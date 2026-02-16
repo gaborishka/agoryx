@@ -46,9 +46,9 @@ export class ClaudeAdapter implements Adapter {
 
     this.status = "busy";
     const prompt = buildPrompt(input);
-    const child = spawn("claude", ["-p", prompt, "--output-format", "stream-json"], {
+    const child = spawn("claude", buildClaudeSpawnArgs(prompt), {
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      env: buildClaudeSpawnEnv(process.env),
     });
     this.running.set(input.requestId, child);
 
@@ -65,8 +65,14 @@ export class ClaudeAdapter implements Adapter {
     });
 
     try {
+      let resultText: string | null = null;
       for await (const chunk of child.stdout) {
-        const text = parseChunkToText(chunk.toString("utf8"));
+        const parsedChunk = parseClaudeChunk(chunk.toString("utf8"));
+        if (parsedChunk.resultText) {
+          resultText = parsedChunk.resultText;
+        }
+
+        const text = parsedChunk.deltaText;
         if (!text) {
           continue;
         }
@@ -98,7 +104,7 @@ export class ClaudeAdapter implements Adapter {
       } else {
         yield messageCompleted(baseArgs(input), {
           ...startedPayload,
-          text: output.trim() || "(no content)",
+          text: output.trim() || resultText?.trim() || "(no content)",
         });
       }
     } catch (error) {
@@ -162,14 +168,109 @@ const buildPrompt = (input: AgentInput): string =>
     .join("\n\n")
     .slice(-20000);
 
-const parseChunkToText = (raw: string): string => {
+export const buildClaudeSpawnArgs = (prompt: string): string[] => [
+  "-p",
+  prompt,
+  "--output-format",
+  "stream-json",
+  "--verbose",
+];
+
+export const buildClaudeSpawnEnv = (
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv => {
+  const sanitized = { ...env };
+  delete sanitized.CLAUDECODE;
+  return sanitized;
+};
+
+export const parseClaudeChunk = (
+  raw: string,
+): { deltaText: string; resultText: string | null } => {
   const lines = raw.split(/\r?\n/);
   const parts: string[] = [];
+  let resultText: string | null = null;
+
   for (const line of lines) {
-    const text = extractTextFromJsonLine(line);
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const maybeObject = tryParseJsonObject(trimmed);
+    if (isClaudeResultEvent(maybeObject)) {
+      const extracted = extractTextFromUnknown(
+        (maybeObject as Record<string, unknown>).result,
+      );
+      if (extracted) {
+        resultText = extracted;
+      }
+      continue;
+    }
+
+    const text = extractTextFromJsonLine(trimmed);
     if (text) {
       parts.push(text);
     }
   }
-  return parts.join("\n");
+
+  return {
+    deltaText: parts.join("\n"),
+    resultText,
+  };
+};
+
+const tryParseJsonObject = (line: string): Record<string, unknown> | null => {
+  try {
+    const parsed = JSON.parse(line);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
+
+const isClaudeResultEvent = (value: unknown): boolean => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  return (value as Record<string, unknown>).type === "result";
+};
+
+const extractTextFromUnknown = (value: unknown): string | null => {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => extractTextFromUnknown(item))
+      .filter((item): item is string => Boolean(item));
+    return parts.length > 0 ? parts.join("") : null;
+  }
+
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const obj = value as Record<string, unknown>;
+  const candidates = [
+    obj.text,
+    obj.value,
+    obj.result,
+    obj.content,
+    obj.message,
+    obj.item,
+    obj.output_text,
+  ];
+  for (const candidate of candidates) {
+    const text = extractTextFromUnknown(candidate);
+    if (text) {
+      return text;
+    }
+  }
+
+  return null;
 };

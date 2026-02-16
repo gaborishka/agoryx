@@ -323,11 +323,19 @@ const handleCommand = async (
         console.log("Usage: /retry @codex");
         return true;
       }
-      const requestId = await engine.retryFailed(target);
-      if (!requestId) {
+      const retry = await engine.retryFailed(target);
+      if (!retry) {
         console.log(`No failed request found for ${target}.`);
+      } else if (!retry.success) {
+        console.error(
+          `[${retry.adapter}] retry failed (${retry.failedRequestId} -> ${retry.requestId}): ${
+            retry.error ?? "unknown error"
+          }`,
+        );
       } else {
-        console.log(`Last failed request for ${target}: ${requestId}`);
+        console.log(
+          `[${retry.adapter}] retry succeeded (${retry.failedRequestId} -> ${retry.requestId})`,
+        );
       }
       return true;
     }

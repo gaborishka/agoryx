@@ -425,16 +425,31 @@ export class SQLiteStore {
   }
 
   public getLastFailedRequest(roomId: string, adapterName: string): string | null {
-    const row = this.db
+    const source = `adapter.${adapterName}`;
+    const failedRow = this.db
       .prepare(
         `
-      SELECT request_id FROM events_log
+      SELECT row_id, request_id FROM events_log
       WHERE room_id = ? AND source = ? AND type = 'message.error'
       ORDER BY row_id DESC LIMIT 1
     `,
       )
-      .get(roomId, `adapter.${adapterName}`) as { request_id: string } | undefined;
-    return row?.request_id ?? null;
+      .get(roomId, source) as { row_id: number; request_id: string } | undefined;
+    if (!failedRow) {
+      return null;
+    }
+
+    const recoveredRow = this.db
+      .prepare(
+        `
+      SELECT row_id FROM events_log
+      WHERE room_id = ? AND source = ? AND type = 'message.completed' AND row_id > ?
+      ORDER BY row_id DESC LIMIT 1
+    `,
+      )
+      .get(roomId, source, failedRow.row_id) as { row_id: number } | undefined;
+
+    return recoveredRow ? null : failedRow.request_id;
   }
 
   public close(): void {

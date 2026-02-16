@@ -3,6 +3,7 @@ import type { ChatRuntimeConfig } from "../config/default.js";
 import type { Message, OrchestrationMode, Room } from "../events/types.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import type { Dispatch, OrchestrationPolicy } from "../orchestrator/policy.js";
+import { createId } from "../session/ids.js";
 import { SessionService } from "../session/service.js";
 
 export interface ChatEngineHooks {
@@ -15,6 +16,10 @@ export interface DispatchResult {
   success: boolean;
   text: string;
   error?: string;
+}
+
+export interface RetryResult extends DispatchResult {
+  failedRequestId: string;
 }
 
 interface EngineState {
@@ -133,12 +138,40 @@ export class ChatEngine {
     return results;
   }
 
-  public async retryFailed(adapterName: string): Promise<string | null> {
-    const requestId = this.getLastFailedRequest(adapterName);
-    if (!requestId) {
+  public async retryFailed(adapterName: string): Promise<RetryResult | null> {
+    const normalizedAdapter = normalizeAdapterName(adapterName);
+    if (!normalizedAdapter) {
       return null;
     }
-    return requestId;
+
+    const failedRequestId = this.getLastFailedRequest(normalizedAdapter);
+    if (!failedRequestId) {
+      return null;
+    }
+
+    const adapter = this.adapters[normalizedAdapter];
+    if (adapter) {
+      // Best-effort cleanup: timeouts/process crashes may leave a stale subprocess.
+      try {
+        await adapter.cancel(failedRequestId);
+      } catch {
+        // Ignore cleanup errors and continue with retry dispatch.
+      }
+    }
+
+    const dispatch: Dispatch = {
+      dispatchId: createId("dsp"),
+      requestId: createId("req"),
+      targetAdapter: normalizedAdapter,
+      priority: 0,
+      reason: `retry:${failedRequestId}`,
+    };
+    const result = await this.runDispatch(dispatch);
+
+    return {
+      ...result,
+      failedRequestId,
+    };
   }
 
   private async runDispatch(dispatch: Dispatch): Promise<DispatchResult> {
@@ -157,7 +190,7 @@ export class ChatEngine {
     const adapterConfig = this.resolveAdapterConfig(dispatch.targetAdapter);
     const messages = this.session.buildContextMessages(state.room, adapterConfig.systemPrompt);
     let finalText = "";
-    let failed: string | undefined;
+    let failed: { errorClass: string; message: string } | undefined;
 
     for await (const event of adapter.send({
       roomId: state.room.id,
@@ -182,7 +215,7 @@ export class ChatEngine {
       }
 
       if (event.type === "message.error") {
-        failed = extractErrorMessage(event.payload);
+        failed = extractErrorInfo(event.payload);
       }
     }
 
@@ -192,7 +225,7 @@ export class ChatEngine {
         requestId: dispatch.requestId,
         success: false,
         text: finalText,
-        error: failed,
+        error: `${failed.errorClass}: ${failed.message}`,
       };
     }
 
@@ -235,10 +268,38 @@ const extractPayloadText = (payload: unknown): string => {
   return typeof text === "string" ? text : "";
 };
 
-const extractErrorMessage = (payload: unknown): string => {
+const ERROR_CLASSES = [
+  "AUTH_ERROR",
+  "RATE_LIMIT",
+  "TIMEOUT",
+  "PROCESS_CRASH",
+  "PROTOCOL_ERROR",
+  "UNKNOWN",
+] as const;
+
+const extractErrorInfo = (payload: unknown): { errorClass: string; message: string } => {
+  const fallback = {
+    errorClass: "UNKNOWN",
+    message: "Unknown adapter error",
+  };
+
   if (!payload || typeof payload !== "object") {
-    return "Unknown adapter error";
+    return fallback;
   }
+
+  const errorClass = (payload as { class?: string }).class;
+  const normalizedClass =
+    typeof errorClass === "string" &&
+    (ERROR_CLASSES as readonly string[]).includes(errorClass)
+      ? errorClass
+      : "UNKNOWN";
+
   const message = (payload as { message?: string }).message;
-  return typeof message === "string" ? message : "Unknown adapter error";
+  return {
+    errorClass: normalizedClass,
+    message: typeof message === "string" ? message : fallback.message,
+  };
 };
+
+const normalizeAdapterName = (value: string): string =>
+  value.trim().toLowerCase();

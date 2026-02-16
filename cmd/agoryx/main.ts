@@ -3,16 +3,12 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { writeFileSync } from "node:fs";
 import { createAdapterRegistry } from "../../internal/adapters/registry.js";
+import { renderSessionAsJson, renderSessionAsMarkdown } from "./session-export.js";
 import type { ChatRuntimeConfig } from "../../internal/config/default.js";
 import { loadConfig, toRuntimeConfig } from "../../internal/config/index.js";
 import { ChatEngine } from "../../internal/engine/chat.js";
 import type { AdapterEvent } from "../../internal/adapters/adapter.js";
-import type {
-  Message,
-  OrchestrationMode,
-  PinnedContext,
-  Room,
-} from "../../internal/events/types.js";
+import type { OrchestrationMode } from "../../internal/events/types.js";
 import { SessionService } from "../../internal/session/service.js";
 import { SQLiteStore } from "../../internal/storage/sqlite.js";
 
@@ -190,25 +186,20 @@ const runSessions = (argv: string[]): void => {
 
         let outputText: string;
         if (format === "json") {
-          outputText = JSON.stringify(
-            {
-              exportedAt: new Date().toISOString(),
-              targetId,
-              room,
-              checkpoint,
-              pinnedContext,
-              messages,
-            },
-            null,
-            2,
-          );
+          outputText = renderSessionAsJson({
+            targetId,
+            room,
+            checkpoint,
+            pinnedContext,
+            messages,
+          });
         } else if (format === "markdown") {
           outputText = renderSessionAsMarkdown({
             targetId,
             room,
-            messages,
+            checkpoint,
             pinnedContext,
-            checkpointText: checkpoint?.summaryText ?? null,
+            messages,
           });
         } else {
           throw new Error(`Unsupported export format: ${format}`);
@@ -482,53 +473,6 @@ const parseArgs = (args: string[]): ParsedArgs => {
     i += 1;
   }
   return { options, positionals };
-};
-
-const renderSessionAsMarkdown = (input: {
-  targetId: string;
-  room: Room;
-  messages: Message[];
-  pinnedContext: PinnedContext[];
-  checkpointText: string | null;
-}): string => {
-  const lines: string[] = [];
-  lines.push("# Agoryx Session Export");
-  lines.push("");
-  lines.push(`- Exported At: ${new Date().toISOString()}`);
-  lines.push(`- Target Id: ${input.targetId}`);
-  lines.push(`- Room Id: ${input.room.id}`);
-  lines.push(`- Room Name: ${input.room.name}`);
-  lines.push(`- Mode: ${input.room.config.mode}`);
-  lines.push(`- Participants: ${input.room.participants.join(", ")}`);
-  lines.push("");
-
-  if (input.pinnedContext.length > 0) {
-    lines.push("## Pinned Context");
-    lines.push("");
-    for (const pin of input.pinnedContext) {
-      lines.push(`### ${pin.label} (${pin.id})`);
-      lines.push(pin.content);
-      lines.push("");
-    }
-  }
-
-  if (input.checkpointText) {
-    lines.push("## Latest Checkpoint");
-    lines.push("");
-    lines.push(input.checkpointText);
-    lines.push("");
-  }
-
-  lines.push("## Messages");
-  lines.push("");
-  for (const message of input.messages) {
-    lines.push(`### ${message.author} (${message.createdAt})`);
-    lines.push("");
-    lines.push(message.text);
-    lines.push("");
-  }
-
-  return lines.join("\n");
 };
 
 main().catch((error) => {

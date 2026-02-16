@@ -49,6 +49,12 @@ interface PinnedContextRow {
   created_at: string;
 }
 
+interface SessionRunRow {
+  id: string;
+  room_id: string;
+  created_at: string;
+}
+
 export class SQLiteStore {
   private readonly db: Database.Database;
 
@@ -169,6 +175,47 @@ export class SQLiteStore {
       .prepare(`INSERT INTO session_runs (id, room_id, created_at) VALUES (?, ?, ?)`)
       .run(sessionId, roomId, nowIso());
     return sessionId;
+  }
+
+  public listSessionRuns(
+    limit = 20,
+  ): Array<{ id: string; roomId: string; roomName: string; createdAt: string }> {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT s.id, s.room_id, s.created_at, r.name AS room_name
+      FROM session_runs s
+      JOIN rooms r ON r.id = s.room_id
+      ORDER BY s.created_at DESC
+      LIMIT ?
+    `,
+      )
+      .all(limit) as Array<{
+      id: string;
+      room_id: string;
+      room_name: string;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      roomId: row.room_id,
+      roomName: row.room_name,
+      createdAt: row.created_at,
+    }));
+  }
+
+  public resolveRoomId(targetId: string): string | null {
+    const existingRoom = this.getRoom(targetId);
+    if (existingRoom) {
+      return existingRoom.id;
+    }
+
+    const row = this.db
+      .prepare(`SELECT room_id FROM session_runs WHERE id = ?`)
+      .get(targetId) as { room_id: string } | undefined;
+
+    return row?.room_id ?? null;
   }
 
   public listRoomSummaries(limit = 20): Array<{ id: string; name: string; createdAt: string }> {

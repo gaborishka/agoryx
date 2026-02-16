@@ -1,12 +1,18 @@
 import process from "node:process";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { writeFileSync } from "node:fs";
 import { createAdapterRegistry } from "../../internal/adapters/registry.js";
-import { createDefaultAdapterConfig, defaultRoomConfig } from "../../internal/config/default.js";
 import type { ChatRuntimeConfig } from "../../internal/config/default.js";
+import { loadConfig, toRuntimeConfig } from "../../internal/config/index.js";
 import { ChatEngine } from "../../internal/engine/chat.js";
 import type { AdapterEvent } from "../../internal/adapters/adapter.js";
-import type { OrchestrationMode } from "../../internal/events/types.js";
+import type {
+  Message,
+  OrchestrationMode,
+  PinnedContext,
+  Room,
+} from "../../internal/events/types.js";
 import { SessionService } from "../../internal/session/service.js";
 import { SQLiteStore } from "../../internal/storage/sqlite.js";
 
@@ -14,44 +20,68 @@ const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto"];
 
 async function main(): Promise<void> {
   const [, , command = "help", ...rest] = process.argv;
-  if (command !== "chat") {
-    printUsage();
-    process.exit(command === "help" ? 0 : 1);
+  switch (command) {
+    case "help":
+      printUsage();
+      return;
+    case "chat":
+      await runChat(rest);
+      return;
+    case "sessions":
+      runSessions(rest);
+      return;
+    default:
+      printUsage();
+      process.exit(1);
+  }
+}
+
+const runChat = async (argv: string[]): Promise<void> => {
+  const parsed = parseArgs(argv);
+  const args = parsed.options;
+  const cliAgents = args.agents
+    ? args.agents
+        .split(",")
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean)
+    : undefined;
+
+  const loadedConfig = loadConfig(args.config);
+  const runtimeConfig = toRuntimeConfig(loadedConfig, {
+    roomName: args["room-name"] ?? "Agoryx Room",
+    resumeRoomId: args.resume,
+    agents: cliAgents,
+  });
+
+  const mode = normalizeMode(args.mode ?? runtimeConfig.mode);
+  if (!mode) {
+    throw new Error(`Invalid mode: ${args.mode ?? runtimeConfig.mode}`);
   }
 
-  const args = parseArgs(rest);
-  const mode = normalizeMode(args.mode ?? "manual");
-  if (!mode) {
-    throw new Error(`Invalid mode: ${args.mode}`);
-  }
-  const agents = (args.agents ?? "codex,claude")
-    .split(",")
+  const config: ChatRuntimeConfig = {
+    ...runtimeConfig,
+    mode,
+    roomConfig: {
+      ...runtimeConfig.roomConfig,
+      mode,
+    },
+    dbPath: args.db ?? runtimeConfig.dbPath,
+  };
+
+  config.agents = config.agents
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
-  const dbPath = args.db ?? "./agoryx.db";
-
-  const adapterConfig = createDefaultAdapterConfig();
   const adapterMode = args["adapter-mode"];
   if (adapterMode === "cli" || adapterMode === "stub") {
-    for (const agent of agents) {
-      if (adapterConfig[agent]) {
-        adapterConfig[agent] = {
-          ...adapterConfig[agent],
+    for (const agent of config.agents) {
+      if (config.adapterConfig[agent]) {
+        config.adapterConfig[agent] = {
+          ...config.adapterConfig[agent],
           mode: adapterMode,
         };
       }
     }
   }
-
-  const config: ChatRuntimeConfig = {
-    dbPath,
-    mode,
-    agents,
-    adapterConfig,
-    roomConfig: defaultRoomConfig(mode),
-    roomName: args["room-name"] ?? "Agoryx Room",
-    resumeRoomId: args.resume,
-  };
 
   const store = new SQLiteStore(config.dbPath);
   store.init();
@@ -106,7 +136,102 @@ async function main(): Promise<void> {
     rl.close();
     store.close();
   }
-}
+};
+
+const runSessions = (argv: string[]): void => {
+  const parsed = parseArgs(argv);
+  const options = parsed.options;
+  const [subcommand, ...positionals] = parsed.positionals;
+  const loadedConfig = loadConfig(options.config);
+  const dbPath = options.db ?? loadedConfig.session.dbPath;
+  const store = new SQLiteStore(dbPath);
+  store.init();
+
+  try {
+    switch (subcommand) {
+      case "list": {
+        const parsedLimit = Number(options.limit ?? "20");
+        const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 20;
+        const sessions = store.listSessionRuns(limit);
+        if (sessions.length === 0) {
+          console.log("No sessions found.");
+          return;
+        }
+
+        console.log("session_id\troom_id\troom_name\tcreated_at");
+        for (const session of sessions) {
+          console.log(
+            `${session.id}\t${session.roomId}\t${session.roomName}\t${session.createdAt}`,
+          );
+        }
+        return;
+      }
+      case "export": {
+        const targetId = positionals[0];
+        if (!targetId) {
+          printSessionsUsage();
+          process.exitCode = 1;
+          return;
+        }
+
+        const roomId = store.resolveRoomId(targetId);
+        if (!roomId) {
+          throw new Error(`No room/session found for id: ${targetId}`);
+        }
+        const room = store.getRoom(roomId);
+        if (!room) {
+          throw new Error(`Room ${roomId} was not found.`);
+        }
+
+        const format = (options.format ?? "markdown").toLowerCase();
+        const messages = store.listMessages(room.id, 10_000);
+        const pinnedContext = store.listPinnedContext(room.id);
+        const checkpoint = store.getLatestCheckpoint(room.id);
+
+        let outputText: string;
+        if (format === "json") {
+          outputText = JSON.stringify(
+            {
+              exportedAt: new Date().toISOString(),
+              targetId,
+              room,
+              checkpoint,
+              pinnedContext,
+              messages,
+            },
+            null,
+            2,
+          );
+        } else if (format === "markdown") {
+          outputText = renderSessionAsMarkdown({
+            targetId,
+            room,
+            messages,
+            pinnedContext,
+            checkpointText: checkpoint?.summaryText ?? null,
+          });
+        } else {
+          throw new Error(`Unsupported export format: ${format}`);
+        }
+
+        const outPath = options.out;
+        if (outPath) {
+          writeFileSync(outPath, outputText, "utf8");
+          console.log(`Session export written to ${outPath}`);
+          return;
+        }
+
+        console.log(outputText);
+        return;
+      }
+      default:
+        printSessionsUsage();
+        process.exitCode = 1;
+    }
+  } finally {
+    store.close();
+  }
+};
 
 const handleCommand = async (
   line: string,
@@ -272,14 +397,25 @@ const printUsage = (): void => {
   console.log(`
 Usage:
   agoryx chat [--agents codex,claude] [--mode manual|round-robin|auto]
+  agoryx sessions list [--limit 20] [--db ./agoryx.db]
+  agoryx sessions export <room_or_session_id> [--format markdown|json] [--out file] [--db ./agoryx.db]
 
 Options:
   --agents       Comma-separated list of agents (default: codex,claude)
   --mode         Orchestration mode (default: manual)
+  --config       Path to agoryx.json config file (default: ./agoryx.json)
   --db           SQLite path (default: ./agoryx.db)
   --adapter-mode Global adapter mode: stub|cli (default: stub)
   --resume       Resume existing room by id
   --room-name    Room title
+`);
+};
+
+const printSessionsUsage = (): void => {
+  console.log(`
+Usage:
+  agoryx sessions list [--limit 20] [--db ./agoryx.db]
+  agoryx sessions export <room_or_session_id> [--format markdown|json] [--out file] [--db ./agoryx.db]
 `);
 };
 
@@ -317,23 +453,82 @@ const printBanner = (
   console.log("Type /help for commands.\n");
 };
 
-const parseArgs = (args: string[]): Record<string, string> => {
-  const parsed: Record<string, string> = {};
+interface ParsedArgs {
+  options: Record<string, string>;
+  positionals: string[];
+}
+
+const parseArgs = (args: string[]): ParsedArgs => {
+  const options: Record<string, string> = {};
+  const positionals: string[] = [];
   for (let i = 0; i < args.length; i += 1) {
     const token = args[i];
-    if (!token || !token.startsWith("--")) {
+    if (!token) {
       continue;
     }
+
+    if (!token.startsWith("--")) {
+      positionals.push(token);
+      continue;
+    }
+
     const key = token.slice(2);
     const next = args[i + 1];
     if (!next || next.startsWith("--")) {
-      parsed[key] = "true";
+      options[key] = "true";
       continue;
     }
-    parsed[key] = next;
+    options[key] = next;
     i += 1;
   }
-  return parsed;
+  return { options, positionals };
+};
+
+const renderSessionAsMarkdown = (input: {
+  targetId: string;
+  room: Room;
+  messages: Message[];
+  pinnedContext: PinnedContext[];
+  checkpointText: string | null;
+}): string => {
+  const lines: string[] = [];
+  lines.push("# Agoryx Session Export");
+  lines.push("");
+  lines.push(`- Exported At: ${new Date().toISOString()}`);
+  lines.push(`- Target Id: ${input.targetId}`);
+  lines.push(`- Room Id: ${input.room.id}`);
+  lines.push(`- Room Name: ${input.room.name}`);
+  lines.push(`- Mode: ${input.room.config.mode}`);
+  lines.push(`- Participants: ${input.room.participants.join(", ")}`);
+  lines.push("");
+
+  if (input.pinnedContext.length > 0) {
+    lines.push("## Pinned Context");
+    lines.push("");
+    for (const pin of input.pinnedContext) {
+      lines.push(`### ${pin.label} (${pin.id})`);
+      lines.push(pin.content);
+      lines.push("");
+    }
+  }
+
+  if (input.checkpointText) {
+    lines.push("## Latest Checkpoint");
+    lines.push("");
+    lines.push(input.checkpointText);
+    lines.push("");
+  }
+
+  lines.push("## Messages");
+  lines.push("");
+  for (const message of input.messages) {
+    lines.push(`### ${message.author} (${message.createdAt})`);
+    lines.push("");
+    lines.push(message.text);
+    lines.push("");
+  }
+
+  return lines.join("\n");
 };
 
 main().catch((error) => {

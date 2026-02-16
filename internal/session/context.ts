@@ -83,9 +83,20 @@ export function buildContext(
   let tokenBudget = maxContextTokens;
   let truncated = false;
 
-  // Account for system prompt
+  // Add system prompt as the first message
   if (systemPrompt) {
-    tokenBudget -= estimateTokens(systemPrompt);
+    const promptTokens = estimateTokens(systemPrompt);
+    tokenBudget -= promptTokens;
+    result.push({
+      id: "system-prompt",
+      roomId,
+      author: "system",
+      role: "system",
+      text: systemPrompt,
+      format: "plain",
+      metadata: {},
+      createdAt: new Date().toISOString(),
+    });
   }
 
   // Add pinned context as synthetic system messages

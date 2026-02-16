@@ -9,6 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { OrchestrationMode, RoomConfig } from "../events/types.js";
 import type { AdapterConfig, AdapterMode } from "../adapters/adapter.js";
+import type { ChatRuntimeConfig } from "./default.js";
 
 // ---------------------------------------------------------------------------
 // Config schema
@@ -95,11 +96,49 @@ export function loadConfig(configPath?: string): AgoryxConfig {
   }
 }
 
+const AGENT_DEFAULTS: Omit<AgentEntry, "adapter"> = {
+  mode: "stub",
+  timeoutMs: 120_000,
+  maxTokens: 4096,
+};
+
+function mergeAgents(
+  defaults: Record<string, AgentEntry>,
+  overrides?: Record<string, Partial<AgentEntry>>,
+): Record<string, AgentEntry> {
+  const result: Record<string, AgentEntry> = {};
+
+  // Start with all default agents
+  for (const [name, entry] of Object.entries(defaults)) {
+    result[name] = structuredClone(entry);
+  }
+
+  if (!overrides) return result;
+
+  // Deep-merge each agent override
+  for (const [name, partial] of Object.entries(overrides)) {
+    const base = result[name];
+    if (base) {
+      // Existing agent — merge fields
+      result[name] = { ...base, ...partial } as AgentEntry;
+    } else {
+      // New agent — fill missing required fields from AGENT_DEFAULTS
+      result[name] = {
+        adapter: partial.adapter ?? name,
+        ...AGENT_DEFAULTS,
+        ...partial,
+      } as AgentEntry;
+    }
+  }
+
+  return result;
+}
+
 function mergeConfig(partial: Partial<AgoryxConfig>): AgoryxConfig {
   return {
     version: partial.version ?? DEFAULT_CONFIG.version,
     defaultMode: partial.defaultMode ?? DEFAULT_CONFIG.defaultMode,
-    agents: { ...DEFAULT_CONFIG.agents, ...partial.agents },
+    agents: mergeAgents(DEFAULT_CONFIG.agents, partial.agents as Record<string, Partial<AgentEntry>> | undefined),
     context: { ...DEFAULT_CONFIG.context, ...partial.context },
     session: { ...DEFAULT_CONFIG.session, ...partial.session },
   };
@@ -133,5 +172,44 @@ export function getAdapterConfig(
     timeoutMs: entry.timeoutMs,
     maxTokens: entry.maxTokens,
     systemPrompt: entry.systemPrompt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Unified runtime config builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert AgoryxConfig into ChatRuntimeConfig that the engine consumes.
+ *
+ * This is the single entry-point for config → engine pipeline:
+ *   loadConfig() → toRuntimeConfig() → new ChatEngine(session, adapters, runtimeConfig)
+ *
+ * @param config - loaded AgoryxConfig (from file or defaults)
+ * @param overrides - optional CLI overrides (roomName, resumeRoomId, agent list)
+ */
+export function toRuntimeConfig(
+  config: AgoryxConfig,
+  overrides: {
+    roomName?: string;
+    resumeRoomId?: string;
+    agents?: string[];
+  } = {},
+): ChatRuntimeConfig {
+  const agentNames = overrides.agents ?? Object.keys(config.agents);
+
+  const adapterConfig: Record<string, AdapterConfig> = {};
+  for (const name of agentNames) {
+    adapterConfig[name] = getAdapterConfig(config, name);
+  }
+
+  return {
+    dbPath: config.session.dbPath,
+    mode: config.defaultMode,
+    agents: agentNames,
+    adapterConfig,
+    roomConfig: toRoomConfig(config),
+    roomName: overrides.roomName ?? "default",
+    resumeRoomId: overrides.resumeRoomId,
   };
 }

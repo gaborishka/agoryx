@@ -1,6 +1,7 @@
 import type { Message, Room, RoomConfig } from "../events/types.js";
 import { createId, nowIso } from "./ids.js";
 import { SQLiteStore } from "../storage/sqlite.js";
+import { buildContext, type BuiltContext } from "./context.js";
 
 export interface SessionOptions {
   roomName: string;
@@ -102,39 +103,34 @@ export class SessionService {
     return this.store.removePinnedContext(roomId, pinId);
   }
 
-  public buildContextMessages(room: Room): Message[] {
-    const pinned = this.store.listPinnedContext(room.id);
-    const messages = this.store.listMessages(room.id, room.config.maxHistoryMessages);
-    const checkpoint = this.store.getLatestCheckpoint(room.id);
+  /**
+   * Build the context message array for an agent dispatch.
+   *
+   * Delegates to the context builder algorithm which handles:
+   * - Pinned context injection
+   * - Checkpoint-aware message selection
+   * - Token budget trimming (keeps newest messages)
+   *
+   * @param room - The room to build context for
+   * @param systemPrompt - Optional system prompt (from adapter config) to account for in token budget
+   */
+  public buildContextMessages(room: Room, systemPrompt?: string): Message[] {
+    const ctx = this.buildFullContext(room, systemPrompt);
+    return ctx.messages;
+  }
 
-    const contextMessages: Message[] = [];
-    if (checkpoint) {
-      contextMessages.push({
-        id: createId("msg"),
-        roomId: room.id,
-        author: "system.checkpoint",
-        role: "system",
-        text: `Conversation summary: ${checkpoint.summaryText}`,
-        format: "plain",
-        metadata: {},
-        createdAt: nowIso(),
-      });
-    }
-
-    for (const pin of pinned) {
-      contextMessages.push({
-        id: createId("msg"),
-        roomId: room.id,
-        author: "system.pinned",
-        role: "system",
-        text: `[Pinned:${pin.label}] ${pin.content}`,
-        format: "plain",
-        metadata: {},
-        createdAt: nowIso(),
-      });
-    }
-
-    return [...contextMessages, ...messages];
+  /**
+   * Rich context build — returns full BuiltContext including token stats and truncation info.
+   * Useful for diagnostics and adapters that want to inspect context metadata.
+   */
+  public buildFullContext(room: Room, systemPrompt?: string): BuiltContext {
+    return buildContext(this.store, {
+      roomId: room.id,
+      systemPrompt,
+      maxHistoryMessages: room.config.maxHistoryMessages,
+      checkpointThreshold: room.config.checkpointThreshold,
+      maxContextTokens: room.config.maxContextTokens,
+    });
   }
 
   public maybeCreateCheckpoint(room: Room): string | null {

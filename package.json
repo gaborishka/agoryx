@@ -5,7 +5,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "cli": "tsx cmd/agoryx/main.ts",
     "chat": "tsx cmd/agoryx/main.ts chat",
+    "sessions": "tsx cmd/agoryx/main.ts sessions",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test tests/**/*.test.ts"

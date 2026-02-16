@@ -154,8 +154,8 @@ export class ChatEngine {
       };
     }
 
-    const messages = this.session.buildContextMessages(state.room);
     const adapterConfig = this.resolveAdapterConfig(dispatch.targetAdapter);
+    const messages = this.session.buildContextMessages(state.room, adapterConfig.systemPrompt);
     let finalText = "";
     let failed: string | undefined;
 

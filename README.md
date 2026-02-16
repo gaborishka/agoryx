@@ -16,6 +16,17 @@ npm install
 npm run chat -- --agents codex,claude --mode manual
 ```
 
+## Session Commands
+
+```bash
+# List recent sessions
+npm run sessions -- list --limit 20
+
+# Export a session (session id or room id)
+npm run sessions -- export <room_or_session_id> --format markdown --out ./export.md
+```
+
 ## Notes
 - Adapters are intentionally stubbed in this scaffold to keep integration safe and deterministic.
 - The architecture and consensus docs are in `docs/`.
+- CLI parser currently supports `--key value` syntax (not `--key=value`) in this MVP.

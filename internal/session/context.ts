@@ -1,0 +1,170 @@
+/**
+ * Context Builder
+ *
+ * Builds the message array to send to an agent.
+ * Implements the context building algorithm from ARCHITECTURE.md:
+ *
+ * 1. Start with system prompt (agent role/persona)
+ * 2. Add all pinned context blocks for this room
+ * 3. If message count > threshold:
+ *    a. Find latest checkpoint summary
+ *    b. Include summary + messages after that checkpoint
+ * 4. Else: include full message history
+ * 5. Trim oldest messages to fit adapter's context budget
+ */
+
+import type { Message, Checkpoint, PinnedContext } from "../events/types.js";
+import type { SQLiteStore } from "../storage/sqlite.js";
+
+export interface ContextBuildOptions {
+  roomId: string;
+  systemPrompt?: string;
+  maxHistoryMessages: number;
+  checkpointThreshold: number;
+  maxContextTokens: number;
+}
+
+export interface BuiltContext {
+  messages: Message[];
+  systemPrompt: string | null;
+  truncated: boolean;
+  totalEstimatedTokens: number;
+}
+
+/**
+ * Rough token estimate: ~4 chars per token.
+ * Intentionally conservative; a proper tokenizer can replace this later.
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+export function buildContext(
+  store: SQLiteStore,
+  opts: ContextBuildOptions,
+): BuiltContext {
+  const {
+    roomId,
+    systemPrompt,
+    maxHistoryMessages,
+    checkpointThreshold,
+    maxContextTokens,
+  } = opts;
+
+  const pinnedContexts = store.listPinnedContext(roomId);
+  const allMessages = store.listMessages(roomId, 10000);
+  const messageCount = allMessages.length;
+
+  let messages: Message[];
+  let checkpointSummary: string | null = null;
+
+  if (messageCount > checkpointThreshold) {
+    const checkpoint = store.getLatestCheckpoint(roomId);
+    if (checkpoint) {
+      checkpointSummary = checkpoint.summaryText;
+      // Get messages created after the checkpoint's last covered message
+      const toIndex = allMessages.findIndex(
+        (m) => m.id === checkpoint.toMessageId,
+      );
+      if (toIndex >= 0 && toIndex < allMessages.length - 1) {
+        messages = allMessages.slice(toIndex + 1);
+      } else {
+        messages = allMessages.slice(-maxHistoryMessages);
+      }
+    } else {
+      messages = allMessages.slice(-maxHistoryMessages);
+    }
+  } else {
+    messages = allMessages;
+  }
+
+  // Build output, tracking token budget
+  const result: Message[] = [];
+  let tokenBudget = maxContextTokens;
+  let truncated = false;
+
+  // Account for system prompt
+  if (systemPrompt) {
+    tokenBudget -= estimateTokens(systemPrompt);
+  }
+
+  // Add pinned context as synthetic system messages
+  for (const pin of pinnedContexts) {
+    const pinText = `[Pinned: ${pin.label}] ${pin.content}`;
+    const tokens = estimateTokens(pinText);
+    if (tokens > tokenBudget) {
+      truncated = true;
+      break;
+    }
+    tokenBudget -= tokens;
+    result.push({
+      id: pin.id,
+      roomId,
+      author: "system",
+      role: "system",
+      text: pinText,
+      format: "plain",
+      metadata: {},
+      createdAt: pin.createdAt,
+    });
+  }
+
+  // Add checkpoint summary
+  if (checkpointSummary) {
+    const summaryText = `[Conversation summary]\n${checkpointSummary}`;
+    const tokens = estimateTokens(summaryText);
+    if (tokens <= tokenBudget) {
+      tokenBudget -= tokens;
+      result.push({
+        id: "checkpoint-summary",
+        roomId,
+        author: "system",
+        role: "system",
+        text: summaryText,
+        format: "plain",
+        metadata: {},
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  // Add conversation messages, trimming oldest if over budget
+  let totalMessageTokens = 0;
+  for (const msg of messages) {
+    totalMessageTokens += estimateTokens(msg.text);
+  }
+
+  if (totalMessageTokens > tokenBudget) {
+    truncated = true;
+    let remaining = tokenBudget;
+    const kept: Message[] = [];
+    // Keep from newest, walking backwards
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const tokens = estimateTokens(messages[i].text);
+      if (remaining >= tokens) {
+        kept.unshift(messages[i]);
+        remaining -= tokens;
+      } else {
+        break;
+      }
+    }
+    result.push(...kept);
+  } else {
+    result.push(...messages);
+  }
+
+  // Calculate total tokens
+  let totalEstimatedTokens = systemPrompt
+    ? estimateTokens(systemPrompt)
+    : 0;
+  for (const msg of result) {
+    totalEstimatedTokens += estimateTokens(msg.text);
+  }
+
+  return {
+    messages: result,
+    systemPrompt: systemPrompt ?? null,
+    truncated,
+    totalEstimatedTokens,
+  };
+}

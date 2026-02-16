@@ -1,0 +1,17 @@
+version: "0.1"
+default_mode: manual
+agents:
+  codex:
+    adapter: codex
+    mode: stub
+    timeout_seconds: 120
+  claude:
+    adapter: claude
+    mode: stub
+    timeout_seconds: 120
+context:
+  max_history_messages: 200
+  checkpoint_threshold: 50
+  max_context_tokens: 30000
+session:
+  db_path: "./agoryx.db"

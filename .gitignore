@@ -1,0 +1,21 @@
+# Ephemeral bridge state
+bridge/SESSION.md
+bridge/LOG.md
+bridge/CLAUDE_PROMPT.md
+bridge/CODEX_PROMPT.md
+
+# Runtime
+agoryx.db
+agoryx.test.db
+*.db
+*.db-shm
+*.db-wal
+
+# Build
+node_modules/
+dist/
+coverage/
+
+# OS
+.DS_Store
+.idea/

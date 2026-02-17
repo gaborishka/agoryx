@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, getAdapterConfig, DEFAULT_CONFIG } from "../../internal/config/index.js";
+import { loadConfig, getAdapterConfig, DEFAULT_CONFIG, resolveAgentSkills } from "../../internal/config/index.js";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -85,6 +85,69 @@ test("new agent in config file gets validated defaults", () => {
   assert.equal(typeof gemini.maxTokens, "number");
   assert.ok(gemini.timeoutMs > 0, "timeoutMs should be positive");
   assert.ok(gemini.maxTokens > 0, "maxTokens should be positive");
+
+  rmSync(dir, { recursive: true });
+});
+
+test("skills merge: config skills override defaults", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      agents: {
+        codex: { skills: ["code", "custom-skill"] },
+      },
+    }),
+  );
+
+  const config = loadConfig(configPath);
+  const skills = resolveAgentSkills(config);
+
+  assert.deepEqual(skills.codex, ["code", "custom-skill"]);
+  assert.ok(skills.claude.length > 0, "claude should have default skills");
+  assert.ok(skills.claude.includes("review"), "claude defaults should include review");
+
+  rmSync(dir, { recursive: true });
+});
+
+test("skills merge: agent without skills gets defaults", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      agents: {
+        codex: { mode: "cli" },
+      },
+    }),
+  );
+
+  const config = loadConfig(configPath);
+  const skills = resolveAgentSkills(config);
+
+  assert.ok(skills.codex.includes("code"), "codex should get default skills");
+  assert.ok(skills.codex.includes("debug"), "codex should get default skills");
+
+  rmSync(dir, { recursive: true });
+});
+
+test("skills merge: new agent without skills gets empty array", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      agents: {
+        gemini: { adapter: "gemini", mode: "stub" },
+      },
+    }),
+  );
+
+  const config = loadConfig(configPath);
+  const skills = resolveAgentSkills(config);
+
+  assert.deepEqual(skills.gemini, []);
 
   rmSync(dir, { recursive: true });
 });

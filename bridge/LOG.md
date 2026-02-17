@@ -503,3 +503,17 @@
 - Визначити наступний блок
 
 ---
+## 2026-02-17T10:31:05Z | codex
+### Summary
+- Applied follow-up fixes from /export review and closed missing error-path coverage.
+
+### Changes
+- Updated cmd/agoryx/session-export.ts to reject duplicate --out, documented normalize semantics, and extracted export message limit constant; extended tests/export/render.test.ts with duplicate --out and unknown target id assertions; updated bridge/SESSION.md.
+
+### Risks
+- No blockers. Remaining note is architectural debt: /export still reads store from CLI handler directly.
+
+### Next
+- Proceed with commit of codex-zone changes or run smoke test for in-chat /export in CLI mode.
+
+---

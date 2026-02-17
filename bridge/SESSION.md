@@ -220,6 +220,18 @@ internal/
 - Agent-to-agent autonomous chaining/debate **не входить у v0.1** (deferred).
 - Джерело істини: `docs/ARCHITECTURE.md` (section `v0.1 Policies`).
 
+## What Changed This Session (Codex — /export review follow-ups)
+
+### Fixes delivered
+- `cmd/agoryx/session-export.ts`
+  - `parseExportCommandArgs()` тепер відхиляє duplicate `--out` (замість silent overwrite)
+  - Додано comments для `normalizeExportFormat()` semantics (default vs reject)
+  - Ліміт export messages винесено в `EXPORT_MESSAGE_LIMIT` з явним поясненням
+- `tests/export/render.test.ts`
+  - Додано test: duplicate `--out` → `null`
+  - Додано test: `collectTargetExportData` кидає помилку для unknown target id
+- Validation: `npm run typecheck` + `npm test` => **67/67 pass**
+
 ## Known Issues
 - Немає блокерів. CLI mode працює для обох адаптерів.
 - SKILL_KEYWORDS dictionary — статичний, може потребувати тюнінгу після real-world testing
@@ -232,4 +244,4 @@ internal/
 2. Визначити наступний блок (пропозиція: in-chat commands /pin /checkpoint /help, або checkpoint auto-creation).
 
 ## Last Updated
-2026-02-17T18:00:00Z by claude
+2026-02-17T18:45:00Z by codex

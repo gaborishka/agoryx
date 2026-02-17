@@ -1,8 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  collectRoomExportData,
+  collectTargetExportData,
+  normalizeExportFormat,
+  parseExportCommandArgs,
   renderSessionAsMarkdown,
   renderSessionAsJson,
+  renderSessionExport,
   type SessionExportData,
 } from "../../cmd/agoryx/session-export.js";
 import type {
@@ -10,7 +15,9 @@ import type {
   Message,
   PinnedContext,
   Checkpoint,
+  RoomConfig,
 } from "../../internal/events/types.js";
+import { SQLiteStore } from "../../internal/storage/sqlite.js";
 
 const FIXED_TIME = "2026-02-17T12:00:00.000Z";
 
@@ -261,4 +268,86 @@ test("exportedAt defaults to current time when not provided", () => {
   // JSON: same check
   assert.ok(jsonResult.exportedAt >= before);
   assert.ok(jsonResult.exportedAt <= after);
+});
+
+test("normalizeExportFormat supports markdown/json and rejects unknown values", () => {
+  assert.equal(normalizeExportFormat(undefined), "markdown");
+  assert.equal(normalizeExportFormat("markdown"), "markdown");
+  assert.equal(normalizeExportFormat("json"), "json");
+  assert.equal(normalizeExportFormat("YAML"), null);
+});
+
+test("parseExportCommandArgs parses format and --out", () => {
+  assert.deepEqual(parseExportCommandArgs([]), { format: "markdown", outPath: undefined });
+  assert.deepEqual(parseExportCommandArgs(["json"]), { format: "json", outPath: undefined });
+  assert.deepEqual(parseExportCommandArgs(["markdown", "--out", "./x.md"]), {
+    format: "markdown",
+    outPath: "./x.md",
+  });
+  assert.deepEqual(parseExportCommandArgs(["--out", "./x.json"]), {
+    format: "markdown",
+    outPath: "./x.json",
+  });
+  assert.equal(parseExportCommandArgs(["yaml"]), null);
+  assert.equal(parseExportCommandArgs(["json", "--out"]), null);
+  assert.equal(parseExportCommandArgs(["json", "--unknown", "x"]), null);
+  assert.equal(parseExportCommandArgs(["json", "--out", "a.md", "--out", "b.md"]), null);
+});
+
+test("renderSessionExport switches by selected format", () => {
+  const data = makeExportData();
+  const markdown = renderSessionExport(data, "markdown");
+  const json = renderSessionExport(data, "json");
+
+  assert.match(markdown, /^# Agoryx Session Export/m);
+  const parsed = JSON.parse(json);
+  assert.equal(parsed.targetId, data.targetId);
+});
+
+test("collectTargetExportData resolves room from session id", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    const roomConfig: RoomConfig = {
+      mode: "manual",
+      checkpointThreshold: 10,
+      maxHistoryMessages: 100,
+      maxContextTokens: 4000,
+    };
+    const room = store.createRoom("Collect Export Test", ["user", "agent.codex"], roomConfig);
+    const sessionId = store.createSessionRun(room.id);
+
+    const data = collectTargetExportData(store, sessionId);
+    assert.equal(data.targetId, sessionId);
+    assert.equal(data.room.id, room.id);
+    assert.deepEqual(data.messages, []);
+  } finally {
+    store.close();
+  }
+});
+
+test("collectTargetExportData throws when target id is unknown", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    assert.throws(
+      () => collectTargetExportData(store, "unknown_target"),
+      /No room\/session found/,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("collectRoomExportData throws when room does not exist", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    assert.throws(() => collectRoomExportData(store, "room_missing"), /was not found/);
+  } finally {
+    store.close();
+  }
 });

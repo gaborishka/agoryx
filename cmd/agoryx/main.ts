@@ -3,7 +3,12 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { writeFileSync } from "node:fs";
 import { createAdapterRegistry } from "../../internal/adapters/registry.js";
-import { renderSessionAsJson, renderSessionAsMarkdown } from "./session-export.js";
+import {
+  collectRoomExportData,
+  collectTargetExportData,
+  parseExportCommandArgs,
+  renderSessionExport,
+} from "./session-export.js";
 import type { ChatRuntimeConfig } from "../../internal/config/default.js";
 import { loadConfig, toRuntimeConfig } from "../../internal/config/index.js";
 import { ChatEngine } from "../../internal/engine/chat.js";
@@ -109,7 +114,7 @@ const runChat = async (argv: string[]): Promise<void> => {
       }
 
       if (line.startsWith("/")) {
-        const shouldContinue = await handleCommand(line, engine, config);
+        const shouldContinue = await handleCommand(line, engine, config, store);
         if (!shouldContinue) {
           break;
         }
@@ -170,40 +175,15 @@ const runSessions = (argv: string[]): void => {
           return;
         }
 
-        const roomId = store.resolveRoomId(targetId);
-        if (!roomId) {
-          throw new Error(`No room/session found for id: ${targetId}`);
-        }
-        const room = store.getRoom(roomId);
-        if (!room) {
-          throw new Error(`Room ${roomId} was not found.`);
-        }
-
-        const format = (options.format ?? "markdown").toLowerCase();
-        const messages = store.listMessages(room.id, 10_000);
-        const pinnedContext = store.listPinnedContext(room.id);
-        const checkpoint = store.getLatestCheckpoint(room.id);
-
-        let outputText: string;
-        if (format === "json") {
-          outputText = renderSessionAsJson({
-            targetId,
-            room,
-            checkpoint,
-            pinnedContext,
-            messages,
-          });
-        } else if (format === "markdown") {
-          outputText = renderSessionAsMarkdown({
-            targetId,
-            room,
-            checkpoint,
-            pinnedContext,
-            messages,
-          });
-        } else {
+        const format = options.format?.toLowerCase();
+        if (format && format !== "markdown" && format !== "json") {
           throw new Error(`Unsupported export format: ${format}`);
         }
+
+        const outputText = renderSessionExport(
+          collectTargetExportData(store, targetId),
+          format === "json" ? "json" : "markdown",
+        );
 
         const outPath = options.out;
         if (outPath) {
@@ -228,6 +208,7 @@ const handleCommand = async (
   line: string,
   engine: ChatEngine,
   config: ChatRuntimeConfig,
+  store: SQLiteStore,
 ): Promise<boolean> => {
   const [command, ...rest] = line.split(" ");
   switch (command) {
@@ -339,6 +320,25 @@ const handleCommand = async (
       }
       return true;
     }
+    case "/export": {
+      const parsed = parseExportCommandArgs(rest);
+      if (!parsed) {
+        console.log("Usage: /export [markdown|json] [--out <file>]");
+        return true;
+      }
+
+      const state = engine.getState();
+      const exportData = collectRoomExportData(store, state.room.id, state.sessionId);
+      const outputText = renderSessionExport(exportData, parsed.format);
+      if (parsed.outPath) {
+        writeFileSync(parsed.outPath, outputText, "utf8");
+        console.log(`Session export written to ${parsed.outPath}`);
+      } else {
+        console.log(outputText);
+      }
+
+      return true;
+    }
     default:
       console.log(`Unknown command: ${command}. Use /help.`);
       return true;
@@ -430,6 +430,7 @@ In-chat commands:
   /summary
   /history [count]
   /retry @codex
+  /export [markdown|json] [--out <file>]
   /quit
 `);
 };

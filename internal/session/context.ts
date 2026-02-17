@@ -164,10 +164,8 @@ export function buildContext(
     result.push(...messages);
   }
 
-  // Calculate total tokens
-  let totalEstimatedTokens = systemPrompt
-    ? estimateTokens(systemPrompt)
-    : 0;
+  // Calculate total tokens from result messages only (system prompt already in result)
+  let totalEstimatedTokens = 0;
   for (const msg of result) {
     totalEstimatedTokens += estimateTokens(msg.text);
   }

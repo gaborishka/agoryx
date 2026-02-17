@@ -1,58 +1,59 @@
 # AGENTS.md
 
-Цей файл потрібен, щоб у нових сесіях не відновлювати контекст вручну.
-Він описує, як працювати над Agoryx у зв'язці Codex + Claude.
+This file exists so new sessions do not require manual context reconstruction.
+It describes how to work on Agoryx in Codex + Claude collaboration.
 
-## Мета проєкту
-- Agoryx = local-first open-source груповий чат для людини і кількох LLM.
-- Стратегія v0.1: CLI-wrapper поверх існуючих підписок (`codex`, `claude`), без обов'язкових API keys.
+## Project Goal
+- Agoryx = local-first open-source group chat for one human and multiple LLMs.
+- v0.1 strategy: a CLI wrapper over existing subscriptions (`codex`, `claude`) without mandatory API keys.
 
-## Зафіксовані рішення
-- Мова: `TypeScript (Node.js)`.
-- Persistence: `SQLite` через `better-sqlite3`.
-- Архітектура: `Transport -> Session -> Orchestration`.
-- Layout: `cmd/` + `internal/` (не використовувати `src/`).
-- Режими v0.1: `manual`, `round-robin`, `auto`.
+## Locked Decisions
+- Language: `TypeScript (Node.js)`.
+- Persistence: `SQLite` via `better-sqlite3`.
+- Architecture: `Transport -> Session -> Orchestration`.
+- Layout: `cmd/` + `internal/` (do not use `src/`).
+- v0.1 modes: `manual`, `round-robin`, `auto`.
 
-## Файли істини
-- `docs/CONSENSUS.md` — рішення і межі v0.1.
-- `docs/ARCHITECTURE.md` — технічний контракт.
-- `bridge/SESSION.md` — поточний стан.
-- `bridge/LOG.md` — журнал хендоверів (append-only).
-- `bridge/PROTOCOL.md` — правила bridge.
+## Source-of-Truth Files
+- `docs/CONSENSUS.md` — decisions and scope boundaries for v0.1.
+- `docs/ARCHITECTURE.md` — technical contract.
+- `bridge/SESSION.md` — current state.
+- `bridge/LOG.md` — handover log (append-only).
+- `bridge/PROTOCOL.md` — bridge rules.
 
-## Обов'язковий bootstrap для будь-якого агента
-1. Прочитати `bridge/SESSION.md`.
-2. Прочитати останні 2-3 записи з `bridge/LOG.md`.
-3. Звірити `docs/CONSENSUS.md` і `docs/ARCHITECTURE.md`.
-4. Перевірити `git status` і поточне дерево файлів перед змінами.
+## Mandatory Bootstrap for Any Agent
+1. Read `bridge/SESSION.md`.
+2. Read the last 2-3 entries in `bridge/LOG.md`.
+3. Cross-check `docs/CONSENSUS.md` and `docs/ARCHITECTURE.md`.
+4. Check `git status` and the current file tree before making changes.
 
-## Протокол співпраці Codex + Claude
-1. Після суттєвої роботи оновити `bridge/SESSION.md`.
-2. Додати запис у кінець `bridge/LOG.md` (ніколи не перезаписувати лог).
-3. Якщо `SESSION.md` і `LOG.md` конфліктують: пріоритет має останній (нижній) запис у `LOG.md`.
-4. Порядок істини в `LOG.md` визначається порядком рядків (append order), не timestamp.
+## Codex + Claude Collaboration Protocol
+1. After substantial work, update `bridge/SESSION.md`.
+2. Append a new entry to the end of `bridge/LOG.md` (never overwrite the log).
+3. If `SESSION.md` and `LOG.md` conflict, the newest (bottom-most) entry in `LOG.md` has priority.
+4. Truth order in `LOG.md` is determined by line order (append order), not timestamps.
+5. All communication in Bridge files (`bridge/*`) must be in English.
 
-Швидкий запис у лог:
+Quick log entry:
 ```bash
 ./scripts/bridge-note.sh <agent> "<summary>" "<changes>" "<risks>" "<next>"
 ```
 
-## Правило комунікації з Ivan
-- У чат писати тільки у двох випадках:
-1. Потрібне рішення/допомога (блокер).
-2. Потрібно показати готовий результат.
-- Весь інший обмін між агентами вести через `bridge/*` файли.
+## Communication Rule with Ivan
+- Write in chat only in two cases:
+1. A decision/help is needed (blocker).
+2. A completed result is ready to present.
+- All other agent-to-agent communication must go through `bridge/*` files in English.
 
-## Правила безпечної паралельної роботи
-- Не створювати альтернативні шари/дублікати структури.
-- Перед редагуванням файлу спочатку прочитати його поточний стан.
-- Якщо з'явились неочікувані паралельні зміни — зупинитись і запросити рішення Ivan.
-- Не видаляти/не переписувати чужі зміни без узгодження.
+## Safe Parallel Work Rules
+- Do not create alternative layers or duplicate project structures.
+- Before editing any file, read its current state first.
+- If unexpected parallel changes appear, stop and ask Ivan for a decision.
+- Do not delete or overwrite other contributors' changes without agreement.
 
-## Технічний baseline (стан scaffold)
-- Працює: `npm run typecheck`, `npm test`, базовий `agoryx chat` у stub mode.
-- Основні модулі:
+## Technical Baseline (Scaffold State)
+- Working: `npm run typecheck`, `npm test`, and basic `agoryx chat` in stub mode.
+- Core modules:
 - `cmd/agoryx/main.ts` — CLI.
 - `internal/engine/chat.ts` — chat engine.
 - `internal/adapters/*` — Codex/Claude adapters.
@@ -60,8 +61,8 @@
 - `internal/session/*` — service/context.
 - `internal/orchestrator/*` — policies + orchestration.
 
-## Найближчі пріоритети
-1. Інтегрувати `internal/session/context.ts` прямо в `internal/engine/chat.ts`.
-2. Уніфікувати config (`internal/config/default.ts` + `internal/config/index.ts`) в один чистий контракт.
-3. Додати adapter contract tests (normalization/parsing/error cases).
-4. Додати CLI команди `sessions list` і `sessions export`.
+## Near-Term Priorities
+1. Integrate `internal/session/context.ts` directly into `internal/engine/chat.ts`.
+2. Unify config (`internal/config/default.ts` + `internal/config/index.ts`) into one clean contract.
+3. Add adapter contract tests (normalization/parsing/error cases).
+4. Add CLI commands `sessions list` and `sessions export`.

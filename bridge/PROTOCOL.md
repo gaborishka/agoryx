@@ -1,39 +1,40 @@
 # Agoryx Agent Bridge Protocol (Temporary)
 
-Мета: дати Codex і Claude спільний, постійний контекст без копіювання всього чату.
+Purpose: provide Codex and Claude with shared, persistent context without copying entire chat threads.
 
-## Файли
-- `bridge/SESSION.md` — поточний "стан проєкту" (single source of truth).
-- `bridge/LOG.md` — append-only журнал хендоверів між агентами.
+## Files
+- `bridge/SESSION.md` — the current "project state" (single source of truth).
+- `bridge/LOG.md` — append-only handover log between agents.
 
-## Цикл роботи для кожного агента
-1. На початку відповіді прочитати:
+## Work Cycle for Each Agent
+1. At the start of a response, read:
 - `bridge/SESSION.md`
-- останні записи з `bridge/LOG.md`
-2. Після завершення задачі:
-- оновити `bridge/SESSION.md` (лише актуальний стан)
-- додати новий запис в кінець `bridge/LOG.md`
+- the latest entries in `bridge/LOG.md`
+2. After finishing a task:
+- update `bridge/SESSION.md` (current state only)
+- append a new entry to the end of `bridge/LOG.md`
 
-## Формат запису в LOG
+## LOG Entry Format
 ```md
 ## 2026-02-16T22:30:00Z | codex
 ### Summary
-- Що зроблено
+- What was done
 
 ### Changes
-- Які файли/рішення змінено
+- Which files/decisions changed
 
 ### Risks
-- Ризики або обмеження
+- Risks or limitations
 
 ### Next
-- Що очікується від іншого агента/людини
+- What is expected from the other agent/human
 
 ---
 ```
 
-## Правила
-- `LOG.md` ніколи не перезаписувати, тільки дописувати.
-- `SESSION.md` тримати коротким (поточний стан, не історія).
-- Якщо дані в `SESSION.md` і `LOG.md` конфліктують, пріоритет має останній (нижній) запис у `LOG.md`.
-- Порядок істини в `LOG.md` визначається порядком рядків (append order), а не значенням timestamp у заголовку.
+## Rules
+- Never rewrite `LOG.md`; append only.
+- Keep `SESSION.md` concise (current state, not history).
+- If data in `SESSION.md` and `LOG.md` conflicts, the newest (bottom-most) entry in `LOG.md` has priority.
+- Truth order in `LOG.md` is determined by line order (append order), not by timestamp values in headers.
+- All communication in Bridge files (`bridge/*`) must be in English.

@@ -1,7 +1,7 @@
 # Shared Session State
 
 ## Active Goal
-Запустити MVP Agoryx як local-first CLI для спільного чату між `codex` і `claude` через існуючі CLI-підписки.
+Launch MVP Agoryx as a local-first CLI for shared chat between `codex` and `claude` using existing CLI subscriptions.
 
 ## Current Phase
 **AUTO MODE VALIDATED** — all foundation complete + auto mode live smoke-test passed (15/15 scenarios: mentions, skill routing, broadcast, fallback, Ukrainian keywords).
@@ -21,63 +21,63 @@ internal/
 ## What Changed This Session (Claude)
 
 ### Task 1: Context builder integration
-- `SessionService.buildContextMessages()` тепер делегує до `buildContext()` з `context.ts`
-- Додано `buildFullContext()` для діагностики (повертає `BuiltContext` з token stats)
-- `ChatEngine.runDispatch()` передає `systemPrompt` з adapter config для точного token budget
-- Порядок виклику змінено: `resolveAdapterConfig` → `buildContextMessages` (щоб мати systemPrompt)
+- `SessionService.buildContextMessages()` now delegates to `buildContext()` from `context.ts`
+- Added `buildFullContext()` for diagnostics (returns `BuiltContext` with token stats)
+- `ChatEngine.runDispatch()` passes `systemPrompt` from adapter config for accurate token budgeting
+- Call order changed: `resolveAdapterConfig` → `buildContextMessages` (to have `systemPrompt` available)
 
 ### Task 2: Config unification
-- Додано `toRuntimeConfig(config, overrides?)` в `internal/config/index.ts`
-- Єдиний pipeline: `loadConfig()` → `toRuntimeConfig()` → `new ChatEngine()`
-- `default.ts` зберігає `ChatRuntimeConfig` type (engine contract), `index.ts` — все інше (loader, defaults, conversion)
+- Added `toRuntimeConfig(config, overrides?)` in `internal/config/index.ts`
+- Unified pipeline: `loadConfig()` → `toRuntimeConfig()` → `new ChatEngine()`
+- `default.ts` keeps `ChatRuntimeConfig` type (engine contract), `index.ts` contains everything else (loader, defaults, conversion)
 
 ## What Changed This Session (Codex)
 
 ### Task 1: Adapter contract tests
-- Додано `tests/adapters/parse-output.test.ts` (json/plain parsing coverage)
-- Додано `tests/adapters/event-factory.test.ts` (event envelope/payload checks)
-- Додано `tests/adapters/stub-contract.test.ts` (codex/claude stub event sequence contract)
-- Повний test suite: **10/10 pass**
+- Added `tests/adapters/parse-output.test.ts` (json/plain parsing coverage)
+- Added `tests/adapters/event-factory.test.ts` (event envelope/payload checks)
+- Added `tests/adapters/stub-contract.test.ts` (codex/claude stub event sequence contract)
+- Full test suite: **10/10 pass**
 
 ### Task 2: CLI sessions commands
-- Додано `sessions list` і `sessions export` у `cmd/agoryx/main.ts`
-- `sessions export` підтримує `room_id` і `session_id` (через `resolveRoomId`)
-- Підтримані формати: `markdown`, `json`; опційний `--out`
-- Додано npm scripts: `npm run cli`, `npm run sessions`
+- Added `sessions list` and `sessions export` to `cmd/agoryx/main.ts`
+- `sessions export` supports both `room_id` and `session_id` (via `resolveRoomId`)
+- Supported formats: `markdown`, `json`; optional `--out`
+- Added npm scripts: `npm run cli`, `npm run sessions`
 
 ### Task 3: Unified config pipeline in CLI
-- `cmd/agoryx/main.ts` переведено на `loadConfig()` + `toRuntimeConfig()`
-- Додано CLI параметр `--config`
-- Усунено попередні typecheck проблеми в `cmd/agoryx/main.ts`
+- `cmd/agoryx/main.ts` migrated to `loadConfig()` + `toRuntimeConfig()`
+- Added CLI parameter `--config`
+- Removed previous typecheck issues in `cmd/agoryx/main.ts`
 
 ## What Changed This Session (Claude — code review fixes)
 
 ### Bugfix 1: Deep merge agents config (P1)
-- `mergeConfig()` тепер робить per-agent deep merge замість shallow spread
-- Додано `mergeAgents()` helper з підтримкою нових агентів (fills missing fields з `AGENT_DEFAULTS`)
-- Файл: `internal/config/index.ts`
+- `mergeConfig()` now performs per-agent deep merge instead of shallow spread
+- Added `mergeAgents()` helper with support for new agents (fills missing fields from `AGENT_DEFAULTS`)
+- File: `internal/config/index.ts`
 
 ### Bugfix 2: systemPrompt propagation (P2)
-- `buildContext()` тепер prepend-ить systemPrompt як перший system message в `messages` масив
-- Раніше systemPrompt тільки вираховувався з token budget, але не включався в output
-- Файл: `internal/session/context.ts`
+- `buildContext()` now prepends systemPrompt as the first system message in the `messages` array
+- Previously systemPrompt was only counted in token budget and not included in output
+- File: `internal/session/context.ts`
 
 ### Tests
-- Додано `tests/config/merge.test.ts` (3 тести: partial merge, adapter config, new agent defaults)
-- Додано `tests/adapters/system-prompt.test.ts` (2 тести: context builder includes systemPrompt, adapter receives it)
+- Added `tests/config/merge.test.ts` (3 tests: partial merge, adapter config, new agent defaults)
+- Added `tests/adapters/system-prompt.test.ts` (2 tests: context builder includes systemPrompt, adapter receives it)
 - Total: 18/18 tests pass, typecheck clean
 
 ## What Changed This Session (Codex — sessions export extraction)
 
 ### Task: sessions export rendering extraction
-- Винесено рендер export в окремий модуль `cmd/agoryx/session-export.ts`
-- `cmd/agoryx/main.ts` переведено на `renderSessionAsJson()` і `renderSessionAsMarkdown()`
-- Додано `tests/cmd/session-export.test.ts` (3 тести: markdown full, markdown skip optional, json shape)
+- Moved export rendering into a separate module `cmd/agoryx/session-export.ts`
+- `cmd/agoryx/main.ts` migrated to `renderSessionAsJson()` and `renderSessionAsMarkdown()`
+- Added `tests/cmd/session-export.test.ts` (3 tests: markdown full, markdown skip optional, json shape)
 
 ## What Changed This Session (Claude — sessions export test coverage)
 
 ### Task: comprehensive test coverage for session-export renderers
-- Додано `tests/export/render.test.ts` (14 тестів):
+- Added `tests/export/render.test.ts` (14 tests):
   - markdown: full export, omit pinned, omit checkpoint, empty summaryText, empty messages, message order, multiple pins
   - json: top-level fields, null checkpoint, message field preservation, empty arrays, room config serialization
   - exportedAt injection testability
@@ -86,20 +86,20 @@ internal/
 ## What Changed This Session (Codex — adapter retry flow hardening)
 
 ### Task: `/retry` end-to-end behavior + recovery
-- `ChatEngine.retryFailed()` тепер робить реальний retry-dispatch:
-  - знаходить останній unresolved failed request для adapter
-  - робить best-effort `adapter.cancel(failedRequestId)` перед retry
-  - запускає новий dispatch з новим `requestId` і повертає `RetryResult`
-- `runDispatch()` повертає помилки з error class (`TIMEOUT`, `PROCESS_CRASH`, ...) у форматі `CLASS: message`
-- `SQLiteStore.getLastFailedRequest()` тепер вважає failure resolved, якщо після `message.error` був `message.completed` для того ж adapter/source
-- CLI `/retry` тепер:
-  - реально виконує retry
-  - показує `retry succeeded/failed` з mapping `failedRequestId -> new requestId`
-- Додано `tests/engine/retry-flow.test.ts`:
-  - recovery сценарії для `TIMEOUT` і `PROCESS_CRASH`
-  - перевірка cleanup через `cancel()`
-  - перевірка що successful retry очищає active failure marker
-  - перевірка `retryFailed()` повертає `null`, якщо unresolved failures немає
+- `ChatEngine.retryFailed()` now performs real retry-dispatch:
+  - finds the latest unresolved failed request for the adapter
+  - performs best-effort `adapter.cancel(failedRequestId)` before retry
+  - starts a new dispatch with a new `requestId` and returns `RetryResult`
+- `runDispatch()` now returns errors with error class (`TIMEOUT`, `PROCESS_CRASH`, ...) in `CLASS: message` format
+- `SQLiteStore.getLastFailedRequest()` now treats failure as resolved if `message.completed` appears after `message.error` for the same adapter/source
+- CLI `/retry` now:
+  - performs real retry
+  - shows `retry succeeded/failed` with mapping `failedRequestId -> new requestId`
+- Added `tests/engine/retry-flow.test.ts`:
+  - recovery scenarios for `TIMEOUT` and `PROCESS_CRASH`
+  - cleanup verification via `cancel()`
+  - verification that successful retry clears active failure marker
+  - verification that `retryFailed()` returns `null` when no unresolved failures exist
 - Validation: `npm run typecheck` + `npm test` => **34/34 pass**
 
 ## What Changed This Session (Claude — live smoke-test)
@@ -126,130 +126,130 @@ internal/
 
 ### Fixes delivered
 - `internal/adapters/parse-output.ts`
-  - Додано підтримку `result` і `item` на top-level candidates
-  - Додано recursive extraction для nested полів (`message.content[]`, `item.content[]`, nested `message/item/result`)
+  - Added support for `result` and `item` in top-level candidates
+  - Added recursive extraction for nested fields (`message.content[]`, `item.content[]`, nested `message/item/result`)
 - `internal/adapters/claude/index.ts`
-  - Spawn args тепер включають `--verbose` для `--output-format stream-json`
-  - `CLAUDECODE` видаляється з env перед spawn (`buildClaudeSpawnEnv`)
+  - Spawn args now include `--verbose` for `--output-format stream-json`
+  - `CLAUDECODE` is removed from env before spawn (`buildClaudeSpawnEnv`)
 - Tests:
-  - Оновлено `tests/adapters/parse-output.test.ts` (нові кейси: codex `item.text`, claude `message.content`, claude `result`)
-  - Додано `tests/adapters/claude-cli.test.ts` (`--verbose` args + env sanitization)
+  - Updated `tests/adapters/parse-output.test.ts` (new cases: codex `item.text`, claude `message.content`, claude `result`)
+  - Added `tests/adapters/claude-cli.test.ts` (`--verbose` args + env sanitization)
   - Validation: `npm run typecheck` + `npm test` => **39/39 pass**
 
 ## What Changed This Session (Claude — smoke-test re-run PASS)
 
 ### Re-run results after Codex hotfixes
 - **Parser isolated test**: codex `item.text` → extracted, claude `message.content` → extracted, claude `result` → extracted
-- **Codex CLI mode**: PASS — `@codex say hello` → `Hello` (reasoning text також потрапляє — minor refinement)
-- **Claude CLI mode**: PASS — `@claude say hello` → `Привіт` (text подвоюється через assistant+result — minor refinement)
-- **Both adapters together**: PASS — `@codex @claude say hello` → обидва відповідають послідовно, бачать контекст один одного
+- **Codex CLI mode**: PASS — `@codex say hello` → `Hello` (reasoning text also appears — minor refinement)
+- **Claude CLI mode**: PASS — `@claude say hello` → `Hello` (text is duplicated via assistant+result — minor refinement)
+- **Both adapters together**: PASS — `@codex @claude say hello` → both respond sequentially and see each other's context
 
 ### Minor refinements (not blockers)
-1. Codex reasoning items (`type:"reasoning"`) потрапляють у відповідь поряд з `agent_message` — варто фільтрувати
-2. Claude text подвоюється (з `assistant` message і з `result` event) — варто дедуплікувати
+1. Codex reasoning items (`type:"reasoning"`) appear in output next to `agent_message` — should be filtered
+2. Claude text is duplicated (from `assistant` message and `result` event) — should be deduplicated
 
 ## What Changed This Session (Codex — CLI parser polish)
 
 ### Fixes delivered
 - `internal/adapters/parse-output.ts`
-  - Додано фільтр reasoning payloads (`type` matches `reasoning`) — такі блоки більше не повертаються як user-visible text
-  - Збережено extraction звичайного text-контенту в mixed payloads (reasoning + text)
+  - Added reasoning payload filter (`type` matches `reasoning`) — these blocks are no longer returned as user-visible text
+  - Preserved extraction of regular text content in mixed payloads (reasoning + text)
 - `internal/adapters/claude/index.ts`
-  - Додано `parseClaudeChunk()` з окремим `deltaText` і `resultText`
-  - `result` event більше не емітиться як delta (прибрано дублювання)
-  - `resultText` використовується як fallback тільки якщо delta-потік порожній
+  - Added `parseClaudeChunk()` with separate `deltaText` and `resultText`
+  - `result` event is no longer emitted as delta (duplication removed)
+  - `resultText` is used as fallback only when delta stream is empty
 - Tests:
-  - Оновлено `tests/adapters/parse-output.test.ts` (reasoning ignore + mixed content keep-text cases)
-  - Додано `tests/adapters/claude-stream-parser.test.ts` (assistant+result dedupe, result-only fallback, non-json passthrough)
+  - Updated `tests/adapters/parse-output.test.ts` (reasoning ignore + mixed content keep-text cases)
+  - Added `tests/adapters/claude-stream-parser.test.ts` (assistant+result dedupe, result-only fallback, non-json passthrough)
   - Validation: `npm run typecheck` + `npm test` => **44/44 pass**
 
 ## What Changed This Session (Codex — in-chat /export command)
 
 ### Fixes delivered
 - `cmd/agoryx/main.ts`
-  - Додано in-chat команду `/export [markdown|json] [--out <file>]`
-  - `/export` без `--out` друкує експорт поточної сесії в консоль
-  - `/export --out <file>` пише експорт у файл і підтверджує шлях
-  - `sessions export` переведено на спільний renderer/collector pipeline
+  - Added in-chat command `/export [markdown|json] [--out <file>]`
+  - `/export` without `--out` prints export of the current session to console
+  - `/export --out <file>` writes export to a file and confirms the path
+  - `sessions export` migrated to shared renderer/collector pipeline
 - `cmd/agoryx/session-export.ts`
-  - Додано єдиний контракт: `normalizeExportFormat`, `parseExportCommandArgs`
-  - Додано `collectTargetExportData` і `collectRoomExportData` для уніфікованого збору даних
-  - Додано `renderSessionExport(format)` як єдину точку рендеру markdown/json
+  - Added unified contract: `normalizeExportFormat`, `parseExportCommandArgs`
+  - Added `collectTargetExportData` and `collectRoomExportData` for unified data collection
+  - Added `renderSessionExport(format)` as single markdown/json rendering entry point
 - Tests:
-  - Оновлено `tests/export/render.test.ts`:
-    - покриття parser-ів аргументів `/export`
-    - покриття format normalizer-а
-    - покриття collect helper-ів (resolve через session_id, error path)
-    - покриття `renderSessionExport` format switch
+  - Updated `tests/export/render.test.ts`:
+    - coverage of `/export` argument parsers
+    - coverage of format normalizer
+    - coverage of collect helpers (resolve via session_id, error path)
+    - coverage of `renderSessionExport` format switch
   - Validation: `npm run typecheck` + `npm test` => **49/49 pass**
 
 ## What Changed This Session (Claude — auto mode smart routing)
 
 ### Auto mode implementation
-- Повний rewrite `internal/orchestrator/auto.ts` — two-pass routing algorithm:
+- Full rewrite of `internal/orchestrator/auto.ts` — two-pass routing algorithm:
   1. Mention pass: `@all` → broadcast, `@agent` → deduplicated dispatch
   2. Skill match: keyword scoring per agent, best score wins, tie → first in config order
   3. Fallback: round-robin rotation (index advances only on fallback, per-room)
-- Punctuation normalization при word split (strip non-letter chars)
+- Punctuation normalization during word split (strip non-letter chars)
 - Short keyword filter (<3 chars ignored unless whitelisted: ui, ux, db)
-- `SKILL_KEYWORDS` dictionary з 14 skills (включно з українськими keywords)
+- `SKILL_KEYWORDS` dictionary with 14 skills (including Ukrainian keywords)
 
 ### Config layer changes
 - `AgentEntry.skills?: string[]` — optional skill tags per agent
-- `DEFAULT_AGENT_SKILLS` — hardcoded defaults для codex (code/debug/test) і claude (architecture/review/explain)
+- `DEFAULT_AGENT_SKILLS` — hardcoded defaults for codex (code/debug/test) and claude (architecture/review/explain)
 - `resolveAgentSkills(config, activeAgents?)` — three-level fallback: config → defaults → []
 - `ChatRuntimeConfig.agentSkills` — propagated through `toRuntimeConfig()`
 
 ### Factory + Engine integration
-- `PolicyOptions` interface в `factory.ts`, `createPolicy(mode, options?)` передає skills до AutoPolicy
-- `ChatEngine.init()` і `setMode()` прокидають `config.agentSkills` при створенні policy
+- `PolicyOptions` interface in `factory.ts`, `createPolicy(mode, options?)` passes skills to AutoPolicy
+- `ChatEngine.init()` and `setMode()` pass `config.agentSkills` when creating policy
 
 ### Tests
-- `tests/orchestrator/auto.test.ts` — 13 тестів: mentions (5), skill routing (5), fallback (3)
-- `tests/config/merge.test.ts` — +3 тести: skills override, defaults fallback, new agent empty
+- `tests/orchestrator/auto.test.ts` — 13 tests: mentions (5), skill routing (5), fallback (3)
+- `tests/config/merge.test.ts` — +3 tests: skills override, defaults fallback, new agent empty
 - Validation: `npm run typecheck` + `npm test` => **65/65 pass**
 
 ### Design docs
-- `docs/plans/2026-02-17-auto-mode-design.md` — повний дизайн-документ
-- `docs/plans/2026-02-17-auto-mode-plan.md` — implementation plan з 7 задачами
+- `docs/plans/2026-02-17-auto-mode-design.md` — full design document
+- `docs/plans/2026-02-17-auto-mode-plan.md` — implementation plan with 7 tasks
 
 ## Decision Lock (2026-02-17)
-- `auto` mode для v0.1 = **smart routing**, а не broadcast:
-  - на кожне user message обирається один найрелевантніший агент (`codex` або `claude`) за deterministic heuristics (intent/keywords + recent context)
-  - fallback при low confidence: round-robin rotation
-- Agent-to-agent autonomous chaining/debate **не входить у v0.1** (deferred).
-- Джерело істини: `docs/ARCHITECTURE.md` (section `v0.1 Policies`).
+- `auto` mode for v0.1 = **smart routing**, not broadcast:
+  - for each user message, select one most relevant agent (`codex` or `claude`) using deterministic heuristics (intent/keywords + recent context)
+  - fallback on low confidence: round-robin rotation
+- Agent-to-agent autonomous chaining/debate is **out of v0.1** (deferred).
+- Source of truth: `docs/ARCHITECTURE.md` (section `v0.1 Policies`).
 
 ## What Changed This Session (Codex — /export review follow-ups)
 
 ### Fixes delivered
 - `cmd/agoryx/session-export.ts`
-  - `parseExportCommandArgs()` тепер відхиляє duplicate `--out` (замість silent overwrite)
-  - Додано comments для `normalizeExportFormat()` semantics (default vs reject)
-  - Ліміт export messages винесено в `EXPORT_MESSAGE_LIMIT` з явним поясненням
+  - `parseExportCommandArgs()` now rejects duplicate `--out` (instead of silent overwrite)
+  - Added comments for `normalizeExportFormat()` semantics (default vs reject)
+  - Export message limit extracted to `EXPORT_MESSAGE_LIMIT` with explicit rationale
 - `tests/export/render.test.ts`
-  - Додано test: duplicate `--out` → `null`
-  - Додано test: `collectTargetExportData` кидає помилку для unknown target id
+  - Added test: duplicate `--out` → `null`
+  - Added test: `collectTargetExportData` throws for unknown target id
 - Validation: `npm run typecheck` + `npm test` => **67/67 pass**
 
 ## What Changed This Session (Codex — auto smoke-test + CLI hardening)
 
 ### Live smoke-test (auto mode, real adapters)
-- Запущено `auto` mode з `--adapter-mode cli` (реальні `codex` + `claude`) у PTY-сесії.
-- Перевірено всі 3 гілки маршрутизації:
+- Started `auto` mode with `--adapter-mode cli` (real `codex` + `claude`) in a PTY session.
+- Verified all 3 routing branches:
   - Mention pass: `@codex` → `codex`, `@claude` → `claude`
-  - Skill pass: `напиши функцію...` → `codex`, `поясни архітектуру...` → `claude`
-  - Fallback pass: `привіт` → `codex`, наступне нейтральне `ок` → `claude` (round-robin rotation)
-- Висновок: контракт smart routing в live CLI середовищі працює як задумано.
+  - Skill pass: `write a function...` → `codex`, `explain architecture...` → `claude`
+  - Fallback pass: `hello` → `codex`, next neutral `ok` → `claude` (round-robin rotation)
+- Conclusion: smart-routing contract works as intended in live CLI environment.
 
 ### CLI hardening
 - `cmd/agoryx/main.ts`
-  - Додано graceful EOF handling для non-interactive stdin (`readline was closed` більше не валить процес).
-  - Додано alias `/checkpoint` для існуючої логіки `/summary`.
-  - Оновлено `/help` (показує `/checkpoint`).
+  - Added graceful EOF handling for non-interactive stdin (`readline was closed` no longer crashes process).
+  - Added alias `/checkpoint` for existing `/summary` logic.
+  - Updated `/help` (shows `/checkpoint`).
 - `tests/cmd/chat-cli.test.ts`
-  - Додано інтеграційний тест clean exit на stdin EOF після одного повідомлення.
-  - Додано інтеграційний тест `/checkpoint` alias.
+  - Added integration test for clean exit on stdin EOF after one message.
+  - Added integration test for `/checkpoint` alias.
 - Validation: `npm run typecheck` + `npm test` => **69/69 pass**
 
 ## What Changed This Session (Claude — independent auto mode smoke-test)
@@ -264,9 +264,9 @@ internal/
   - `@all say hi` → both respond ✅
   - `write a hello world function` → codex (skill: write/code) ✅
   - `explain dependency injection` → claude (skill: explain) ✅
-  - `напиши функцію додавання` → codex (skill: UKR write/code) ✅
-  - `поясни SOLID принципи` → claude (skill: UKR explain) ✅
-  - `привіт` → codex (fallback #0) ✅
+  - `write an addition function` → codex (skill: UKR write/code) ✅
+  - `explain SOLID principles` → claude (skill: UKR explain) ✅
+  - `hello` → codex (fallback #0) ✅
 - Conclusion: all 3 routing branches (mention, skill, fallback) work correctly with real agents
 
 ### Discovery: /pin, /unpin, /summary already implemented
@@ -341,20 +341,43 @@ internal/
     - `Checkpoint created.`
     - `[user] hello smoke`
 
+## What Changed This Session (Codex — Bridge language policy docs update)
+
+### Documentation updates
+- Updated `AGENTS.md`:
+  - translated the full document to English
+  - added explicit rule: all Bridge communication (`bridge/*`) must be in English
+- Updated `CLAUDE.md`:
+  - added the same explicit Bridge English-only rule in protocol rules
+  - removed the conflicting "respond in Ukrainian" instruction from Communication Style
+- Scope note: only collaboration-guideline docs were updated in this step.
+
+## What Changed This Session (Codex — Bridge folder full English migration)
+
+### Documentation updates
+- Translated all Bridge files to English:
+  - `bridge/PROTOCOL.md`
+  - `bridge/CLAUDE_PROMPT.md`
+  - `bridge/CODEX_PROMPT.md`
+  - `bridge/SESSION.md`
+  - `bridge/LOG.md`
+- `bridge/LOG.md` historical entries were translated and normalized to English wording.
+- Validation: no Cyrillic text remains in `bridge/*.md`.
+
 ## Known Issues
-- Немає блокерів. CLI mode працює для обох адаптерів.
-- SKILL_KEYWORDS dictionary — статичний, може потребувати тюнінгу після real-world testing
+- No blockers. CLI mode works for both adapters.
+- SKILL_KEYWORDS dictionary is static and may need tuning after real-world testing.
 
 ## Open Questions
-- Немає.
+- None.
 
 ## Next Step
 1. Claude: context/checkpoint algorithm block:
-   - fix token double-count у `internal/session/context.ts`
-   - dedup/overlap guard у `maybeCreateCheckpoint()`
+   - fix token double-count in `internal/session/context.ts`
+   - add dedup/overlap guard in `maybeCreateCheckpoint()`
    - structured summary generation + edge-case tests
 2. Joint validation:
-   - smoke-test `/summary` + `/history` у CLI mode після обох блоків.
+   - smoke-test `/summary` + `/history` in CLI mode after both blocks.
 
 ## Active Plan (2026-02-17)
 - **Claude (session + context):**
@@ -373,4 +396,4 @@ internal/
   3. Final smoke validation together
 
 ## Last Updated
-2026-02-17T11:29:17Z by codex
+2026-02-17T12:13:17Z by codex

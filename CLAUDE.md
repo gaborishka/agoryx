@@ -54,6 +54,7 @@ We use a file-based bridge to sync context between agents. **On every substantia
    - `SESSION.md` stays short — current state, not history
    - If SESSION.md and LOG.md conflict, the newest (bottom) LOG entry wins
    - Truth order in LOG.md is determined by line order (append order), not by timestamp in headers
+   - All communication in Bridge files (`bridge/*`) must be in English
 
 ## Important Files
 
@@ -93,7 +94,8 @@ We use a file-based bridge to sync context between agents. **On every substantia
 
 ## Communication Style
 
-- Ivan communicates in Ukrainian. Respond in Ukrainian.
+- Ivan may communicate in Ukrainian in chat.
+- Keep all Bridge communication (`bridge/*`) in English.
 - Ivan relays messages between agents manually (until Agoryx itself replaces this).
 - When Ivan says "Codex said X" — treat it as Codex's actual position.
 - Keep bridge updates factual and concise.

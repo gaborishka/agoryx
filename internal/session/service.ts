@@ -1,4 +1,4 @@
-import type { Message, Room, RoomConfig } from "../events/types.js";
+import type { Message, PinnedContext, Room, RoomConfig } from "../events/types.js";
 import { createId, nowIso } from "./ids.js";
 import { SQLiteStore } from "../storage/sqlite.js";
 import { buildContext, type BuiltContext } from "./context.js";
@@ -101,6 +101,10 @@ export class SessionService {
 
   public removePinnedContext(roomId: string, pinId: string): boolean {
     return this.store.removePinnedContext(roomId, pinId);
+  }
+
+  public listPinnedContext(roomId: string): PinnedContext[] {
+    return this.store.listPinnedContext(roomId);
   }
 
   /**

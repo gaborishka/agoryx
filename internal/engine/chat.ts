@@ -1,6 +1,6 @@
 import type { Adapter, AdapterConfig, AdapterEvent } from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
-import type { Message, OrchestrationMode, Room } from "../events/types.js";
+import type { Message, OrchestrationMode, PinnedContext, Room } from "../events/types.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import type { Dispatch, OrchestrationPolicy } from "../orchestrator/policy.js";
 import { createId } from "../session/ids.js";
@@ -111,6 +111,10 @@ export class ChatEngine {
 
   public removePinnedContext(pinId: string): boolean {
     return this.session.removePinnedContext(this.getState().room.id, pinId);
+  }
+
+  public listPinnedContext(): PinnedContext[] {
+    return this.session.listPinnedContext(this.getState().room.id);
   }
 
   public checkpointNow(): string | null {

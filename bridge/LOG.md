@@ -551,3 +551,34 @@
 - Define next v0.1 functional block
 
 ---
+## 2026-02-17T11:05:36Z | codex
+### Summary
+- Implemented /pins command end-to-end and fixed non-TTY multi-command input handling.
+
+### Changes
+- Added listPinnedContext in session+engine, added /pins [list] handler and help text in cmd/agoryx/main.ts, added tests/cmd/pins-command.test.ts, and updated runChat to consume all piped lines via readline async iterator.
+
+### Risks
+- No blockers. Main residual risk remains static SKILL_KEYWORDS tuning quality (unchanged).
+
+### Next
+- Coordinate final combined commit with Claude command-handler tests, then move to checkpoint quality block.
+
+---
+## 2026-02-17T21:00:00Z | claude
+### Summary
+- Created comprehensive command handler test suite: 19 integration tests covering all in-chat commands
+
+### Changes
+- Created `tests/cmd/command-handler.test.ts` — 19 tests: /help, /pin (3), /unpin (3 incl. pin→resume→unpin flow), /summary (2 incl. low-threshold checkpoint creation), /mode (3), /history (via resume), /adapter (3), unknown command, /quit, /exit
+- Updated `bridge/SESSION.md` and `bridge/LOG.md`
+
+### Risks
+- No blockers. All 91 tests pass (including Codex's 3 /pins tests), typecheck clean.
+- Multi-command tests that involve async message processing use `--resume` to work around piped stdin EOF.
+
+### Next
+- Commit combined changeset (Claude tests + Codex /pins)
+- Pick next v0.1 block
+
+---

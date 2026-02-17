@@ -107,6 +107,16 @@ const runChat = async (argv: string[]): Promise<void> => {
   const rl = readline.createInterface({ input, output });
 
   try {
+    if (!input.isTTY) {
+      for await (const rawLine of rl) {
+        const shouldContinue = await processChatInputLine(rawLine, engine, config, store);
+        if (!shouldContinue) {
+          break;
+        }
+      }
+      return;
+    }
+
     while (true) {
       let rawLine: string;
       try {
@@ -118,35 +128,45 @@ const runChat = async (argv: string[]): Promise<void> => {
         throw error;
       }
 
-      const line = rawLine.trim();
-      if (!line) {
-        continue;
-      }
-
-      if (line.startsWith("/")) {
-        const shouldContinue = await handleCommand(line, engine, config, store);
-        if (!shouldContinue) {
-          break;
-        }
-        continue;
-      }
-
-      const results = await engine.processUserMessage(line);
-      if (results.length === 0) {
-        console.log("No dispatch generated. In manual mode, mention an agent (e.g. @codex).");
-        continue;
-      }
-
-      for (const result of results) {
-        if (!result.success) {
-          console.error(`[${result.adapter}] error: ${result.error ?? "unknown error"}`);
-        }
+      const shouldContinue = await processChatInputLine(rawLine, engine, config, store);
+      if (!shouldContinue) {
+        break;
       }
     }
   } finally {
     rl.close();
     store.close();
   }
+};
+
+const processChatInputLine = async (
+  rawLine: string,
+  engine: ChatEngine,
+  config: ChatRuntimeConfig,
+  store: SQLiteStore,
+): Promise<boolean> => {
+  const line = rawLine.trim();
+  if (!line) {
+    return true;
+  }
+
+  if (line.startsWith("/")) {
+    return handleCommand(line, engine, config, store);
+  }
+
+  const results = await engine.processUserMessage(line);
+  if (results.length === 0) {
+    console.log("No dispatch generated. In manual mode, mention an agent (e.g. @codex).");
+    return true;
+  }
+
+  for (const result of results) {
+    if (!result.success) {
+      console.error(`[${result.adapter}] error: ${result.error ?? "unknown error"}`);
+    }
+  }
+
+  return true;
 };
 
 const runSessions = (argv: string[]): void => {
@@ -220,7 +240,7 @@ const handleCommand = async (
   config: ChatRuntimeConfig,
   store: SQLiteStore,
 ): Promise<boolean> => {
-  const [command, ...rest] = line.split(" ");
+  const [command, ...rest] = line.split(/\s+/);
   switch (command) {
     case "/quit":
     case "/exit":
@@ -287,6 +307,25 @@ const handleCommand = async (
       }
       const removed = engine.removePinnedContext(pinId);
       console.log(removed ? `Removed pinned context ${pinId}` : `Pin ${pinId} not found`);
+      return true;
+    }
+    case "/pins": {
+      const subcommand = rest[0]?.toLowerCase();
+      if (rest.length > 1 || (subcommand && subcommand !== "list")) {
+        console.log("Usage: /pins [list]");
+        return true;
+      }
+
+      const pinned = engine.listPinnedContext();
+      if (pinned.length === 0) {
+        console.log("No pinned context.");
+        return true;
+      }
+
+      console.log("pin_id\tlabel\tcontent");
+      for (const pin of pinned) {
+        console.log(`${pin.id}\t${pin.label}\t${pin.content}`);
+      }
       return true;
     }
     case "/summary":
@@ -449,6 +488,7 @@ In-chat commands:
   /adapter <codex|claude> <stub|cli>
   /pin <label>: <content>
   /unpin <pin_id>
+  /pins [list]
   /summary
   /checkpoint
   /history [count]

@@ -275,6 +275,46 @@ internal/
 - `/help` exists but basic (no per-command help)
 - Missing: `/pins` list command, test coverage for command handlers
 
+## What Changed This Session (Codex — /pins command + non-TTY command processing)
+
+### /pins implementation
+- Added end-to-end `/pins` command support (with optional `list` subcommand):
+  - `internal/session/service.ts`: `listPinnedContext(roomId)`
+  - `internal/engine/chat.ts`: `listPinnedContext()`
+  - `cmd/agoryx/main.ts`: `/pins [list]` command handler + `/help` update
+- Behavior:
+  - empty state: `No pinned context.`
+  - list state: tabular output `pin_id<TAB>label<TAB>content`
+  - invalid subcommand: `Usage: /pins [list]`
+
+### Runtime hardening for piped stdin
+- `cmd/agoryx/main.ts` now processes non-TTY input via `for await (const line of rl)` path.
+- Fixes multi-command scripted sessions (e.g. `/help\n/pin\n/summary\n/quit`) that were being cut after first line when stdin closed.
+- Interactive TTY flow (`rl.question("> ")`) remains unchanged.
+
+### Tests
+- Added `tests/cmd/pins-command.test.ts`:
+  - `/pins` empty state
+  - `/pins list` after multiple `/pin`
+  - invalid `/pins` subcommand
+- Validation: `npm run typecheck` + `npm test` => **91/91 pass**
+
+## What Changed This Session (Claude — command handler tests)
+
+### Command handler test coverage
+- Created `tests/cmd/command-handler.test.ts` — **19 integration tests** covering all in-chat commands:
+  - `/help` — verifies all commands listed
+  - `/pin` — label+content, content-only, empty args (usage)
+  - `/unpin` — missing args (usage), nonexistent id (not found), valid id via pin→resume→unpin flow
+  - `/summary` — empty room (not enough history), with messages + low threshold config (checkpoint created)
+  - `/mode` — missing arg (usage), valid mode (switched), invalid mode (usage)
+  - `/history` — shows user and agent messages via resume
+  - `/adapter` — switches mode, missing args (usage), unknown agent (error)
+  - unknown command — error with `/help` hint
+  - `/quit` and `/exit` — clean exit
+- Test pattern: integration via spawn + piped stdin; multi-step tests use `--resume` to avoid piped stdin EOF issue
+- Validation: `npm run typecheck` + `npm test` => **91/91 pass** (includes Codex's 3 /pins tests)
+
 ## Known Issues
 - Немає блокерів. CLI mode працює для обох адаптерів.
 - SKILL_KEYWORDS dictionary — статичний, може потребувати тюнінгу після real-world testing
@@ -283,8 +323,8 @@ internal/
 - Немає.
 
 ## Next Step
-1. Закомітити smoke/hardening зміни.
-2. Визначити наступний функціональний блок v0.1.
+1. Закомітити зміни (Claude command handler tests + Codex /pins end-to-end).
+2. Перейти до наступного v0.1 блоку (checkpoint quality / keyword tuning).
 
 ## Last Updated
-2026-02-17T20:15:00Z by claude
+2026-02-17T21:00:00Z by claude

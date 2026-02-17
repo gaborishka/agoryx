@@ -108,7 +108,17 @@ const runChat = async (argv: string[]): Promise<void> => {
 
   try {
     while (true) {
-      const line = (await rl.question("> ")).trim();
+      let rawLine: string;
+      try {
+        rawLine = await rl.question("> ");
+      } catch (error) {
+        if (isReadlineClosedError(error)) {
+          break;
+        }
+        throw error;
+      }
+
+      const line = rawLine.trim();
       if (!line) {
         continue;
       }
@@ -279,7 +289,8 @@ const handleCommand = async (
       console.log(removed ? `Removed pinned context ${pinId}` : `Pin ${pinId} not found`);
       return true;
     }
-    case "/summary": {
+    case "/summary":
+    case "/checkpoint": {
       const summary = engine.checkpointNow();
       if (!summary) {
         console.log("Not enough conversation history to create a checkpoint.");
@@ -392,6 +403,17 @@ const normalizeMode = (value?: string): OrchestrationMode | null => {
   return null;
 };
 
+const isReadlineClosedError = (error: unknown): boolean => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const maybeError = error as { code?: string; message?: string };
+  if (maybeError.code === "ERR_USE_AFTER_CLOSE") {
+    return true;
+  }
+  return typeof maybeError.message === "string" && maybeError.message.includes("readline was closed");
+};
+
 const printUsage = (): void => {
   console.log(`
 Usage:
@@ -428,6 +450,7 @@ In-chat commands:
   /pin <label>: <content>
   /unpin <pin_id>
   /summary
+  /checkpoint
   /history [count]
   /retry @codex
   /export [markdown|json] [--out <file>]

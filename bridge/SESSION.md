@@ -4,7 +4,7 @@
 Запустити MVP Agoryx як local-first CLI для спільного чату між `codex` і `claude` через існуючі CLI-підписки.
 
 ## Current Phase
-**FOUNDATION + CLI POLISH COMPLETE** — context/config інтегровані, adapter tests + sessions CLI реалізовані, retry flow додано, CLI mode smoke-test pass + minor parser refinements закриті.
+**AUTO MODE VALIDATED** — all foundation complete + auto mode live smoke-test passed (15/15 scenarios: mentions, skill routing, broadcast, fallback, Ukrainian keywords).
 
 ## Project Structure
 ```
@@ -232,6 +232,49 @@ internal/
   - Додано test: `collectTargetExportData` кидає помилку для unknown target id
 - Validation: `npm run typecheck` + `npm test` => **67/67 pass**
 
+## What Changed This Session (Codex — auto smoke-test + CLI hardening)
+
+### Live smoke-test (auto mode, real adapters)
+- Запущено `auto` mode з `--adapter-mode cli` (реальні `codex` + `claude`) у PTY-сесії.
+- Перевірено всі 3 гілки маршрутизації:
+  - Mention pass: `@codex` → `codex`, `@claude` → `claude`
+  - Skill pass: `напиши функцію...` → `codex`, `поясни архітектуру...` → `claude`
+  - Fallback pass: `привіт` → `codex`, наступне нейтральне `ок` → `claude` (round-robin rotation)
+- Висновок: контракт smart routing в live CLI середовищі працює як задумано.
+
+### CLI hardening
+- `cmd/agoryx/main.ts`
+  - Додано graceful EOF handling для non-interactive stdin (`readline was closed` більше не валить процес).
+  - Додано alias `/checkpoint` для існуючої логіки `/summary`.
+  - Оновлено `/help` (показує `/checkpoint`).
+- `tests/cmd/chat-cli.test.ts`
+  - Додано інтеграційний тест clean exit на stdin EOF після одного повідомлення.
+  - Додано інтеграційний тест `/checkpoint` alias.
+- Validation: `npm run typecheck` + `npm test` => **69/69 pass**
+
+## What Changed This Session (Claude — independent auto mode smoke-test)
+
+### Live smoke-test (auto mode, piped stdin)
+- Independently validated auto mode routing (both stub and CLI adapters)
+- **Stub mode (7/7 PASS):** mentions (3), skill routing (2), fallback round-robin (2)
+- **CLI mode (8/8 PASS):** mentions (2), skill routing EN (2), broadcast @all (1), fallback (1), Ukrainian keywords (2)
+- Key scenarios verified:
+  - `@codex say hello` → codex: "Hello" ✅
+  - `@claude say hello` → claude: "Hello!" ✅
+  - `@all say hi` → both respond ✅
+  - `write a hello world function` → codex (skill: write/code) ✅
+  - `explain dependency injection` → claude (skill: explain) ✅
+  - `напиши функцію додавання` → codex (skill: UKR write/code) ✅
+  - `поясни SOLID принципи` → claude (skill: UKR explain) ✅
+  - `привіт` → codex (fallback #0) ✅
+- Conclusion: all 3 routing branches (mention, skill, fallback) work correctly with real agents
+
+### Discovery: /pin, /unpin, /summary already implemented
+- All three commands fully functional in CLI (Codex implemented earlier)
+- Storage, session layer, context builder integration complete
+- `/help` exists but basic (no per-command help)
+- Missing: `/pins` list command, test coverage for command handlers
+
 ## Known Issues
 - Немає блокерів. CLI mode працює для обох адаптерів.
 - SKILL_KEYWORDS dictionary — статичний, може потребувати тюнінгу після real-world testing
@@ -240,8 +283,8 @@ internal/
 - Немає.
 
 ## Next Step
-1. Live smoke-test auto mode з реальними агентами.
-2. Визначити наступний блок (пропозиція: in-chat commands /pin /checkpoint /help, або checkpoint auto-creation).
+1. Закомітити smoke/hardening зміни.
+2. Визначити наступний функціональний блок v0.1.
 
 ## Last Updated
-2026-02-17T18:45:00Z by codex
+2026-02-17T20:15:00Z by claude

@@ -517,3 +517,37 @@
 - Proceed with commit of codex-zone changes or run smoke test for in-chat /export in CLI mode.
 
 ---
+## 2026-02-17T10:44:46Z | codex
+### Summary
+- Live auto-mode smoke-test PASS; CLI chat hardening delivered.
+
+### Changes
+- Validated mention/skill/fallback routing against real codex+claude CLIs; updated cmd/agoryx/main.ts with graceful stdin EOF handling and /checkpoint alias; added tests/cmd/chat-cli.test.ts; updated bridge/SESSION.md.
+
+### Risks
+- No blockers. Non-interactive EOF crash fixed; remaining risk is static keyword dictionary tuning quality.
+
+### Next
+- Commit current changes and pick next v0.1 block (checkpoint quality or routing keyword tuning).
+
+---
+## 2026-02-17T20:15:00Z | claude
+### Summary
+- Independent live smoke-test of auto mode: 15/15 scenarios PASS (stub 7/7 + CLI 8/8)
+- Validated all 3 routing branches with real codex+claude CLIs: mentions, skill keywords (EN+UKR), broadcast, fallback round-robin
+- Discovered that /pin, /unpin, /summary are already fully implemented by Codex — no implementation needed
+- Updated bridge/SESSION.md with results
+
+### Changes
+- Updated: `bridge/SESSION.md` (added Claude smoke-test section, discovery note)
+- Updated: `bridge/LOG.md`
+
+### Risks
+- No blockers. Auto mode routing confirmed working end-to-end.
+- piped stdin causes "readline was closed" on exit (cosmetic — Codex already fixed with graceful EOF handler)
+
+### Next
+- Commit smoke/hardening changes
+- Define next v0.1 functional block
+
+---

@@ -157,7 +157,9 @@ interface Dispatch {
 
 **round-robin:** Alternate responders on each user turn. After user speaks, the next agent in rotation responds. The user can override by using `@mention`.
 
-**auto:** Both agents respond to every user message. Responses are displayed sequentially. Simple but token-expensive — useful for comparison and brainstorming.
+**auto:** Select one best-fit agent per user message using deterministic routing heuristics (intent/keywords). Priority: `@mention` → skill keyword match → round-robin fallback. Goal: reduce noise and token cost versus broadcast while keeping useful autonomy. If no skill matches, the policy falls back to round-robin rotation (per-room, advances only on fallback).
+
+**Out of scope for v0.1:** agent-to-agent autonomous chaining/debate loops. Cross-agent autonomous turns are deferred to a later version behind explicit guardrails (step limits, loop prevention, budget caps).
 
 ### Message Flow — Manual Mode
 

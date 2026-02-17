@@ -194,7 +194,8 @@ export function resolveAgentSkills(
   for (const name of agents) {
     const entry = config.agents[name];
     if (!entry) continue;
-    result[name] = entry.skills ?? DEFAULT_AGENT_SKILLS[name] ?? [];
+    const raw = entry.skills ?? DEFAULT_AGENT_SKILLS[name] ?? [];
+    result[name] = raw.map((s) => s.trim().toLowerCase());
   }
   return result;
 }

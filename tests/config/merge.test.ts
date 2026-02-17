@@ -151,3 +151,23 @@ test("skills merge: new agent without skills gets empty array", () => {
 
   rmSync(dir, { recursive: true });
 });
+
+test("skills merge: mixed-case and whitespace skills are normalized", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      agents: {
+        codex: { skills: ["Review", " Code ", "DEBUG"] },
+      },
+    }),
+  );
+
+  const config = loadConfig(configPath);
+  const skills = resolveAgentSkills(config);
+
+  assert.deepEqual(skills.codex, ["review", "code", "debug"]);
+
+  rmSync(dir, { recursive: true });
+});

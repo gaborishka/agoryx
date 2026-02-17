@@ -179,37 +179,45 @@ test("no nested [Prior summary] wrappers after 3 checkpoints (INV-3)", () => {
     "should have exactly one [Prior summary] section regardless of checkpoint depth");
 });
 
-// --- 10k ceiling bug reproduction ---
+// --- 10k ceiling regression tests ---
+// These use >10,001 messages so the old listMessages(10_000) ASC LIMIT
+// would return stale data and fail. Inserting 10k+ rows takes ~60ms
+// in in-memory SQLite, so runtime impact is minimal.
 
-test("auto-checkpoint triggers when threshold > 10k and no prior checkpoint (P2a)", () => {
-  // Bug: listMessages(10_000) caps at oldest 10k, so uncoveredMessages.length
-  // never reaches a threshold >10k, making auto-checkpoint impossible.
-  const largeThresholdConfig: RoomConfig = {
-    mode: "manual",
-    checkpointThreshold: 50, // simulate threshold > data loaded by ASC LIMIT
-    maxHistoryMessages: 10,
-    maxContextTokens: 100_000,
-  };
+function bulkInsertMessages(store: SQLiteStore, roomId: string, count: number): string {
+  const ts = "2026-02-17T12:00:00.000Z";
+  let lastId = "";
+  for (let i = 0; i < count; i++) {
+    lastId = `bmsg_${i}`;
+    store.saveMessage({
+      id: lastId, roomId, author: "user", role: "user",
+      text: `m${i}`, format: "plain", metadata: {}, createdAt: ts,
+    });
+  }
+  return lastId;
+}
+
+test("auto-checkpoint triggers with >10k messages and threshold >10k (P2a)", () => {
+  // Old code: listMessages(10_000) caps at oldest 10k → uncoveredMessages.length
+  // maxes at 10,000, so a threshold of 10,001 can never be reached.
   const store = new SQLiteStore(":memory:");
   store.init();
   const session = new SessionService(store);
   const { room } = session.createSession({
-    roomName: "test", participants: ["user"], roomConfig: largeThresholdConfig,
+    roomName: "test", participants: ["user"],
+    roomConfig: { mode: "manual", checkpointThreshold: 10_001, maxHistoryMessages: 10, maxContextTokens: 100_000 },
   });
 
-  // Add 60 messages (exceeds threshold of 50)
-  for (let i = 0; i < 60; i++) {
-    session.saveUserMessage(room.id, `msg ${i}`);
-  }
+  // Insert 10,002 messages (exceeds threshold of 10,001)
+  bulkInsertMessages(store, room.id, 10_002);
 
-  // Auto checkpoint should trigger — there are 60 uncovered messages >= threshold 50
   const result = session.maybeCreateCheckpoint(room);
-  assert.ok(result, "auto checkpoint must trigger when message count exceeds threshold");
+  assert.ok(result, "auto checkpoint must trigger when message count exceeds 10k threshold");
 });
 
-test("first checkpoint saves accurate toMessageId for the actual last message (P2b)", () => {
-  // Bug: listMessages(10_000) with ASC LIMIT returns oldest 10k, so
-  // toMessageId is derived from that capped subset, not the real last message.
+test("first checkpoint toMessageId is accurate with >10k messages (P2b)", () => {
+  // Old code: listMessages(10_000) ASC LIMIT returns oldest 10k → toMessageId
+  // points to the 10,000th oldest message, not the actual last.
   const store = new SQLiteStore(":memory:");
   store.init();
   const session = new SessionService(store);
@@ -218,16 +226,11 @@ test("first checkpoint saves accurate toMessageId for the actual last message (P
     roomConfig: { mode: "manual", checkpointThreshold: 5, maxHistoryMessages: 10, maxContextTokens: 100_000 },
   });
 
-  // Add 30 messages
-  const lastMsgId = [] as string[];
-  for (let i = 0; i < 30; i++) {
-    const msg = session.saveUserMessage(room.id, `msg ${i}`);
-    lastMsgId.push(msg.id);
-  }
+  const actualLastId = bulkInsertMessages(store, room.id, 10_001);
 
   session.maybeCreateCheckpoint(room, true);
   const coverage = store.getCheckpointCoverage(room.id);
   assert.ok(coverage);
-  assert.equal(coverage.toMessageId, lastMsgId[lastMsgId.length - 1],
-    "toMessageId must be the actual last message, not a capped subset");
+  assert.equal(coverage.toMessageId, actualLastId,
+    "toMessageId must be the actual last message (bmsg_10000), not bmsg_9999 from capped window");
 });

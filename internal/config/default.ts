@@ -9,6 +9,7 @@ export interface ChatRuntimeConfig {
   roomConfig: RoomConfig;
   roomName: string;
   resumeRoomId?: string;
+  agentSkills?: Record<string, string[]>;
 }
 
 export const defaultRoomConfig = (mode: OrchestrationMode): RoomConfig => ({

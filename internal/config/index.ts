@@ -21,6 +21,7 @@ export interface AgentEntry {
   timeoutMs: number;
   maxTokens: number;
   systemPrompt?: string;
+  skills?: string[];
 }
 
 export interface AgoryxConfig {
@@ -102,6 +103,11 @@ const AGENT_DEFAULTS: Omit<AgentEntry, "adapter"> = {
   maxTokens: 4096,
 };
 
+export const DEFAULT_AGENT_SKILLS: Record<string, string[]> = {
+  codex: ["code", "implement", "debug", "fix", "test", "refactor", "write"],
+  claude: ["architecture", "review", "explain", "plan", "docs", "design", "analyze"],
+};
+
 function mergeAgents(
   defaults: Record<string, AgentEntry>,
   overrides?: Record<string, Partial<AgentEntry>>,
@@ -176,6 +182,24 @@ export function getAdapterConfig(
 }
 
 // ---------------------------------------------------------------------------
+// Skills resolution
+// ---------------------------------------------------------------------------
+
+export function resolveAgentSkills(
+  config: AgoryxConfig,
+  activeAgents?: string[],
+): Record<string, string[]> {
+  const result: Record<string, string[]> = {};
+  const agents = activeAgents ?? Object.keys(config.agents);
+  for (const name of agents) {
+    const entry = config.agents[name];
+    if (!entry) continue;
+    result[name] = entry.skills ?? DEFAULT_AGENT_SKILLS[name] ?? [];
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Unified runtime config builder
 // ---------------------------------------------------------------------------
 
@@ -211,5 +235,6 @@ export function toRuntimeConfig(
     roomConfig: toRoomConfig(config),
     roomName: overrides.roomName ?? "default",
     resumeRoomId: overrides.resumeRoomId,
+    agentSkills: resolveAgentSkills(config, agentNames),
   };
 }

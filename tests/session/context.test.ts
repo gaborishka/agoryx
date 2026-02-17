@@ -112,3 +112,115 @@ test("fallback when checkpoint covers all messages loads recent history, not old
   const hasSummary = ctx.messages.some(m => m.text.includes("Summary of 20 messages"));
   assert.ok(hasSummary, "checkpoint summary should be in context");
 });
+
+test("long dialogue: buildContext uses summary + recent after checkpoint", () => {
+  const store = createTestStore();
+  const room = store.createRoom("test", ["user", "agent.codex"], {
+    mode: "manual", checkpointThreshold: 5,
+    maxHistoryMessages: 100, maxContextTokens: 100_000,
+  });
+
+  // Create 30 messages
+  for (let i = 1; i <= 30; i++) {
+    saveMsg(store, room.id, `msg_${i}`, `discussion point ${i}`);
+  }
+
+  // Checkpoint covers msg_1..msg_25
+  store.saveCheckpoint(room.id, "Summary of 25 messages about discussion", "msg_1", "msg_25");
+
+  const ctx = buildContext(store, {
+    roomId: room.id, maxHistoryMessages: 100,
+    checkpointThreshold: 5, maxContextTokens: 100_000,
+  });
+
+  const userMsgs = ctx.messages.filter(m => m.role === "user");
+  assert.equal(userMsgs.length, 5, "should have 5 post-checkpoint messages");
+  assert.equal(userMsgs[0].id, "msg_26");
+
+  const hasSummary = ctx.messages.some(m => m.text.includes("Summary of 25 messages"));
+  assert.ok(hasSummary, "should include checkpoint summary");
+});
+
+test("pinned context + checkpoint summary both present in context", () => {
+  const store = createTestStore();
+  const room = store.createRoom("test", ["user", "agent.codex"], {
+    mode: "manual", checkpointThreshold: 3,
+    maxHistoryMessages: 100, maxContextTokens: 100_000,
+  });
+
+  // Add pinned context
+  store.addPinnedContext(room.id, "project-rules", "Always use TypeScript", "user");
+
+  // Add messages + checkpoint
+  for (let i = 1; i <= 5; i++) {
+    saveMsg(store, room.id, `msg_${i}`, `message ${i}`);
+  }
+  store.saveCheckpoint(room.id, "Summary of first messages", "msg_1", "msg_3");
+
+  const ctx = buildContext(store, {
+    roomId: room.id, maxHistoryMessages: 100,
+    checkpointThreshold: 3, maxContextTokens: 100_000,
+  });
+
+  const hasPinned = ctx.messages.some(m => m.text.includes("Always use TypeScript"));
+  const hasSummary = ctx.messages.some(m => m.text.includes("Summary of first messages"));
+  assert.ok(hasPinned, "pinned context should be in output");
+  assert.ok(hasSummary, "checkpoint summary should be in output");
+});
+
+test("buildContext threshold check works when checkpointThreshold > maxHistoryMessages (INV-5)", () => {
+  const store = createTestStore();
+  const room = store.createRoom("test", ["user", "agent.codex"], {
+    mode: "manual",
+    checkpointThreshold: 20, // larger than maxHistoryMessages
+    maxHistoryMessages: 10,
+    maxContextTokens: 100_000,
+  });
+
+  // Create 25 messages — exceeds threshold
+  for (let i = 1; i <= 25; i++) {
+    saveMsg(store, room.id, `msg_${i}`, `message ${i}`);
+  }
+
+  // Checkpoint covers first 20
+  store.saveCheckpoint(room.id, "Summary of 20 messages", "msg_1", "msg_20");
+
+  const ctx = buildContext(store, {
+    roomId: room.id,
+    maxHistoryMessages: 10,
+    checkpointThreshold: 20,
+    maxContextTokens: 100_000,
+  });
+
+  // Should use checkpoint path (threshold exceeded) and show post-checkpoint messages
+  const userMsgs = ctx.messages.filter(m => m.role === "user");
+  assert.equal(userMsgs.length, 5, "should have 5 post-checkpoint messages");
+  assert.equal(userMsgs[0].id, "msg_21");
+
+  const hasSummary = ctx.messages.some(m => m.text.includes("Summary of 20 messages"));
+  assert.ok(hasSummary, "should include checkpoint summary");
+});
+
+test("token budget: trims oldest messages when over budget", () => {
+  const store = createTestStore();
+  const room = store.createRoom("test", ["user"], {
+    mode: "manual", checkpointThreshold: 50,
+    maxHistoryMessages: 100, maxContextTokens: 200, // very small budget (~800 chars)
+  });
+
+  // Each message ~100 chars = ~25 tokens. 10 messages = ~250 tokens > budget
+  for (let i = 1; i <= 10; i++) {
+    saveMsg(store, room.id, `msg_${i}`, `A`.repeat(100));
+  }
+
+  const ctx = buildContext(store, {
+    roomId: room.id, maxHistoryMessages: 100,
+    checkpointThreshold: 50, maxContextTokens: 200,
+  });
+
+  assert.ok(ctx.truncated, "should be truncated");
+  assert.ok(ctx.messages.length < 10, "should have fewer than 10 messages");
+  // Last message should always be present (newest kept)
+  const lastMsg = ctx.messages[ctx.messages.length - 1];
+  assert.equal(lastMsg.id, "msg_10", "newest message should be kept");
+});

@@ -582,3 +582,17 @@
 - Pick next v0.1 block
 
 ---
+## 2026-02-17T11:29:40Z | codex
+### Summary
+- Added storage APIs for checkpoint-quality handoff and validated CLI summary/history smoke.
+
+### Changes
+- Updated internal/storage/sqlite.ts with listMessagesAfter + getCheckpointCoverage; added tests/storage/sqlite-store.test.ts (4 tests); updated bridge/SESSION.md with plan and completed Codex block; ran typecheck, full test suite, and CLI smoke in adapter-mode cli.
+
+### Risks
+- No blockers. New APIs are additive and covered by tests; remaining risk sits in upcoming session-layer algorithm changes.
+
+### Next
+- Claude can proceed with context.ts token-budget fix + checkpoint dedup/structured summary using new storage methods; then run joint smoke.
+
+---

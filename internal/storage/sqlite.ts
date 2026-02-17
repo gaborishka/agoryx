@@ -31,6 +31,11 @@ interface MessageRow {
   created_at: string;
 }
 
+interface CheckpointCoverageRow {
+  from_message_id: string;
+  to_message_id: string;
+}
+
 interface CheckpointRow {
   id: string;
   room_id: string;
@@ -279,16 +284,26 @@ export class SQLiteStore {
       )
       .all(roomId, limit) as MessageRow[];
 
-    return rows.map((row) => ({
-      id: row.id,
-      roomId: row.room_id,
-      author: row.author,
-      role: row.role,
-      text: row.text,
-      format: row.format,
-      metadata: tryParseJson(row.metadata_json, {}),
-      createdAt: row.created_at,
-    }));
+    return rows.map(messageRowToDomain);
+  }
+
+  public listMessagesAfter(roomId: string, afterMessageId: string): Message[] {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT m.*
+      FROM messages m
+      JOIN messages anchor
+        ON anchor.room_id = m.room_id
+       AND anchor.id = ?
+      WHERE m.room_id = ?
+        AND m.rowid > anchor.rowid
+      ORDER BY m.rowid ASC
+    `,
+      )
+      .all(afterMessageId, roomId) as MessageRow[];
+
+    return rows.map(messageRowToDomain);
   }
 
   public addPinnedContext(
@@ -403,6 +418,31 @@ export class SQLiteStore {
     };
   }
 
+  public getCheckpointCoverage(
+    roomId: string,
+  ): { fromMessageId: string; toMessageId: string } | null {
+    const row = this.db
+      .prepare(
+        `
+      SELECT from_message_id, to_message_id
+      FROM checkpoints
+      WHERE room_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+      )
+      .get(roomId) as CheckpointCoverageRow | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      fromMessageId: row.from_message_id,
+      toMessageId: row.to_message_id,
+    };
+  }
+
   public appendEvent(event: EventEnvelope): void {
     this.db
       .prepare(
@@ -477,3 +517,14 @@ const tryParseJson = <T>(value: string, fallback: T): T => {
     return fallback;
   }
 };
+
+const messageRowToDomain = (row: MessageRow): Message => ({
+  id: row.id,
+  roomId: row.room_id,
+  author: row.author,
+  role: row.role,
+  text: row.text,
+  format: row.format,
+  metadata: tryParseJson(row.metadata_json, {}),
+  createdAt: row.created_at,
+});

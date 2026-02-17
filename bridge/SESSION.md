@@ -315,6 +315,32 @@ internal/
 - Test pattern: integration via spawn + piped stdin; multi-step tests use `--resume` to avoid piped stdin EOF issue
 - Validation: `npm run typecheck` + `npm test` => **91/91 pass** (includes Codex's 3 /pins tests)
 
+## What Changed This Session (Codex — storage checkpoint APIs + CLI smoke)
+
+### Storage/API changes
+- `internal/storage/sqlite.ts`
+  - Added `listMessagesAfter(roomId, afterMessageId)`:
+    - efficient incremental message fetch without loading large history windows
+    - uses `rowid` ordering to keep deterministic append order even when `created_at` timestamps are equal
+  - Added `getCheckpointCoverage(roomId)`:
+    - returns `{ fromMessageId, toMessageId }` for latest checkpoint
+    - lightweight API for dedup/overlap guards in session layer
+  - Refactored message row mapping into `messageRowToDomain()` helper (no behavior change)
+- Added `tests/storage/sqlite-store.test.ts`:
+  - `listMessagesAfter` returns messages strictly after anchor in insertion order
+  - `listMessagesAfter` returns empty array for missing anchor
+  - `getCheckpointCoverage` returns `null` when no checkpoints
+  - `getCheckpointCoverage` returns latest checkpoint range when checkpoints exist
+
+### Validation
+- `npm run typecheck` ✅
+- `npm test` ✅ (**96/96 pass**)
+- CLI smoke (`--adapter-mode cli`) for `/summary` + `/history` ✅:
+  - Input: `hello smoke`, `/summary`, `/history`, `/quit`
+  - Observed:
+    - `Checkpoint created.`
+    - `[user] hello smoke`
+
 ## Known Issues
 - Немає блокерів. CLI mode працює для обох адаптерів.
 - SKILL_KEYWORDS dictionary — статичний, може потребувати тюнінгу після real-world testing
@@ -323,8 +349,28 @@ internal/
 - Немає.
 
 ## Next Step
-1. Закомітити зміни (Claude command handler tests + Codex /pins end-to-end).
-2. Перейти до наступного v0.1 блоку (checkpoint quality / keyword tuning).
+1. Claude: context/checkpoint algorithm block:
+   - fix token double-count у `internal/session/context.ts`
+   - dedup/overlap guard у `maybeCreateCheckpoint()`
+   - structured summary generation + edge-case tests
+2. Joint validation:
+   - smoke-test `/summary` + `/history` у CLI mode після обох блоків.
+
+## Active Plan (2026-02-17)
+- **Claude (session + context):**
+  1. Fix token double-count bug in `context.ts`
+  2. Add dedup/overlap guards in `maybeCreateCheckpoint()`
+  3. Replace raw transcript clipping with structured summary extraction
+  4. Add context builder tests: long dialogue, rollover, pinned+summary, token-budget edges
+- **Codex (storage + engine):**
+  1. Optimize message access with `listMessagesAfter(roomId, afterMessageId)`
+  2. Add `getCheckpointCoverage(roomId)` for latest checkpoint range checks
+  3. Run CLI smoke-test for `/summary` + `/history`
+  4. Adapt engine/session only if required by the storage contract
+- **Execution order:**
+  1. Codex storage API changes first
+  2. Claude algorithm/context changes second
+  3. Final smoke validation together
 
 ## Last Updated
-2026-02-17T21:00:00Z by claude
+2026-02-17T11:29:17Z by codex

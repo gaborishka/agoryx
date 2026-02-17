@@ -62,6 +62,70 @@ test("listMessagesAfter returns empty array when anchor message does not exist",
   }
 });
 
+test("listRecentMessages returns newest N messages in ASC order", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    const room = store.createRoom("storage-test", ["user"], ROOM_CONFIG);
+
+    for (let i = 1; i <= 20; i++) {
+      const ts = new Date(2026, 1, 17, 12, 0, i).toISOString();
+      store.saveMessage(createMessage(room.id, `msg_${i}`, `text ${i}`, ts));
+    }
+
+    // Request only 5 most recent
+    const recent = store.listRecentMessages(room.id, 5);
+    assert.equal(recent.length, 5);
+    assert.deepEqual(recent.map(m => m.id), ["msg_16", "msg_17", "msg_18", "msg_19", "msg_20"]);
+
+    // Verify ASC ordering within result
+    for (let i = 1; i < recent.length; i++) {
+      assert.ok(recent[i].createdAt >= recent[i - 1].createdAt,
+        "results should be in ASC order");
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test("listRecentMessages returns all messages when limit exceeds count", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    const room = store.createRoom("storage-test", ["user"], ROOM_CONFIG);
+    const ts = "2026-02-17T12:00:00.000Z";
+    store.saveMessage(createMessage(room.id, "msg_1", "one", ts));
+    store.saveMessage(createMessage(room.id, "msg_2", "two", ts));
+
+    const recent = store.listRecentMessages(room.id, 100);
+    assert.equal(recent.length, 2);
+    assert.deepEqual(recent.map(m => m.id), ["msg_1", "msg_2"]);
+  } finally {
+    store.close();
+  }
+});
+
+test("countMessages returns accurate count", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    const room = store.createRoom("storage-test", ["user"], ROOM_CONFIG);
+    assert.equal(store.countMessages(room.id), 0);
+
+    const ts = "2026-02-17T12:00:00.000Z";
+    store.saveMessage(createMessage(room.id, "msg_1", "one", ts));
+    assert.equal(store.countMessages(room.id), 1);
+
+    store.saveMessage(createMessage(room.id, "msg_2", "two", ts));
+    assert.equal(store.countMessages(room.id), 2);
+  } finally {
+    store.close();
+  }
+});
+
 test("getCheckpointCoverage returns null when room has no checkpoints", () => {
   const store = new SQLiteStore(":memory:");
   store.init();

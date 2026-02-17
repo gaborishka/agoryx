@@ -287,6 +287,40 @@ export class SQLiteStore {
     return rows.map(messageRowToDomain);
   }
 
+  public listRecentMessages(roomId: string, limit = 250): Message[] {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT * FROM (
+        SELECT *, rowid AS _rid FROM messages
+        WHERE room_id = ?
+        ORDER BY rowid DESC
+        LIMIT ?
+      ) sub
+      ORDER BY _rid ASC
+    `,
+      )
+      .all(roomId, limit) as (MessageRow & { _rid: number })[];
+
+    return rows.map(messageRowToDomain);
+  }
+
+  public countMessages(roomId: string, roles?: string[]): number {
+    if (roles && roles.length > 0) {
+      const placeholders = roles.map(() => "?").join(",");
+      const row = this.db
+        .prepare(
+          `SELECT COUNT(*) AS cnt FROM messages WHERE room_id = ? AND role IN (${placeholders})`,
+        )
+        .get(roomId, ...roles) as { cnt: number } | undefined;
+      return row?.cnt ?? 0;
+    }
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS cnt FROM messages WHERE room_id = ?`)
+      .get(roomId) as { cnt: number } | undefined;
+    return row?.cnt ?? 0;
+  }
+
   public listMessagesAfter(roomId: string, afterMessageId: string): Message[] {
     const rows = this.db
       .prepare(

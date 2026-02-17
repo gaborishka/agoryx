@@ -266,6 +266,7 @@ export class SessionService {
     const coverage = this.store.getCheckpointCoverage(room.id);
     let uncoveredMessages: Message[];
     let allConversationMessages: Message[] | null = null;
+    const minRequired = force ? 2 : room.config.checkpointThreshold;
 
     if (coverage) {
       // Targeted query: messages after last checkpoint's endpoint (no window limit)
@@ -275,23 +276,24 @@ export class SessionService {
       );
       // Dedup: nothing new since last checkpoint
       if (uncoveredMessages.length === 0) return null;
+      // Threshold check (INV-2)
+      if (uncoveredMessages.length < minRequired) return null;
     } else {
-      // No previous checkpoint: load conversation messages with a high ceiling
-      // so that toMessageId is the real last message.
-      // NOTE: listMessages is ORDER BY ASC LIMIT, so this returns the oldest 10k.
-      // For rooms >10k messages, toMessageId will be stale. Acceptable for v0.1
-      // where rooms stay well under 10k; post-v0.1 should use a DESC+reverse query.
-      const messages = this.store.listMessages(room.id, 10_000);
+      // No previous checkpoint: use countMessages for accurate threshold check
+      // (no 10k ceiling), then listRecentMessages for the actual data (newest, not oldest).
+      const conversationCount = this.store.countMessages(room.id, ["user", "assistant"]);
+      if (conversationCount === 0 || conversationCount < minRequired) return null;
+
+      // Load all messages using total count to ensure we get everything including
+      // system messages, then filter. listRecentMessages uses DESC+reverse so
+      // the last element is always the actual last message (fixes stale toMessageId).
+      const totalCount = this.store.countMessages(room.id);
+      const messages = this.store.listRecentMessages(room.id, totalCount);
       allConversationMessages = messages.filter(
         (m) => m.role === "assistant" || m.role === "user",
       );
       uncoveredMessages = allConversationMessages;
-      if (uncoveredMessages.length === 0) return null;
     }
-
-    // Threshold check (INV-2)
-    const minRequired = force ? 2 : room.config.checkpointThreshold;
-    if (uncoveredMessages.length < minRequired) return null;
 
     // Get previous summary for cumulative checkpoint
     const prevCheckpoint = this.store.getLatestCheckpoint(room.id);

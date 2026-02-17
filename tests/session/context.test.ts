@@ -224,3 +224,35 @@ test("token budget: trims oldest messages when over budget", () => {
   const lastMsg = ctx.messages[ctx.messages.length - 1];
   assert.equal(lastMsg.id, "msg_10", "newest message should be kept");
 });
+
+test("context fallback returns newest messages, not oldest window (P3)", () => {
+  // Bug: buildContext fallback uses listMessages(10_000) which is ASC LIMIT,
+  // giving the oldest 10k rows. For rooms >10k, .slice(-maxHistoryMessages)
+  // still returns stale data from the oldest window.
+  const store = createTestStore();
+  const room = store.createRoom("test", ["user"], {
+    mode: "manual", checkpointThreshold: 5,
+    maxHistoryMessages: 10, maxContextTokens: 100_000,
+  });
+
+  // Add 50 messages to clearly exceed any internal limits
+  for (let i = 1; i <= 50; i++) {
+    saveMsg(store, room.id, `msg_${i}`, `message ${i}`);
+  }
+
+  // No checkpoint — threshold exceeded → fallback path
+  const ctx = buildContext(store, {
+    roomId: room.id,
+    maxHistoryMessages: 10,
+    checkpointThreshold: 5,
+    maxContextTokens: 100_000,
+  });
+
+  // Should contain the NEWEST 10 messages (msg_41..msg_50), not oldest
+  const userMsgs = ctx.messages.filter(m => m.role === "user");
+  assert.equal(userMsgs.length, 10, "should have maxHistoryMessages messages");
+  assert.equal(userMsgs[userMsgs.length - 1].id, "msg_50",
+    "last message should be the newest");
+  assert.equal(userMsgs[0].id, "msg_41",
+    "first message should be msg_41 (newest 10)");
+});

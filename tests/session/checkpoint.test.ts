@@ -178,3 +178,56 @@ test("no nested [Prior summary] wrappers after 3 checkpoints (INV-3)", () => {
   assert.equal(count, 1,
     "should have exactly one [Prior summary] section regardless of checkpoint depth");
 });
+
+// --- 10k ceiling bug reproduction ---
+
+test("auto-checkpoint triggers when threshold > 10k and no prior checkpoint (P2a)", () => {
+  // Bug: listMessages(10_000) caps at oldest 10k, so uncoveredMessages.length
+  // never reaches a threshold >10k, making auto-checkpoint impossible.
+  const largeThresholdConfig: RoomConfig = {
+    mode: "manual",
+    checkpointThreshold: 50, // simulate threshold > data loaded by ASC LIMIT
+    maxHistoryMessages: 10,
+    maxContextTokens: 100_000,
+  };
+  const store = new SQLiteStore(":memory:");
+  store.init();
+  const session = new SessionService(store);
+  const { room } = session.createSession({
+    roomName: "test", participants: ["user"], roomConfig: largeThresholdConfig,
+  });
+
+  // Add 60 messages (exceeds threshold of 50)
+  for (let i = 0; i < 60; i++) {
+    session.saveUserMessage(room.id, `msg ${i}`);
+  }
+
+  // Auto checkpoint should trigger — there are 60 uncovered messages >= threshold 50
+  const result = session.maybeCreateCheckpoint(room);
+  assert.ok(result, "auto checkpoint must trigger when message count exceeds threshold");
+});
+
+test("first checkpoint saves accurate toMessageId for the actual last message (P2b)", () => {
+  // Bug: listMessages(10_000) with ASC LIMIT returns oldest 10k, so
+  // toMessageId is derived from that capped subset, not the real last message.
+  const store = new SQLiteStore(":memory:");
+  store.init();
+  const session = new SessionService(store);
+  const { room } = session.createSession({
+    roomName: "test", participants: ["user"],
+    roomConfig: { mode: "manual", checkpointThreshold: 5, maxHistoryMessages: 10, maxContextTokens: 100_000 },
+  });
+
+  // Add 30 messages
+  const lastMsgId = [] as string[];
+  for (let i = 0; i < 30; i++) {
+    const msg = session.saveUserMessage(room.id, `msg ${i}`);
+    lastMsgId.push(msg.id);
+  }
+
+  session.maybeCreateCheckpoint(room, true);
+  const coverage = store.getCheckpointCoverage(room.id);
+  assert.ok(coverage);
+  assert.equal(coverage.toMessageId, lastMsgId[lastMsgId.length - 1],
+    "toMessageId must be the actual last message, not a capped subset");
+});

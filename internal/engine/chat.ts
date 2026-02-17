@@ -119,7 +119,7 @@ export class ChatEngine {
 
   public checkpointNow(): string | null {
     const state = this.getState();
-    return this.session.maybeCreateCheckpoint(state.room);
+    return this.session.maybeCreateCheckpoint(state.room, true);
   }
 
   public getLastFailedRequest(adapter: string): string | null {

@@ -199,15 +199,15 @@ test("/summary on empty room reports not enough history", async (t) => {
 
 test("/summary creates checkpoint when enough messages exist", async (t) => {
   const dir = makeTmpDir(t, "agoryx-cmd-summary-ok-");
-  // Create a config with very low checkpoint threshold (2) so that
-  // a couple of messages are enough to trigger checkpoint creation.
+  // Set auto threshold high (10) so processUserMessage doesn't auto-checkpoint,
+  // but /summary (force=true, threshold=2) still triggers.
   const configPath = join(dir, "agoryx.json");
   writeFileSync(
     configPath,
     JSON.stringify({
       version: "0.1",
       context: {
-        checkpointThreshold: 2,
+        checkpointThreshold: 10,
         maxHistoryMessages: 100,
         maxContextTokens: 30000,
       },

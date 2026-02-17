@@ -76,3 +76,39 @@ test("buildContext uses checkpoint to load only post-checkpoint messages", () =>
   const summaryMsg = ctx.messages.find(m => m.text.includes("Summary of first 3 messages"));
   assert.ok(summaryMsg, "checkpoint summary should be in context");
 });
+
+test("fallback when checkpoint covers all messages loads recent history, not oldest window", () => {
+  const store = createTestStore();
+  const room = store.createRoom("test", ["user"], {
+    mode: "manual", checkpointThreshold: 5,
+    maxHistoryMessages: 10, maxContextTokens: 100_000,
+  });
+
+  // Add 20 messages — total exceeds countLimit (max(10, 6) = 10)
+  for (let i = 1; i <= 20; i++) {
+    saveMsg(store, room.id, `msg_${i}`, `message ${i}`);
+  }
+
+  // Checkpoint covers ALL messages (toMessageId = last message)
+  store.saveCheckpoint(room.id, "Summary of 20 messages", "msg_1", "msg_20");
+
+  const ctx = buildContext(store, {
+    roomId: room.id,
+    maxHistoryMessages: 10,
+    checkpointThreshold: 5,
+    maxContextTokens: 100_000,
+  });
+
+  // afterCheckpoint is empty (checkpoint covers last message)
+  // Fallback must include the NEWEST messages, not the oldest window
+  const userMsgs = ctx.messages.filter(m => m.role === "user");
+  if (userMsgs.length > 0) {
+    const lastMsg = userMsgs[userMsgs.length - 1];
+    assert.equal(lastMsg.id, "msg_20",
+      "fallback should include newest messages, not oldest window");
+  }
+
+  // Checkpoint summary should still be present
+  const hasSummary = ctx.messages.some(m => m.text.includes("Summary of 20 messages"));
+  assert.ok(hasSummary, "checkpoint summary should be in context");
+});

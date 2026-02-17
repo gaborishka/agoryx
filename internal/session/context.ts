@@ -67,11 +67,18 @@ export function buildContext(
       checkpointSummary = checkpoint.summaryText;
       // Use targeted query: only messages after checkpoint (no window dependency)
       const afterCheckpoint = store.listMessagesAfter(roomId, checkpoint.toMessageId);
-      messages = afterCheckpoint.length > 0
-        ? afterCheckpoint
-        : allMessages.slice(-maxHistoryMessages);
+      if (afterCheckpoint.length > 0) {
+        messages = afterCheckpoint;
+      } else {
+        // Checkpoint covers all messages or anchor is stale — load recent history
+        // (bounded allMessages may only contain oldest window due to ASC LIMIT)
+        const recent = store.listMessages(roomId, 10_000);
+        messages = recent.slice(-maxHistoryMessages);
+      }
     } else {
-      messages = allMessages.slice(-maxHistoryMessages);
+      // No checkpoint despite threshold exceeded — load recent history
+      const recent = store.listMessages(roomId, 10_000);
+      messages = recent.slice(-maxHistoryMessages);
     }
   } else {
     messages = allMessages;

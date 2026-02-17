@@ -364,36 +364,42 @@ internal/
 - `bridge/LOG.md` historical entries were translated and normalized to English wording.
 - Validation: no Cyrillic text remains in `bridge/*.md`.
 
+## What Changed This Session (Claude — checkpoint quality implementation)
+
+### Checkpoint quality overhaul (branch: feat/checkpoint-quality)
+- **Token fix (INV-4):** `buildContext` no longer double-counts systemPrompt in `totalEstimatedTokens`
+- **Context builder refactor:** uses `listMessagesAfter` for targeted post-checkpoint loading; `Math.max(maxHistoryMessages, checkpointThreshold + 1)` for threshold check (INV-5)
+- **Fallback fix:** fallback paths now reload with 10k ceiling to get newest messages, not bounded oldest window
+- **Structured summary helpers:** `extractTopics`, `extractDecisions`, `buildBudgetTail`, `buildStructuredSummary` added to `service.ts`
+  - Topics: top-5 keywords by word frequency (EN+UA stop words filtered)
+  - Decisions: regex patterns for EN and UA decision language
+  - Budget tail: newline-aware character budget, no mid-message truncation
+  - Summary format: `[Prior summary]` + `[Checkpoint] N messages (author breakdown)` + Topics + Decisions + tail
+- **Checkpoint rewrite (INV-1,2,3):** `maybeCreateCheckpoint(room, force?)` with:
+  - Dedup via `getCheckpointCoverage` — no repeat checkpoints without new messages
+  - Auto threshold (`checkpointThreshold`) vs force threshold (2 messages)
+  - Cumulative summaries — prior summary prepended with `[Prior summary]` wrapper
+  - No nested wrappers (INV-3) — existing `[Prior summary]` prefix stripped before re-wrapping
+  - Range preservation (INV-1) — `fromMessageId` carried forward from first checkpoint
+- **Engine integration:** `checkpointNow()` passes `force=true`; existing `/summary` test updated for new threshold split
+- **Known v0.1 tradeoff:** `listMessages(10_000)` is ASC LIMIT, so rooms >10k messages will get stale data in fallback paths; documented at all call sites
+- **Tests:** 29 new tests across 3 files:
+  - `tests/session/context.test.ts` (7): token fix, post-checkpoint, fallback regression, long dialogue, pinned+summary, INV-5, budget
+  - `tests/session/summary.test.ts` (12): topics, decisions, budget tail (incl. newline accounting), structured summary, prior trim, INV-3
+  - `tests/session/checkpoint.test.ts` (10): dedup, auto/force thresholds, cumulative, INV-1, INV-5 window, topics/decisions, INV-3
+- Validation: `npm run typecheck` + `npm test` => **125/125 pass**
+
 ## Known Issues
 - No blockers. CLI mode works for both adapters.
 - SKILL_KEYWORDS dictionary is static and may need tuning after real-world testing.
+- `listMessages(10_000)` ASC LIMIT ceiling: rooms >10k messages will have stale fallback paths. Post-v0.1 should add a DESC+reverse query.
 
 ## Open Questions
 - None.
 
 ## Next Step
-1. Claude: context/checkpoint algorithm block:
-   - fix token double-count in `internal/session/context.ts`
-   - add dedup/overlap guard in `maybeCreateCheckpoint()`
-   - structured summary generation + edge-case tests
-2. Joint validation:
-   - smoke-test `/summary` + `/history` in CLI mode after both blocks.
-
-## Active Plan (2026-02-17)
-- **Claude (session + context):**
-  1. Fix token double-count bug in `context.ts`
-  2. Add dedup/overlap guards in `maybeCreateCheckpoint()`
-  3. Replace raw transcript clipping with structured summary extraction
-  4. Add context builder tests: long dialogue, rollover, pinned+summary, token-budget edges
-- **Codex (storage + engine):**
-  1. Optimize message access with `listMessagesAfter(roomId, afterMessageId)`
-  2. Add `getCheckpointCoverage(roomId)` for latest checkpoint range checks
-  3. Run CLI smoke-test for `/summary` + `/history`
-  4. Adapt engine/session only if required by the storage contract
-- **Execution order:**
-  1. Codex storage API changes first
-  2. Claude algorithm/context changes second
-  3. Final smoke validation together
+1. Joint validation: smoke-test `/summary` + `/history` in CLI mode after checkpoint quality merge.
+2. Decide next feature block (e.g., adaptive routing, conversation branching, or CLI UX improvements).
 
 ## Last Updated
-2026-02-17T12:13:17Z by codex
+2026-02-17T14:00:00Z by claude

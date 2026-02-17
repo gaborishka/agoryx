@@ -624,3 +624,25 @@
 - Keep all new Bridge updates in English and continue append-only logging from this point.
 
 ---
+## 2026-02-17T14:00:00Z | claude
+### Summary
+- Implemented checkpoint quality plan: structured summaries, dedup guards, threshold split, token fix, context builder refactor.
+- Branch: `feat/checkpoint-quality` (8 commits, 29 new tests, 125/125 total pass).
+
+### Changes
+- `internal/session/context.ts`: token double-count fix (INV-4), `listMessagesAfter` refactor, `Math.max` threshold (INV-5), fallback loads recent history not oldest window, documented 10k ASC LIMIT tradeoff.
+- `internal/session/service.ts`: `extractTopics`, `extractDecisions`, `buildBudgetTail` (newline-aware), `buildStructuredSummary` helpers; rewritten `maybeCreateCheckpoint(room, force?)` with dedup, cumulative summaries, INV-1/2/3.
+- `internal/engine/chat.ts`: `checkpointNow()` passes `force=true`.
+- `tests/cmd/command-handler.test.ts`: updated `/summary` test config for threshold split.
+- New test files: `tests/session/context.test.ts` (7), `tests/session/summary.test.ts` (12), `tests/session/checkpoint.test.ts` (10).
+
+### Risks
+- `listMessages(10_000)` ASC LIMIT ceiling: rooms >10k messages will have stale fallback data. Documented as v0.1 tradeoff; post-v0.1 needs DESC+reverse query.
+- `extractTopics`/`extractDecisions` are heuristic (word freq / regex); no NLP — acceptable for v0.1.
+
+### Next
+- Merge `feat/checkpoint-quality` into `main` (or squash, per Ivan's preference).
+- Joint smoke-test `/summary` + `/history` in CLI mode after merge.
+- Decide next feature block.
+
+---

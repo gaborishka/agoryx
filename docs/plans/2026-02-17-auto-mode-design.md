@@ -86,7 +86,7 @@ const SKILL_KEYWORDS: Record<string, string[]> = {
 
 ### Matching rules
 
-- Message is lowercased, trimmed, split into words
+- Message is lowercased, trimmed, split into words, punctuation stripped per-word (only letters, digits, `_`, `-` kept)
 - Each word is checked against keyword dictionary via **prefix match** (substring from start)
 - Keywords shorter than 3 characters are ignored unless in explicit whitelist: `["ui", "ux", "db"]`
 - Score = number of keyword hits across all agent's skills
@@ -138,12 +138,12 @@ agentSkills?: Record<string, string[]>;
 
 ```typescript
 // config/index.ts — toRuntimeConfig() adds:
-agentSkills: resolveAgentSkills(config),
+agentSkills: resolveAgentSkills(config, agentNames),
 ```
 
 ## Dispatch reasons (for debugging/logging)
 
-- `auto:broadcast` — @all triggered
+- `auto:mention:all` — @all triggered
 - `auto:mention:codex` — explicit @mention
 - `auto:skill:code→codex` — skill match with winning skill
 - `auto:fallback:rotation` — no match, round-robin
@@ -163,6 +163,7 @@ agentSkills: resolveAgentSkills(config),
 10. Short keywords (<3 chars) ignored unless whitelisted
 11. Custom skills from config override defaults
 12. Unknown agent in @mention is ignored
+13. Rotation is per-room (independent indices for different rooms)
 
 ### merge.test.ts (EXTEND)
 13. Skills merge: config skills override defaults

@@ -49,9 +49,15 @@ export const DEFAULT_AGENT_SKILLS: Record<string, string[]> = {
 In `internal/config/index.ts`, add before `toRuntimeConfig`:
 
 ```typescript
-export function resolveAgentSkills(config: AgoryxConfig): Record<string, string[]> {
+export function resolveAgentSkills(
+  config: AgoryxConfig,
+  activeAgents?: string[],
+): Record<string, string[]> {
   const result: Record<string, string[]> = {};
-  for (const [name, entry] of Object.entries(config.agents)) {
+  const agents = activeAgents ?? Object.keys(config.agents);
+  for (const name of agents) {
+    const entry = config.agents[name];
+    if (!entry) continue;
     result[name] = entry.skills ?? DEFAULT_AGENT_SKILLS[name] ?? [];
   }
   return result;
@@ -88,7 +94,7 @@ return {
   roomConfig: toRoomConfig(config),
   roomName: overrides.roomName ?? "default",
   resumeRoomId: overrides.resumeRoomId,
-  agentSkills: resolveAgentSkills(config),
+  agentSkills: resolveAgentSkills(config, agentNames),
 };
 ```
 
@@ -354,7 +360,7 @@ export class AutoPolicy implements OrchestrationPolicy {
     // @all → broadcast
     if (mentions.includes("all")) {
       return context.availableAgents.map((agent, index) =>
-        makeDispatch(agent, "auto:broadcast", 100 + index),
+        makeDispatch(agent, "auto:mention:all", 100 + index),
       );
     }
 
@@ -371,7 +377,12 @@ export class AutoPolicy implements OrchestrationPolicy {
     }
 
     // --- Pass 2: Skill match ---
-    const words = message.text.toLowerCase().trim().split(/\s+/);
+    const words = message.text
+      .toLowerCase()
+      .trim()
+      .split(/\s+/)
+      .map((w) => w.replace(/[^a-zA-Zа-яА-ЯіІїЇєЄґҐ0-9_-]/g, ""))
+      .filter((w) => w.length > 0);
     const skills = this.agentSkills ?? {};
 
     let bestAgent = "";
@@ -491,7 +502,7 @@ test("@all broadcasts to all agents", () => {
   assert.equal(dispatches.length, 2);
   assert.equal(dispatches[0].targetAdapter, "codex");
   assert.equal(dispatches[1].targetAdapter, "claude");
-  assert.ok(dispatches[0].reason.includes("broadcast"));
+  assert.ok(dispatches[0].reason.includes("mention:all"));
 });
 
 test("@codex dispatches to codex only", () => {
@@ -660,12 +671,34 @@ test("round-robin index advances only on fallback", () => {
   assert.equal(d3[0].targetAdapter, "claude");
   assert.ok(d3[0].reason.includes("fallback"));
 });
+
+test("rotation is per-room (independent indices)", () => {
+  const policy = new AutoPolicy(defaultSkills);
+  const roomA = makeRoom("room_a");
+  const roomB = makeRoom("room_b");
+
+  // Room A: first fallback → codex (index 0)
+  const a1 = policy.onUserMessage(roomA, makeMessage("привіт"), defaultContext);
+  assert.equal(a1[0].targetAdapter, "codex");
+
+  // Room B: first fallback → also codex (index 0, independent)
+  const b1 = policy.onUserMessage(roomB, makeMessage("привіт"), defaultContext);
+  assert.equal(b1[0].targetAdapter, "codex");
+
+  // Room A: second fallback → claude (index 1)
+  const a2 = policy.onUserMessage(roomA, makeMessage("ок"), defaultContext);
+  assert.equal(a2[0].targetAdapter, "claude");
+
+  // Room B: second fallback → also claude (index 1, still independent)
+  const b2 = policy.onUserMessage(roomB, makeMessage("ок"), defaultContext);
+  assert.equal(b2[0].targetAdapter, "claude");
+});
 ```
 
 **Step 2: Run tests**
 
 Run: `npx tsx --test tests/orchestrator/auto.test.ts`
-Expected: ALL 12 PASS
+Expected: ALL 13 PASS
 
 **Step 3: Commit**
 
@@ -734,7 +767,7 @@ Expected: PASS — zero errors
 **Step 2: Run full test suite**
 
 Run: `npx tsx --test tests/**/*.test.ts`
-Expected: ALL PASS (49 existing + 12 auto + 3 config merge = 64 total, approximately)
+Expected: ALL PASS (49 existing + 13 auto + 3 config merge = 65 total, approximately)
 
 **Step 3: Update bridge files**
 
@@ -749,7 +782,7 @@ Append to `bridge/LOG.md`:
 ### Summary
 - Implemented auto mode smart routing: two-pass algorithm (mention → skill match → round-robin fallback)
 - Config-based agent skills with hardcoded defaults for codex/claude
-- 12 new auto routing tests + 3 config merge tests
+- 13 new auto routing tests + 3 config merge tests
 
 ### Changes
 - Rewritten: internal/orchestrator/auto.ts (two-pass routing)

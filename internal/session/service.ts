@@ -259,27 +259,52 @@ export class SessionService {
     });
   }
 
-  public maybeCreateCheckpoint(room: Room): string | null {
-    const messages = this.store.listMessages(room.id, room.config.maxHistoryMessages);
-    const assistantAndUserMessages = messages.filter(
-      (message) => message.role === "assistant" || message.role === "user",
-    );
-    if (assistantAndUserMessages.length < room.config.checkpointThreshold) {
-      return null;
+  public maybeCreateCheckpoint(room: Room, force?: boolean): string | null {
+    // Determine uncovered messages (INV-5: no window dependency for dedup)
+    const coverage = this.store.getCheckpointCoverage(room.id);
+    let uncoveredMessages: Message[];
+    let allConversationMessages: Message[] | null = null;
+
+    if (coverage) {
+      // Targeted query: messages after last checkpoint's endpoint (no window limit)
+      const afterCheckpoint = this.store.listMessagesAfter(room.id, coverage.toMessageId);
+      uncoveredMessages = afterCheckpoint.filter(
+        (m) => m.role === "assistant" || m.role === "user",
+      );
+      // Dedup: nothing new since last checkpoint
+      if (uncoveredMessages.length === 0) return null;
+    } else {
+      // No previous checkpoint: load conversation messages with a high ceiling
+      // so that toMessageId is the real last message (sufficient for v0.1 rooms)
+      const messages = this.store.listMessages(room.id, 10_000);
+      allConversationMessages = messages.filter(
+        (m) => m.role === "assistant" || m.role === "user",
+      );
+      uncoveredMessages = allConversationMessages;
+      if (uncoveredMessages.length === 0) return null;
     }
 
-    const first = assistantAndUserMessages[0];
-    const last = assistantAndUserMessages[assistantAndUserMessages.length - 1];
-    if (!first || !last) {
-      return null;
-    }
+    // Threshold check (INV-2)
+    const minRequired = force ? 2 : room.config.checkpointThreshold;
+    if (uncoveredMessages.length < minRequired) return null;
 
-    const clipped = assistantAndUserMessages.slice(-12).map((message) => ({
-      author: message.author,
-      text: message.text.length > 180 ? `${message.text.slice(0, 180)}...` : message.text,
-    }));
-    const summaryText = clipped.map((item) => `${item.author}: ${item.text}`).join("\n");
-    this.store.saveCheckpoint(room.id, summaryText, first.id, last.id);
+    // Get previous summary for cumulative checkpoint
+    const prevCheckpoint = this.store.getLatestCheckpoint(room.id);
+    const previousSummary = prevCheckpoint?.summaryText;
+
+    // Build structured summary
+    const summaryText = buildStructuredSummary(uncoveredMessages, previousSummary);
+
+    // Range (INV-1): preserve fromMessageId from previous coverage
+    const firstMsgId = allConversationMessages
+      ? allConversationMessages[0].id
+      : uncoveredMessages[0].id;
+    const fromMessageId = coverage?.fromMessageId ?? firstMsgId;
+    // toMessageId = last conversation message (including uncovered)
+    const lastMessages = allConversationMessages ?? uncoveredMessages;
+    const toMessageId = lastMessages[lastMessages.length - 1].id;
+
+    this.store.saveCheckpoint(room.id, summaryText, fromMessageId, toMessageId);
     return summaryText;
   }
 

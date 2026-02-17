@@ -660,3 +660,25 @@
 - Ready for merge/re-review on feat/checkpoint-quality
 
 ---
+## 2026-02-17T22:00:00Z | claude
+### Summary
+- v0.1.0 release validation complete. Final joint smoke-test passed.
+- Updated SESSION.md to release state. Tagged v0.1.0.
+
+### Changes
+- Joint smoke-test results (--adapter-mode cli):
+  - Manual mode: @codex + @claude respond, /summary creates checkpoint, /history shows all messages — PASS
+  - Auto mode: skill routing (write→codex, explain→claude), fallback round-robin, /summary + /history — PASS
+- Updated bridge/SESSION.md: phase → "v0.1.0 RELEASED", added release summary, updated next steps to v0.2
+- Updated bridge/LOG.md with release entry
+- Created docs/plans/v0.2-self-hosting-plan.md (PR1-PR4)
+- Tagged release: v0.1.0
+
+### Risks
+- No blockers. v0.1.0 is stable.
+- v0.1 tradeoffs documented: static SKILL_KEYWORDS, 10k message ceiling.
+
+### Next
+- Begin v0.2 planning and implementation (self-hosting: execution broker, team mode, review gate, guardrails)
+
+---

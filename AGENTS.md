@@ -61,8 +61,15 @@ Quick log entry:
 - `internal/session/*` — service/context.
 - `internal/orchestrator/*` — policies + orchestration.
 
-## Near-Term Priorities
-1. Integrate `internal/session/context.ts` directly into `internal/engine/chat.ts`.
-2. Unify config (`internal/config/default.ts` + `internal/config/index.ts`) into one clean contract.
-3. Add adapter contract tests (normalization/parsing/error cases).
-4. Add CLI commands `sessions list` and `sessions export`.
+## Completed v0.1 Milestones
+1. ~~Integrate context builder into engine~~ — done
+2. ~~Unify config pipeline~~ — done
+3. ~~Adapter contract tests~~ — done
+4. ~~Sessions list/export~~ — done
+5. ~~Auto mode smart routing~~ — done
+6. ~~Checkpoint quality (dedup, cumulative, structured)~~ — done
+7. ~~Full command handler test coverage~~ — done
+8. ~~CLI mode smoke-tested with real adapters~~ — done
+
+## Current Status
+v0.1.0 released. 135/135 tests pass. Next version (v0.2) scope TBD.

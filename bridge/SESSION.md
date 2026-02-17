@@ -4,7 +4,17 @@
 Launch MVP Agoryx as a local-first CLI for shared chat between `codex` and `claude` using existing CLI subscriptions.
 
 ## Current Phase
-**AUTO MODE VALIDATED** — all foundation complete + auto mode live smoke-test passed (15/15 scenarios: mentions, skill routing, broadcast, fallback, Ukrainian keywords).
+**v0.1.0 RELEASED** — all foundation complete, all smoke-tests passed, release tagged.
+
+## Release Summary (v0.1.0)
+- **135/135 tests pass**, typecheck clean, repo clean on `main`
+- All 4 Near-Term Priorities from AGENTS.md completed
+- CLI mode works for both codex and claude adapters
+- Manual, round-robin, auto modes all validated
+- Checkpoint quality (dedup, cumulative summaries, structured summary) delivered
+- Full in-chat command set: /help, /pin, /unpin, /pins, /summary, /checkpoint, /mode, /adapter, /history, /export, /retry, /quit, /exit
+- Final joint smoke-test passed: /summary + /history in --adapter-mode cli (both manual and auto modes)
+- 18 test files, 22 internal modules, 2 CLI entry points
 
 ## Project Structure
 ```
@@ -389,20 +399,18 @@ internal/
   - `tests/session/checkpoint.test.ts` (10): dedup, auto/force thresholds, cumulative, INV-1, INV-5 window, topics/decisions, INV-3
 - Validation: `npm run typecheck` + `npm test` => **125/125 pass**
 
-## Known Issues
-- No blockers. CLI mode works for both adapters.
+## Known Issues (v0.1 tradeoffs)
 - SKILL_KEYWORDS dictionary is static and may need tuning after real-world testing.
-- `listMessages(10_000)` ASC LIMIT ceiling: rooms >10k messages will have stale fallback paths. Post-v0.1 should add a DESC+reverse query.
+- `listMessages(10_000)` ASC LIMIT ceiling: rooms >10k messages will have stale fallback paths. Deferred to v0.2.
 
 ## Open Questions
 - None.
 
 ## Next Step
-1. Joint validation: smoke-test `/summary` + `/history` in CLI mode after checkpoint quality merge.
-2. Decide next feature block (e.g., adaptive routing, conversation branching, or CLI UX improvements).
+1. v0.2 scope and plan — to be defined in a future session.
 
 ## Last Updated
-2026-02-17T14:00:00Z by claude
+2026-02-17T22:00:00Z by claude
 
 ## What Changed This Session (Codex — review follow-up fixes)
 

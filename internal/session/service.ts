@@ -3,6 +3,128 @@ import { createId, nowIso } from "./ids.js";
 import { SQLiteStore } from "../storage/sqlite.js";
 import { buildContext, type BuiltContext } from "./context.js";
 
+// --- Stop words for topic extraction ---
+const STOP_WORDS = new Set([
+  // EN
+  "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+  "her", "was", "one", "our", "out", "has", "have", "been", "some", "them",
+  "than", "its", "over", "such", "that", "this", "with", "will", "each",
+  "make", "like", "from", "just", "into", "also", "more", "other", "would",
+  "about", "which", "their", "there", "should", "what", "when", "where",
+  "could", "does", "here", "much", "being", "those", "then", "these",
+  "very", "after", "before", "your", "only",
+  // UA
+  "що", "який", "яка", "яке", "які", "для", "при", "або", "але", "так",
+  "ще", "вже", "як", "цей", "ця", "це", "ці", "той", "та", "те", "ті",
+  "він", "вона", "воно", "вони", "мій", "моя", "моє", "мої", "наш",
+  "ваш", "його", "її", "їх", "нас", "вас", "них", "нам", "вам", "ним",
+  "тут", "там", "коли", "тоді", "потім", "після", "перед", "між",
+]);
+
+export function extractTopics(messages: Message[]): string[] {
+  const freq = new Map<string, number>();
+  for (const m of messages) {
+    const words = m.text
+      .toLowerCase()
+      .split(/[^a-zA-Zа-яА-ЯіІїЇєЄґҐ'']+/)
+      .filter(w => w.length >= 4 && !STOP_WORDS.has(w));
+    for (const w of words) {
+      freq.set(w, (freq.get(w) ?? 0) + 1);
+    }
+  }
+  return [...freq.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([word]) => word);
+}
+
+const DECISION_PATTERNS = [
+  // EN
+  /(?:agreed|decision|let's use|we'll use|chosen|picked|going with)\s+(.+)/i,
+  // UA
+  /(?:використовуємо|вирішили|обрали|приймаємо|зупинились на)\s+(.+)/i,
+];
+
+export function extractDecisions(messages: Message[]): string[] {
+  const decisions: string[] = [];
+  for (const m of messages) {
+    for (const pattern of DECISION_PATTERNS) {
+      const match = m.text.match(pattern);
+      if (match?.[1]) {
+        // Take first sentence or up to 80 chars
+        const text = match[1].split(/[.!?\n]/)[0].trim().slice(0, 80);
+        if (text) decisions.push(text);
+      }
+    }
+  }
+  return decisions;
+}
+
+export function buildBudgetTail(messages: Message[], charBudget = 2000): string[] {
+  const lines: string[] = [];
+  let remaining = charBudget;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const line = `${messages[i].author}: ${messages[i].text}`;
+    if (line.length > remaining) break;
+    lines.unshift(line);
+    remaining -= line.length;
+  }
+  return lines;
+}
+
+const PRIOR_SUMMARY_TRIM = 1000;
+
+export function buildStructuredSummary(
+  messages: Message[],
+  previousSummary?: string,
+): string {
+  // Header: count per author
+  const authorCounts = new Map<string, number>();
+  for (const m of messages) {
+    authorCounts.set(m.author, (authorCounts.get(m.author) ?? 0) + 1);
+  }
+  const authorBreakdown = [...authorCounts.entries()]
+    .map(([a, c]) => `${a}: ${c}`)
+    .join(", ");
+  const total = messages.length;
+
+  // Topics
+  const topics = extractTopics(messages);
+  const topicsLine = topics.length > 0 ? topics.join(", ") : "general discussion";
+
+  // Decisions
+  const decisions = extractDecisions(messages);
+  const decisionsLine = decisions.length > 0
+    ? decisions.join("; ")
+    : "none detected";
+
+  // Tail (budget-based)
+  const tail = buildBudgetTail(messages);
+
+  // Build output
+  const parts: string[] = [];
+
+  // Prior summary (cumulative, flat — strip existing marker to prevent nesting per INV-3)
+  if (previousSummary) {
+    // Strip existing [Prior summary] prefix to prevent nested wrappers
+    const stripped = previousSummary.replace(/^\[Prior summary\]\n/, "");
+    // Trim from END to keep freshest context (not oldest)
+    const trimmed = stripped.length > PRIOR_SUMMARY_TRIM
+      ? stripped.slice(-PRIOR_SUMMARY_TRIM)
+      : stripped;
+    parts.push(`[Prior summary]\n${trimmed}\n---`);
+  }
+
+  parts.push(`[Checkpoint] ${total} messages (${authorBreakdown})`);
+  parts.push(`Topics: ${topicsLine}`);
+  parts.push(`Decisions: ${decisionsLine}`);
+  parts.push("---");
+  parts.push(...tail);
+
+  return parts.join("\n");
+}
+
 export interface SessionOptions {
   roomName: string;
   participants: string[];

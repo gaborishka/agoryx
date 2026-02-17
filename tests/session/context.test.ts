@@ -43,3 +43,36 @@ test("totalEstimatedTokens does not double-count systemPrompt (INV-4)", () => {
   assert.equal(ctx.totalEstimatedTokens, expected,
     "totalEstimatedTokens should match sum of result messages only");
 });
+
+test("buildContext uses checkpoint to load only post-checkpoint messages", () => {
+  const store = createTestStore();
+  const room = store.createRoom("test", ["user", "agent.codex"], {
+    mode: "manual", checkpointThreshold: 3,
+    maxHistoryMessages: 100, maxContextTokens: 100_000,
+  });
+
+  // Create 5 messages
+  for (let i = 1; i <= 5; i++) {
+    saveMsg(store, room.id, `msg_${i}`, `message ${i}`);
+  }
+
+  // Create checkpoint covering msg_1 through msg_3
+  store.saveCheckpoint(room.id, "Summary of first 3 messages", "msg_1", "msg_3");
+
+  const ctx = buildContext(store, {
+    roomId: room.id,
+    maxHistoryMessages: 100,
+    checkpointThreshold: 3, // triggers checkpoint path
+    maxContextTokens: 100_000,
+  });
+
+  // Should contain: checkpoint summary + msg_4, msg_5 (post-checkpoint)
+  const userMsgs = ctx.messages.filter(m => m.role === "user");
+  assert.equal(userMsgs.length, 2, "should only include post-checkpoint messages");
+  assert.equal(userMsgs[0].id, "msg_4");
+  assert.equal(userMsgs[1].id, "msg_5");
+
+  // Checkpoint summary should be present
+  const summaryMsg = ctx.messages.find(m => m.text.includes("Summary of first 3 messages"));
+  assert.ok(summaryMsg, "checkpoint summary should be in context");
+});

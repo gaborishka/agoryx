@@ -52,7 +52,10 @@ export function buildContext(
   } = opts;
 
   const pinnedContexts = store.listPinnedContext(roomId);
-  const allMessages = store.listMessages(roomId, 10000);
+  // Use max of both limits for threshold check (INV-5: avoid false negatives
+  // when checkpointThreshold > maxHistoryMessages)
+  const countLimit = Math.max(maxHistoryMessages, checkpointThreshold + 1);
+  const allMessages = store.listMessages(roomId, countLimit);
   const messageCount = allMessages.length;
 
   let messages: Message[];
@@ -62,15 +65,11 @@ export function buildContext(
     const checkpoint = store.getLatestCheckpoint(roomId);
     if (checkpoint) {
       checkpointSummary = checkpoint.summaryText;
-      // Get messages created after the checkpoint's last covered message
-      const toIndex = allMessages.findIndex(
-        (m) => m.id === checkpoint.toMessageId,
-      );
-      if (toIndex >= 0 && toIndex < allMessages.length - 1) {
-        messages = allMessages.slice(toIndex + 1);
-      } else {
-        messages = allMessages.slice(-maxHistoryMessages);
-      }
+      // Use targeted query: only messages after checkpoint (no window dependency)
+      const afterCheckpoint = store.listMessagesAfter(roomId, checkpoint.toMessageId);
+      messages = afterCheckpoint.length > 0
+        ? afterCheckpoint
+        : allMessages.slice(-maxHistoryMessages);
     } else {
       messages = allMessages.slice(-maxHistoryMessages);
     }

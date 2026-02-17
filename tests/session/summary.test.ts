@@ -79,6 +79,20 @@ test("buildBudgetTail fits within char budget", () => {
   assert.ok(tail.length > 0, "tail should have at least one message");
 });
 
+test("buildBudgetTail joined output fits within char budget (including newlines)", () => {
+  // Each line = "user: " + 14 chars = 20 chars exactly. 10 lines = 200 chars.
+  // Without newline accounting: all 10 fit (200 <= 200).
+  // Joined: 200 + 9 newlines = 209 > 200. Bug!
+  const msgs = Array.from({ length: 10 }, (_, i) =>
+    msg("user", `x`.repeat(14), `msg_${i}`)
+  );
+  const tail = buildBudgetTail(msgs, 200);
+  const joined = tail.join("\n");
+
+  assert.ok(joined.length <= 200,
+    `joined tail should be <= 200 chars including newlines, got ${joined.length}`);
+});
+
 test("buildBudgetTail does not truncate messages mid-text", () => {
   const msgs = [
     msg("user", "short"),

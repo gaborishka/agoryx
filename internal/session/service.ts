@@ -66,9 +66,11 @@ export function buildBudgetTail(messages: Message[], charBudget = 2000): string[
 
   for (let i = messages.length - 1; i >= 0; i--) {
     const line = `${messages[i].author}: ${messages[i].text}`;
-    if (line.length > remaining) break;
+    // Account for \n joiner when this isn't the first line added
+    const cost = lines.length > 0 ? line.length + 1 : line.length;
+    if (cost > remaining) break;
     lines.unshift(line);
-    remaining -= line.length;
+    remaining -= cost;
   }
   return lines;
 }
@@ -275,7 +277,10 @@ export class SessionService {
       if (uncoveredMessages.length === 0) return null;
     } else {
       // No previous checkpoint: load conversation messages with a high ceiling
-      // so that toMessageId is the real last message (sufficient for v0.1 rooms)
+      // so that toMessageId is the real last message.
+      // NOTE: listMessages is ORDER BY ASC LIMIT, so this returns the oldest 10k.
+      // For rooms >10k messages, toMessageId will be stale. Acceptable for v0.1
+      // where rooms stay well under 10k; post-v0.1 should use a DESC+reverse query.
       const messages = this.store.listMessages(room.id, 10_000);
       allConversationMessages = messages.filter(
         (m) => m.role === "assistant" || m.role === "user",

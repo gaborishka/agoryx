@@ -70,13 +70,16 @@ export function buildContext(
       if (afterCheckpoint.length > 0) {
         messages = afterCheckpoint;
       } else {
-        // Checkpoint covers all messages or anchor is stale — load recent history
-        // (bounded allMessages may only contain oldest window due to ASC LIMIT)
+        // Checkpoint covers all messages or anchor is stale — load recent history.
+        // NOTE: listMessages is ASC LIMIT, so 10k returns oldest 10k rows.
+        // For rooms >10k this gives stale data. Acceptable for v0.1;
+        // post-v0.1 should use a DESC+reverse query for true recent window.
         const recent = store.listMessages(roomId, 10_000);
         messages = recent.slice(-maxHistoryMessages);
       }
     } else {
-      // No checkpoint despite threshold exceeded — load recent history
+      // No checkpoint despite threshold exceeded — load recent history.
+      // Same v0.1 ceiling caveat as above.
       const recent = store.listMessages(roomId, 10_000);
       messages = recent.slice(-maxHistoryMessages);
     }

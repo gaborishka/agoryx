@@ -57,7 +57,9 @@ export class ChatEngine {
       throw new Error(`Room ${this.config.resumeRoomId} was not found.`);
     }
 
-    const policy = createPolicy(created.room.config.mode);
+    const policy = createPolicy(created.room.config.mode, {
+      agentSkills: this.config.agentSkills,
+    });
     this.state = {
       room: created.room,
       sessionId: created.sessionId,
@@ -82,7 +84,9 @@ export class ChatEngine {
   public setMode(mode: OrchestrationMode): OrchestrationMode {
     const current = this.getState();
     current.room = this.session.updateRoomMode(current.room, mode);
-    current.policy = createPolicy(mode);
+    current.policy = createPolicy(mode, {
+      agentSkills: this.config.agentSkills,
+    });
     this.state = current;
     return mode;
   }

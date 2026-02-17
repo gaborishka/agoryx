@@ -4,14 +4,21 @@ import { ManualPolicy } from "./manual.js";
 import type { OrchestrationPolicy } from "./policy.js";
 import { RoundRobinPolicy } from "./round-robin.js";
 
-export const createPolicy = (mode: OrchestrationMode): OrchestrationPolicy => {
+export interface PolicyOptions {
+  agentSkills?: Record<string, string[]>;
+}
+
+export const createPolicy = (
+  mode: OrchestrationMode,
+  options?: PolicyOptions,
+): OrchestrationPolicy => {
   switch (mode) {
     case "manual":
       return new ManualPolicy();
     case "round-robin":
       return new RoundRobinPolicy();
     case "auto":
-      return new AutoPolicy();
+      return new AutoPolicy(options?.agentSkills);
     default:
       return new ManualPolicy();
   }

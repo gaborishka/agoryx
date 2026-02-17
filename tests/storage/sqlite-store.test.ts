@@ -107,6 +107,43 @@ test("listRecentMessages returns all messages when limit exceeds count", () => {
   }
 });
 
+test("listRecentMessagesByRoles returns newest messages only for requested roles", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    const room = store.createRoom("storage-test", ["user"], ROOM_CONFIG);
+    const ts = "2026-02-17T12:00:00.000Z";
+
+    store.saveMessage({
+      ...createMessage(room.id, "sys_1", "system one", ts),
+      author: "system",
+      role: "system",
+    });
+    store.saveMessage(createMessage(room.id, "msg_1", "one", ts));
+    store.saveMessage({
+      ...createMessage(room.id, "asst_1", "assistant one", ts),
+      author: "agent.codex",
+      role: "assistant",
+    });
+    store.saveMessage({
+      ...createMessage(room.id, "sys_2", "system two", ts),
+      author: "system",
+      role: "system",
+    });
+    store.saveMessage(createMessage(room.id, "msg_2", "two", ts));
+
+    const recentConversation = store.listRecentMessagesByRoles(
+      room.id,
+      ["user", "assistant"],
+      3,
+    );
+    assert.deepEqual(recentConversation.map((m) => m.id), ["msg_1", "asst_1", "msg_2"]);
+  } finally {
+    store.close();
+  }
+});
+
 test("countMessages returns accurate count", () => {
   const store = new SQLiteStore(":memory:");
   store.init();
@@ -121,6 +158,14 @@ test("countMessages returns accurate count", () => {
 
     store.saveMessage(createMessage(room.id, "msg_2", "two", ts));
     assert.equal(store.countMessages(room.id), 2);
+
+    store.saveMessage({
+      ...createMessage(room.id, "asst_1", "assistant", ts),
+      author: "agent.codex",
+      role: "assistant",
+    });
+    assert.equal(store.countMessages(room.id, ["assistant"]), 1);
+    assert.equal(store.countMessages(room.id, ["user", "assistant"]), 3);
   } finally {
     store.close();
   }

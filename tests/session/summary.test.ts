@@ -29,6 +29,19 @@ test("extractTopics returns top-5 keywords by frequency", () => {
   assert.ok(topics.includes("context"), "context should be a top topic");
 });
 
+test("extractTopics can surface repeated multi-word phrases", () => {
+  const msgs = [
+    msg("user", "we should improve context builder reliability"),
+    msg("codex", "context builder also needs better tests"),
+    msg("claude", "context builder can use clearer checkpoints"),
+  ];
+  const topics = extractTopics(msgs);
+  assert.ok(
+    topics.includes("context builder"),
+    "repeated phrase should be included as topic",
+  );
+});
+
 test("extractTopics filters stop words and short words", () => {
   const msgs = [
     msg("user", "the and or but is are was with for this that from"),
@@ -148,6 +161,17 @@ test("buildStructuredSummary trims previous summary to ~1000 chars from END (fre
     "trim should keep the tail (freshest content), not the head");
   assert.ok(!priorSection.includes("OLD_CONTENT"),
     "trim should discard the head (oldest content)");
+});
+
+test("buildStructuredSummary trims prior summary at word boundary when possible", () => {
+  const msgs = [msg("user", "new message")];
+  const longPrev = `${"word ".repeat(400)}TAIL`;
+  const summary = buildStructuredSummary(msgs, longPrev);
+  const priorSection = summary.split("[Prior summary]\n")[1]?.split("\n---")[0] ?? "";
+
+  assert.ok(priorSection.length <= 1000, "prior summary should respect trim budget");
+  assert.ok(!priorSection.startsWith("ord "), "trim should avoid mid-word start");
+  assert.ok(priorSection.includes("TAIL"), "trim should still keep freshest content");
 });
 
 test("buildStructuredSummary does not nest [Prior summary] wrappers (INV-3)", () => {

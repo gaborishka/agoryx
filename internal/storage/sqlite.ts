@@ -305,6 +305,34 @@ export class SQLiteStore {
     return rows.map(messageRowToDomain);
   }
 
+  public listRecentMessagesByRoles(
+    roomId: string,
+    roles: Message["role"][],
+    limit = 250,
+  ): Message[] {
+    if (roles.length === 0 || limit <= 0) {
+      return [];
+    }
+
+    const placeholders = roles.map(() => "?").join(",");
+    const rows = this.db
+      .prepare(
+        `
+      SELECT * FROM (
+        SELECT *, rowid AS _rid FROM messages
+        WHERE room_id = ?
+          AND role IN (${placeholders})
+        ORDER BY rowid DESC
+        LIMIT ?
+      ) sub
+      ORDER BY _rid ASC
+    `,
+      )
+      .all(roomId, ...roles, limit) as (MessageRow & { _rid: number })[];
+
+    return rows.map(messageRowToDomain);
+  }
+
   public countMessages(roomId: string, roles?: string[]): number {
     if (roles && roles.length > 0) {
       const placeholders = roles.map(() => "?").join(",");

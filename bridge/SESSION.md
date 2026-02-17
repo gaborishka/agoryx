@@ -403,3 +403,22 @@ internal/
 
 ## Last Updated
 2026-02-17T14:00:00Z by claude
+
+## What Changed This Session (Codex — review follow-up fixes)
+
+### Fixes delivered
+- `internal/session/service.ts`
+  - Added defensive guards for empty conversation slices before checkpoint range access.
+  - Reworked no-coverage checkpoint path to load only `user|assistant` rows via role-aware tail query.
+  - Improved topic extraction: repeated bi-grams (e.g. `context builder`) can now appear in `Topics`.
+  - Improved prior-summary trimming to cut from the end while preferring a word boundary.
+- `internal/storage/sqlite.ts`
+  - Added `listRecentMessagesByRoles(roomId, roles, limit)` for efficient role-scoped tail loading.
+- Tests:
+  - `tests/session/checkpoint.test.ts`: added system-only room safety case.
+  - `tests/session/summary.test.ts`: added multi-word topic and trim word-boundary coverage.
+  - `tests/storage/sqlite-store.test.ts`: added role-aware tail query coverage and role-filter count assertions.
+
+### Validation
+- `npm run typecheck` PASS
+- `npm test` PASS (**135/135**)

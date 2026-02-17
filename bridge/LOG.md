@@ -646,3 +646,17 @@
 - Decide next feature block.
 
 ---
+## 2026-02-17T13:22:23Z | codex
+### Summary
+- Applied all code-review follow-up fixes for checkpoint-quality
+
+### Changes
+- Hardened maybeCreateCheckpoint edge guards, added role-aware tail query in SQLiteStore, improved topic extraction with repeated bi-grams, improved prior-summary trimming at word boundary, and expanded session/storage tests
+
+### Risks
+- No blockers. Remaining tradeoff: topic/decision extraction is still heuristic by design.
+
+### Next
+- Ready for merge/re-review on feat/checkpoint-quality
+
+---

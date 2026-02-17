@@ -179,6 +179,35 @@ test("no nested [Prior summary] wrappers after 3 checkpoints (INV-3)", () => {
     "should have exactly one [Prior summary] section regardless of checkpoint depth");
 });
 
+test("force checkpoint skips rooms with only system messages", () => {
+  const { store, session, room } = setup();
+  const ts = "2026-02-17T12:00:00.000Z";
+
+  store.saveMessage({
+    id: "sys_1",
+    roomId: room.id,
+    author: "system",
+    role: "system",
+    text: "System note 1",
+    format: "plain",
+    metadata: {},
+    createdAt: ts,
+  });
+  store.saveMessage({
+    id: "sys_2",
+    roomId: room.id,
+    author: "system",
+    role: "system",
+    text: "System note 2",
+    format: "plain",
+    metadata: {},
+    createdAt: ts,
+  });
+
+  const summary = session.maybeCreateCheckpoint(room, true);
+  assert.equal(summary, null, "should not crash or create checkpoint without user/assistant turns");
+});
+
 // --- 10k ceiling regression tests ---
 // These use >10,001 messages so the old listMessages(10_000) ASC LIMIT
 // would return stale data and fail. Inserting 10k+ rows takes ~60ms

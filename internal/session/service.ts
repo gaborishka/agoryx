@@ -21,21 +21,48 @@ const STOP_WORDS = new Set([
   "тут", "там", "коли", "тоді", "потім", "після", "перед", "між",
 ]);
 
+function tokenizeWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-zA-Zа-яА-ЯіІїЇєЄґҐ']+/)
+    .map((word) => word.replace(/^'+|'+$/g, ""))
+    .filter((word) => word.length >= 4 && !STOP_WORDS.has(word));
+}
+
 export function extractTopics(messages: Message[]): string[] {
-  const freq = new Map<string, number>();
-  for (const m of messages) {
-    const words = m.text
-      .toLowerCase()
-      .split(/[^a-zA-Zа-яА-ЯіІїЇєЄґҐ'']+/)
-      .filter(w => w.length >= 4 && !STOP_WORDS.has(w));
-    for (const w of words) {
-      freq.set(w, (freq.get(w) ?? 0) + 1);
+  const unigramFreq = new Map<string, number>();
+  const bigramFreq = new Map<string, number>();
+
+  for (const message of messages) {
+    const words = tokenizeWords(message.text);
+    for (const word of words) {
+      unigramFreq.set(word, (unigramFreq.get(word) ?? 0) + 1);
+    }
+
+    for (let i = 0; i < words.length - 1; i++) {
+      const phrase = `${words[i]} ${words[i + 1]}`;
+      bigramFreq.set(phrase, (bigramFreq.get(phrase) ?? 0) + 1);
     }
   }
-  return [...freq.entries()]
-    .sort((a, b) => b[1] - a[1])
+
+  const ranked = [
+    ...[...bigramFreq.entries()]
+      .filter(([, count]) => count >= 2)
+      .map(([term, count]) => ({ term, count })),
+    ...[...unigramFreq.entries()].map(([term, count]) => ({ term, count })),
+  ].sort((left, right) => {
+    if (right.count !== left.count) {
+      return right.count - left.count;
+    }
+    if (right.term.length !== left.term.length) {
+      return right.term.length - left.term.length;
+    }
+    return left.term.localeCompare(right.term);
+  });
+
+  return ranked
     .slice(0, 5)
-    .map(([word]) => word);
+    .map(({ term }) => term);
 }
 
 const DECISION_PATTERNS = [
@@ -77,6 +104,20 @@ export function buildBudgetTail(messages: Message[], charBudget = 2000): string[
 
 const PRIOR_SUMMARY_TRIM = 1000;
 
+function trimFromEndAtWordBoundary(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  const slice = text.slice(-maxChars);
+  const firstBoundary = slice.search(/\s/);
+  if (firstBoundary <= 0 || firstBoundary >= slice.length - 1) {
+    return slice;
+  }
+
+  return slice.slice(firstBoundary + 1).trimStart();
+}
+
 export function buildStructuredSummary(
   messages: Message[],
   previousSummary?: string,
@@ -112,9 +153,7 @@ export function buildStructuredSummary(
     // Strip existing [Prior summary] prefix to prevent nested wrappers
     const stripped = previousSummary.replace(/^\[Prior summary\]\n/, "");
     // Trim from END to keep freshest context (not oldest)
-    const trimmed = stripped.length > PRIOR_SUMMARY_TRIM
-      ? stripped.slice(-PRIOR_SUMMARY_TRIM)
-      : stripped;
+    const trimmed = trimFromEndAtWordBoundary(stripped, PRIOR_SUMMARY_TRIM);
     parts.push(`[Prior summary]\n${trimmed}\n---`);
   }
 
@@ -279,19 +318,17 @@ export class SessionService {
       // Threshold check (INV-2)
       if (uncoveredMessages.length < minRequired) return null;
     } else {
-      // No previous checkpoint: use countMessages for accurate threshold check
-      // (no 10k ceiling), then listRecentMessages for the actual data (newest, not oldest).
+      // No previous checkpoint: count conversation turns and load only those roles
+      // from the tail without a fixed ceiling.
       const conversationCount = this.store.countMessages(room.id, ["user", "assistant"]);
       if (conversationCount === 0 || conversationCount < minRequired) return null;
 
-      // Load all messages using total count to ensure we get everything including
-      // system messages, then filter. listRecentMessages uses DESC+reverse so
-      // the last element is always the actual last message (fixes stale toMessageId).
-      const totalCount = this.store.countMessages(room.id);
-      const messages = this.store.listRecentMessages(room.id, totalCount);
-      allConversationMessages = messages.filter(
-        (m) => m.role === "assistant" || m.role === "user",
+      allConversationMessages = this.store.listRecentMessagesByRoles(
+        room.id,
+        ["user", "assistant"],
+        conversationCount,
       );
+      if (allConversationMessages.length === 0) return null;
       uncoveredMessages = allConversationMessages;
     }
 
@@ -303,13 +340,14 @@ export class SessionService {
     const summaryText = buildStructuredSummary(uncoveredMessages, previousSummary);
 
     // Range (INV-1): preserve fromMessageId from previous coverage
-    const firstMsgId = allConversationMessages
-      ? allConversationMessages[0].id
-      : uncoveredMessages[0].id;
+    const firstMsgId = allConversationMessages?.[0]?.id ?? uncoveredMessages[0]?.id;
     const fromMessageId = coverage?.fromMessageId ?? firstMsgId;
     // toMessageId = last conversation message (including uncovered)
     const lastMessages = allConversationMessages ?? uncoveredMessages;
-    const toMessageId = lastMessages[lastMessages.length - 1].id;
+    const toMessageId = lastMessages[lastMessages.length - 1]?.id;
+    if (!fromMessageId || !toMessageId) {
+      return null;
+    }
 
     this.store.saveCheckpoint(room.id, summaryText, fromMessageId, toMessageId);
     return summaryText;

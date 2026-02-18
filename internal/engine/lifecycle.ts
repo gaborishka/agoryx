@@ -60,12 +60,17 @@ export class EngineLifecycle {
 
     if (destroyOps.length > 0) {
       const results = await Promise.allSettled(destroyOps);
-      const failed = results.filter((result) => result.status === "rejected").length;
-      if (failed > 0) {
+      const rejected = results.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (rejected.length > 0) {
         this.logger.log("warn", "engine.shutdown_destroy_failures", {
           roomId: state.room.id,
-          failed,
+          failed: rejected.length,
           total: destroyOps.length,
+          reasons: rejected.map((r) =>
+            r.reason instanceof Error ? r.reason.message : String(r.reason),
+          ),
         });
       }
     }

@@ -5,6 +5,7 @@ import {
   buildCodexSpawnArgs,
   buildCodexSpawnEnv,
   extractCodexThreadId,
+  shouldConsumeCodexDelta,
   shouldRestartCodexInteractiveRunner,
 } from "../../internal/adapters/codex/index.js";
 
@@ -70,4 +71,12 @@ test("shouldRestartCodexInteractiveRunner keeps warm runner for same session", (
     "session_same",
   );
   assert.equal(restart, false);
+});
+
+test("shouldConsumeCodexDelta locks on first source to avoid duplicate streams", () => {
+  assert.equal(shouldConsumeCodexDelta(null, "envelope"), true);
+  assert.equal(shouldConsumeCodexDelta("envelope", "legacy"), false);
+  assert.equal(shouldConsumeCodexDelta("envelope", "envelope"), true);
+  assert.equal(shouldConsumeCodexDelta("legacy", "legacy"), true);
+  assert.equal(shouldConsumeCodexDelta("legacy", "envelope"), false);
 });

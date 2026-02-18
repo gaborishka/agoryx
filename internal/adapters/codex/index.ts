@@ -45,11 +45,14 @@ interface CodexAppServerPending {
 interface CodexAppServerTurn {
   requestId: string;
   output: string;
+  deltaSource: CodexDeltaSource | null;
   onDelta: (text: string) => void;
   resolve: (result: CodexInteractiveTurnResult) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
 }
+
+type CodexDeltaSource = "envelope" | "legacy";
 
 export class CodexAdapter implements PersistentAdapter {
   public readonly name = "codex";
@@ -630,6 +633,7 @@ class CodexAppServerRunner {
       this.activeTurn = {
         requestId: input.requestId,
         output: "",
+        deltaSource: null,
         onDelta: input.onDelta,
         resolve,
         reject,
@@ -821,7 +825,8 @@ class CodexAppServerRunner {
 
       if (eventType === "agent_message_delta") {
         const delta = readStringField(event, "delta");
-        if (delta) {
+        if (delta && shouldConsumeCodexDelta(this.activeTurn.deltaSource, "envelope")) {
+          this.activeTurn.deltaSource = "envelope";
           this.activeTurn.output += delta;
           this.activeTurn.onDelta(delta);
         }
@@ -830,7 +835,12 @@ class CodexAppServerRunner {
 
       if (eventType === "agent_message") {
         const message = readStringField(event, "message");
-        if (message && this.activeTurn.output.trim().length === 0) {
+        if (
+          message &&
+          this.activeTurn.output.trim().length === 0 &&
+          shouldConsumeCodexDelta(this.activeTurn.deltaSource, "envelope")
+        ) {
+          this.activeTurn.deltaSource = "envelope";
           this.activeTurn.output = message;
           this.activeTurn.onDelta(message);
         }
@@ -872,8 +882,10 @@ class CodexAppServerRunner {
       const delta = readStringField(obj, "delta");
       if (
         delta &&
+        shouldConsumeCodexDelta(this.activeTurn.deltaSource, "legacy") &&
         (!this.sessionIdValue || !threadId || threadId === this.sessionIdValue)
       ) {
+        this.activeTurn.deltaSource = "legacy";
         this.activeTurn.output += delta;
         this.activeTurn.onDelta(delta);
       }
@@ -1033,12 +1045,20 @@ class CodexAppServerRunner {
         },
         10_000,
       );
-    } catch {
-      response = await this.request(
-        "addConversationListener",
-        { conversationId },
-        10_000,
-      );
+    } catch (firstError: unknown) {
+      const message = firstError instanceof Error ? firstError.message : String(firstError);
+      if (/invalid|unknown.*param|not supported|unrecognized/i.test(message)) {
+        console.error(
+          `[adapter.codex] addConversationListener with experimentalRawEvents not supported, retrying without: ${message}`,
+        );
+        response = await this.request(
+          "addConversationListener",
+          { conversationId },
+          10_000,
+        );
+      } else {
+        throw firstError;
+      }
     }
     const responseObj =
       response && typeof response === "object"
@@ -1156,6 +1176,11 @@ export const shouldRestartCodexInteractiveRunner = (
   }
   return currentSessionId !== requestedSessionId;
 };
+
+export const shouldConsumeCodexDelta = (
+  currentSource: CodexDeltaSource | null,
+  incomingSource: CodexDeltaSource,
+): boolean => currentSource === null || currentSource === incomingSource;
 
 const buildPrompt = (input: AgentInput): string =>
   input.messages

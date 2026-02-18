@@ -1238,3 +1238,45 @@
 - Ready for Claude or Ivan verification/review
 
 ---
+## 2026-02-18T15:30:10Z | codex
+### Summary
+- Completed v0.2 pre-release readiness pass
+
+### Changes
+- Bumped version to 0.2.0, made CLI banner version dynamic, added verify script + CHANGELOG + v0.2 release-readiness plan, synced README/ARCHITECTURE/AGENTS, validated typecheck/build/test (242/242)
+
+### Risks
+- npm run verify may fail in restricted sandbox due tsx IPC EPERM; separate steps pass
+
+### Next
+- Run final real-adapter smoke (cli+agentic) and tag v0.2.0 if accepted
+
+---
+## 2026-02-18T15:35:44Z | codex
+### Summary
+- Fixed codex agentic duplicate-delta stream and refreshed live smoke
+
+### Changes
+- Added interactive delta-source lock in internal/adapters/codex/index.ts to prevent duplicate cross-source chunks, added regression in tests/adapters/codex-resume.test.ts, reran full suite (245/245), and repeated live smoke (codex cli/agentic pass; claude cli hit provider API 500 once)
+
+### Risks
+- Claude live smoke can fail transiently due upstream provider health
+
+### Next
+- Retry claude live smoke when provider recovers, then tag v0.2.0
+
+---
+## 2026-02-18T16:29:25Z | codex
+### Summary
+- Accepted autonomous hardening edits from team+agentic smoke
+
+### Changes
+- Kept config command-pattern hardening (< > # block), lifecycle shutdown rejection reasons, and team control inline-code normalization with new parse-team-control tests; suite remains green (245/245)
+
+### Risks
+- Low risk; behavior changes are defensive and test-covered
+
+### Next
+- Proceed with final v0.2 candidate review and release tagging after claude smoke stability check
+
+---

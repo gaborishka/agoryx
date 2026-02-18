@@ -166,7 +166,7 @@ function mergeAgents(
   return result;
 }
 
-const CHECK_COMMAND_PATTERN = /^[a-zA-Z0-9_./-]+(\s+[^\s|;&`$()]+)*$/;
+const CHECK_COMMAND_PATTERN = /^[a-zA-Z0-9_./-]+(\s+[^\s|;&`$()<>#]+)*$/;
 
 function validateCheckCommands(commands: string[]): string[] {
   const valid: string[] = [];

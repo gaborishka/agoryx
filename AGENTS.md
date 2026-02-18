@@ -12,7 +12,7 @@ It describes how to work on Agoryx in Codex + Claude collaboration.
 - Persistence: `SQLite` via `better-sqlite3`.
 - Architecture: `Transport -> Session -> Orchestration`.
 - Layout: `cmd/` + `internal/` (do not use `src/`).
-- v0.1 modes: `manual`, `round-robin`, `auto`.
+- Modes: `manual`, `round-robin`, `auto`, `team`.
 
 ## Source-of-Truth Files
 - `docs/CONSENSUS.md` — decisions and scope boundaries for v0.1.
@@ -55,7 +55,9 @@ Quick log entry:
 - Working: `npm run typecheck`, `npm test`, and basic `agoryx chat` in stub mode.
 - Core modules:
 - `cmd/agoryx/main.ts` — CLI.
-- `internal/engine/chat.ts` — chat engine.
+- `internal/engine/chat.ts` — chat engine facade.
+- `internal/engine/dispatch-engine.ts` — dispatch + retry runtime.
+- `internal/engine/team-orchestrator.ts` — team runtime loop/control.
 - `internal/adapters/*` — Codex/Claude adapters.
 - `internal/storage/sqlite.ts` — SQLite store + events log.
 - `internal/session/*` — service/context.
@@ -72,4 +74,4 @@ Quick log entry:
 8. ~~CLI mode smoke-tested with real adapters~~ — done
 
 ## Current Status
-v0.1.0 released. 135/135 tests pass. Next version (v0.2) scope TBD.
+v0.2.0 pre-release ready on `feat/v0.2`. Full suite passes (`245/245` tests).

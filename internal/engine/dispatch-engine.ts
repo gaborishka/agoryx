@@ -455,13 +455,19 @@ export class DispatchEngine implements TeamDispatchApi {
   }
 
   private resolveAdapterConfig(adapterName: string): AdapterConfig {
-    const fallback = {
+    const config = this.config.adapterConfig[adapterName];
+    if (config) {
+      return config;
+    }
+    this.logger.log("warn", "dispatch.missing_adapter_config", {
+      adapter: adapterName,
+      fallback: "stub",
+    });
+    return {
       mode: "stub",
       timeoutMs: 120_000,
       maxTokens: 4_000,
-    } satisfies AdapterConfig;
-
-    return this.config.adapterConfig[adapterName] ?? fallback;
+    };
   }
 }
 

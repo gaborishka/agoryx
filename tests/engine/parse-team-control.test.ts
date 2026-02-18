@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseTeamDebateControl } from "../../internal/engine/team-orchestrator.js";
+import { parseTeamDebateControl, sanitizeTeamOutput } from "../../internal/engine/team-orchestrator.js";
 
 test("parseTeamDebateControl: empty text returns no control", () => {
   const result = parseTeamDebateControl("");
@@ -42,6 +42,12 @@ test("parseTeamDebateControl: TEAM_NEXT with @ prefix", () => {
   assert.equal(result.nextActor, "claude");
 });
 
+test("parseTeamDebateControl: TEAM_NEXT wrapped in inline code", () => {
+  const result = parseTeamDebateControl("Done this step.\n`TEAM_NEXT:claude`");
+  assert.equal(result.done, false);
+  assert.equal(result.nextActor, "claude");
+});
+
 test("parseTeamDebateControl: TEAM_NEXT with spaces around colon", () => {
   const result = parseTeamDebateControl("Next step.\nTEAM_NEXT : codex");
   assert.equal(result.done, false);
@@ -62,6 +68,12 @@ test("parseTeamDebateControl: AGORYX_STOP on last line", () => {
 
 test("parseTeamDebateControl: TEAM_STOP on last line", () => {
   const result = parseTeamDebateControl("Blocked.\nTEAM_STOP");
+  assert.equal(result.done, true);
+  assert.equal(result.nextActor, null);
+});
+
+test("parseTeamDebateControl: TEAM_DONE wrapped in inline code", () => {
+  const result = parseTeamDebateControl("Task complete.\n`TEAM_DONE`");
   assert.equal(result.done, true);
   assert.equal(result.nextActor, null);
 });
@@ -125,4 +137,50 @@ test("parseTeamDebateControl: TEAM_NEXT on second-to-last line", () => {
 test("parseTeamDebateControl: stop word with surrounding whitespace", () => {
   const result = parseTeamDebateControl("Done.\n  TEAM_STOP  ");
   assert.equal(result.done, true);
+});
+
+// --- sanitizeTeamOutput regression tests ---
+
+test("sanitizeTeamOutput: preserves TEAM_DONE control line", () => {
+  const input = "I finished the implementation.\nTEAM_DONE";
+  const result = sanitizeTeamOutput(input);
+  assert.ok(result.includes("TEAM_DONE"), "TEAM_DONE must survive sanitization");
+});
+
+test("sanitizeTeamOutput: preserves TEAM_NEXT control line", () => {
+  const input = "Handing off to codex.\nTEAM_NEXT:codex";
+  const result = sanitizeTeamOutput(input);
+  assert.ok(result.includes("TEAM_NEXT:codex"), "TEAM_NEXT must survive sanitization");
+});
+
+test("sanitizeTeamOutput: preserves AGORYX_STOP control line", () => {
+  const input = "Blocked on user input.\nAGORYX_STOP";
+  const result = sanitizeTeamOutput(input);
+  assert.ok(result.includes("AGORYX_STOP"), "AGORYX_STOP must survive sanitization");
+});
+
+test("sanitizeTeamOutput: strips system-reminder blocks", () => {
+  const input = "Real content.\n<system-reminder>secret</system-reminder>\nMore content.";
+  const result = sanitizeTeamOutput(input);
+  assert.ok(!result.includes("system-reminder"));
+  assert.ok(result.includes("Real content."));
+  assert.ok(result.includes("More content."));
+});
+
+test("sanitizeTeamOutput: strips numbered dump lines", () => {
+  const input = "Work done.\n42→some dumped line\nTEAM_DONE";
+  const result = sanitizeTeamOutput(input);
+  assert.ok(!result.includes("42→"));
+  assert.ok(result.includes("TEAM_DONE"));
+});
+
+test("sanitizeTeamOutput: strips bridge log preamble", () => {
+  const input = "Content.\nNow appending to the bridge log:\nTEAM_NEXT:claude";
+  const result = sanitizeTeamOutput(input);
+  assert.ok(!result.includes("appending to the bridge log"));
+  assert.ok(result.includes("TEAM_NEXT:claude"));
+});
+
+test("sanitizeTeamOutput: returns empty string for empty input", () => {
+  assert.equal(sanitizeTeamOutput(""), "");
 });

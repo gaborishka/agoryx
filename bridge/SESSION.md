@@ -1115,5 +1115,91 @@ internal/
 - `npm run typecheck` PASS
 - `npm test` PASS (**225/225**)
 
+## What Changed This Session (Codex — v0.2 pre-release readiness pass)
+
+### Scope
+- Ran independent release-readiness audit and aligned release metadata/docs to current v0.2 implementation.
+
+### Fixes delivered
+- Versioning:
+  - bumped package version to `0.2.0` (`package.json`, `package-lock.json`).
+  - added `npm run verify` script (typecheck + build + test).
+- CLI UX:
+  - removed hardcoded banner text `Agoryx v0.1-dev`;
+  - banner now reads runtime version from `package.json`.
+- Release docs:
+  - added `CHANGELOG.md` with v0.2.0 release notes.
+  - added `docs/plans/2026-02-18-v0.2-release-readiness.md` (validation snapshot, pre-tag checklist, post-v0.2 direction).
+- Consistency docs:
+  - updated `README.md` (v0.2 feature framing, engine structure note, current test-suite scale, verify script).
+  - updated `docs/ARCHITECTURE.md` project layout for modularized engine files.
+  - updated `AGENTS.md` current status/baseline for v0.2 pre-release.
+
+### Validation
+- `npm run typecheck` PASS
+- `npm run build` PASS
+- `npm test` PASS (**245/245**)
+- smoke: `npm run chat -- --mode manual --adapter-mode stub` shows `Agoryx v0.2.0` banner.
+
+### Risks
+- In restricted sandbox mode, single-command `npm run verify` can fail due `tsx` IPC pipe permission (`EPERM`); step-by-step validation remains green.
+
+### Next
+- Run final real-adapter smoke (`cli` + `agentic`) and tag `v0.2.0` when accepted.
+
+## What Changed This Session (Codex — codex agentic duplicate-delta hotfix + live smoke)
+
+### Scope
+- Investigated live smoke artifact where Codex `agentic` responses duplicated words (`HereHere is is ...`).
+
+### Fixes delivered
+- `internal/adapters/codex/index.ts`:
+  - added delta-source lock for interactive app-server turn stream:
+    - first seen source wins (`envelope` via `codex/event/*` or `legacy` via `item/agentMessage/*`)
+    - ignores cross-source duplicates for the same active turn.
+  - added exported helper `shouldConsumeCodexDelta(...)`.
+- `tests/adapters/codex-resume.test.ts`:
+  - added regression test for source-lock behavior.
+
+### Validation
+- `npx tsx --test tests/adapters/codex-resume.test.ts` PASS (**10/10**)
+- `npm run typecheck` PASS
+- `npm test` PASS (**245/245**)
+- live smoke:
+  - `manual + agentic + codex` → PASS (`Here are exactly five words.`; duplication removed)
+  - `manual + cli + codex` → PASS
+  - `manual + cli + claude` → provider-side API 500 (non-deterministic upstream failure)
+
+### Risks
+- Claude live readiness remains partially dependent on provider health at run time (`api_error 500` seen once during smoke).
+
+### Next
+- Re-run Claude live smoke once provider stabilizes, then tag `v0.2.0`.
+
+## What Changed This Session (Codex — accepted autonomous hardening edits)
+
+### Scope
+- Kept and validated additional code changes produced during `team+agentic` smoke execution.
+
+### Accepted changes
+- `internal/config/index.ts`:
+  - strengthened `CHECK_COMMAND_PATTERN` to reject `<`, `>`, `#` in check commands.
+- `internal/engine/lifecycle.ts`:
+  - improved shutdown warning payload with explicit rejected reasons for failed adapter `destroy()` operations.
+- `internal/engine/team-orchestrator.ts`:
+  - exported `sanitizeTeamOutput`.
+  - improved `parseTeamDebateControl` by normalizing inline-code directives (e.g. `` `TEAM_DONE` ``, `` `TEAM_NEXT:claude` ``).
+- `tests/engine/parse-team-control.test.ts`:
+  - added regression tests for inline-code wrapped team directives.
+
+### Validation
+- `npm test` PASS (**245/245**).
+
+### Risks
+- Low risk; changes are hardening-focused and covered by tests.
+
+### Next
+- Keep these edits in `v0.2.0` candidate branch.
+
 ## Last Updated
-2026-02-18T14:56:12Z by codex
+2026-02-18T15:36:30Z by codex

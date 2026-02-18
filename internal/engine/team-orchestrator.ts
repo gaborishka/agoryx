@@ -607,7 +607,7 @@ export class TeamOrchestrator {
   }
 }
 
-const sanitizeTeamOutput = (text: string): string => {
+export const sanitizeTeamOutput = (text: string): string => {
   if (!text) {
     return text;
   }
@@ -662,6 +662,7 @@ const TEAM_STOP_WORD_PATTERNS = [
   /^\s*AGORYX_STOP\s*$/i,
   /^\s*TEAM_STOP\s*$/i,
 ];
+const INLINE_CODE_WRAPPER_PATTERN = /^(`{1,3})([^`]+)\1$/;
 
 /** Max number of trailing lines to scan for control directives. */
 const CONTROL_TAIL_LINES = 5;
@@ -676,16 +677,18 @@ export const parseTeamDebateControl = (text: string): TeamDebateControl => {
   const tail = lines.slice(-CONTROL_TAIL_LINES);
 
   for (const line of tail) {
+    const normalizedLine = normalizeTeamControlLine(line);
     if (
-      TEAM_DONE_PATTERN.test(line) ||
-      TEAM_STOP_WORD_PATTERNS.some((pattern) => pattern.test(line))
+      TEAM_DONE_PATTERN.test(normalizedLine) ||
+      TEAM_STOP_WORD_PATTERNS.some((pattern) => pattern.test(normalizedLine))
     ) {
       return { done: true, nextActor: null };
     }
   }
 
   for (const line of tail) {
-    const nextMatch = TEAM_NEXT_PATTERN.exec(line);
+    const normalizedLine = normalizeTeamControlLine(line);
+    const nextMatch = TEAM_NEXT_PATTERN.exec(normalizedLine);
     if (nextMatch?.[1]) {
       return {
         done: false,
@@ -695,4 +698,13 @@ export const parseTeamDebateControl = (text: string): TeamDebateControl => {
   }
 
   return { done: false, nextActor: null };
+};
+
+const normalizeTeamControlLine = (line: string): string => {
+  const trimmed = line.trim();
+  const inlineCodeMatch = INLINE_CODE_WRAPPER_PATTERN.exec(trimmed);
+  if (!inlineCodeMatch) {
+    return trimmed;
+  }
+  return inlineCodeMatch[2]?.trim() ?? trimmed;
 };

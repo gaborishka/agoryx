@@ -1182,3 +1182,31 @@
 - Final validation green: npm run typecheck + npm test (218/218)
 
 ---
+## 2026-02-18T14:05:31Z | codex
+### Summary
+- Fixed review follow-up issues in team runtime and storage constraint
+
+### Changes
+- Marked failed debate steps as failed runs; stop active team run on mode switch; dropped unconditional single-active index; added regressions in tests/engine/team-mode.test.ts and updated tests/storage/team-runs.test.ts
+
+### Risks
+- Low risk; behavior changes scoped to team stop/failure state transitions and storage index migration on init
+
+### Next
+- Optional: add CLI-level /mode messaging that explicitly reports when an active team run was stopped
+
+---
+## 2026-02-18T14:10:05Z | codex
+### Summary
+- Refactored ChatEngine into modular components with structured logger scaffolding
+
+### Changes
+- Extracted dispatch logic to internal/engine/dispatch-engine.ts, team runtime to internal/engine/team-orchestrator.ts, shutdown lifecycle to internal/engine/lifecycle.ts, and shared engine contracts to internal/engine/types.ts; reduced internal/engine/chat.ts to a facade delegating orchestration while preserving public API; added env-gated structured logger in internal/engine/logger.ts (AGORYX_ENGINE_LOG).
+
+### Risks
+- Medium risk in refactor surface area inside engine internals; behavior preserved by full test suite but future changes should target new module boundaries to avoid drift.
+
+### Next
+- If desired, wire AGORYX_ENGINE_LOG in CLI docs/examples and add lightweight correlation IDs to adapter events for deeper tracing.
+
+---

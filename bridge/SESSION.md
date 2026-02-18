@@ -1044,5 +1044,52 @@ internal/
 - `npm run typecheck` PASS
 - `npm test` PASS (**218/218**)
 
+## What Changed This Session (Codex — review follow-up fixes)
+
+### Scope
+- Implemented fixes for three new review findings in team runtime/state handling and storage constraints.
+
+### Fixes delivered
+- `internal/engine/chat.ts`:
+  - `setMode(...)` now stops an active team run when switching from `team` to another mode.
+  - team debate flow now marks failed dispatches as run status `failed` with the real error summary (instead of falling through to generic `waiting_user_input` completion).
+  - added a stop-flag pre-dispatch guard to avoid launching new debate dispatches after stop has been requested.
+- `internal/storage/sqlite.ts`:
+  - removed unconditional `idx_team_runs_single_active` enforcement via startup `DROP INDEX IF EXISTS`, so storage no longer contradicts `team.singleActive=false` runtime behavior.
+- `tests/engine/team-mode.test.ts`:
+  - added regression: failed team dispatch marks run as `failed`.
+  - added regression: `setMode("manual")` stops and cancels active team run.
+- `tests/storage/team-runs.test.ts`:
+  - updated storage expectation to allow parallel active runs when runtime policy allows it.
+
+### Validation
+- `npx tsx --test tests/engine/team-mode.test.ts tests/storage/team-runs.test.ts` PASS (**19/19**)
+- `npm run typecheck` PASS
+- `npm test` PASS (**220/220**)
+
+## What Changed This Session (Codex — engine modularization + logger scaffold)
+
+### Scope
+- Refactored `ChatEngine` god-object internals into dedicated modules without changing public behavior.
+
+### Fixes delivered
+- `internal/engine/dispatch-engine.ts`:
+  - extracted dispatch execution paths (`runDispatch`, `runPromptDispatch`, legacy/persistent flows, retry handling, error normalization).
+- `internal/engine/team-orchestrator.ts`:
+  - extracted team runtime state machine (run lifecycle, loop execution, interrupt/feedback handling, TEAM_NEXT/TEAM_DONE control parsing).
+- `internal/engine/lifecycle.ts`:
+  - extracted shutdown/lifecycle concerns (active team stop + adapter session destroy).
+- `internal/engine/types.ts`:
+  - centralized engine contracts previously embedded in `chat.ts`.
+- `internal/engine/logger.ts`:
+  - added structured logger scaffold with env-gated activation (`AGORYX_ENGINE_LOG`) and null logger default.
+- `internal/engine/chat.ts`:
+  - reduced to orchestration facade delegating to the new modules; public API preserved.
+
+### Validation
+- `npm run typecheck` PASS
+- `npx tsx --test tests/engine/team-mode.test.ts tests/engine/persistent-session.test.ts tests/engine/retry-flow.test.ts` PASS
+- `npm test` PASS (**220/220**)
+
 ## Last Updated
-2026-02-18T13:42:49Z by codex
+2026-02-18T14:10:09Z by codex

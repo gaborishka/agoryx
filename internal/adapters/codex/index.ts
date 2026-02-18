@@ -108,6 +108,9 @@ export class CodexAdapter implements PersistentAdapter {
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
+      if (stderr.length > STDERR_BUFFER_MAX) {
+        stderr = stderr.slice(-STDERR_SNAPSHOT_SIZE);
+      }
     });
 
     try {
@@ -211,6 +214,9 @@ export class CodexAdapter implements PersistentAdapter {
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
+      if (stderr.length > STDERR_BUFFER_MAX) {
+        stderr = stderr.slice(-STDERR_SNAPSHOT_SIZE);
+      }
     });
 
     try {
@@ -474,17 +480,21 @@ export class CodexAdapter implements PersistentAdapter {
   private async waitForRequestCleanup(
     requestId: string,
     timeoutMs = 2_000,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (
         !this.running.has(requestId) &&
         !this.interactiveRequestIds.has(requestId)
       ) {
-        return;
+        return true;
       }
       await wait(20);
     }
+    console.error(
+      `[adapter.codex] waitForRequestCleanup timed out after ${timeoutMs}ms for request ${requestId}`,
+    );
+    return false;
   }
 
   private stubText(input: AgentInput): string {

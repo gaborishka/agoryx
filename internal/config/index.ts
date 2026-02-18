@@ -22,6 +22,7 @@ export interface AgentEntry {
   maxTokens: number;
   systemPrompt?: string;
   skills?: string[];
+  workspaceCwd?: string;
 }
 
 export interface AgoryxConfig {
@@ -218,6 +219,7 @@ export function getAdapterConfig(
     timeoutMs: entry.timeoutMs,
     maxTokens: entry.maxTokens,
     systemPrompt: entry.systemPrompt,
+    workspaceCwd: entry.workspaceCwd,
   };
 }
 

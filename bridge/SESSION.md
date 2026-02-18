@@ -1201,5 +1201,12 @@ internal/
 ### Next
 - Keep these edits in `v0.2.0` candidate branch.
 
+## Strategic Direction Lock (2026-02-18)
+
+- v0.3 is locked as CLI-first with Bridge-free daily workflow as the primary acceptance target.
+- v0.3 excludes Web UI scope; focus is workspace-aware context, project memory, safe parallel work via worktrees, and operational reliability.
+- v0.4 is tracked as MCP-first productization (daemon/back-end orchestration shape), after v0.3 reliability baseline is proven.
+- Source document: `docs/plans/2026-02-18-v0.3-cli-first-v0.4-mcp-first.md`.
+
 ## Last Updated
-2026-02-18T15:36:30Z by codex
+2026-02-18T17:11:00Z by codex

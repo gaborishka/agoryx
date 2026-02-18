@@ -1280,3 +1280,17 @@
 - Proceed with final v0.2 candidate review and release tagging after claude smoke stability check
 
 ---
+## 2026-02-18T17:11:12Z | codex
+### Summary
+- Recorded agreed v0.3/v0.4 direction in project docs
+
+### Changes
+- Added docs/plans/2026-02-18-v0.3-cli-first-v0.4-mcp-first.md and updated bridge/SESSION.md with strategy lock and source path
+
+### Risks
+- Direction is documented but not yet converted into executable task breakdown
+
+### Next
+- If approved, convert this direction into a concrete v0.3 CLI command contract and implementation backlog
+
+---

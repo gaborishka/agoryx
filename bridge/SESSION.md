@@ -430,3 +430,97 @@ internal/
 ### Validation
 - `npm run typecheck` PASS
 - `npm test` PASS (**135/135**)
+
+## What Changed This Session (Codex — Claude chat-mode isolation)
+
+### Fixes delivered
+- `internal/adapters/claude/index.ts`
+  - Added CLI safety flags for chat turns:
+    - `--disable-slash-commands`
+    - `--tools ""`
+    - `--setting-sources user`
+  - Spawn now runs with isolated working directory via `buildClaudeSpawnCwd(process.env)`:
+    - defaults to `tmpdir()` to avoid loading workspace instructions (`AGENTS.md`, `CLAUDE.md`)
+    - supports override with `AGORYX_CLAUDE_CWD`
+  - Effect: Claude no longer runs workspace bootstrap flows during standard Agoryx chat responses.
+- `tests/adapters/claude-cli.test.ts`
+  - Updated spawn-args contract test to lock non-agentic defaults.
+  - Added test coverage for cwd isolation + env override.
+
+### Validation
+- `npm run typecheck` PASS
+- `npm test` PASS (**136/136**)
+- CLI smoke (`--adapter-mode cli`) PASS:
+  - Input: `@claude Що думаєш про проєкт?` then `/quit`
+  - Observed: direct chat response without file scans, skill bootstrap, or interactive follow-up loops.
+
+## What Changed This Session (Codex — Claude capability restoration)
+
+### Fixes delivered
+- `internal/adapters/claude/index.ts`
+  - Removed restrictive non-agentic flags from Claude spawn args:
+    - removed `--disable-slash-commands`
+    - removed `--tools ""`
+    - removed `--setting-sources user`
+  - Kept cwd isolation (`buildClaudeSpawnCwd`) as the root fix for workspace bootstrap leakage.
+- `tests/adapters/claude-cli.test.ts`
+  - Restored spawn-args contract to standard Claude CLI invocation:
+    - `-p <prompt> --output-format stream-json --verbose`
+
+### Validation
+- `npm run typecheck` PASS
+- `npm test` PASS (**136/136**)
+- CLI smoke (`--adapter-mode cli`) PASS:
+  - Input: `@codex @claude Що думаєте про наш прогрес?` then `/quit`
+  - Observed: both agents respond in normal chat mode; Claude no longer enters bootstrap file-scan flow.
+
+## What Changed This Session (Codex — SDK migration research)
+
+### Investigation scope
+- Reviewed current adapter contract and implementation (`internal/adapters/*`, config/runtime wiring, README guarantees).
+- Compared against official SDK docs for:
+  - OpenAI Codex SDK
+  - Anthropic Claude Agent SDK (TypeScript)
+
+### Findings
+- Current v0.1 strategy is explicitly CLI-first and no mandatory API keys.
+- Codex SDK is technically compatible as an optional transport backend (typed events, timeout/abort controls, conversation helpers).
+- Claude Agent SDK guidance for third-party apps requires API/provider auth and explicitly does not support using Claude app subscription login for third-party products.
+- A full rewrite of both adapters to SDK now would conflict with Agoryx v0.1 product promise and onboarding model.
+
+### Recommendation
+- Do **not** replace both adapters with SDKs right now.
+- Keep CLI adapters as default path.
+- Consider a v0.2 opt-in Codex SDK backend (`mode: "sdk"`) while preserving current adapter event contract.
+- Keep Claude CLI adapter for subscription-based UX; only add Claude SDK as a separate API-key mode if product direction explicitly changes.
+
+### Risks
+- Supporting both CLI and SDK backends increases the adapter test matrix.
+- Claude SDK path introduces API billing/compliance expectations and changes onboarding.
+
+### Next
+- If approved, draft a codex-only SDK spike plan (small scope, mode-gated, no behavior regressions).
+
+## What Changed This Session (Codex — persistent session plan corrections)
+
+### Documentation corrections
+- Updated `docs/plans/2026-02-18-persistent-sessions-plan.md` to align with design/runtime realities:
+  - removed hardcoded test-count expectations (`136`) in favor of dynamic baseline checks
+  - passed `systemPrompt` through `buildDeltaPrompt` cold-start path in plan snippets
+  - replaced outdated test config shape (`adapterMode`, `adapterTimeoutMs`, `adapterMaxTokens`) with current `ChatRuntimeConfig.adapterConfig` structure
+  - removed `session.store` access pattern from engine snippets and switched to explicit `SessionService` wrapper methods
+  - fixed cursor semantics in engine snippet so cursor advances only on successful turns (not on error paths), matching design invariants
+- Updated `docs/plans/2026-02-18-persistent-sessions-design.md` to remove hardcoded `136` test-count wording.
+
+### Validation
+- Confirmed current repository baseline remains green: `npm run typecheck` + `npm test` => **136/136** pass.
+- Confirmed Codex resume CLI syntax availability via `codex exec resume --help`.
+
+### Risks
+- Claude `session_id` extraction format remains a runtime validation item during real persistent-mode smoke tests.
+
+### Next
+- If approved, start implementation from corrected persistent-session plan (Task 1 onward) without additional pre-plan edits.
+
+## Last Updated
+2026-02-17T23:58:14Z by codex

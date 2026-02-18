@@ -254,7 +254,7 @@ If during generation a new event arrives (e.g., parallel agent response), it mus
 - `PersistentAdapter` extends `Adapter` — no breaking changes.
 - `ChatEngine` checks adapter mode and dispatches to `send()` or `sendTurn()` accordingly.
 - New `AdapterMode`: `'stub' | 'cli' | 'persistent'`.
-- All 136 existing tests must continue passing.
+- All existing tests must continue passing.
 
 ## Test Plan
 
@@ -276,7 +276,7 @@ If during generation a new event arrives (e.g., parallel agent response), it mus
 
 ### Regression Tests
 13. Existing v0.1 stub/cli mode works without changes
-14. All 136 existing tests pass
+14. All existing regression tests pass
 
 ## Delivery Order
 

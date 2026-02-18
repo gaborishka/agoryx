@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { tmpdir } from "node:os";
 import type { Readable } from "node:stream";
 import { setTimeout as wait } from "node:timers/promises";
 import type { Adapter, AdapterStatus, AgentInput } from "../adapter.js";
@@ -49,6 +50,7 @@ export class ClaudeAdapter implements Adapter {
     const child = spawn("claude", buildClaudeSpawnArgs(prompt), {
       stdio: ["ignore", "pipe", "pipe"],
       env: buildClaudeSpawnEnv(process.env),
+      cwd: buildClaudeSpawnCwd(process.env),
     });
     this.running.set(input.requestId, child);
 
@@ -72,15 +74,20 @@ export class ClaudeAdapter implements Adapter {
           resultText = parsedChunk.resultText;
         }
 
-        const text = parsedChunk.deltaText;
-        if (!text) {
+        if (parsedChunk.deltaParts.length === 0) {
           continue;
         }
-        output += text;
-        yield messageDelta(baseArgs(input), {
-          ...startedPayload,
-          text,
-        });
+
+        const chunkParts = parsedChunk.deltaParts.map((part, index) =>
+          index === 0 ? part : `\n${part}`,
+        );
+        for (const text of chunkParts) {
+          output += text;
+          yield messageDelta(baseArgs(input), {
+            ...startedPayload,
+            text,
+          });
+        }
       }
 
       const exitCode = await new Promise<number | null>((resolve) => {
@@ -174,6 +181,7 @@ export const buildClaudeSpawnArgs = (prompt: string): string[] => [
   "--output-format",
   "stream-json",
   "--verbose",
+  "--include-partial-messages",
 ];
 
 export const buildClaudeSpawnEnv = (
@@ -184,9 +192,17 @@ export const buildClaudeSpawnEnv = (
   return sanitized;
 };
 
+export const buildClaudeSpawnCwd = (env: NodeJS.ProcessEnv): string => {
+  const overridden = env.AGORYX_CLAUDE_CWD?.trim();
+  if (overridden) {
+    return overridden;
+  }
+  return tmpdir();
+};
+
 export const parseClaudeChunk = (
   raw: string,
-): { deltaText: string; resultText: string | null } => {
+): { deltaParts: string[]; resultText: string | null } => {
   const lines = raw.split(/\r?\n/);
   const parts: string[] = [];
   let resultText: string | null = null;
@@ -215,7 +231,7 @@ export const parseClaudeChunk = (
   }
 
   return {
-    deltaText: parts.join("\n"),
+    deltaParts: parts,
     resultText,
   };
 };

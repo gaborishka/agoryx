@@ -682,3 +682,79 @@
 - Begin v0.2 planning and implementation (self-hosting: execution broker, team mode, review gate, guardrails)
 
 ---
+## 2026-02-17T14:34:39Z | codex
+### Summary
+- Isolated Claude CLI chat mode from project skills/instructions to prevent unsolicited brainstorming/tool runs.
+
+### Changes
+- Updated internal/adapters/claude/index.ts spawn args with --disable-slash-commands, --tools "", --setting-sources user; updated tests/adapters/claude-cli.test.ts expected args; updated bridge/SESSION.md.
+
+### Risks
+- Intentional tradeoff: Claude tools/skills are disabled in v0.1 chat mode; agentic tool use should be enabled later via dedicated v0.2 mode/config.
+
+### Next
+- Run a live smoke chat in --adapter-mode cli and confirm @claude now answers directly without file scans or clarifying-question loops.
+
+---
+## 2026-02-17T14:37:06Z | codex
+### Summary
+- Completed Claude chat-mode isolation by moving Claude spawn cwd out of workspace and validating with live CLI smoke.
+
+### Changes
+- Updated internal/adapters/claude/index.ts with buildClaudeSpawnCwd + spawn cwd; extended tests/adapters/claude-cli.test.ts (cwd default+override); updated bridge/SESSION.md; ran typecheck, full tests (136/136), and live chat smoke.
+
+### Risks
+- Tradeoff kept: chat mode is intentionally non-agentic for Claude in v0.1; if agentic behavior is needed later, it should be behind explicit mode/config.
+
+### Next
+- Optionally mirror the same non-agentic isolation strategy for Codex adapter in chat mode for symmetry.
+
+---
+## 2026-02-17T17:21:09Z | codex
+### Summary
+- Restored full Claude CLI capabilities in chat mode while keeping bootstrap-fix isolation.
+
+### Changes
+- Removed --disable-slash-commands/--tools ""/--setting-sources user from internal/adapters/claude/index.ts; restored tests/adapters/claude-cli.test.ts args expectation; kept buildClaudeSpawnCwd isolation; updated bridge/SESSION.md; validated typecheck/tests/smoke.
+
+### Risks
+- No known blocker; behavior now matches user expectation (no artificial Claude limitation) with bootstrap issue still prevented by cwd isolation.
+
+### Next
+- If needed, make Claude isolation strategy configurable via agoryx.json for advanced users.
+
+---
+## 2026-02-17T18:32:26Z | codex
+### Summary
+- Researched whether Agoryx should rewrite adapters from CLI wrappers to official SDKs.
+
+### Changes
+- Audited current adapter contract and implementation against official SDK docs:
+  - OpenAI Codex SDK
+  - Anthropic Claude Agent SDK (TypeScript)
+- Recorded findings in `bridge/SESSION.md`:
+  - keep CLI adapters as default
+  - avoid full dual-SDK rewrite in current v0.1 direction
+  - consider Codex SDK as opt-in v0.2 backend only
+
+### Risks
+- Full SDK rewrite now conflicts with the no-mandatory-API-key model because Claude Agent SDK for third-party apps requires API/provider auth and disallows using Claude app login for third-party products.
+
+### Next
+- If Ivan approves, prepare a scoped codex-only SDK spike plan with mode-gated rollout and compatibility tests.
+
+---
+## 2026-02-17T23:58:33Z | codex
+### Summary
+- Corrected persistent-session planning docs for implementation readiness
+
+### Changes
+- Updated docs/plans/2026-02-18-persistent-sessions-plan.md (cursor-on-success only, systemPrompt propagation in delta builder snippet, current ChatRuntimeConfig config shape in tests, SessionService wrapper API instead of engine->store access, dynamic test baseline wording) and docs/plans/2026-02-18-persistent-sessions-design.md (removed hardcoded test-count wording); updated bridge/SESSION.md
+
+### Risks
+- No runtime/code risk from this change set (docs-only); remaining implementation risk is Claude session-id extraction during real persistent-mode smoke
+
+### Next
+- Proceed with persistent-session implementation tasks using corrected plan
+
+---

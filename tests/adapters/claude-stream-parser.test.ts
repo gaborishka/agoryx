@@ -9,18 +9,18 @@ test("claude stream parser keeps assistant delta text and captures final result"
   ].join("\n");
 
   const parsed = parseClaudeChunk(chunk);
-  assert.equal(parsed.deltaText, "hello world");
+  assert.deepEqual(parsed.deltaParts, ["hello world"]);
   assert.equal(parsed.resultText, "hello world");
 });
 
 test("claude stream parser supports result-only payload", () => {
   const parsed = parseClaudeChunk('{"type":"result","result":{"content":[{"text":"final"}]}}');
-  assert.equal(parsed.deltaText, "");
+  assert.deepEqual(parsed.deltaParts, []);
   assert.equal(parsed.resultText, "final");
 });
 
 test("claude stream parser preserves non-json lines as deltas", () => {
   const parsed = parseClaudeChunk("plain output line");
-  assert.equal(parsed.deltaText, "plain output line");
+  assert.deepEqual(parsed.deltaParts, ["plain output line"]);
   assert.equal(parsed.resultText, null);
 });

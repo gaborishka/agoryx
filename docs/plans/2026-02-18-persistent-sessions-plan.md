@@ -20,7 +20,7 @@ Before starting, verify current test count and typecheck:
 npm run typecheck && npm test 2>&1 | tail -5
 ```
 
-Record the starting test count (expected: 136 pass).
+Record the starting test count from output (do not hardcode an exact number; baseline at plan creation was 136).
 
 Also verify Codex resume syntax is available:
 
@@ -88,7 +88,7 @@ Expected: no errors.
 npm test
 ```
 
-Expected: all 136 pass.
+Expected: all existing tests pass (baseline may change over time).
 
 **Step 4: Commit**
 
@@ -793,7 +793,7 @@ Expected: import error — functions don't exist.
 
 **Step 3: Implement in `internal/adapters/codex/index.ts`**
 
-Add imports:
+Update imports (or extend existing imports) so they include:
 ```typescript
 import type { PersistentAdapter, SendTurnInput } from "../adapter.js";
 import { sessionBound } from "../event-factory.js";
@@ -1380,12 +1380,13 @@ public buildDeltaPrompt(
   room: Room,
   agentName: string,
   lastSeenSeq: number | null,
+  systemPrompt?: string,
 ): { prompt: string; cutoffSeq: number | null } {
   const cutoffSeq = this.store.getMaxMessageSeq(room.id);
 
   // Cold start: return full context
   if (lastSeenSeq === null) {
-    const messages = this.buildContextMessages(room);
+    const messages = this.buildContextMessages(room, systemPrompt);
     const prompt = messages
       .map((m) => `[${m.author}] ${m.text}`)
       .join("\n\n")
@@ -1434,12 +1435,42 @@ public async acquireTurnLock<T>(
 
   return current;
 }
+
+public getOrCreateAgentSession(roomId: string, agentName: string): AgentSession {
+  return this.store.getActiveAgentSession(roomId, agentName)
+    ?? this.store.createAgentSession(roomId, agentName);
+}
+
+public updateAgentSessionNativeId(id: string, nativeId: string): void {
+  this.store.updateAgentSessionNativeId(id, nativeId);
+}
+
+public updateAgentSessionCursor(id: string, seq: number): void {
+  this.store.updateAgentSessionCursor(id, seq);
+}
+
+public updateAgentSessionStatus(
+  id: string,
+  status: "active" | "expired" | "failed",
+): void {
+  this.store.updateAgentSessionStatus(id, status);
+}
+
+public incrementAgentSessionFailCount(id: string): number {
+  return this.store.incrementAgentSessionFailCount(id);
+}
 ```
 
 Add `Room` to imports if not present:
 
 ```typescript
 import type { Message, PinnedContext, Room, RoomConfig } from "../events/types.js";
+```
+
+Add `AgentSession` import:
+
+```typescript
+import type { AgentSession } from "../storage/sqlite.js";
 ```
 
 **Step 4: Run tests**
@@ -1470,7 +1501,7 @@ This is the most complex task. The engine's `runDispatch` is modified to:
 2. Build delta prompt (cold or warm)
 3. Call `sendTurn` (or fallback to `send` for stub)
 4. Handle `session.bound` events
-5. Atomic post-turn: save native ID, update cursor
+5. Atomic post-turn on success: save native ID, update cursor
 6. Error recovery: SESSION_EXPIRED → close + cold retry
 
 **Step 1: Write failing tests**
@@ -1544,12 +1575,18 @@ function makeEngine(adapter: PersistentAdapter) {
   store.init();
   const session = new SessionService(store);
   const config = {
+    dbPath: ":memory:",
+    mode: "manual" as const,
     roomName: "test-room",
     agents: [adapter.name],
     roomConfig: { mode: "manual" as const, checkpointThreshold: 50, maxHistoryMessages: 100, maxContextTokens: 8000 },
-    adapterMode: "persistent" as const,
-    adapterTimeoutMs: 5000,
-    adapterMaxTokens: 4000,
+    adapterConfig: {
+      [adapter.name]: {
+        mode: "persistent" as const,
+        timeoutMs: 5000,
+        maxTokens: 4000,
+      },
+    },
     agentSkills: {},
   };
   const engine = new ChatEngine(session, { [adapter.name]: adapter }, config);
@@ -1638,12 +1675,18 @@ test("stub mode: uses send() not sendTurn()", async () => {
   store.init();
   const session = new SessionService(store);
   const config = {
+    dbPath: ":memory:",
+    mode: "manual" as const,
     roomName: "test-room",
     agents: ["claude"],
     roomConfig: { mode: "manual" as const, checkpointThreshold: 50, maxHistoryMessages: 100, maxContextTokens: 8000 },
-    adapterMode: "stub" as const,
-    adapterTimeoutMs: 5000,
-    adapterMaxTokens: 4000,
+    adapterConfig: {
+      claude: {
+        mode: "stub" as const,
+        timeoutMs: 5000,
+        maxTokens: 4000,
+      },
+    },
     agentSkills: {},
   };
   const engine = new ChatEngine(session, { claude: adapter }, config);
@@ -1669,12 +1712,11 @@ Expected: failures — engine doesn't support persistent mode yet.
 Add imports:
 
 ```typescript
-import type { PersistentAdapter, SendTurnInput } from "../adapters/adapter.js";
-import type { AgentSession } from "../storage/sqlite.js";
+import type { Adapter, AdapterConfig, PersistentAdapter, SendTurnInput } from "../adapters/adapter.js";
 import type { SessionBoundPayload } from "../events/types.js";
 ```
 
-Add `adapterMode` to `ChatRuntimeConfig` type check — verify `internal/config/default.ts` includes `adapterMode`. If `AdapterMode` is defined as `'stub' | 'cli'`, extend it to `'stub' | 'cli' | 'persistent'` in `internal/adapters/adapter.ts`.
+No new root fields are needed in `ChatRuntimeConfig`: keep using `adapterConfig[agent].mode`. Extend `AdapterMode` from `'stub' | 'cli'` to `'stub' | 'cli' | 'persistent'` in `internal/adapters/adapter.ts`.
 
 In `runDispatch`, add persistent session logic. Replace the method with:
 
@@ -1720,22 +1762,17 @@ private async runPersistentDispatch(
   const state = this.getState();
 
   // Get or create agent session
-  let agentSession = this.session.store.getActiveAgentSession(
+  const agentSession = this.session.getOrCreateAgentSession(
     state.room.id,
     dispatch.targetAdapter,
   );
-  if (!agentSession) {
-    agentSession = this.session.store.createAgentSession(
-      state.room.id,
-      dispatch.targetAdapter,
-    );
-  }
 
   // Build delta prompt
   const { prompt, cutoffSeq } = this.session.buildDeltaPrompt(
     state.room,
     dispatch.targetAdapter,
     agentSession.lastSeenSeq,
+    adapterConfig.systemPrompt,
   );
 
   const input: SendTurnInput = {
@@ -1772,17 +1809,9 @@ private async runPersistentDispatch(
     }
   }
 
-  // Post-turn atomic updates
-  if (boundNativeId) {
-    this.session.store.updateAgentSessionNativeId(agentSession.id, boundNativeId);
-  }
-  if (cutoffSeq !== null) {
-    this.session.store.updateAgentSessionCursor(agentSession.id, cutoffSeq);
-  }
-
   // Error recovery: SESSION_EXPIRED → close + cold retry (once)
   if (failed?.errorClass === "SESSION_EXPIRED" && !isSessionRetry) {
-    this.session.store.updateAgentSessionStatus(agentSession.id, "expired");
+    this.session.updateAgentSessionStatus(agentSession.id, "expired");
     const retryDispatch: Dispatch = {
       ...dispatch,
       requestId: createId("req"),
@@ -1797,7 +1826,7 @@ private async runPersistentDispatch(
 
   if (failed) {
     if (failed.errorClass !== "SESSION_EXPIRED") {
-      this.session.store.incrementAgentSessionFailCount(agentSession.id);
+      this.session.incrementAgentSessionFailCount(agentSession.id);
     }
     return {
       adapter: dispatch.targetAdapter,
@@ -1810,7 +1839,7 @@ private async runPersistentDispatch(
 
   // Cold start without session.bound → fatal
   if (!agentSession.nativeSessionId && !boundNativeId) {
-    this.session.store.updateAgentSessionStatus(agentSession.id, "failed");
+    this.session.updateAgentSessionStatus(agentSession.id, "failed");
     return {
       adapter: dispatch.targetAdapter,
       requestId: dispatch.requestId,
@@ -1818,6 +1847,14 @@ private async runPersistentDispatch(
       text: finalText,
       error: "FATAL: no native session ID received on cold start",
     };
+  }
+
+  // Success path only: persist bound session id and advance cursor.
+  if (boundNativeId) {
+    this.session.updateAgentSessionNativeId(agentSession.id, boundNativeId);
+  }
+  if (cutoffSeq !== null) {
+    this.session.updateAgentSessionCursor(agentSession.id, cutoffSeq);
   }
 
   const provider = dispatch.targetAdapter === "codex" ? "openai" : "anthropic";
@@ -1853,18 +1890,12 @@ private async runLegacyDispatch(
 }
 ```
 
-Also add `AdapterConfig` to the import from `../adapters/adapter.js` if not already imported.
+Ensure the adapter import includes both `Adapter` and `AdapterConfig` (for `runLegacyDispatch` typing).
 
-Expose store as public on SessionService (for engine to call agent session methods):
-
-In `internal/session/service.ts`, change:
-```typescript
-public constructor(private readonly store: SQLiteStore) {
-```
-to:
-```typescript
-public constructor(public readonly store: SQLiteStore) {
-```
+Use the explicit `SessionService` methods from Task 7 for agent-session operations
+(`getOrCreateAgentSession`, `updateAgentSessionNativeId`, `updateAgentSessionCursor`,
+`updateAgentSessionStatus`, `incrementAgentSessionFailCount`) instead of exposing
+`store` publicly from the service.
 
 **Step 4: Update `AdapterMode` in `internal/adapters/adapter.ts`**
 
@@ -1883,8 +1914,7 @@ Expected: all pass including 6 new persistent session engine tests.
 **Step 6: Commit**
 
 ```bash
-git add internal/engine/chat.ts internal/session/service.ts \
-        internal/adapters/adapter.ts tests/engine/persistent-session.test.ts
+git add internal/engine/chat.ts internal/adapters/adapter.ts tests/engine/persistent-session.test.ts
 git commit -m "feat(engine): integrate persistent session lifecycle with sendTurn, recovery, and concurrency lock"
 ```
 
@@ -1900,7 +1930,7 @@ git commit -m "feat(engine): integrate persistent session lifecycle with sendTur
 npm run typecheck && npm test
 ```
 
-Expected: all tests pass (136 original + ~30 new).
+Expected: all tests pass (current baseline + new persistent-session tests).
 
 **Step 2: Quick CLI smoke test with stub mode**
 

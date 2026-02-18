@@ -3,6 +3,7 @@ import readline from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import ora, { type Ora } from "ora";
 import cliCursor from "cli-cursor";
 import pc from "picocolors";
@@ -22,6 +23,9 @@ import { SessionService } from "../../internal/session/service.js";
 import { SQLiteStore } from "../../internal/storage/sqlite.js";
 
 const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team"];
+const require = createRequire(import.meta.url);
+const packageMeta = require("../../package.json") as { version?: string };
+const APP_VERSION = packageMeta.version ?? "dev";
 
 interface RenderOptions {
   richUi: boolean;
@@ -1062,8 +1066,10 @@ const setupEscInterruptHotkey = (engine: ChatEngine): (() => void) => {
     if (key.name !== "escape" || key.ctrl || key.meta || key.shift) {
       return;
     }
-    void triggerEscInterrupt(engine).catch(() => {
-      // Best-effort hotkey handler; explicit command path still reports errors.
+    void triggerEscInterrupt(engine).catch((error: unknown) => {
+      output.write(
+        `\n${formatErrorText(`[team] Interrupt failed: ${error instanceof Error ? error.message : String(error)}`)}\n`,
+      );
     });
   };
   input.on("keypress", onKeypress);
@@ -1164,7 +1170,7 @@ const printBanner = (
   agents: string[],
   adapterConfig: ChatRuntimeConfig["adapterConfig"],
 ): void => {
-  console.log(colorize("Agoryx v0.1-dev", pc.bold));
+  console.log(colorize(`Agoryx v${APP_VERSION}`, pc.bold));
   console.log(`${formatInfoLabel("Room:")} ${roomId}`);
   console.log(`${formatInfoLabel("Session:")} ${sessionId}`);
   console.log(`${formatInfoLabel("Mode:")} ${mode}`);

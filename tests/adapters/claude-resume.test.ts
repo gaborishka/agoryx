@@ -5,6 +5,7 @@ import {
   buildClaudeInteractiveSpawnArgs,
   buildClaudeSpawnArgs,
   extractClaudeSessionId,
+  shouldRestartClaudeInteractiveRunner,
 } from "../../internal/adapters/claude/index.js";
 
 test("buildClaudeSpawnArgs cold: -p <prompt>", () => {
@@ -99,4 +100,28 @@ test("extractClaudeSessionId extracts top-level id from stream_event", () => {
 
 test("extractClaudeSessionId returns null for non-json", () => {
   assert.equal(extractClaudeSessionId("not json"), null);
+});
+
+test("shouldRestartClaudeInteractiveRunner restarts for cold retry against warm session", () => {
+  const restart = shouldRestartClaudeInteractiveRunner(
+    true,
+    false,
+    "/workspace",
+    "/workspace",
+    "session_old",
+    null,
+  );
+  assert.equal(restart, true);
+});
+
+test("shouldRestartClaudeInteractiveRunner keeps warm runner for same session", () => {
+  const restart = shouldRestartClaudeInteractiveRunner(
+    true,
+    false,
+    "/workspace",
+    "/workspace",
+    "session_same",
+    "session_same",
+  );
+  assert.equal(restart, false);
 });

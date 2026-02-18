@@ -5,6 +5,8 @@ import {
   buildCodexSpawnArgs,
   buildCodexSpawnEnv,
   extractCodexThreadId,
+  shouldConsumeCodexDelta,
+  shouldRestartCodexInteractiveRunner,
 } from "../../internal/adapters/codex/index.js";
 
 test("buildCodexSpawnArgs cold: exec --json <prompt>", () => {
@@ -45,4 +47,36 @@ test("extractCodexThreadId returns null for non-thread event", () => {
 
 test("extractCodexThreadId returns null for non-JSON", () => {
   assert.equal(extractCodexThreadId("not json"), null);
+});
+
+test("shouldRestartCodexInteractiveRunner restarts for cold retry against warm session", () => {
+  const restart = shouldRestartCodexInteractiveRunner(
+    true,
+    false,
+    "/workspace",
+    "/workspace",
+    "session_old",
+    null,
+  );
+  assert.equal(restart, true);
+});
+
+test("shouldRestartCodexInteractiveRunner keeps warm runner for same session", () => {
+  const restart = shouldRestartCodexInteractiveRunner(
+    true,
+    false,
+    "/workspace",
+    "/workspace",
+    "session_same",
+    "session_same",
+  );
+  assert.equal(restart, false);
+});
+
+test("shouldConsumeCodexDelta locks on first source to avoid duplicate streams", () => {
+  assert.equal(shouldConsumeCodexDelta(null, "envelope"), true);
+  assert.equal(shouldConsumeCodexDelta("envelope", "legacy"), false);
+  assert.equal(shouldConsumeCodexDelta("envelope", "envelope"), true);
+  assert.equal(shouldConsumeCodexDelta("legacy", "legacy"), true);
+  assert.equal(shouldConsumeCodexDelta("legacy", "envelope"), false);
 });

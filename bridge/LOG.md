@@ -1182,3 +1182,115 @@
 - Final validation green: npm run typecheck + npm test (218/218)
 
 ---
+## 2026-02-18T14:05:31Z | codex
+### Summary
+- Fixed review follow-up issues in team runtime and storage constraint
+
+### Changes
+- Marked failed debate steps as failed runs; stop active team run on mode switch; dropped unconditional single-active index; added regressions in tests/engine/team-mode.test.ts and updated tests/storage/team-runs.test.ts
+
+### Risks
+- Low risk; behavior changes scoped to team stop/failure state transitions and storage index migration on init
+
+### Next
+- Optional: add CLI-level /mode messaging that explicitly reports when an active team run was stopped
+
+---
+## 2026-02-18T14:10:05Z | codex
+### Summary
+- Refactored ChatEngine into modular components with structured logger scaffolding
+
+### Changes
+- Extracted dispatch logic to internal/engine/dispatch-engine.ts, team runtime to internal/engine/team-orchestrator.ts, shutdown lifecycle to internal/engine/lifecycle.ts, and shared engine contracts to internal/engine/types.ts; reduced internal/engine/chat.ts to a facade delegating orchestration while preserving public API; added env-gated structured logger in internal/engine/logger.ts (AGORYX_ENGINE_LOG).
+
+### Risks
+- Medium risk in refactor surface area inside engine internals; behavior preserved by full test suite but future changes should target new module boundaries to avoid drift.
+
+### Next
+- If desired, wire AGORYX_ENGINE_LOG in CLI docs/examples and add lightweight correlation IDs to adapter events for deeper tracing.
+
+---
+## 2026-02-18T14:56:47Z | codex
+### Summary
+- Fixed 3 review findings in adapters/team runtime
+
+### Changes
+- Patched codex+claude interactive cold-retry restart predicates, delayed team feedback consume until post-interrupt acceptance, added regressions in tests/adapters/*-resume.test.ts and tests/engine/team-mode.test.ts
+
+### Risks
+- Low: logic is localized but touches recovery/control flow; future adapter protocol drift can still affect SESSION_EXPIRED detection
+
+### Next
+- Optionally run full npm test to refresh global count in docs/bridge state
+
+---
+## 2026-02-18T14:57:13Z | codex
+### Summary
+- Validated review-fix patch with full suite
+
+### Changes
+- Ran npm test after fixes; all tests pass (225/225) with updated adapter/team regressions included
+
+### Risks
+- No new risks observed beyond known upstream CLI protocol drift
+
+### Next
+- Ready for Claude or Ivan verification/review
+
+---
+## 2026-02-18T15:30:10Z | codex
+### Summary
+- Completed v0.2 pre-release readiness pass
+
+### Changes
+- Bumped version to 0.2.0, made CLI banner version dynamic, added verify script + CHANGELOG + v0.2 release-readiness plan, synced README/ARCHITECTURE/AGENTS, validated typecheck/build/test (242/242)
+
+### Risks
+- npm run verify may fail in restricted sandbox due tsx IPC EPERM; separate steps pass
+
+### Next
+- Run final real-adapter smoke (cli+agentic) and tag v0.2.0 if accepted
+
+---
+## 2026-02-18T15:35:44Z | codex
+### Summary
+- Fixed codex agentic duplicate-delta stream and refreshed live smoke
+
+### Changes
+- Added interactive delta-source lock in internal/adapters/codex/index.ts to prevent duplicate cross-source chunks, added regression in tests/adapters/codex-resume.test.ts, reran full suite (245/245), and repeated live smoke (codex cli/agentic pass; claude cli hit provider API 500 once)
+
+### Risks
+- Claude live smoke can fail transiently due upstream provider health
+
+### Next
+- Retry claude live smoke when provider recovers, then tag v0.2.0
+
+---
+## 2026-02-18T16:29:25Z | codex
+### Summary
+- Accepted autonomous hardening edits from team+agentic smoke
+
+### Changes
+- Kept config command-pattern hardening (< > # block), lifecycle shutdown rejection reasons, and team control inline-code normalization with new parse-team-control tests; suite remains green (245/245)
+
+### Risks
+- Low risk; behavior changes are defensive and test-covered
+
+### Next
+- Proceed with final v0.2 candidate review and release tagging after claude smoke stability check
+
+---
+## 2026-02-18T17:11:12Z | codex
+### Summary
+- Recorded agreed v0.3/v0.4 direction in project docs
+
+### Changes
+- Added docs/plans/2026-02-18-v0.3-cli-first-v0.4-mcp-first.md and updated bridge/SESSION.md with strategy lock and source path
+
+### Risks
+- Direction is documented but not yet converted into executable task breakdown
+
+### Next
+- If approved, convert this direction into a concrete v0.3 CLI command contract and implementation backlog
+
+---

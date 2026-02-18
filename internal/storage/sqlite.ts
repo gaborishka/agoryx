@@ -368,9 +368,7 @@ export class SQLiteStore {
       CREATE INDEX IF NOT EXISTS idx_team_feedback_run_status
       ON team_feedback_queue(run_id, status, created_at ASC);
 
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_team_runs_single_active
-      ON team_runs(room_id)
-      WHERE status IN ('active', 'waiting_user_input');
+      DROP INDEX IF EXISTS idx_team_runs_single_active;
     `);
   }
 
@@ -829,7 +827,11 @@ export class SQLiteStore {
     `,
       )
       .run(id, roomId, agentName, now);
-    return this.getAgentSessionById(id)!;
+    const session = this.getAgentSessionById(id);
+    if (!session) {
+      throw new Error(`Failed to create agent session: read-back for id=${id} returned null`);
+    }
+    return session;
   }
 
   public getActiveAgentSession(roomId: string, agentName: string): AgentSession | null {
@@ -945,7 +947,11 @@ export class SQLiteStore {
         now,
       );
 
-    return this.getTeamRun(id)!;
+    const run = this.getTeamRun(id);
+    if (!run) {
+      throw new Error(`Failed to create team run: read-back for id=${id} returned null`);
+    }
+    return run;
   }
 
   public getTeamRun(runId: string): TeamRun | null {
@@ -1082,7 +1088,10 @@ export class SQLiteStore {
 
     const row = this.db
       .prepare(`SELECT * FROM team_steps WHERE id = ?`)
-      .get(id) as TeamStepRow;
+      .get(id) as TeamStepRow | undefined;
+    if (!row) {
+      throw new Error(`Failed to create team step: read-back for id=${id} returned null`);
+    }
     return teamStepRowToDomain(row);
   }
 
@@ -1120,7 +1129,10 @@ export class SQLiteStore {
 
     const row = this.db
       .prepare(`SELECT * FROM team_feedback_queue WHERE id = ?`)
-      .get(id) as TeamFeedbackRow;
+      .get(id) as TeamFeedbackRow | undefined;
+    if (!row) {
+      throw new Error(`Failed to enqueue team feedback: read-back for id=${id} returned null`);
+    }
     return teamFeedbackRowToDomain(row);
   }
 
@@ -1195,7 +1207,10 @@ export class SQLiteStore {
 
     const row = this.db
       .prepare(`SELECT * FROM team_checks WHERE id = ?`)
-      .get(id) as TeamCheckRow;
+      .get(id) as TeamCheckRow | undefined;
+    if (!row) {
+      throw new Error(`Failed to add team check: read-back for id=${id} returned null`);
+    }
     return teamCheckRowToDomain(row);
   }
 
@@ -1241,7 +1256,12 @@ const roomRowToDomain = (row: RoomRow): Room => ({
 const tryParseJson = <T>(value: string, fallback: T): T => {
   try {
     return JSON.parse(value) as T;
-  } catch {
+  } catch (error: unknown) {
+    console.error(
+      `[storage] Failed to parse JSON column: ${
+        error instanceof Error ? error.message : String(error)
+      } — value preview: ${value.slice(0, 100)}`,
+    );
     return fallback;
   }
 };

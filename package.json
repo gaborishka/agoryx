@@ -1,6 +1,6 @@
 {
   "name": "agoryx",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local-first multi-agent chat orchestrator for Codex and Claude.",
   "license": "MIT",
   "private": true,
@@ -11,7 +11,8 @@
     "sessions": "tsx cmd/agoryx/main.ts sessions",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test tests/**/*.test.ts"
+    "test": "tsx --test tests/**/*.test.ts",
+    "verify": "npm run typecheck && npm run build && npm test"
   },
   "engines": {
     "node": ">=22.0.0"

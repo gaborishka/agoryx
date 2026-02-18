@@ -45,11 +45,14 @@ interface CodexAppServerPending {
 interface CodexAppServerTurn {
   requestId: string;
   output: string;
+  deltaSource: CodexDeltaSource | null;
   onDelta: (text: string) => void;
   resolve: (result: CodexInteractiveTurnResult) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
 }
+
+type CodexDeltaSource = "envelope" | "legacy";
 
 export class CodexAdapter implements PersistentAdapter {
   public readonly name = "codex";
@@ -108,6 +111,9 @@ export class CodexAdapter implements PersistentAdapter {
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
+      if (stderr.length > STDERR_BUFFER_MAX) {
+        stderr = stderr.slice(-STDERR_SNAPSHOT_SIZE);
+      }
     });
 
     try {
@@ -211,6 +217,9 @@ export class CodexAdapter implements PersistentAdapter {
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
+      if (stderr.length > STDERR_BUFFER_MAX) {
+        stderr = stderr.slice(-STDERR_SNAPSHOT_SIZE);
+      }
     });
 
     try {
@@ -386,11 +395,14 @@ export class CodexAdapter implements PersistentAdapter {
     workspaceCwd?: string,
   ): Promise<CodexAppServerRunner> {
     const cwd = buildCodexSpawnCwd(workspaceCwd);
-    const needsRestart =
-      !this.interactiveRunner ||
-      this.interactiveRunner.isClosed() ||
-      this.interactiveCwd !== cwd ||
-      (nativeSessionId !== null && this.interactiveSessionId !== nativeSessionId);
+    const needsRestart = shouldRestartCodexInteractiveRunner(
+      this.interactiveRunner !== null,
+      this.interactiveRunner?.isClosed() ?? false,
+      this.interactiveCwd,
+      cwd,
+      this.interactiveSessionId,
+      nativeSessionId,
+    );
 
     if (needsRestart) {
       await this.disposeInteractiveRunner();
@@ -474,17 +486,21 @@ export class CodexAdapter implements PersistentAdapter {
   private async waitForRequestCleanup(
     requestId: string,
     timeoutMs = 2_000,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (
         !this.running.has(requestId) &&
         !this.interactiveRequestIds.has(requestId)
       ) {
-        return;
+        return true;
       }
       await wait(20);
     }
+    console.error(
+      `[adapter.codex] waitForRequestCleanup timed out after ${timeoutMs}ms for request ${requestId}`,
+    );
+    return false;
   }
 
   private stubText(input: AgentInput): string {
@@ -617,6 +633,7 @@ class CodexAppServerRunner {
       this.activeTurn = {
         requestId: input.requestId,
         output: "",
+        deltaSource: null,
         onDelta: input.onDelta,
         resolve,
         reject,
@@ -672,8 +689,13 @@ class CodexAppServerRunner {
           5_000,
         );
       }
-    } catch {
-      // Best effort: if interrupt fails, still reject local turn state.
+    } catch (error: unknown) {
+      this.closed = true;
+      console.error(
+        `[adapter.codex] interrupt failed, marking runner closed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
 
     activeTurn.reject(new Error(reason));
@@ -803,7 +825,8 @@ class CodexAppServerRunner {
 
       if (eventType === "agent_message_delta") {
         const delta = readStringField(event, "delta");
-        if (delta) {
+        if (delta && shouldConsumeCodexDelta(this.activeTurn.deltaSource, "envelope")) {
+          this.activeTurn.deltaSource = "envelope";
           this.activeTurn.output += delta;
           this.activeTurn.onDelta(delta);
         }
@@ -812,7 +835,12 @@ class CodexAppServerRunner {
 
       if (eventType === "agent_message") {
         const message = readStringField(event, "message");
-        if (message && this.activeTurn.output.trim().length === 0) {
+        if (
+          message &&
+          this.activeTurn.output.trim().length === 0 &&
+          shouldConsumeCodexDelta(this.activeTurn.deltaSource, "envelope")
+        ) {
+          this.activeTurn.deltaSource = "envelope";
           this.activeTurn.output = message;
           this.activeTurn.onDelta(message);
         }
@@ -854,8 +882,10 @@ class CodexAppServerRunner {
       const delta = readStringField(obj, "delta");
       if (
         delta &&
+        shouldConsumeCodexDelta(this.activeTurn.deltaSource, "legacy") &&
         (!this.sessionIdValue || !threadId || threadId === this.sessionIdValue)
       ) {
+        this.activeTurn.deltaSource = "legacy";
         this.activeTurn.output += delta;
         this.activeTurn.onDelta(delta);
       }
@@ -1015,12 +1045,20 @@ class CodexAppServerRunner {
         },
         10_000,
       );
-    } catch {
-      response = await this.request(
-        "addConversationListener",
-        { conversationId },
-        10_000,
-      );
+    } catch (firstError: unknown) {
+      const message = firstError instanceof Error ? firstError.message : String(firstError);
+      if (/invalid|unknown.*param|not supported|unrecognized/i.test(message)) {
+        console.error(
+          `[adapter.codex] addConversationListener with experimentalRawEvents not supported, retrying without: ${message}`,
+        );
+        response = await this.request(
+          "addConversationListener",
+          { conversationId },
+          10_000,
+        );
+      } else {
+        throw firstError;
+      }
     }
     const responseObj =
       response && typeof response === "object"
@@ -1042,8 +1080,12 @@ class CodexAppServerRunner {
         { subscriptionId },
         5_000,
       );
-    } catch {
-      // Best effort only.
+    } catch (error: unknown) {
+      console.error(
+        `[adapter.codex] failed to remove conversation listener: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 }
@@ -1111,6 +1153,34 @@ export const extractCodexThreadId = (line: string): string | null => {
 
   return null;
 };
+
+export const shouldRestartCodexInteractiveRunner = (
+  hasRunner: boolean,
+  runnerClosed: boolean,
+  currentCwd: string | null,
+  requestedCwd: string,
+  currentSessionId: string | null,
+  requestedSessionId: string | null,
+): boolean => {
+  if (!hasRunner) {
+    return true;
+  }
+  if (runnerClosed) {
+    return true;
+  }
+  if (currentCwd !== requestedCwd) {
+    return true;
+  }
+  if (requestedSessionId === null) {
+    return currentSessionId !== null;
+  }
+  return currentSessionId !== requestedSessionId;
+};
+
+export const shouldConsumeCodexDelta = (
+  currentSource: CodexDeltaSource | null,
+  incomingSource: CodexDeltaSource,
+): boolean => currentSource === null || currentSource === incomingSource;
 
 const buildPrompt = (input: AgentInput): string =>
   input.messages

@@ -446,7 +446,12 @@ agoryx/
 │   │   ├── index.ts         # loader, mergeConfig, toRuntimeConfig
 │   │   └── default.ts       # ChatRuntimeConfig type and defaults
 │   ├── engine/
-│   │   └── chat.ts          # main chat loop, dispatch, retry, team runtime
+│   │   ├── chat.ts          # public engine facade
+│   │   ├── dispatch-engine.ts
+│   │   ├── team-orchestrator.ts
+│   │   ├── lifecycle.ts
+│   │   ├── logger.ts
+│   │   └── types.ts
 │   ├── events/
 │   │   └── types.ts         # event envelope, payload types
 │   ├── orchestrator/

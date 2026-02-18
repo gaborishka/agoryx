@@ -8,7 +8,7 @@ Named after Greek **agorá** — the public square where citizens gathered to di
 
 Working with multiple LLMs today means copying text between apps and re-explaining context. Agoryx replaces that with one shared room where agents participate together — no API keys required, uses your existing CLI subscriptions.
 
-## Features (v0.1)
+## Features (v0.2)
 
 - **Two agents:** Codex and Claude, running via their local CLIs
 - **Three modes:** `manual` (you choose who responds), `round-robin` (agents alternate), `auto` (smart routing by intent/keywords)
@@ -101,12 +101,12 @@ cmd/agoryx/          CLI entry point
 internal/
   adapters/          Codex and Claude CLI adapters, output parser, event factory
   config/            Config loader, defaults, runtime config builder
-  engine/            Main chat loop, dispatch, retry
+  engine/            Chat facade + dispatch, team orchestration, lifecycle modules
   events/            Canonical event types
   orchestrator/      Policies (manual, round-robin, auto, team), factory
   session/           Context builder, session service, checkpoint summaries
   storage/           SQLite persistence
-tests/               206 tests
+tests/               Comprehensive suite (245 tests)
 docs/                Architecture, vision, consensus, design plans
 ```
 
@@ -165,6 +165,7 @@ Create `agoryx.json` in the project root to customize defaults:
 npm run typecheck    # Type check
 npm test             # Run all tests
 npm run build        # Production build
+npm run verify       # Release gate: typecheck + build + test
 ```
 
 ## License

@@ -11,7 +11,7 @@ const createRoom = (store: SQLiteStore): Room =>
     maxContextTokens: 30_000,
   });
 
-test("team run single-active index prevents parallel active runs", () => {
+test("team run storage allows parallel active runs when runtime policy permits", () => {
   const store = new SQLiteStore(":memory:");
   store.init();
   try {
@@ -30,20 +30,20 @@ test("team run single-active index prevents parallel active runs", () => {
     });
     assert.equal(first.status, "active");
 
-    assert.throws(() => {
-      store.createTeamRun({
-        roomId: room.id,
-        strategy: "debate",
-        stage: "debate",
-        goal: "Goal B",
-        participants: ["codex", "claude"],
-        maxSteps: 8,
-        maxNoProgressSteps: 2,
-        maxDurationMs: 900_000,
-        checksEnabled: true,
-        createdBy: "user",
-      });
+    const second = store.createTeamRun({
+      roomId: room.id,
+      strategy: "debate",
+      stage: "debate",
+      goal: "Goal B",
+      participants: ["codex", "claude"],
+      maxSteps: 8,
+      maxNoProgressSteps: 2,
+      maxDurationMs: 900_000,
+      checksEnabled: true,
+      createdBy: "user",
     });
+    assert.equal(second.status, "active");
+    assert.notEqual(second.id, first.id);
   } finally {
     store.close();
   }

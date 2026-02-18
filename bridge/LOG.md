@@ -758,3 +758,46 @@
 - Proceed with persistent-session implementation tasks using corrected plan
 
 ---
+## 2026-02-18T06:12:24Z | codex
+### Summary
+- Implemented persistent sessions end-to-end across types, adapters, storage, session service, and engine
+
+### Changes
+- Added persistent adapter contract + session.bound event, implemented codex/claude sendTurn resume flow, added agent_sessions schema+CRUD+delta queries, integrated persistent lifecycle/recovery in chat engine, expanded CLI mode handling, and added 6 new test files
+- Validation baseline moved from 136/136 to 172/172 passing tests (`npm run typecheck`, `npm test`), plus stub-mode CLI smoke pass
+
+### Risks
+- Main remaining risk: Claude session-id extraction keys may differ in live CLI output and may need a small parser adjustment
+
+### Next
+- Run live --adapter-mode persistent smoke with real codex+claude and verify resume continuity across turns
+
+---
+## 2026-02-18T06:48:07Z | codex
+### Summary
+- Improved CLI real-time visibility of adapter activity
+
+### Changes
+- Updated chat event renderer to show generating/session-bound/done lifecycle lines with safe mid-stream handling and added chat-cli test coverage for live status output
+
+### Risks
+- No functional blocker; only UX tradeoff is slightly higher output verbosity in chat
+
+### Next
+- Optionally add a compact/verbose toggle for lifecycle status lines
+
+---
+## 2026-02-18T07:07:27Z | codex
+### Summary
+- Fixed review findings before merge (adapter mode precedence + Claude session id binding)
+
+### Changes
+- Adjusted chat adapter-mode override semantics to preserve agoryx.json modes unless CLI flag is explicitly passed, moved default cli behavior into config defaults, hardened Claude session-id extraction to ignore hook events, and expanded command/adapter tests
+
+### Risks
+- No known blockers; remaining risk is future upstream CLI output shape changes
+
+### Next
+- Proceed to merge once Ivan confirms
+
+---

@@ -3,6 +3,7 @@ import type {
   ErrorClass,
   MessageEventPayload,
   MessageErrorPayload,
+  SessionBoundPayload,
 } from "../events/types.js";
 import { createId, nowIso } from "../session/ids.js";
 
@@ -73,4 +74,18 @@ export const messageError = (
     message,
     raw,
   } satisfies MessageErrorPayload,
+});
+
+export const sessionBound = (
+  args: BaseArgs,
+  nativeSessionId: string,
+): AdapterEvent => ({
+  eventId: createId("evt"),
+  roomId: args.roomId,
+  sessionId: args.sessionId,
+  timestamp: nowIso(),
+  source: args.source,
+  type: "session.bound",
+  requestId: args.requestId,
+  payload: { nativeSessionId } satisfies SessionBoundPayload,
 });

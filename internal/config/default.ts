@@ -21,13 +21,13 @@ export const defaultRoomConfig = (mode: OrchestrationMode): RoomConfig => ({
 
 export const createDefaultAdapterConfig = (): Record<string, AdapterConfig> => ({
   codex: {
-    mode: "stub",
+    mode: "cli",
     timeoutMs: 120_000,
     maxTokens: 4_000,
     systemPrompt: "You are a collaborative agent in a multi-agent room.",
   },
   claude: {
-    mode: "stub",
+    mode: "cli",
     timeoutMs: 120_000,
     maxTokens: 4_000,
     systemPrompt: "You are a collaborative agent in a multi-agent room.",

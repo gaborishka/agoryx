@@ -53,14 +53,14 @@ export const DEFAULT_CONFIG: AgoryxConfig = {
   agents: {
     codex: {
       adapter: "codex",
-      mode: "stub",
+      mode: "cli",
       timeoutMs: 120_000,
       maxTokens: 4096,
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
     },
     claude: {
       adapter: "claude",
-      mode: "stub",
+      mode: "cli",
       timeoutMs: 120_000,
       maxTokens: 4096,
       systemPrompt: DEFAULT_SYSTEM_PROMPT,

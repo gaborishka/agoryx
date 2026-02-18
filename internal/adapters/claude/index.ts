@@ -2,12 +2,18 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { tmpdir } from "node:os";
 import type { Readable } from "node:stream";
 import { setTimeout as wait } from "node:timers/promises";
-import type { Adapter, AdapterStatus, AgentInput } from "../adapter.js";
+import type {
+  AdapterStatus,
+  AgentInput,
+  PersistentAdapter,
+  SendTurnInput,
+} from "../adapter.js";
 import {
   messageCompleted,
   messageDelta,
   messageError,
   messageStarted,
+  sessionBound,
 } from "../event-factory.js";
 import { extractTextFromJsonLine } from "../parse-output.js";
 import { createId } from "../../session/ids.js";
@@ -15,7 +21,7 @@ import { createId } from "../../session/ids.js";
 const SOURCE = "adapter.claude";
 type SpawnedProcess = ChildProcessByStdio<null, Readable, Readable>;
 
-export class ClaudeAdapter implements Adapter {
+export class ClaudeAdapter implements PersistentAdapter {
   public readonly name = "claude";
   private readonly running = new Map<string, SpawnedProcess>();
   private status: AdapterStatus = "ready";
@@ -47,7 +53,7 @@ export class ClaudeAdapter implements Adapter {
 
     this.status = "busy";
     const prompt = buildPrompt(input);
-    const child = spawn("claude", buildClaudeSpawnArgs(prompt), {
+    const child = spawn("claude", buildClaudeSpawnArgs(prompt, null), {
       stdio: ["ignore", "pipe", "pipe"],
       env: buildClaudeSpawnEnv(process.env),
       cwd: buildClaudeSpawnCwd(process.env),
@@ -104,7 +110,116 @@ export class ClaudeAdapter implements Adapter {
       } else if (exitCode !== 0) {
         yield messageError(
           baseArgs(input),
-          "PROCESS_CRASH",
+          classifyClaudeProcessError(stderr),
+          `claude process exited with code ${String(exitCode)}`,
+          stderr,
+        );
+      } else {
+        yield messageCompleted(baseArgs(input), {
+          ...startedPayload,
+          text: output.trim() || resultText?.trim() || "(no content)",
+        });
+      }
+    } catch (error) {
+      yield messageError(
+        baseArgs(input),
+        "UNKNOWN",
+        error instanceof Error ? error.message : "unknown claude adapter failure",
+        stderr,
+      );
+    } finally {
+      clearTimeout(timer);
+      this.running.delete(input.requestId);
+      this.status = "ready";
+    }
+  }
+
+  public async *sendTurn(input: SendTurnInput) {
+    const messageId = createId("msg");
+    const startedPayload = {
+      messageId,
+      author: "agent.claude",
+      role: "assistant" as const,
+      text: "",
+      format: "markdown" as const,
+      metadata: {
+        provider: "anthropic",
+        model: "claude-code",
+        requestId: input.requestId,
+      },
+    };
+
+    yield messageStarted(baseArgs(input), startedPayload);
+
+    this.status = "busy";
+    const child = spawn("claude", buildClaudeSpawnArgs(input.prompt, input.nativeSessionId), {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: buildClaudeSpawnEnv(process.env),
+      cwd: buildClaudeSpawnCwd(process.env),
+    });
+    this.running.set(input.requestId, child);
+
+    let stderr = "";
+    let output = "";
+    let timedOut = false;
+    let resultText: string | null = null;
+    let emittedSessionId: string | null = null;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, input.config.timeoutMs);
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    try {
+      for await (const chunk of child.stdout) {
+        const raw = chunk.toString("utf8");
+        const lines = raw.split(/\r?\n/);
+        for (const line of lines) {
+          const sessionId = extractClaudeSessionId(line);
+          if (sessionId && sessionId !== emittedSessionId) {
+            emittedSessionId = sessionId;
+            yield sessionBound(baseArgs(input), sessionId);
+          }
+        }
+
+        const parsedChunk = parseClaudeChunk(raw);
+        if (parsedChunk.resultText) {
+          resultText = parsedChunk.resultText;
+        }
+        if (parsedChunk.deltaParts.length === 0) {
+          continue;
+        }
+
+        const chunkParts = parsedChunk.deltaParts.map((part, index) =>
+          index === 0 ? part : `\n${part}`,
+        );
+        for (const text of chunkParts) {
+          output += text;
+          yield messageDelta(baseArgs(input), {
+            ...startedPayload,
+            text,
+          });
+        }
+      }
+
+      const exitCode = await new Promise<number | null>((resolve) => {
+        child.once("close", resolve);
+      });
+
+      if (timedOut) {
+        yield messageError(
+          baseArgs(input),
+          "TIMEOUT",
+          "claude request timed out",
+          stderr,
+        );
+      } else if (exitCode !== 0) {
+        yield messageError(
+          baseArgs(input),
+          classifyClaudeProcessError(stderr),
           `claude process exited with code ${String(exitCode)}`,
           stderr,
         );
@@ -162,7 +277,7 @@ export class ClaudeAdapter implements Adapter {
   }
 }
 
-const baseArgs = (input: AgentInput) => ({
+const baseArgs = (input: { roomId: string; sessionId: string; requestId: string }) => ({
   roomId: input.roomId,
   sessionId: input.sessionId,
   requestId: input.requestId,
@@ -175,7 +290,11 @@ const buildPrompt = (input: AgentInput): string =>
     .join("\n\n")
     .slice(-20000);
 
-export const buildClaudeSpawnArgs = (prompt: string): string[] => [
+export const buildClaudeSpawnArgs = (
+  prompt: string,
+  nativeSessionId: string | null = null,
+): string[] => [
+  ...(nativeSessionId ? ["--resume", nativeSessionId] : []),
   "-p",
   prompt,
   "--output-format",
@@ -236,6 +355,37 @@ export const parseClaudeChunk = (
   };
 };
 
+export const extractClaudeSessionId = (line: string): string | null => {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = tryParseJsonObject(trimmed);
+  if (!parsed) {
+    return null;
+  }
+
+  const type = parsed.type;
+  if (typeof type !== "string") {
+    return null;
+  }
+
+  // Ignore hook/session bootstrap events that may carry a different internal id.
+  if (type === "system") {
+    if (parsed.subtype !== "init") {
+      return null;
+    }
+    return readTopLevelSessionId(parsed);
+  }
+
+  if (type === "stream_event" || type === "assistant" || type === "result") {
+    return readTopLevelSessionId(parsed);
+  }
+
+  return null;
+};
+
 const tryParseJsonObject = (line: string): Record<string, unknown> | null => {
   try {
     const parsed = JSON.parse(line);
@@ -289,4 +439,35 @@ const extractTextFromUnknown = (value: unknown): string | null => {
   }
 
   return null;
+};
+
+const readTopLevelSessionId = (obj: Record<string, unknown>): string | null => {
+  const keys = [
+    "session_id",
+    "sessionId",
+    "conversation_id",
+    "conversationId",
+    "thread_id",
+    "threadId",
+  ] as const;
+  for (const key of keys) {
+    const candidate = obj[key];
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const classifyClaudeProcessError = (
+  stderr: string,
+): "SESSION_EXPIRED" | "PROCESS_CRASH" => {
+  const normalized = stderr.toLowerCase();
+  if (
+    /session|conversation|thread|resume/.test(normalized) &&
+    /(expired|not found|unknown|invalid|missing)/.test(normalized)
+  ) {
+    return "SESSION_EXPIRED";
+  }
+  return "PROCESS_CRASH";
 };

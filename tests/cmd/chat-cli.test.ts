@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -106,4 +106,75 @@ test("/checkpoint is supported as alias of /summary", async (t) => {
   assert.equal(result.signal, null);
   assert.equal(result.code, 0);
   assert.match(result.stdout, /Not enough conversation history to create a checkpoint\./);
+});
+
+test("chat prints live agent status lines while streaming", async (t) => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-status-"));
+  t.after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const dbPath = join(tmpDir, "chat.db");
+  const result = await runChatCli(
+    [
+      "--agents",
+      "codex",
+      "--mode",
+      "manual",
+      "--adapter-mode",
+      "stub",
+      "--db",
+      dbPath,
+    ],
+    "@codex hello\n/quit\n",
+  );
+
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /\[codex\] generating\.\.\./);
+  assert.match(result.stdout, /codex:/);
+  assert.match(result.stdout, /\[codex\] done/);
+});
+
+test("chat keeps config-defined adapter mode when --adapter-mode is not provided", async (t) => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-config-mode-"));
+  t.after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const dbPath = join(tmpDir, "chat.db");
+  const configPath = join(tmpDir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      version: "0.1",
+      agents: {
+        codex: {
+          adapter: "codex",
+          mode: "persistent",
+          timeoutMs: 120000,
+          maxTokens: 4000,
+        },
+      },
+    }),
+    "utf8",
+  );
+
+  const result = await runChatCli(
+    [
+      "--agents",
+      "codex",
+      "--mode",
+      "manual",
+      "--config",
+      configPath,
+      "--db",
+      dbPath,
+    ],
+    "/quit\n",
+  );
+
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /- codex: mode=persistent/);
 });

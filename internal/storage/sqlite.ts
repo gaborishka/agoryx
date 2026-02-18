@@ -60,6 +60,32 @@ interface SessionRunRow {
   created_at: string;
 }
 
+export interface AgentSession {
+  id: string;
+  roomId: string;
+  agentName: string;
+  nativeSessionId: string | null;
+  transportMode: "resume" | "interactive";
+  status: "active" | "expired" | "failed";
+  lastSeenSeq: number | null;
+  failCount: number;
+  createdAt: number;
+  lastTurnAt: number | null;
+}
+
+interface AgentSessionRow {
+  id: string;
+  room_id: string;
+  agent_name: string;
+  native_session_id: string | null;
+  transport_mode: string;
+  status: string;
+  last_seen_seq: number | null;
+  fail_count: number;
+  created_at: number;
+  last_turn_at: number | null;
+}
+
 export class SQLiteStore {
   private readonly db: Database.Database;
 
@@ -135,6 +161,26 @@ export class SQLiteStore {
       );
       CREATE INDEX IF NOT EXISTS idx_events_room_ts
       ON events_log(room_id, timestamp);
+
+      CREATE TABLE IF NOT EXISTS agent_sessions (
+        id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        agent_name TEXT NOT NULL,
+        native_session_id TEXT,
+        transport_mode TEXT NOT NULL DEFAULT 'resume'
+          CHECK(transport_mode IN ('resume', 'interactive')),
+        status TEXT NOT NULL DEFAULT 'active'
+          CHECK(status IN ('active', 'expired', 'failed')),
+        last_seen_seq INTEGER,
+        fail_count INTEGER NOT NULL DEFAULT 0
+          CHECK(fail_count >= 0),
+        created_at INTEGER NOT NULL,
+        last_turn_at INTEGER,
+        FOREIGN KEY(room_id) REFERENCES rooms(id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_active
+        ON agent_sessions(room_id, agent_name)
+        WHERE status = 'active';
     `);
   }
 
@@ -368,6 +414,34 @@ export class SQLiteStore {
     return rows.map(messageRowToDomain);
   }
 
+  public getMaxMessageSeq(roomId: string): number | null {
+    const row = this.db
+      .prepare(`SELECT MAX(rowid) AS max_seq FROM messages WHERE room_id = ?`)
+      .get(roomId) as { max_seq: number | null } | undefined;
+    return row?.max_seq ?? null;
+  }
+
+  public listMessagesDelta(
+    roomId: string,
+    afterSeq: number,
+    cutoffSeq: number,
+    excludeAuthor: string,
+  ): Message[] {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT * FROM messages
+      WHERE room_id = ?
+        AND rowid > ?
+        AND rowid <= ?
+        AND author != ?
+      ORDER BY rowid ASC
+    `,
+      )
+      .all(roomId, afterSeq, cutoffSeq, excludeAuthor) as MessageRow[];
+    return rows.map(messageRowToDomain);
+  }
+
   public addPinnedContext(
     roomId: string,
     label: string,
@@ -554,6 +628,110 @@ export class SQLiteStore {
     return recoveredRow ? null : failedRow.request_id;
   }
 
+  public createAgentSession(roomId: string, agentName: string): AgentSession {
+    const id = createId("agtsess");
+    const now = Date.now();
+    this.db
+      .prepare(
+        `
+      INSERT INTO agent_sessions (id, room_id, agent_name, created_at)
+      VALUES (?, ?, ?, ?)
+    `,
+      )
+      .run(id, roomId, agentName, now);
+    return this.getAgentSessionById(id)!;
+  }
+
+  public getActiveAgentSession(roomId: string, agentName: string): AgentSession | null {
+    const row = this.db
+      .prepare(
+        `
+      SELECT * FROM agent_sessions
+      WHERE room_id = ? AND agent_name = ? AND status = 'active'
+    `,
+      )
+      .get(roomId, agentName) as AgentSessionRow | undefined;
+    return row ? agentSessionRowToDomain(row) : null;
+  }
+
+  public listActiveAgentSessions(roomId: string): AgentSession[] {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT * FROM agent_sessions
+      WHERE room_id = ? AND status = 'active'
+      ORDER BY COALESCE(last_turn_at, created_at) DESC, created_at DESC
+    `,
+      )
+      .all(roomId) as AgentSessionRow[];
+    return rows.map(agentSessionRowToDomain);
+  }
+
+  public updateAgentSessionNativeId(id: string, nativeId: string): void {
+    if (!nativeId) {
+      return;
+    }
+    this.db
+      .prepare(
+        `
+      UPDATE agent_sessions
+      SET native_session_id = ?,
+          last_turn_at = ?
+      WHERE id = ?
+    `,
+      )
+      .run(nativeId, Date.now(), id);
+  }
+
+  public updateAgentSessionCursor(id: string, seq: number): void {
+    this.db
+      .prepare(
+        `
+      UPDATE agent_sessions
+      SET last_seen_seq = CASE
+          WHEN last_seen_seq IS NULL THEN ?
+          WHEN ? > last_seen_seq THEN ?
+          ELSE last_seen_seq
+        END,
+        last_turn_at = ?
+      WHERE id = ?
+    `,
+      )
+      .run(seq, seq, seq, Date.now(), id);
+  }
+
+  public updateAgentSessionStatus(
+    id: string,
+    status: AgentSession["status"],
+  ): void {
+    this.db
+      .prepare(`UPDATE agent_sessions SET status = ? WHERE id = ?`)
+      .run(status, id);
+  }
+
+  public incrementAgentSessionFailCount(id: string): number {
+    this.db
+      .prepare(
+        `
+      UPDATE agent_sessions
+      SET fail_count = fail_count + 1
+      WHERE id = ?
+    `,
+      )
+      .run(id);
+    const row = this.db
+      .prepare(`SELECT fail_count FROM agent_sessions WHERE id = ?`)
+      .get(id) as { fail_count: number } | undefined;
+    return row?.fail_count ?? 0;
+  }
+
+  private getAgentSessionById(id: string): AgentSession | null {
+    const row = this.db
+      .prepare(`SELECT * FROM agent_sessions WHERE id = ?`)
+      .get(id) as AgentSessionRow | undefined;
+    return row ? agentSessionRowToDomain(row) : null;
+  }
+
   public close(): void {
     this.db.close();
   }
@@ -589,4 +767,17 @@ const messageRowToDomain = (row: MessageRow): Message => ({
   format: row.format,
   metadata: tryParseJson(row.metadata_json, {}),
   createdAt: row.created_at,
+});
+
+const agentSessionRowToDomain = (row: AgentSessionRow): AgentSession => ({
+  id: row.id,
+  roomId: row.room_id,
+  agentName: row.agent_name,
+  nativeSessionId: row.native_session_id,
+  transportMode: row.transport_mode as AgentSession["transportMode"],
+  status: row.status as AgentSession["status"],
+  lastSeenSeq: row.last_seen_seq,
+  failCount: row.fail_count,
+  createdAt: row.created_at,
+  lastTurnAt: row.last_turn_at,
 });

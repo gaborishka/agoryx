@@ -1,6 +1,7 @@
 import type { Message, PinnedContext, Room, RoomConfig } from "../events/types.js";
 import { createId, nowIso } from "./ids.js";
 import { SQLiteStore } from "../storage/sqlite.js";
+import type { AgentSession } from "../storage/sqlite.js";
 import { buildContext, type BuiltContext } from "./context.js";
 
 // --- Stop words for topic extraction ---
@@ -173,6 +174,8 @@ export interface SessionOptions {
 }
 
 export class SessionService {
+  private readonly turnLocks = new Map<string, Promise<void>>();
+
   public constructor(private readonly store: SQLiteStore) {}
 
   public createSession(options: SessionOptions): { room: Room; sessionId: string } {
@@ -298,6 +301,91 @@ export class SessionService {
       checkpointThreshold: room.config.checkpointThreshold,
       maxContextTokens: room.config.maxContextTokens,
     });
+  }
+
+  public buildDeltaPrompt(
+    room: Room,
+    agentName: string,
+    lastSeenSeq: number | null,
+    systemPrompt?: string,
+  ): { prompt: string; cutoffSeq: number | null } {
+    const cutoffSeq = this.store.getMaxMessageSeq(room.id);
+
+    if (lastSeenSeq === null) {
+      const messages = this.buildContextMessages(room, systemPrompt);
+      const prompt = messages
+        .map((message) => `[${message.author}] ${message.text}`)
+        .join("\n\n")
+        .slice(-20000);
+      return { prompt, cutoffSeq };
+    }
+
+    if (cutoffSeq === null) {
+      return { prompt: "", cutoffSeq: null };
+    }
+
+    const delta = this.store.listMessagesDelta(
+      room.id,
+      lastSeenSeq,
+      cutoffSeq,
+      `agent.${agentName}`,
+    );
+    if (delta.length === 0) {
+      return { prompt: "", cutoffSeq };
+    }
+
+    const prompt = [
+      "[Team context since your last response]",
+      ...delta.map((message) => `- [${message.author}][${message.id}] ${message.text}`),
+    ].join("\n");
+
+    return { prompt, cutoffSeq };
+  }
+
+  public async acquireTurnLock<T>(
+    roomId: string,
+    agentName: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const key = `${roomId}:${agentName}`;
+    const previous = this.turnLocks.get(key) ?? Promise.resolve();
+    const current = previous.then(fn, fn);
+    const settled = current.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.turnLocks.set(key, settled);
+
+    try {
+      return await current;
+    } finally {
+      if (this.turnLocks.get(key) === settled) {
+        this.turnLocks.delete(key);
+      }
+    }
+  }
+
+  public getOrCreateAgentSession(roomId: string, agentName: string): AgentSession {
+    return (
+      this.store.getActiveAgentSession(roomId, agentName) ??
+      this.store.createAgentSession(roomId, agentName)
+    );
+  }
+
+  public updateAgentSessionNativeId(id: string, nativeId: string): void {
+    this.store.updateAgentSessionNativeId(id, nativeId);
+  }
+
+  public updateAgentSessionCursor(id: string, seq: number): void {
+    this.store.updateAgentSessionCursor(id, seq);
+  }
+
+  public updateAgentSessionStatus(id: string, status: AgentSession["status"]): void {
+    this.store.updateAgentSessionStatus(id, status);
+  }
+
+  public incrementAgentSessionFailCount(id: string): number {
+    return this.store.incrementAgentSessionFailCount(id);
   }
 
   public maybeCreateCheckpoint(room: Room, force?: boolean): string | null {

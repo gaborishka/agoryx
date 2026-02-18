@@ -73,7 +73,7 @@ const runChat = async (argv: string[]): Promise<void> => {
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
   const adapterMode = args["adapter-mode"];
-  if (adapterMode === "cli" || adapterMode === "stub") {
+  if (adapterMode === "cli" || adapterMode === "stub" || adapterMode === "persistent") {
     for (const agent of config.agents) {
       if (config.adapterConfig[agent]) {
         config.adapterConfig[agent] = {
@@ -269,8 +269,8 @@ const handleCommand = async (
     }
     case "/adapter": {
       const [agent, mode] = rest;
-      if (!agent || (mode !== "stub" && mode !== "cli")) {
-        console.log("Usage: /adapter <codex|claude> <stub|cli>");
+      if (!agent || (mode !== "stub" && mode !== "cli" && mode !== "persistent")) {
+        console.log("Usage: /adapter <codex|claude> <stub|cli|persistent>");
         return true;
       }
       if (!config.adapterConfig[agent]) {
@@ -395,23 +395,108 @@ const handleCommand = async (
   }
 };
 
+interface AdapterRenderState {
+  lineOpen: boolean;
+  sawContent: boolean;
+  pendingSessionId: string | null;
+  lastSessionId: string | null;
+}
+
+const adapterRenderStates = new Map<string, AdapterRenderState>();
+
+const getAdapterRenderState = (adapterName: string): AdapterRenderState => {
+  const existing = adapterRenderStates.get(adapterName);
+  if (existing) {
+    return existing;
+  }
+  const created: AdapterRenderState = {
+    lineOpen: false,
+    sawContent: false,
+    pendingSessionId: null,
+    lastSessionId: null,
+  };
+  adapterRenderStates.set(adapterName, created);
+  return created;
+};
+
 const renderAdapterEvent = (adapterName: string, event: AdapterEvent): void => {
+  const state = getAdapterRenderState(adapterName);
   switch (event.type) {
-    case "message.started":
-      output.write(`\n${adapterName}: `);
+    case "message.started": {
+      state.lineOpen = true;
+      state.sawContent = false;
+      state.pendingSessionId = null;
+      output.write(`\n[${adapterName}] generating...\n${adapterName}: `);
       return;
+    }
     case "message.delta": {
       const text = extractPayloadText(event.payload);
       if (text) {
+        state.sawContent = true;
         output.write(text);
       }
       return;
     }
+    case "session.bound": {
+      const payload = event.payload as { nativeSessionId?: string };
+      const nativeSessionId = payload.nativeSessionId;
+      if (!nativeSessionId) {
+        return;
+      }
+
+      if (state.lineOpen && state.sawContent) {
+        // Defer non-text status to avoid interrupting streamed answer text.
+        state.pendingSessionId = nativeSessionId;
+        return;
+      }
+
+      const label = describeSessionBinding(state.lastSessionId, nativeSessionId);
+      state.lastSessionId = nativeSessionId;
+
+      if (state.lineOpen && !state.sawContent) {
+        output.write(
+          `\n[${adapterName}] ${label} (${formatSessionId(nativeSessionId)})\n${adapterName}: `,
+        );
+        return;
+      }
+
+      output.write(
+        `\n[${adapterName}] ${label} (${formatSessionId(nativeSessionId)})\n`,
+      );
+      return;
+    }
     case "message.completed":
+      if (state.lineOpen) {
+        output.write("\n");
+      }
+      if (state.pendingSessionId) {
+        const label = describeSessionBinding(state.lastSessionId, state.pendingSessionId);
+        state.lastSessionId = state.pendingSessionId;
+        output.write(
+          `[${adapterName}] ${label} (${formatSessionId(state.pendingSessionId)})\n`,
+        );
+        state.pendingSessionId = null;
+      }
+      state.lineOpen = false;
+      state.sawContent = false;
+      output.write(`[${adapterName}] done\n`);
       output.write("\n");
       return;
     case "message.error": {
       const payload = event.payload as { class?: string; message?: string };
+      if (state.lineOpen) {
+        output.write("\n");
+      }
+      if (state.pendingSessionId) {
+        const label = describeSessionBinding(state.lastSessionId, state.pendingSessionId);
+        state.lastSessionId = state.pendingSessionId;
+        output.write(
+          `[${adapterName}] ${label} (${formatSessionId(state.pendingSessionId)})\n`,
+        );
+        state.pendingSessionId = null;
+      }
+      state.lineOpen = false;
+      state.sawContent = false;
       output.write(
         `\n${adapterName} error (${payload.class ?? "UNKNOWN"}): ${
           payload.message ?? "unknown"
@@ -422,6 +507,26 @@ const renderAdapterEvent = (adapterName: string, event: AdapterEvent): void => {
     default:
       return;
   }
+};
+
+const describeSessionBinding = (
+  previousSessionId: string | null,
+  currentSessionId: string,
+): string => {
+  if (!previousSessionId) {
+    return "session ready";
+  }
+  if (previousSessionId === currentSessionId) {
+    return "session resumed";
+  }
+  return "session switched";
+};
+
+const formatSessionId = (sessionId: string): string => {
+  if (sessionId.length <= 16) {
+    return sessionId;
+  }
+  return `${sessionId.slice(0, 8)}...${sessionId.slice(-6)}`;
 };
 
 const extractPayloadText = (payload: unknown): string => {
@@ -465,7 +570,7 @@ Options:
   --mode         Orchestration mode (default: manual)
   --config       Path to agoryx.json config file (default: ./agoryx.json)
   --db           SQLite path (default: ./agoryx.db)
-  --adapter-mode Global adapter mode: stub|cli (default: stub)
+  --adapter-mode Global adapter mode: stub|cli|persistent (default: cli)
   --resume       Resume existing room by id
   --room-name    Room title
 `);
@@ -485,7 +590,7 @@ In-chat commands:
   /help
   /mode <manual|round-robin|auto>
   /status
-  /adapter <codex|claude> <stub|cli>
+  /adapter <codex|claude> <stub|cli|persistent>
   /pin <label>: <content>
   /unpin <pin_id>
   /pins [list]

@@ -1,6 +1,17 @@
-import type { Adapter, AdapterConfig, AdapterEvent } from "../adapters/adapter.js";
+import type {
+  Adapter,
+  AdapterConfig,
+  AdapterEvent,
+  PersistentAdapter,
+} from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
-import type { Message, OrchestrationMode, PinnedContext, Room } from "../events/types.js";
+import type {
+  Message,
+  OrchestrationMode,
+  PinnedContext,
+  Room,
+  SessionBoundPayload,
+} from "../events/types.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import type { Dispatch, OrchestrationPolicy } from "../orchestrator/policy.js";
 import { createId } from "../session/ids.js";
@@ -182,7 +193,10 @@ export class ChatEngine {
     };
   }
 
-  private async runDispatch(dispatch: Dispatch): Promise<DispatchResult> {
+  private async runDispatch(
+    dispatch: Dispatch,
+    isSessionRetry = false,
+  ): Promise<DispatchResult> {
     const state = this.getState();
     const adapter = this.adapters[dispatch.targetAdapter];
     if (!adapter) {
@@ -196,6 +210,30 @@ export class ChatEngine {
     }
 
     const adapterConfig = this.resolveAdapterConfig(dispatch.targetAdapter);
+    const isPersistent = adapterConfig.mode === "persistent" && "sendTurn" in adapter;
+    if (isPersistent) {
+      return this.session.acquireTurnLock(
+        state.room.id,
+        dispatch.targetAdapter,
+        () =>
+          this.runPersistentDispatch(
+            dispatch,
+            adapter as PersistentAdapter,
+            adapterConfig,
+            isSessionRetry,
+          ),
+      );
+    }
+
+    return this.runLegacyDispatch(dispatch, adapter, adapterConfig);
+  }
+
+  private async runLegacyDispatch(
+    dispatch: Dispatch,
+    adapter: Adapter,
+    adapterConfig: AdapterConfig,
+  ): Promise<DispatchResult> {
+    const state = this.getState();
     const messages = this.session.buildContextMessages(state.room, adapterConfig.systemPrompt);
     let finalText = "";
     let failed: { errorClass: string; message: string } | undefined;
@@ -257,6 +295,124 @@ export class ChatEngine {
     };
   }
 
+  private async runPersistentDispatch(
+    dispatch: Dispatch,
+    adapter: PersistentAdapter,
+    adapterConfig: AdapterConfig,
+    isSessionRetry: boolean,
+  ): Promise<DispatchResult> {
+    const state = this.getState();
+    const agentSession = this.session.getOrCreateAgentSession(
+      state.room.id,
+      dispatch.targetAdapter,
+    );
+    const { prompt, cutoffSeq } = this.session.buildDeltaPrompt(
+      state.room,
+      dispatch.targetAdapter,
+      agentSession.lastSeenSeq,
+      adapterConfig.systemPrompt,
+    );
+
+    let finalText = "";
+    let failed: { errorClass: string; message: string } | undefined;
+    let boundNativeId: string | null = null;
+
+    for await (const event of adapter.sendTurn({
+      roomId: state.room.id,
+      sessionId: state.sessionId,
+      requestId: dispatch.requestId,
+      nativeSessionId: agentSession.nativeSessionId,
+      prompt,
+      config: adapterConfig,
+    })) {
+      this.session.appendEvent(event);
+      this.hooks.onAdapterEvent?.(dispatch.targetAdapter, event);
+
+      if (event.type === "session.bound") {
+        const payload = event.payload as SessionBoundPayload;
+        if (typeof payload.nativeSessionId === "string" && payload.nativeSessionId) {
+          boundNativeId = payload.nativeSessionId;
+        }
+      }
+
+      if (event.type === "message.delta") {
+        const payloadText = extractPayloadText(event.payload);
+        if (payloadText) {
+          finalText += payloadText;
+        }
+      }
+
+      if (event.type === "message.completed") {
+        const payloadText = extractPayloadText(event.payload);
+        finalText = payloadText || finalText;
+      }
+
+      if (event.type === "message.error") {
+        failed = extractErrorInfo(event.payload);
+      }
+    }
+
+    if (failed?.errorClass === "SESSION_EXPIRED" && !isSessionRetry) {
+      this.session.updateAgentSessionStatus(agentSession.id, "expired");
+      const retryDispatch: Dispatch = {
+        ...dispatch,
+        dispatchId: createId("dsp"),
+        requestId: createId("req"),
+      };
+      return this.runPersistentDispatch(retryDispatch, adapter, adapterConfig, true);
+    }
+
+    if (failed) {
+      if (failed.errorClass !== "SESSION_EXPIRED") {
+        this.session.incrementAgentSessionFailCount(agentSession.id);
+      }
+      return {
+        adapter: dispatch.targetAdapter,
+        requestId: dispatch.requestId,
+        success: false,
+        text: finalText,
+        error: `${failed.errorClass}: ${failed.message}`,
+      };
+    }
+
+    if (!agentSession.nativeSessionId && !boundNativeId) {
+      this.session.updateAgentSessionStatus(agentSession.id, "failed");
+      return {
+        adapter: dispatch.targetAdapter,
+        requestId: dispatch.requestId,
+        success: false,
+        text: finalText,
+        error: "FATAL: no native session ID received on cold start",
+      };
+    }
+
+    if (boundNativeId) {
+      this.session.updateAgentSessionNativeId(agentSession.id, boundNativeId);
+    }
+    if (cutoffSeq !== null) {
+      this.session.updateAgentSessionCursor(agentSession.id, cutoffSeq);
+    }
+
+    const provider = dispatch.targetAdapter === "codex" ? "openai" : "anthropic";
+    const model = dispatch.targetAdapter === "codex" ? "codex" : "claude-code";
+    this.session.saveAssistantMessage(
+      state.room.id,
+      `agent.${dispatch.targetAdapter}`,
+      finalText.trim() || "(empty response)",
+      dispatch.requestId,
+      dispatch.dispatchId,
+      provider,
+      model,
+    );
+
+    return {
+      adapter: dispatch.targetAdapter,
+      requestId: dispatch.requestId,
+      success: true,
+      text: finalText.trim() || "(empty response)",
+    };
+  }
+
   private resolveAdapterConfig(adapterName: string): AdapterConfig {
     const fallback = {
       mode: "stub",
@@ -282,6 +438,7 @@ const ERROR_CLASSES = [
   "TIMEOUT",
   "PROCESS_CRASH",
   "PROTOCOL_ERROR",
+  "SESSION_EXPIRED",
   "UNKNOWN",
 ] as const;
 

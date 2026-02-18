@@ -4,10 +4,11 @@ import type {
   Message,
   MessageEventPayload,
   MessageErrorPayload,
+  SessionBoundPayload,
 } from "../events/types.js";
 
 export type AdapterStatus = "ready" | "busy" | "error" | "not_authenticated";
-export type AdapterMode = "stub" | "cli";
+export type AdapterMode = "stub" | "cli" | "persistent";
 
 export interface AdapterConfig {
   mode: AdapterMode;
@@ -24,6 +25,15 @@ export interface AgentInput {
   config: AdapterConfig;
 }
 
+export interface SendTurnInput {
+  roomId: string;
+  sessionId: string;
+  requestId: string;
+  nativeSessionId: string | null;
+  prompt: string;
+  config: AdapterConfig;
+}
+
 export interface Adapter {
   name: string;
   send(input: AgentInput): AsyncGenerator<AdapterEvent>;
@@ -31,9 +41,15 @@ export interface Adapter {
   health(): Promise<AdapterStatus>;
 }
 
+export interface PersistentAdapter extends Adapter {
+  sendTurn(input: SendTurnInput): AsyncGenerator<AdapterEvent>;
+  destroy?(nativeSessionId: string): Promise<void>;
+}
+
 export type AdapterEvent =
   | EventEnvelope<MessageEventPayload>
-  | EventEnvelope<MessageErrorPayload>;
+  | EventEnvelope<MessageErrorPayload>
+  | EventEnvelope<SessionBoundPayload>;
 
 export interface AdapterError {
   class: ErrorClass;

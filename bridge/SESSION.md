@@ -522,5 +522,120 @@ internal/
 ### Next
 - If approved, start implementation from corrected persistent-session plan (Task 1 onward) without additional pre-plan edits.
 
+## What Changed This Session (Codex — persistent sessions implementation)
+
+### Core implementation
+- Added canonical persistent-session event/types:
+  - `SESSION_EXPIRED` error class
+  - `session.bound` event type
+  - `SessionBoundPayload { nativeSessionId }`
+- Added adapter-level persistent contract:
+  - `AdapterMode` now includes `persistent`
+  - `SendTurnInput` and `PersistentAdapter.sendTurn()`
+- Added `sessionBound(...)` event factory in `internal/adapters/event-factory.ts`.
+
+### Storage + session layer
+- Added `agent_sessions` schema and APIs in `internal/storage/sqlite.ts`:
+  - create/get/list/update lifecycle methods
+  - fail counter tracking
+  - partial unique index for one active session per `(room, agent)`
+  - `getMaxMessageSeq(roomId)` and `listMessagesDelta(...)` for rowid-based delta windows
+- Added `SessionService` persistent helpers in `internal/session/service.ts`:
+  - `buildDeltaPrompt(...)` (cold full-context + warm delta paths)
+  - `acquireTurnLock(...)` per `(room, agent)` to serialize concurrent turns
+  - agent-session wrapper methods (`getOrCreateAgentSession`, cursor/native-id/status/fail updates)
+
+### Adapter layer
+- `internal/adapters/codex/index.ts`:
+  - implemented `sendTurn()` with cold/warm resume flow
+  - added `buildCodexSpawnArgs(prompt, nativeSessionId)`
+  - added `extractCodexThreadId(...)` and `session.bound` emission
+  - added process-error mapping to `SESSION_EXPIRED` for resume/session failures
+- `internal/adapters/claude/index.ts`:
+  - implemented `sendTurn()` with `--resume` flow
+  - extended `buildClaudeSpawnArgs(prompt, nativeSessionId)`
+  - added `extractClaudeSessionId(...)` and `session.bound` emission
+  - added process-error mapping to `SESSION_EXPIRED` for resume/session failures
+
+### Engine integration
+- `internal/engine/chat.ts` now has dual dispatch paths:
+  - `runLegacyDispatch(...)` for `stub|cli`
+  - `runPersistentDispatch(...)` for `persistent`
+- Persistent lifecycle implemented:
+  - per-agent turn lock usage
+  - delta prompt build from session cursor
+  - `session.bound` capture and native id persistence
+  - cursor advance only on successful turn
+  - `SESSION_EXPIRED` one-shot cold retry (mark old session expired, create new active)
+  - cold-start fatal guard when no native session id is bound
+- CLI surface updated for persistent mode:
+  - `--adapter-mode stub|cli|persistent`
+  - `/adapter <codex|claude> <stub|cli|persistent>`
+
+### Tests and validation
+- Added tests:
+  - `tests/adapters/session-bound-event.test.ts`
+  - `tests/adapters/codex-resume.test.ts`
+  - `tests/adapters/claude-resume.test.ts`
+  - `tests/storage/agent-sessions.test.ts`
+  - `tests/session/delta.test.ts`
+  - `tests/engine/persistent-session.test.ts`
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**172/172**)
+  - baseline before implementation was **136/136**
+  - `codex exec resume --help` verified
+  - stub smoke PASS (`npx tsx cmd/agoryx/main.ts chat --adapter-mode stub`)
+
+### Risks
+- Claude native session-id extraction uses tolerant key matching and may need adjustment after real persistent-mode live run if CLI output schema differs.
+
+### Next
+- Run live smoke in `--adapter-mode persistent` with real Codex and Claude CLIs and verify end-to-end resume behavior across multi-turn chats.
+
+## What Changed This Session (Codex — CLI live status visibility)
+
+### CLI UX improvements
+- Updated `cmd/agoryx/main.ts` event rendering to expose real-time adapter lifecycle states:
+  - `[agent] generating...` on `message.started`
+  - session binding visibility on `session.bound` (`session ready/resumed/switched` with shortened native session id)
+  - `[agent] done` on `message.completed`
+- Added render-state tracking per adapter to avoid breaking streamed text when `session.bound` arrives mid-stream (deferred status print when needed).
+
+### Tests
+- Added `tests/cmd/chat-cli.test.ts` coverage:
+  - verifies live status lines appear during stub streaming (`generating`, response stream, `done`).
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**173/173**)
+
+### Next
+- Optionally add a compact/verbose toggle for status lines in chat UI if users want lower-noise output.
+
+## What Changed This Session (Codex — review findings fixes before merge)
+
+### Fixes delivered
+- Fixed CLI adapter-mode precedence regression in `cmd/agoryx/main.ts`:
+  - `--adapter-mode` now overrides adapter modes only when explicitly provided.
+  - Config-defined modes in `agoryx.json` are preserved when no CLI override is passed.
+- Kept default `cli` behavior without forcing overrides by updating defaults:
+  - `internal/config/index.ts` (`DEFAULT_CONFIG.agents.{codex,claude}.mode = "cli"`)
+  - `internal/config/default.ts` (`createDefaultAdapterConfig()` returns `cli` modes)
+- Hardened Claude session binding extraction in `internal/adapters/claude/index.ts`:
+  - ignore `system` hook events (`hook_started`/`hook_response`) for native session binding
+  - accept session IDs from stable event families (`system:init`, `stream_event`, `assistant`, `result`)
+  - removed recursive nested session-id scan to avoid latching onto unrelated IDs
+
+### Tests
+- Expanded tests:
+  - `tests/cmd/chat-cli.test.ts`: verifies config-defined adapter mode remains intact when `--adapter-mode` is omitted
+  - `tests/adapters/claude-resume.test.ts`: covers hook-event ignore path and stream_event extraction path
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**176/176**)
+  - Manual sanity checks:
+    - no-flag startup shows `mode=cli`
+    - config with `mode=persistent` remains `mode=persistent` without CLI override
+
 ## Last Updated
-2026-02-17T23:58:14Z by codex
+2026-02-18T08:05:00Z by codex

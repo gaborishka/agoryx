@@ -8,6 +8,7 @@ export type ErrorClass =
   | "TIMEOUT"
   | "PROCESS_CRASH"
   | "PROTOCOL_ERROR"
+  | "SESSION_EXPIRED"
   | "UNKNOWN";
 
 export interface RoomConfig {
@@ -71,6 +72,7 @@ export type EventType =
   | "message.delta"
   | "message.completed"
   | "message.error"
+  | "session.bound"
   | "tool.call.started"
   | "tool.call.completed"
   | "agent.status"
@@ -100,4 +102,8 @@ export interface MessageErrorPayload {
   class: ErrorClass;
   message: string;
   raw?: string;
+}
+
+export interface SessionBoundPayload {
+  nativeSessionId: string;
 }

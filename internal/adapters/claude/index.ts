@@ -414,11 +414,14 @@ export class ClaudeAdapter implements PersistentAdapter {
   ): Promise<ClaudeInteractiveRunner> {
     const cwd = buildClaudeSpawnCwd(process.env, "agentic", workspaceCwd);
 
-    const needsRestart =
-      !this.interactiveRunner ||
-      this.interactiveRunner.isClosed() ||
-      this.interactiveCwd !== cwd ||
-      (nativeSessionId !== null && this.interactiveSessionId !== nativeSessionId);
+    const needsRestart = shouldRestartClaudeInteractiveRunner(
+      this.interactiveRunner !== null,
+      this.interactiveRunner?.isClosed() ?? false,
+      this.interactiveCwd,
+      cwd,
+      this.interactiveSessionId,
+      nativeSessionId,
+    );
 
     if (needsRestart) {
       await this.disposeInteractiveRunner();
@@ -646,8 +649,13 @@ class ClaudeInteractiveRunner {
       this.child.stdin.write(`${control}\n`, () => {
         resolve();
       });
-    }).catch(() => {
-      // Best-effort interrupt; ignore write failures.
+    }).catch((error: unknown) => {
+      this.closed = true;
+      console.error(
+        `[adapter.claude] interrupt write failed, marking runner closed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     });
 
     activeTurn.reject(new Error(reason));
@@ -917,6 +925,29 @@ export const extractClaudeSessionId = (line: string): string | null => {
   }
 
   return null;
+};
+
+export const shouldRestartClaudeInteractiveRunner = (
+  hasRunner: boolean,
+  runnerClosed: boolean,
+  currentCwd: string | null,
+  requestedCwd: string,
+  currentSessionId: string | null,
+  requestedSessionId: string | null,
+): boolean => {
+  if (!hasRunner) {
+    return true;
+  }
+  if (runnerClosed) {
+    return true;
+  }
+  if (currentCwd !== requestedCwd) {
+    return true;
+  }
+  if (requestedSessionId === null) {
+    return currentSessionId !== null;
+  }
+  return currentSessionId !== requestedSessionId;
 };
 
 const tryParseJsonObject = (line: string): Record<string, unknown> | null => {

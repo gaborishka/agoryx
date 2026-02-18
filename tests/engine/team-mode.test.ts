@@ -112,7 +112,7 @@ const createEngine = (
 
   const engine = new ChatEngine(session, { [adapter.name]: adapter }, config);
   engine.init();
-  return { engine, store };
+  return { engine, store, session };
 };
 
 const waitForRunStatus = async (
@@ -361,6 +361,103 @@ test("interruptTeamRun cancels active step and injects feedback into the next st
     await waitForRunStatus(engine, "waiting_user_input");
     assert.equal(calls.length, 2);
     assert.match(calls[1]!.prompt, /Please focus on rollback risk\./);
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("interrupt does not drop feedback that was pending before aborted step", async () => {
+  const calls: SendTurnInput[] = [];
+  const stalledByRequest = new Map<string, () => void>();
+  const cancelledRequests = new Set<string>();
+  const adapter: PersistentAdapter = {
+    name: "claude",
+    async *send() {
+      throw new Error("send() should not be used in team tests");
+    },
+    async *sendTurn(input: SendTurnInput): AsyncGenerator<AdapterEvent> {
+      calls.push(input);
+      const base = {
+        roomId: input.roomId,
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+        source: "adapter.claude",
+      };
+      const startedPayload = {
+        messageId: createId("msg"),
+        author: "agent.claude",
+        role: "assistant" as const,
+        text: "",
+        format: "markdown" as const,
+        metadata: { provider: "test", model: "test", requestId: input.requestId },
+      };
+
+      yield messageStarted(base, startedPayload);
+      yield sessionBound(base, "native-session");
+
+      if (calls.length === 1) {
+        await new Promise<void>((resolve) => {
+          stalledByRequest.set(input.requestId, resolve);
+          if (cancelledRequests.has(input.requestId)) {
+            resolve();
+          }
+        });
+        if (cancelledRequests.has(input.requestId)) {
+          yield messageError(base, "PROCESS_CRASH", "cancelled by user");
+          return;
+        }
+      }
+
+      yield messageCompleted(base, {
+        ...startedPayload,
+        text: "continue\nTEAM_DONE",
+      });
+    },
+    async cancel(requestId: string) {
+      cancelledRequests.add(requestId);
+      stalledByRequest.get(requestId)?.();
+    },
+    async health() {
+      return "ready" as const;
+    },
+  };
+
+  const { engine, store, session } = createEngine(adapter, {
+    maxSteps: 8,
+    adapterMode: "agentic",
+  });
+  try {
+    const roomId = engine.getState().room.id;
+    const run = session.createTeamRun({
+      roomId,
+      strategy: "debate",
+      goal: "Investigate failure and include rollback plan.",
+      participants: ["claude"],
+      maxSteps: 8,
+      maxNoProgressSteps: 2,
+      maxDurationMs: 900_000,
+      checksEnabled: true,
+      createdBy: "user",
+    });
+    const message = session.saveUserMessage(roomId, "Please keep rollback plan in scope.");
+    session.enqueueTeamFeedback(run.id, message.id, message.text);
+
+    const resumed = engine.teamResume();
+    assert.ok(resumed);
+
+    for (let i = 0; i < 40 && calls.length === 0; i++) {
+      await wait(25);
+    }
+    assert.ok(calls.length > 0);
+
+    const interrupted = await engine.interruptTeamRun(undefined, run.id);
+    assert.ok(interrupted);
+    assert.equal(interrupted.interrupted, true);
+
+    await waitForRunStatus(engine, "waiting_user_input", run.id);
+    assert.equal(calls.length, 2);
+    assert.match(calls[1]!.prompt, /Please keep rollback plan in scope\./);
   } finally {
     await engine.shutdown();
     store.close();

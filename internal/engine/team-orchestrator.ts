@@ -220,8 +220,11 @@ export class TeamOrchestrator {
     }
 
     this.teamStopFlags.add(run.id);
-    void this.interrupt(undefined, run.id).catch(() => {
-      // Best-effort interruption; status update below is authoritative.
+    void this.interrupt(undefined, run.id).catch((error: unknown) => {
+      this.logger.log("warn", "team.stop_interrupt_failed", {
+        runId: run.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
     this.session.updateTeamRunStatus(run.id, "stopped", {
       completedAt: new Date().toISOString(),
@@ -270,8 +273,13 @@ export class TeamOrchestrator {
     const adapter = this.adapters[activeDispatch.adapterName];
     try {
       await adapter?.cancel(activeDispatch.requestId);
-    } catch {
-      // Best-effort cancellation only.
+    } catch (error: unknown) {
+      this.logger.log("warn", "team.interrupt_cancel_failed", {
+        runId: run.id,
+        requestId: activeDispatch.requestId,
+        adapterName: activeDispatch.adapterName,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     this.logger.log("info", "team.run_interrupted", {
@@ -452,7 +460,6 @@ export class TeamOrchestrator {
       },
     );
     const consumedFeedbackIds = this.session.listPendingTeamFeedback(run.id, 20).map((item) => item.id);
-    this.session.consumeTeamFeedback(consumedFeedbackIds);
 
     const dispatch = this.dispatchApi.createInternalDispatch(actor, `team:debate:${run.stepCount + 1}`);
     this.trackActiveTeamDispatch(run.id, actor, dispatch.requestId);
@@ -469,6 +476,7 @@ export class TeamOrchestrator {
       this.teamNextActorByRun.set(run.id, actor);
       return;
     }
+    this.session.consumeTeamFeedback(consumedFeedbackIds);
 
     const stepSeq = run.stepCount + 1;
     this.session.addTeamStep({
@@ -648,32 +656,42 @@ interface TeamDebateControl {
   nextActor: string | null;
 }
 
-const TEAM_DONE_PATTERN = /(?:^|\n)\s*TEAM_DONE(?:\b|:)/i;
-const TEAM_NEXT_PATTERN = /(?:^|\n)\s*TEAM_NEXT\s*:\s*@?([a-z0-9._-]+)/i;
+const TEAM_DONE_PATTERN = /^\s*TEAM_DONE(?:\b|:)/i;
+const TEAM_NEXT_PATTERN = /^\s*TEAM_NEXT\s*:\s*@?([a-z0-9._-]+)/i;
 const TEAM_STOP_WORD_PATTERNS = [
-  /\bAGORYX_STOP\b/i,
-  /\bTEAM_STOP\b/i,
+  /^\s*AGORYX_STOP\s*$/i,
+  /^\s*TEAM_STOP\s*$/i,
 ];
 
-const parseTeamDebateControl = (text: string): TeamDebateControl => {
+/** Max number of trailing lines to scan for control directives. */
+const CONTROL_TAIL_LINES = 5;
+
+export const parseTeamDebateControl = (text: string): TeamDebateControl => {
   const trimmed = text.trim();
   if (!trimmed) {
     return { done: false, nextActor: null };
   }
 
-  if (
-    TEAM_DONE_PATTERN.test(trimmed) ||
-    TEAM_STOP_WORD_PATTERNS.some((pattern) => pattern.test(trimmed))
-  ) {
-    return { done: true, nextActor: null };
+  const lines = trimmed.split(/\r?\n/);
+  const tail = lines.slice(-CONTROL_TAIL_LINES);
+
+  for (const line of tail) {
+    if (
+      TEAM_DONE_PATTERN.test(line) ||
+      TEAM_STOP_WORD_PATTERNS.some((pattern) => pattern.test(line))
+    ) {
+      return { done: true, nextActor: null };
+    }
   }
 
-  const nextMatch = TEAM_NEXT_PATTERN.exec(trimmed);
-  if (nextMatch?.[1]) {
-    return {
-      done: false,
-      nextActor: nextMatch[1].toLowerCase(),
-    };
+  for (const line of tail) {
+    const nextMatch = TEAM_NEXT_PATTERN.exec(line);
+    if (nextMatch?.[1]) {
+      return {
+        done: false,
+        nextActor: nextMatch[1].toLowerCase(),
+      };
+    }
   }
 
   return { done: false, nextActor: null };

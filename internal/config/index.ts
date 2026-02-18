@@ -114,7 +114,11 @@ export function loadConfig(configPath?: string): AgoryxConfig {
     const parsed = JSON.parse(raw) as Partial<AgoryxConfig>;
     return mergeConfig(parsed);
   } catch (err) {
-    console.warn(`[config] Failed to load ${path}, using defaults:`, err);
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`\n*** WARNING: Failed to load config from ${path} — using defaults ***`);
+    console.error(`  Error: ${detail}`);
+    console.error(`  Your custom settings (agents, modes, team limits) are NOT applied.`);
+    console.error(`  Fix the file or remove it to use defaults.\n`);
     return structuredClone(DEFAULT_CONFIG);
   }
 }
@@ -162,6 +166,23 @@ function mergeAgents(
   return result;
 }
 
+const CHECK_COMMAND_PATTERN = /^[a-zA-Z0-9_./-]+(\s+[^\s|;&`$()]+)*$/;
+
+function validateCheckCommands(commands: string[]): string[] {
+  const valid: string[] = [];
+  for (const cmd of commands) {
+    const trimmed = cmd.trim();
+    if (CHECK_COMMAND_PATTERN.test(trimmed)) {
+      valid.push(trimmed);
+    } else {
+      console.error(
+        `[config] Rejected check command with unsafe characters: ${trimmed.slice(0, 80)}`,
+      );
+    }
+  }
+  return valid;
+}
+
 function mergeConfig(partial: Partial<AgoryxConfig>): AgoryxConfig {
   const teamDefaults = DEFAULT_CONFIG.team;
   const teamTrigger = partial.team?.trigger;
@@ -184,9 +205,10 @@ function mergeConfig(partial: Partial<AgoryxConfig>): AgoryxConfig {
         ...strictDefaults,
         ...strictOverrides,
       },
-      checkCommands:
+      checkCommands: validateCheckCommands(
         partial.team?.checkCommands?.filter((command) => command.trim().length > 0) ??
         teamDefaults.checkCommands,
+      ),
     },
   };
 }

@@ -80,8 +80,12 @@ export class DispatchEngine implements TeamDispatchApi {
     if (adapter) {
       try {
         await adapter.cancel(failedRequestId);
-      } catch {
-        // Best-effort cleanup only.
+      } catch (error: unknown) {
+        this.logger.log("warn", "retry.cancel_failed", {
+          adapter: normalizedAdapter,
+          failedRequestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 

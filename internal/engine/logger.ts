@@ -48,9 +48,7 @@ export class NullEngineLogger implements EngineLogger {
 }
 
 export const createDefaultEngineLogger = (): EngineLogger => {
-  const level = process.env["AGORYX_ENGINE_LOG"]?.trim().toLowerCase() as EngineLogLevel | undefined;
-  if (!level || !(level in LEVEL_WEIGHT)) {
-    return new NullEngineLogger();
-  }
+  const envLevel = process.env["AGORYX_ENGINE_LOG"]?.trim().toLowerCase() as EngineLogLevel | undefined;
+  const level = envLevel && envLevel in LEVEL_WEIGHT ? envLevel : "warn";
   return new ConsoleEngineLogger({ minLevel: level });
 };

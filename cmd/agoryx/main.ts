@@ -1062,8 +1062,10 @@ const setupEscInterruptHotkey = (engine: ChatEngine): (() => void) => {
     if (key.name !== "escape" || key.ctrl || key.meta || key.shift) {
       return;
     }
-    void triggerEscInterrupt(engine).catch(() => {
-      // Best-effort hotkey handler; explicit command path still reports errors.
+    void triggerEscInterrupt(engine).catch((error: unknown) => {
+      output.write(
+        `\n${formatErrorText(`[team] Interrupt failed: ${error instanceof Error ? error.message : String(error)}`)}\n`,
+      );
     });
   };
   input.on("keypress", onKeypress);

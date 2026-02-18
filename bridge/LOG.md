@@ -1210,3 +1210,31 @@
 - If desired, wire AGORYX_ENGINE_LOG in CLI docs/examples and add lightweight correlation IDs to adapter events for deeper tracing.
 
 ---
+## 2026-02-18T14:56:47Z | codex
+### Summary
+- Fixed 3 review findings in adapters/team runtime
+
+### Changes
+- Patched codex+claude interactive cold-retry restart predicates, delayed team feedback consume until post-interrupt acceptance, added regressions in tests/adapters/*-resume.test.ts and tests/engine/team-mode.test.ts
+
+### Risks
+- Low: logic is localized but touches recovery/control flow; future adapter protocol drift can still affect SESSION_EXPIRED detection
+
+### Next
+- Optionally run full npm test to refresh global count in docs/bridge state
+
+---
+## 2026-02-18T14:57:13Z | codex
+### Summary
+- Validated review-fix patch with full suite
+
+### Changes
+- Ran npm test after fixes; all tests pass (225/225) with updated adapter/team regressions included
+
+### Risks
+- No new risks observed beyond known upstream CLI protocol drift
+
+### Next
+- Ready for Claude or Ivan verification/review
+
+---

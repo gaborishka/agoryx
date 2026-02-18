@@ -1091,5 +1091,29 @@ internal/
 - `npx tsx --test tests/engine/team-mode.test.ts tests/engine/persistent-session.test.ts tests/engine/retry-flow.test.ts` PASS
 - `npm test` PASS (**220/220**)
 
+## What Changed This Session (Codex — review findings remediation)
+
+### Scope
+- Fixed three confirmed review findings in adapter session recovery and team feedback durability.
+
+### Fixes delivered
+- `internal/adapters/codex/index.ts`:
+  - fixed interactive runner restart predicate for cold retry (`nativeSessionId = null`) so expired warm sessions are not reused.
+  - added exported helper `shouldRestartCodexInteractiveRunner(...)` and regression coverage.
+- `internal/adapters/claude/index.ts`:
+  - fixed the same cold-retry restart predicate for Claude interactive runner.
+  - added exported helper `shouldRestartClaudeInteractiveRunner(...)` and regression coverage.
+- `internal/engine/team-orchestrator.ts`:
+  - moved feedback dequeue to after interruption check, so aborted steps do not drop already-pending user feedback.
+- `tests/adapters/codex-resume.test.ts`, `tests/adapters/claude-resume.test.ts`:
+  - added restart-condition regression tests for cold retry vs warm session reuse.
+- `tests/engine/team-mode.test.ts`:
+  - added regression test proving pending feedback survives an interrupted debate step and appears in the next prompt.
+
+### Validation
+- `npx tsx --test tests/adapters/codex-resume.test.ts tests/adapters/claude-resume.test.ts tests/engine/team-mode.test.ts` PASS (**38/38**)
+- `npm run typecheck` PASS
+- `npm test` PASS (**225/225**)
+
 ## Last Updated
-2026-02-18T14:10:09Z by codex
+2026-02-18T14:56:12Z by codex

@@ -1256,7 +1256,12 @@ const roomRowToDomain = (row: RoomRow): Room => ({
 const tryParseJson = <T>(value: string, fallback: T): T => {
   try {
     return JSON.parse(value) as T;
-  } catch {
+  } catch (error: unknown) {
+    console.error(
+      `[storage] Failed to parse JSON column: ${
+        error instanceof Error ? error.message : String(error)
+      } — value preview: ${value.slice(0, 100)}`,
+    );
     return fallback;
   }
 };

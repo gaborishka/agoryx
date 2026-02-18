@@ -392,11 +392,14 @@ export class CodexAdapter implements PersistentAdapter {
     workspaceCwd?: string,
   ): Promise<CodexAppServerRunner> {
     const cwd = buildCodexSpawnCwd(workspaceCwd);
-    const needsRestart =
-      !this.interactiveRunner ||
-      this.interactiveRunner.isClosed() ||
-      this.interactiveCwd !== cwd ||
-      (nativeSessionId !== null && this.interactiveSessionId !== nativeSessionId);
+    const needsRestart = shouldRestartCodexInteractiveRunner(
+      this.interactiveRunner !== null,
+      this.interactiveRunner?.isClosed() ?? false,
+      this.interactiveCwd,
+      cwd,
+      this.interactiveSessionId,
+      nativeSessionId,
+    );
 
     if (needsRestart) {
       await this.disposeInteractiveRunner();
@@ -682,8 +685,13 @@ class CodexAppServerRunner {
           5_000,
         );
       }
-    } catch {
-      // Best effort: if interrupt fails, still reject local turn state.
+    } catch (error: unknown) {
+      this.closed = true;
+      console.error(
+        `[adapter.codex] interrupt failed, marking runner closed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
 
     activeTurn.reject(new Error(reason));
@@ -1052,8 +1060,12 @@ class CodexAppServerRunner {
         { subscriptionId },
         5_000,
       );
-    } catch {
-      // Best effort only.
+    } catch (error: unknown) {
+      console.error(
+        `[adapter.codex] failed to remove conversation listener: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 }
@@ -1120,6 +1132,29 @@ export const extractCodexThreadId = (line: string): string | null => {
   }
 
   return null;
+};
+
+export const shouldRestartCodexInteractiveRunner = (
+  hasRunner: boolean,
+  runnerClosed: boolean,
+  currentCwd: string | null,
+  requestedCwd: string,
+  currentSessionId: string | null,
+  requestedSessionId: string | null,
+): boolean => {
+  if (!hasRunner) {
+    return true;
+  }
+  if (runnerClosed) {
+    return true;
+  }
+  if (currentCwd !== requestedCwd) {
+    return true;
+  }
+  if (requestedSessionId === null) {
+    return currentSessionId !== null;
+  }
+  return currentSessionId !== requestedSessionId;
 };
 
 const buildPrompt = (input: AgentInput): string =>

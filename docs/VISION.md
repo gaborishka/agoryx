@@ -18,7 +18,7 @@ The best solutions to hard problems often emerge not from asking one expert, but
 
 ## Product Thesis
 
-Start with a personal tool that solves the creator's daily workflow. Build on top of existing authenticated CLIs (Claude Code, Codex CLI) rather than raw provider APIs, so users can leverage their existing subscriptions without managing separate API keys. Treat orchestration modes (manual, round-robin, debate, team-roles) as policies of one engine, not separate applications. Keep identity, auth tokens, and conversation data local by default.
+Start with a personal tool that solves the creator's daily workflow. Build on top of existing authenticated CLIs (Claude Code, Codex CLI) rather than raw provider APIs, so users can leverage their existing subscriptions without managing separate API keys. Treat orchestration modes (manual, round-robin, auto, team) as policies of one engine, not separate applications. Keep identity, auth tokens, and conversation data local by default.
 
 ## Core Principles
 
@@ -76,10 +76,10 @@ Long conversations can exceed practical context limits. Mitigation: implement su
 
 ## Roadmap
 
-**v0.1** — CLI-first two-agent local room (Codex + Claude). Manual, round-robin, and auto modes. SQLite persistence. Basic context management.
+**v0.1** ✓ — CLI-first two-agent local room (Codex + Claude). Manual, round-robin, and auto modes. SQLite persistence. Context management (pins, checkpoints, structured summaries). Session export (Markdown, JSON). Retry flow. Persistent adapter sessions.
 
-**v0.2** — Local web UI on the same gateway core. Session export (Markdown, JSON). Additional adapters (Gemini CLI, local models via Ollama).
+**v0.2** ✓ — Autonomous team mode with round-robin debate loop, proposal-gated completion, background team runs, and resumable state. Agentic adapter transport (workspace-aware cwd). Live status output (generating/done, session binding). Team output sanitization and noise filtering.
 
-**v0.3** — Richer orchestration policies (debate, team-roles, moderated). MCP integration. Shared tool/file context between agents.
+**v0.3** — Local web UI. Additional adapters (Gemini CLI, local models via Ollama). MCP integration. Shared tool/file context between agents.
 
 **v1.0** — Stable API, community adapters, configurable policy engine, optional daemon mode.

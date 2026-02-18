@@ -23,6 +23,7 @@ const extractTextFromObject = (value: unknown): string | null => {
 
   const obj = value as Record<string, unknown>;
   const candidates = [
+    obj.event,
     obj.delta,
     obj.text,
     obj.output_text,
@@ -71,6 +72,7 @@ const extractStringCandidate = (value: unknown): string | null => {
 
     // Provider streams often nest text under message/content, item/content, or result.
     const nestedCandidates = [
+      obj.event,
       obj.delta,
       obj.output_text,
       obj.result,

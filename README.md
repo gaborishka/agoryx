@@ -17,6 +17,9 @@ Working with multiple LLMs today means copying text between apps and re-explaini
 - **Session export:** markdown and JSON formats, in-chat and CLI
 - **Retry flow:** `/retry` with automatic cancel of failed requests
 - **No API keys:** wraps `codex exec` and `claude -p` using existing authenticated CLIs
+- **Team runtime (v0.2):** autonomous `team` mode with proposal gate and resumable team runs
+- **Enthusiast defaults:** relaxed team limits by default; strict profile is opt-in (`/team start --strict` or config)
+- **Agentic adapter mode:** `agentic` transport mode for persistent turn-based execution with workspace-aware cwd
 
 ## Prerequisites
 
@@ -38,9 +41,12 @@ npm run chat -- --mode auto
 npm run chat -- --mode manual          # you pick who responds with @agent
 npm run chat -- --mode round-robin     # agents alternate
 npm run chat -- --mode auto            # smart routing (recommended)
+npm run chat -- --mode team            # autonomous team runtime
 
-# Use real CLI adapters (default is stub mode)
-npm run chat -- --adapter-mode cli
+# Adapter transport modes
+npm run chat -- --adapter-mode cli       # default for non-team modes
+npm run chat -- --adapter-mode agentic   # explicit persistent+workspace mode
+# In team mode, cli adapters are auto-promoted to agentic unless overridden
 
 # Resume a previous session
 npm run chat -- --resume <session_id>
@@ -56,8 +62,15 @@ npm run chat -- --config ./my-config.json
 | `@codex <msg>` | Direct message to Codex |
 | `@claude <msg>` | Direct message to Claude |
 | `@all <msg>` | Broadcast to all agents |
-| `/mode <manual\|round-robin\|auto>` | Switch orchestration mode |
-| `/adapter <agent> <stub\|cli>` | Switch adapter mode per agent |
+| `/mode <manual\|round-robin\|auto\|team>` | Switch orchestration mode |
+| `/adapter <agent> <stub\|cli\|persistent\|agentic>` | Switch adapter mode per agent |
+| `/team start <goal> [--strict] [--no-checks]` | Start autonomous team run |
+| `/team status` | Show active team run status |
+| `/team log [limit]` | Show recent team steps/checks |
+| `/team resume` | Resume latest team run |
+| `/team approve [run_id]` | Approve proposal and mark run done |
+| `/team interrupt [feedback]` | Interrupt active team step and optionally queue correction |
+| `/team stop` | Stop active team run |
 | `/pin [label] <content>` | Pin persistent context |
 | `/unpin <id>` | Remove pinned context |
 | `/pins` | List all pinned contexts |
@@ -68,6 +81,8 @@ npm run chat -- --config ./my-config.json
 | `/retry` | Retry last failed agent request |
 | `/help` | Show available commands |
 | `/quit` or `/exit` | End session |
+
+In interactive TTY sessions, pressing `Esc` in `team` mode also interrupts the active team step.
 
 ## Session Management
 
@@ -88,10 +103,10 @@ internal/
   config/            Config loader, defaults, runtime config builder
   engine/            Main chat loop, dispatch, retry
   events/            Canonical event types
-  orchestrator/      Policies (manual, round-robin, auto), factory
+  orchestrator/      Policies (manual, round-robin, auto, team), factory
   session/           Context builder, session service, checkpoint summaries
   storage/           SQLite persistence
-tests/               135 tests across 18 files
+tests/               206 tests
 docs/                Architecture, vision, consensus, design plans
 ```
 
@@ -101,23 +116,45 @@ Create `agoryx.json` in the project root to customize defaults:
 
 ```json
 {
+  "defaultMode": "team",
   "agents": {
     "codex": {
-      "adapter": "cli",
+      "mode": "agentic",
+      "workspaceCwd": "/absolute/path/to/workspace",
       "skills": ["code", "debug", "test", "refactor"]
     },
     "claude": {
-      "adapter": "cli",
+      "mode": "agentic",
+      "workspaceCwd": "/absolute/path/to/workspace",
       "skills": ["architecture", "review", "explain", "documentation"]
     }
   },
-  "session": {
-    "dbPath": "./agoryx.db",
+  "context": {
     "maxHistoryMessages": 100,
-    "checkpointThreshold": 30
+    "checkpointThreshold": 30,
+    "maxContextTokens": 30000
   },
-  "orchestration": {
-    "defaultMode": "auto"
+  "session": {
+    "dbPath": "./agoryx.db"
+  },
+  "team": {
+    "profile": "enthusiast",
+    "maxSteps": 24,
+    "maxNoProgressSteps": 8,
+    "maxDurationMs": 3600000,
+    "checksEnabledByDefault": false,
+    "checkCommands": ["npm run typecheck", "npm test"],
+    "strict": {
+      "maxSteps": 8,
+      "maxNoProgressSteps": 2,
+      "maxDurationMs": 900000,
+      "checksEnabledByDefault": true
+    },
+    "singleActive": true,
+    "trigger": {
+      "autoOnMessage": true,
+      "commandStart": true
+    }
   }
 }
 ```
@@ -126,7 +163,7 @@ Create `agoryx.json` in the project root to customize defaults:
 
 ```bash
 npm run typecheck    # Type check
-npm test             # Run all 135 tests
+npm test             # Run all tests
 npm run build        # Production build
 ```
 

@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, getAdapterConfig, DEFAULT_CONFIG, resolveAgentSkills } from "../../internal/config/index.js";
+import {
+  loadConfig,
+  getAdapterConfig,
+  DEFAULT_CONFIG,
+  resolveAgentSkills,
+  toRuntimeConfig,
+} from "../../internal/config/index.js";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -168,6 +174,41 @@ test("skills merge: mixed-case and whitespace skills are normalized", () => {
   const skills = resolveAgentSkills(config);
 
   assert.deepEqual(skills.codex, ["review", "code", "debug"]);
+
+  rmSync(dir, { recursive: true });
+});
+
+test("team config merge applies overrides and keeps trigger defaults", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      team: {
+        profile: "strict",
+        maxSteps: 5,
+        strict: {
+          maxSteps: 3,
+        },
+        trigger: {
+          autoOnMessage: false,
+        },
+      },
+    }),
+  );
+
+  const config = loadConfig(configPath);
+  assert.equal(config.team.maxSteps, 5);
+  assert.equal(config.team.profile, "strict");
+  assert.equal(config.team.strict.maxSteps, 3);
+  assert.equal(config.team.trigger.autoOnMessage, false);
+  assert.equal(config.team.trigger.commandStart, true);
+
+  const runtime = toRuntimeConfig(config);
+  assert.equal(runtime.team.maxSteps, 5);
+  assert.equal(runtime.team.profile, "strict");
+  assert.equal(runtime.team.strict.maxSteps, 3);
+  assert.equal(runtime.team.trigger.commandStart, true);
 
   rmSync(dir, { recursive: true });
 });

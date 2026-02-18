@@ -1,8 +1,9 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { tmpdir } from "node:os";
-import type { Readable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 import { setTimeout as wait } from "node:timers/promises";
 import type {
+  AdapterMode,
   AdapterStatus,
   AgentInput,
   PersistentAdapter,
@@ -17,14 +18,46 @@ import {
 } from "../event-factory.js";
 import { extractTextFromJsonLine } from "../parse-output.js";
 import { createId } from "../../session/ids.js";
+import { AsyncQueue } from "../async-queue.js";
+import type { ErrorClass } from "../../events/types.js";
 
 const SOURCE = "adapter.claude";
-type SpawnedProcess = ChildProcessByStdio<null, Readable, Readable>;
+const STDERR_BUFFER_MAX = 16_000;
+const STDERR_SNAPSHOT_SIZE = 8_000;
+type OneShotProcess = ChildProcessByStdio<null, Readable, Readable>;
+type InteractiveProcess = ChildProcessByStdio<Writable, Readable, Readable>;
+
+interface ClaudeInteractiveTurnResult {
+  text: string;
+  sessionId: string | null;
+}
+
+interface ClaudeInteractiveStreamItem {
+  type: "delta" | "session.bound";
+  text?: string;
+  sessionId?: string;
+}
+
+interface ClaudeInteractiveTurn {
+  requestId: string;
+  output: string;
+  resultText: string | null;
+  timer: NodeJS.Timeout;
+  onDelta: (text: string) => void;
+  onSessionId: (sessionId: string) => void;
+  resolve: (result: ClaudeInteractiveTurnResult) => void;
+  reject: (error: Error) => void;
+}
 
 export class ClaudeAdapter implements PersistentAdapter {
   public readonly name = "claude";
-  private readonly running = new Map<string, SpawnedProcess>();
+  private readonly running = new Map<string, OneShotProcess>();
+  private readonly interactiveRequestIds = new Set<string>();
   private status: AdapterStatus = "ready";
+  private activeRequests = 0;
+  private interactiveRunner: ClaudeInteractiveRunner | null = null;
+  private interactiveSessionId: string | null = null;
+  private interactiveCwd: string | null = null;
 
   public async *send(input: AgentInput) {
     const messageId = createId("msg");
@@ -51,13 +84,16 @@ export class ClaudeAdapter implements PersistentAdapter {
       return;
     }
 
-    this.status = "busy";
     const prompt = buildPrompt(input);
     const child = spawn("claude", buildClaudeSpawnArgs(prompt, null), {
       stdio: ["ignore", "pipe", "pipe"],
       env: buildClaudeSpawnEnv(process.env),
-      cwd: buildClaudeSpawnCwd(process.env),
+      cwd: buildClaudeSpawnCwd(process.env, input.config.mode, input.config.workspaceCwd),
     });
+    const exitPromise = new Promise<number | null>((resolve) => {
+      child.once("close", resolve);
+    });
+    this.markRequestStart();
     this.running.set(input.requestId, child);
 
     let stderr = "";
@@ -96,9 +132,7 @@ export class ClaudeAdapter implements PersistentAdapter {
         }
       }
 
-      const exitCode = await new Promise<number | null>((resolve) => {
-        child.once("close", resolve);
-      });
+      const exitCode = await exitPromise;
 
       if (timedOut) {
         yield messageError(
@@ -130,11 +164,20 @@ export class ClaudeAdapter implements PersistentAdapter {
     } finally {
       clearTimeout(timer);
       this.running.delete(input.requestId);
-      this.status = "ready";
+      this.markRequestEnd();
     }
   }
 
   public async *sendTurn(input: SendTurnInput) {
+    if (input.config.mode === "agentic") {
+      yield* this.sendTurnInteractive(input);
+      return;
+    }
+
+    yield* this.sendTurnResume(input);
+  }
+
+  private async *sendTurnResume(input: SendTurnInput) {
     const messageId = createId("msg");
     const startedPayload = {
       messageId,
@@ -151,12 +194,15 @@ export class ClaudeAdapter implements PersistentAdapter {
 
     yield messageStarted(baseArgs(input), startedPayload);
 
-    this.status = "busy";
     const child = spawn("claude", buildClaudeSpawnArgs(input.prompt, input.nativeSessionId), {
       stdio: ["ignore", "pipe", "pipe"],
       env: buildClaudeSpawnEnv(process.env),
-      cwd: buildClaudeSpawnCwd(process.env),
+      cwd: buildClaudeSpawnCwd(process.env, input.config.mode, input.config.workspaceCwd),
     });
+    const exitPromise = new Promise<number | null>((resolve) => {
+      child.once("close", resolve);
+    });
+    this.markRequestStart();
     this.running.set(input.requestId, child);
 
     let stderr = "";
@@ -205,9 +251,7 @@ export class ClaudeAdapter implements PersistentAdapter {
         }
       }
 
-      const exitCode = await new Promise<number | null>((resolve) => {
-        child.once("close", resolve);
-      });
+      const exitCode = await exitPromise;
 
       if (timedOut) {
         yield messageError(
@@ -239,29 +283,233 @@ export class ClaudeAdapter implements PersistentAdapter {
     } finally {
       clearTimeout(timer);
       this.running.delete(input.requestId);
-      this.status = "ready";
+      this.markRequestEnd();
     }
+  }
+
+  private async *sendTurnInteractive(input: SendTurnInput) {
+    const messageId = createId("msg");
+    const startedPayload = {
+      messageId,
+      author: "agent.claude",
+      role: "assistant" as const,
+      text: "",
+      format: "markdown" as const,
+      metadata: {
+        provider: "anthropic",
+        model: "claude-code",
+        requestId: input.requestId,
+      },
+    };
+
+    yield messageStarted(baseArgs(input), startedPayload);
+    this.markRequestStart();
+
+    let output = "";
+    try {
+      const runner = await this.ensureInteractiveRunner(
+        input.nativeSessionId,
+        input.config.workspaceCwd,
+      );
+
+      const preBoundSessionId = runner.sessionId();
+      if (preBoundSessionId && preBoundSessionId !== input.nativeSessionId) {
+        this.interactiveSessionId = preBoundSessionId;
+        yield sessionBound(baseArgs(input), preBoundSessionId);
+      }
+
+      const queue = new AsyncQueue<ClaudeInteractiveStreamItem>();
+      this.interactiveRequestIds.add(input.requestId);
+
+      const turnPromise = runner
+        .sendTurn({
+          prompt: input.prompt,
+          requestId: input.requestId,
+          timeoutMs: input.config.timeoutMs,
+          onDelta: (text) => {
+            queue.push({ type: "delta", text });
+          },
+          onSessionId: (sessionId) => {
+            if (
+              sessionId !== preBoundSessionId &&
+              sessionId !== input.nativeSessionId
+            ) {
+              queue.push({ type: "session.bound", sessionId });
+            }
+          },
+        })
+        .then((result) => {
+          if (
+            result.sessionId &&
+            result.sessionId !== preBoundSessionId &&
+            result.sessionId !== input.nativeSessionId
+          ) {
+            queue.push({ type: "session.bound", sessionId: result.sessionId });
+          }
+          return { ok: true as const, result };
+        })
+        .catch((error) => {
+          return {
+            ok: false as const,
+            error: error instanceof Error ? error : new Error(String(error)),
+          };
+        })
+        .finally(() => {
+          queue.close();
+        });
+
+      for await (const item of queue) {
+        if (item.type === "session.bound" && item.sessionId) {
+          this.interactiveSessionId = item.sessionId;
+          yield sessionBound(baseArgs(input), item.sessionId);
+          continue;
+        }
+
+        if (item.type === "delta" && item.text) {
+          output += item.text;
+          yield messageDelta(baseArgs(input), {
+            ...startedPayload,
+            text: item.text,
+          });
+        }
+      }
+
+      const turnOutcome = await turnPromise;
+      if (!turnOutcome.ok) {
+        yield messageError(
+          baseArgs(input),
+          classifyClaudeInteractiveError(turnOutcome.error.message),
+          turnOutcome.error.message,
+          runner.stderrSnapshot(),
+        );
+        return;
+      }
+
+      const resolvedText = turnOutcome.result.text.trim() || output.trim() || "(no content)";
+      yield messageCompleted(baseArgs(input), {
+        ...startedPayload,
+        text: resolvedText,
+      });
+    } catch (error) {
+      yield messageError(
+        baseArgs(input),
+        "UNKNOWN",
+        error instanceof Error ? error.message : "unknown claude interactive failure",
+      );
+    } finally {
+      this.interactiveRequestIds.delete(input.requestId);
+      this.markRequestEnd();
+    }
+  }
+
+  private async ensureInteractiveRunner(
+    nativeSessionId: string | null,
+    workspaceCwd?: string,
+  ): Promise<ClaudeInteractiveRunner> {
+    const cwd = buildClaudeSpawnCwd(process.env, "agentic", workspaceCwd);
+
+    const needsRestart =
+      !this.interactiveRunner ||
+      this.interactiveRunner.isClosed() ||
+      this.interactiveCwd !== cwd ||
+      (nativeSessionId !== null && this.interactiveSessionId !== nativeSessionId);
+
+    if (needsRestart) {
+      await this.disposeInteractiveRunner();
+      const runner = new ClaudeInteractiveRunner(
+        cwd,
+        buildClaudeSpawnEnv(process.env),
+        nativeSessionId,
+      );
+      this.interactiveRunner = runner;
+      this.interactiveSessionId = runner.sessionId();
+      this.interactiveCwd = cwd;
+      return runner;
+    }
+
+    if (!this.interactiveRunner) {
+      throw new Error("interactive claude runner is not available");
+    }
+    return this.interactiveRunner;
+  }
+
+  private async disposeInteractiveRunner(): Promise<void> {
+    if (!this.interactiveRunner) {
+      return;
+    }
+    await this.interactiveRunner.shutdown();
+    this.interactiveRunner = null;
+    this.interactiveSessionId = null;
+    this.interactiveCwd = null;
   }
 
   public async cancel(requestId: string): Promise<void> {
     const proc = this.running.get(requestId);
-    if (!proc) {
+    if (proc) {
+      proc.kill("SIGTERM");
+      await this.waitForRequestCleanup(requestId);
       return;
     }
-    proc.kill("SIGTERM");
-    this.running.delete(requestId);
-    this.status = "ready";
+
+    if (this.interactiveRequestIds.has(requestId) && this.interactiveRunner) {
+      await this.interactiveRunner.cancelActiveTurn(
+        "claude interactive turn cancelled",
+      );
+      await this.waitForRequestCleanup(requestId);
+    }
+  }
+
+  public async destroy(nativeSessionId: string): Promise<void> {
+    if (!this.interactiveRunner) {
+      return;
+    }
+    if (!nativeSessionId || this.interactiveSessionId === nativeSessionId) {
+      await this.disposeInteractiveRunner();
+    }
   }
 
   public async health(): Promise<AdapterStatus> {
-    if (this.status !== "ready") {
-      return this.status;
+    if (this.interactiveRunner?.isClosed()) {
+      this.interactiveRunner = null;
+      this.interactiveSessionId = null;
+      this.interactiveCwd = null;
     }
-    if (process.env.ANTHROPIC_API_KEY) {
-      // This is informational and does not block operation.
-      return "ready";
+    if (
+      this.activeRequests > 0 ||
+      this.running.size > 0 ||
+      this.interactiveRequestIds.size > 0
+    ) {
+      return "busy";
     }
-    return "ready";
+    return this.status;
+  }
+
+  private markRequestStart(): void {
+    this.activeRequests += 1;
+    this.status = "busy";
+  }
+
+  private markRequestEnd(): void {
+    this.activeRequests = Math.max(0, this.activeRequests - 1);
+    if (this.activeRequests === 0) {
+      this.status = "ready";
+    }
+  }
+
+  private async waitForRequestCleanup(
+    requestId: string,
+    timeoutMs = 2_000,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (
+        !this.running.has(requestId) &&
+        !this.interactiveRequestIds.has(requestId)
+      ) {
+        return;
+      }
+      await wait(20);
+    }
   }
 
   private stubText(input: AgentInput): string {
@@ -274,6 +522,234 @@ export class ClaudeAdapter implements PersistentAdapter {
       `Prompt preview: ${prompt.slice(0, 180)}`,
       "Integration mode is currently STUB. Switch adapter mode to CLI to run claude directly.",
     ].join("\n");
+  }
+}
+
+class ClaudeInteractiveRunner {
+  private readonly child: InteractiveProcess;
+  private stdoutBuffer = "";
+  private stderrBuffer = "";
+  private closed = false;
+  private sessionIdValue: string | null;
+  private activeTurn: ClaudeInteractiveTurn | null = null;
+
+  public constructor(
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+    nativeSessionId: string | null,
+  ) {
+    this.sessionIdValue = nativeSessionId;
+    this.child = spawn("claude", buildClaudeInteractiveSpawnArgs(nativeSessionId), {
+      stdio: ["pipe", "pipe", "pipe"],
+      env,
+      cwd,
+    });
+
+    this.child.stdout.on("data", (chunk: Buffer) => {
+      this.consumeStdout(chunk.toString("utf8"));
+    });
+    this.child.stderr.on("data", (chunk: Buffer) => {
+      this.stderrBuffer += chunk.toString("utf8");
+      if (this.stderrBuffer.length > STDERR_BUFFER_MAX) {
+        this.stderrBuffer = this.stderrBuffer.slice(-STDERR_SNAPSHOT_SIZE);
+      }
+    });
+    this.child.once("close", (code) => {
+      this.handleClose(code);
+    });
+    this.child.once("error", (error) => {
+      this.handleFatal(error instanceof Error ? error : new Error(String(error)));
+    });
+  }
+
+  public sessionId(): string | null {
+    return this.sessionIdValue;
+  }
+
+  public async sendTurn(input: {
+    prompt: string;
+    requestId: string;
+    timeoutMs: number;
+    onDelta: (text: string) => void;
+    onSessionId: (sessionId: string) => void;
+  }): Promise<ClaudeInteractiveTurnResult> {
+    if (this.closed) {
+      throw new Error("PROCESS_CRASH: claude interactive process is closed");
+    }
+    if (this.activeTurn) {
+      throw new Error("PROTOCOL_ERROR: claude interactive turn overlap is not supported");
+    }
+
+    const turnPromise = new Promise<ClaudeInteractiveTurnResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        void this.cancelActiveTurn("TIMEOUT: claude interactive request timed out");
+      }, Math.max(1_000, input.timeoutMs));
+
+      this.activeTurn = {
+        requestId: input.requestId,
+        output: "",
+        resultText: null,
+        timer,
+        onDelta: input.onDelta,
+        onSessionId: input.onSessionId,
+        resolve,
+        reject,
+      };
+    });
+
+    const line = JSON.stringify(buildClaudeInteractiveInput(input.prompt));
+    await new Promise<void>((resolve, reject) => {
+      this.child.stdin.write(`${line}\n`, (error) => {
+        if (!error) {
+          resolve();
+          return;
+        }
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("PROCESS_CRASH: failed to write claude interactive request"),
+        );
+      });
+    }).catch((error) => {
+      this.rejectActiveTurn(
+        error instanceof Error
+          ? error
+          : new Error("PROCESS_CRASH: failed to send claude interactive request"),
+      );
+      throw error;
+    });
+
+    return turnPromise;
+  }
+
+  public async cancelActiveTurn(reason: string): Promise<void> {
+    const activeTurn = this.activeTurn;
+    if (!activeTurn) {
+      return;
+    }
+
+    this.activeTurn = null;
+    clearTimeout(activeTurn.timer);
+
+    await new Promise<void>((resolve) => {
+      const control = JSON.stringify({ type: "control", signal: "interrupt" });
+      this.child.stdin.write(`${control}\n`, () => {
+        resolve();
+      });
+    }).catch(() => {
+      // Best-effort interrupt; ignore write failures.
+    });
+
+    activeTurn.reject(new Error(reason));
+  }
+
+  public stderrSnapshot(): string {
+    return this.stderrBuffer.slice(-STDERR_SNAPSHOT_SIZE);
+  }
+
+  public isClosed(): boolean {
+    return this.closed;
+  }
+
+  public async shutdown(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+
+    if (this.activeTurn) {
+      clearTimeout(this.activeTurn.timer);
+      this.activeTurn.reject(
+        new Error("PROCESS_CRASH: claude interactive process was shut down"),
+      );
+      this.activeTurn = null;
+    }
+
+    this.child.kill("SIGTERM");
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this.child.kill("SIGKILL");
+        resolve();
+      }, 1_500);
+      this.child.once("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  private consumeStdout(chunk: string): void {
+    this.stdoutBuffer += chunk;
+    let index = this.stdoutBuffer.indexOf("\n");
+    while (index !== -1) {
+      const line = this.stdoutBuffer.slice(0, index).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(index + 1);
+      if (line) {
+        this.consumeLine(line);
+      }
+      index = this.stdoutBuffer.indexOf("\n");
+    }
+  }
+
+  private consumeLine(line: string): void {
+    const sessionId = extractClaudeSessionId(line);
+    if (sessionId) {
+      this.sessionIdValue = sessionId;
+      this.activeTurn?.onSessionId(sessionId);
+    }
+
+    const parsed = tryParseJsonObject(line);
+    if (!parsed || !this.activeTurn) {
+      return;
+    }
+
+    if (parsed.type === "error") {
+      const message =
+        extractTextFromUnknown(parsed.error) ||
+        extractTextFromUnknown(parsed.message) ||
+        "claude interactive error";
+      this.rejectActiveTurn(new Error(`PROCESS_CRASH: ${message}`));
+      return;
+    }
+
+    const chunk = parseClaudeChunk(line);
+    for (const part of chunk.deltaParts) {
+      this.activeTurn.output += part;
+      this.activeTurn.onDelta(part);
+    }
+    if (chunk.resultText) {
+      this.activeTurn.resultText = chunk.resultText;
+    }
+
+    if (isClaudeResultEvent(parsed)) {
+      const activeTurn = this.activeTurn;
+      this.activeTurn = null;
+      clearTimeout(activeTurn.timer);
+      activeTurn.resolve({
+        text: activeTurn.resultText?.trim() || activeTurn.output.trim() || "(no content)",
+        sessionId: this.sessionIdValue,
+      });
+    }
+  }
+
+  private rejectActiveTurn(error: Error): void {
+    if (!this.activeTurn) {
+      return;
+    }
+    const activeTurn = this.activeTurn;
+    this.activeTurn = null;
+    clearTimeout(activeTurn.timer);
+    activeTurn.reject(error);
+  }
+
+  private handleClose(code: number | null): void {
+    this.closed = true;
+    const suffix = code === null ? "" : ` (exit ${code})`;
+    this.handleFatal(new Error(`PROCESS_CRASH: claude interactive process closed${suffix}`));
+  }
+
+  private handleFatal(error: Error): void {
+    this.rejectActiveTurn(error);
   }
 }
 
@@ -303,6 +779,32 @@ export const buildClaudeSpawnArgs = (
   "--include-partial-messages",
 ];
 
+export const buildClaudeInteractiveSpawnArgs = (
+  nativeSessionId: string | null = null,
+): string[] => [
+  ...(nativeSessionId ? ["--resume", nativeSessionId] : []),
+  "--print",
+  "--input-format",
+  "stream-json",
+  "--output-format",
+  "stream-json",
+  "--verbose",
+  "--include-partial-messages",
+];
+
+export const buildClaudeInteractiveInput = (prompt: string): Record<string, unknown> => ({
+  type: "user",
+  message: {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: prompt,
+      },
+    ],
+  },
+});
+
 export const buildClaudeSpawnEnv = (
   env: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv => {
@@ -311,7 +813,14 @@ export const buildClaudeSpawnEnv = (
   return sanitized;
 };
 
-export const buildClaudeSpawnCwd = (env: NodeJS.ProcessEnv): string => {
+export const buildClaudeSpawnCwd = (
+  env: NodeJS.ProcessEnv,
+  mode: AdapterMode = "cli",
+  workspaceCwd?: string,
+): string => {
+  if (mode === "agentic") {
+    return workspaceCwd?.trim() || process.cwd();
+  }
   const overridden = env.AGORYX_CLAUDE_CWD?.trim();
   if (overridden) {
     return overridden;
@@ -333,12 +842,26 @@ export const parseClaudeChunk = (
     }
 
     const maybeObject = tryParseJsonObject(trimmed);
+    if (!maybeObject) {
+      continue;
+    }
+
     if (isClaudeResultEvent(maybeObject)) {
       const extracted = extractTextFromUnknown(
         (maybeObject as Record<string, unknown>).result,
       );
       if (extracted) {
         resultText = extracted;
+      }
+      continue;
+    }
+
+    if ((maybeObject as Record<string, unknown>).type === "stream_event") {
+      const extracted = extractTextFromUnknown(
+        (maybeObject as Record<string, unknown>).event,
+      );
+      if (extracted) {
+        parts.push(extracted);
       }
       continue;
     }
@@ -423,9 +946,12 @@ const extractTextFromUnknown = (value: unknown): string | null => {
 
   const obj = value as Record<string, unknown>;
   const candidates = [
+    obj.delta,
     obj.text,
     obj.value,
     obj.result,
+    obj.event,
+    obj.data,
     obj.content,
     obj.message,
     obj.item,
@@ -468,6 +994,23 @@ const classifyClaudeProcessError = (
     /(expired|not found|unknown|invalid|missing)/.test(normalized)
   ) {
     return "SESSION_EXPIRED";
+  }
+  return "PROCESS_CRASH";
+};
+
+const classifyClaudeInteractiveError = (message: string): ErrorClass => {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("timeout")) {
+    return "TIMEOUT";
+  }
+  if (
+    /session|conversation|thread|resume/.test(normalized) &&
+    /(expired|not found|unknown|invalid|missing)/.test(normalized)
+  ) {
+    return "SESSION_EXPIRED";
+  }
+  if (normalized.includes("protocol")) {
+    return "PROTOCOL_ERROR";
   }
   return "PROCESS_CRASH";
 };

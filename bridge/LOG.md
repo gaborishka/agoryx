@@ -801,3 +801,384 @@
 - Proceed to merge once Ivan confirms
 
 ---
+## 2026-02-18T07:31:44Z | codex
+### Summary
+- Implemented v0.2 team runtime end-to-end with team mode, agentic mode, lifecycle APIs, and docs/tests
+
+### Changes
+- Added team domain types/config, SQLite team tables+APIs, SessionService wrappers/prompt builder, TeamPolicy, ChatEngine team loop + /team controls + shutdown, CLI /team commands, adapter agentic cwd behavior, README/ARCHITECTURE updates, and 7 new test files
+
+### Risks
+- Known tradeoff retained by decision: unrestricted safety policy for team/agentic execution
+
+### Next
+- Run live CLI smoke for team mode with real codex+claude in agentic mode and tune pipeline check UX if needed
+
+---
+## 2026-02-18T07:37:18Z | codex
+### Summary
+- Simplified team runtime by removing public pipeline/debate branching
+
+### Changes
+- Collapsed team execution to one deterministic loop, removed --strategy from /team start, removed team.defaultStrategy from config surface, simplified TeamPolicy/ChatEngine, and updated tests/docs accordingly
+
+### Risks
+- No blocker; legacy team_runs.strategy column remains for backward compatibility but is no longer user-configurable
+
+### Next
+- If needed, run a live team-mode smoke with real adapters and refine no-progress guardrails
+
+---
+## 2026-02-18T07:56:54Z | codex
+### Summary
+- Cleaned team-mode UX and stream output for real autonomous collaboration
+
+### Changes
+- Removed strategy text from team CLI/status output, auto-promoted team adapters cli->agentic by default, hardened Claude stream parser to ignore non-JSON diagnostic lines, and tightened team-step instructions to reduce check-in loops; updated related engine/cmd/adapter tests
+
+### Risks
+- Team policy still remains deterministic round-robin and may still need future no-progress heuristics under edge prompts
+
+### Next
+- Run live smoke in team mode with codex+claude to verify cleaner dialogue and artifact-producing turns
+
+---
+
+## 2026-02-18T08:10:00Z | claude
+### Summary
+- Provided joint project review from Claude's perspective (team run: debate stage)
+
+### Changes
+- No code changes; review output delivered in team room
+
+### Risks
+- Team mode is the first autonomous multi-turn feature; no-progress heuristics and loop detection are not yet implemented — runaway or stuck runs remain the most likely real-world failure mode
+- `buildTeamPrompt` + delta context path has not been exercised in a real persistent live run; Claude native session-id extraction may still need parser adjustments
+- SKILL_KEYWORDS is static and limited to EN/UA; will need a more principled approach as usage grows
+
+### Next
+- Run live team-mode smoke (real codex+claude, agentic adapter mode) to validate team prompt quality and session-id extraction end-to-end
+
+---
+## 2026-02-18T08:05:00Z | codex
+### Summary
+- Hardened team-mode output against Claude/Codex noise artifacts
+
+### Changes
+- Added team-specific system-prompt overlay and output sanitizer in engine, limited team prompt tail context to user messages, and filtered streamed CLI deltas for system-reminder/line-dump artifacts; added team sanitization test
+
+### Risks
+- Heuristic filtering may still miss some process-chatter phrasing that is semantically valid text
+
+### Next
+- Collect another live team run sample and tighten/relax heuristics based on real false-positive/false-negative cases
+
+---
+## 2026-02-18T08:06:29Z | codex
+### Summary
+- Added live-stream renderer filtering and finalized noise-hardening test coverage
+
+### Changes
+- Extended chat CLI renderer to strip system-reminder blocks and numbered dump lines during streaming, added chat-cli integration test for reminder filtering, and revalidated full suite
+
+### Risks
+- Renderer filtering is heuristic and may need tuning if legitimate content matches numbered-dump patterns
+
+### Next
+- Gather fresh real-team transcripts and calibrate filter strictness based on false positives
+
+---
+## 2026-02-18T08:12:36Z | codex
+### Summary
+- Suppressed process-chatter noise in team mode and fixed persistent prompt propagation
+
+### Changes
+- Applied team-mode process-chatter filtering in engine sanitizer and CLI renderer, injected system prompt into persistent sendTurn prompt path, and added chat-cli/team test coverage for chatter suppression
+
+### Risks
+- Chatter filtering remains heuristic and may hide edge-case legitimate narrative text in team mode
+
+### Next
+- Collect a few real team transcripts and tune regexes for precision
+
+---
+
+## 2026-02-18T08:20:00Z | claude
+### Summary
+- Completed doc review pass across ARCHITECTURE.md, VISION.md, CONSENSUS.md, README.md.
+- Applied three targeted fixes to close confirmed drift between docs and code.
+
+### Changes
+- `docs/ARCHITECTURE.md`:
+  - Adapter contract block: replaced pseudo-`send(): AsyncStream<Event>` with accurate `AsyncGenerator<AdapterEvent>`; added `PersistentAdapter` interface with `sendTurn()`; updated `AgentInput` to match real fields (`roomId`, `sessionId`, no top-level `systemPrompt`); added `SendTurnInput` and `AdapterMode` type.
+  - Project layout: `output-parser.ts` → `parse-output.ts` (actual filename).
+  - Config example: added missing `strict`, `singleActive`, `trigger` keys under `team`.
+- `docs/VISION.md`:
+  - Product Thesis: replaced stale "debate, team-roles" mode names with current "auto, team".
+
+### Risks
+- `events_log` table confirmed present in sqlite.ts — no doc fix needed.
+- `--strict` flag confirmed present in CLI parser — README and ARCHITECTURE are correct.
+- CONSENSUS.md is intentionally a historical record; no changes made.
+
+### Next
+- Docs are now consistent with the v0.2 implementation. No blocking issues remain.
+---
+## 2026-02-18T08:14:50Z | codex
+### Summary
+- Fixed team-mode first-speaker selection to respect @mention
+
+### Changes
+- Changed TeamPolicy seeding so first step in a new run follows the first valid @agent mention in goal text and added resume-safe seed-by-stepCount fallback; added orchestrator+engine tests for @claude-first behavior
+
+### Risks
+- Mention parsing is text-based; unusual mention formats may still fall back to default order
+
+### Next
+- If needed, add a strict mention parser shared with manual/auto mode routing
+
+---
+## 2026-02-18T08:30:00Z | claude
+### Summary
+- Applied residual doc fix identified by Codex's independent verification pass (step #9).
+
+### Changes
+- `docs/ARCHITECTURE.md` — Storage tables list (line ~130): added `agent_sessions`, `team_runs`, `team_steps`, `team_feedback_queue`, `team_checks` — all five tables exist in `internal/storage/sqlite.ts` and were missing from docs.
+
+### Risks
+- `codex exec --json` spawn format confirmed correct — no doc change needed.
+- No other residual gaps found after re-inspection.
+
+### Next
+- Doc review is complete. All confirmed drift items patched.
+---
+## 2026-02-18T08:40:00Z | claude
+### Summary
+- Applied three residual doc fixes from Codex step #11 verification pass.
+
+### Changes
+- `docs/ARCHITECTURE.md` — Event envelope JSON example: snake_case keys → camelCase to match `EventEnvelope<T>` in `types.ts` (`eventId`, `roomId`, `sessionId`, `requestId`).
+- `docs/ARCHITECTURE.md` — Message payload JSON example: `message_id` → `messageId`; `token_usage` → `tokenUsage`; `latency_ms` → `latencyMs` to match `MessageEventPayload` and `MessageMetadata` in `types.ts`.
+- `docs/ARCHITECTURE.md` — Error Classes table: added `SESSION_EXPIRED` row (present in `ErrorClass` type since persistent sessions implementation; was absent from docs).
+
+### Risks
+- No code changes. All fixes are doc-only.
+
+### Next
+- Doc review is fully complete. All confirmed drift items across all three passes are now patched.
+---
+## 2026-02-18T08:50:00Z | claude
+### Summary
+- Applied final two residual doc fixes from Codex step #15 verification pass.
+
+### Changes
+- `docs/ARCHITECTURE.md` — Config example: `"defaultMode": "auto"` → `"manual"` (matches `DEFAULT_CONFIG` in `internal/config/index.ts` line 72).
+- `docs/ARCHITECTURE.md` — Open Technical Questions heading: `v0.2+` → `v0.3+` (agent-to-agent autonomous loop was delivered in v0.2 team mode; removed that item; retained remaining open questions).
+
+### Risks
+- `checkpointThreshold: 50` confirmed correct against `default.ts` — no change needed.
+- ARCHITECTURE minimal config example intentionally omits `workspaceCwd` (optional field); README has the full example — no change needed.
+
+### Next
+- Doc review is complete. All passes exhausted. No remaining confirmed drift.
+---
+## 2026-02-18T09:00:00Z | claude
+### Summary
+- Applied two remaining doc fixes from Codex step #17 verification pass.
+
+### Changes
+- `docs/ARCHITECTURE.md` — claude-adapter description: updated spawn args to match `buildClaudeSpawnArgs` in `internal/adapters/claude/index.ts` (added `--verbose --include-partial-messages`); removed stale `ANTHROPIC_API_KEY` detection note; added cwd isolation note.
+- `docs/CONSENSUS.md` — Section 5 "Orchestration as Configuration": replaced stale "debate, team-roles" with "auto, team" to match current implemented modes.
+
+### Risks
+- No code changes. All fixes are doc-only.
+- "Open Technical Questions for v0.3+" heading was already fixed in a prior step — confirmed still in place.
+
+### Next
+- Doc review is complete. All passes exhausted with no remaining confirmed drift.
+---
+## 2026-02-18T09:10:00Z | claude
+### Summary
+- Applied final two doc fixes from Codex step #19 verification pass.
+
+### Changes
+- `docs/ARCHITECTURE.md` — Error handling rules: `/retry @codex` → `/retry` (no agent argument; matches actual CLI command implemented in `cmd/agoryx/main.ts`).
+- `docs/CONSENSUS.md` — Divergence table, "Project layout language" row: Resolution column updated from "Layout agreed, language TBD" to "Layout agreed, language resolved: TypeScript" (language was resolved and confirmed in Open Questions item #5 of the same document).
+
+### Risks
+- No code changes. All fixes are doc-only.
+- README `/retry` row is already correct (no agent argument) — no change needed.
+
+### Next
+- Doc review is complete. All confirmed drift patched across all verification passes.
+---
+## 2026-02-18T09:15:00Z | claude
+### Summary
+- Doc review goal fully complete. Final state confirmed via system-injected file diffs.
+
+### Final doc state (all confirmed correct)
+- `docs/ARCHITECTURE.md`: adapter contract matches `adapter.ts`; JSON examples use camelCase; `SESSION_EXPIRED` in error table; storage tables list complete; config example has correct defaults and team keys; `/retry` has no agent argument; `v0.3+` heading; `parse-output.ts` filename; `PersistentAdapter` documented.
+- `docs/VISION.md`: mode names corrected to "auto, team"; roadmap marks v0.1 and v0.2 complete.
+- `docs/CONSENSUS.md`: Section 5 uses "auto, team"; divergence table shows TypeScript resolution.
+- `docs/README.md`: test count updated to 201 (confirmed by Codex); all commands accurate.
+
+### Risks
+- None. All changes are doc-only.
+
+### Next
+- No further doc work needed. Agoryx docs are consistent with v0.2 implementation.
+---
+## 2026-02-18T10:24:04Z | codex
+### Summary
+- Added modern CLI rendering baseline with spinner/colors and quiet system mode
+
+### Changes
+- Updated cmd/agoryx/main.ts with ora+picocolors+cli-cursor integration, added --quiet-system/--plain-ui/--no-color flags, added tests/cmd/chat-cli.test.ts coverage, and installed new dependencies in package.json/package-lock.json.
+
+### Risks
+- Rich UI path is TTY-only; spinner behavior may still need refinement under very noisy concurrent streaming.
+
+### Next
+- Optionally add README docs for the new chat UI flags and a runtime compact/verbose toggle command.
+
+---
+## 2026-02-18T10:38:15Z | codex
+### Summary
+- Switched team loop to explicit control events to prevent runaway handoff cycles
+
+### Changes
+- Updated internal/engine/chat.ts to parse TEAM_DONE/TEAM_NEXT control lines and finalize when TEAM_NEXT is missing; added teamNextActorByRun tracking and cleanup; expanded tests/engine/team-mode.test.ts with explicit control-event coverage
+
+### Risks
+- Agents now must emit TEAM_NEXT to keep debate running; existing prompts without control lines will finalize after one step
+
+### Next
+- Run a live team smoke and verify prompts in both adapters consistently emit TEAM_NEXT/TEAM_DONE where intended
+
+---
+## 2026-02-18T10:46:29Z | codex
+### Summary
+- Fixed rich TTY in-flight visibility after first delta
+
+### Changes
+- Adjusted cmd/agoryx/main.ts so first delta persists a static [agent] generating... line via ora stopAndPersist instead of hiding status; kept completion/error teardown behavior unchanged.
+
+### Risks
+- This is a TTY rendering fix; if concurrent multi-agent streams overlap heavily, further layout tuning may still be needed.
+
+### Next
+- If desired, add a compact renderer mode that collapses per-agent status lines into one shared status bar.
+
+---
+## 2026-02-18T10:46:57Z | codex
+### Summary
+- Added in-flight team interruption and user correction controls
+
+### Changes
+- Implemented ChatEngine.interruptTeamRun with active-dispatch cancellation tracking; updated team loop to treat cancelled steps as interrupts; wired CLI team-mode free-text to interrupt+queue feedback; added /team interrupt command and TTY Esc hotkey; updated README/docs; added engine/cmd tests.
+
+### Risks
+- Esc hotkey relies on TTY keypress/raw mode and may behave differently in some terminals.
+
+### Next
+- Optionally add a config flag to disable Esc hotkey and document interactive examples.
+
+---
+## 2026-02-18T10:51:05Z | codex
+### Summary
+- Removed team finalize stage; completion now happens directly from debate control events
+
+### Changes
+- Refactored internal/engine/chat.ts: dropped finalizeTeamRun dispatch, added completeTeamRun for direct waiting_user_input transition on TEAM_DONE/missing TEAM_NEXT/guardrail; updated tests/engine/team-mode.test.ts expectations to single-step completion; updated docs/plans/2026-02-18-team-runtime-design.md
+
+### Risks
+- Runs now depend on explicit TEAM_NEXT to continue; old prompts expecting automatic final-summary turn no longer get that extra step
+
+### Next
+- Run live team smoke to confirm both codex/claude prompts emit TEAM_NEXT during multi-step runs and TEAM_DONE when finished
+
+---
+## 2026-02-18T11:10:38Z | codex
+### Summary
+- Implemented interactive agentic background transports for codex+claude
+
+### Changes
+- Added long-lived codex app-server and claude stream-json interactive runners in adapter sendTurn paths; wired engine shutdown to call adapter destroy on active native sessions; added async queue utility and tests for interactive args + shutdown destroy behavior
+
+### Risks
+- Interactive protocol handling depends on upstream CLI event shapes and may need tuning across CLI releases
+
+### Next
+- Run a live team/manual smoke in real CLI mode to confirm no repeated session-resume churn and verify interrupt behavior
+
+---
+## 2026-02-18T12:43:48Z | codex
+### Summary
+- Hotfixed interactive transport regressions after live user report
+
+### Changes
+- Codex app-server runner now subscribes to conversation events and handles codex/event task_complete + delta envelopes to avoid agentic timeouts; Claude parser now extracts nested stream_event deltas; parse-output parser extended for nested event field
+
+### Risks
+- Upstream CLI event schema can still drift across versions and may require parser updates
+
+### Next
+- Run live manual/auto smoke with --adapter-mode agentic to confirm codex no longer times out and claude delta stream is visible
+
+---
+## 2026-02-18T13:36:41Z | codex
+### Summary
+- Fixed two review findings in team runtime
+
+### Changes
+- Updated internal/engine/chat.ts to cancel active team dispatch during shutdown and to avoid queuing feedback in waiting_user_input; updated cmd/agoryx/main.ts team free-text messaging; added regression tests in tests/engine/team-mode.test.ts and tests/cmd/team-command.test.ts.
+
+### Risks
+- Low risk; behavior changes are scoped to team mode shutdown and waiting_user_input handling.
+
+### Next
+- If needed, document waiting_user_input free-text behavior in README team section.
+
+---
+## 2026-02-18T13:40:43Z | codex
+### Summary
+- Validated Claude review and fixed confirmed critical/important issues
+
+### Changes
+- Patched adapter close-listener race (4 spots), bounded interactive stderr buffers, added active-request status accounting + cancel cleanup wait, sanitized codex spawn env, restored adapter mode after team run, fixed teamStop unhandled rejection, switched team prompt tail to recent messages, enabled sqlite foreign keys pragma, hardened CLI team start/status/esc paths
+
+### Risks
+- Cancel semantics remain best-effort for upstream CLI protocols; recommendation-level items (e.g. parser precedence/docs dedupe) intentionally not changed in this pass
+
+### Next
+- If needed, follow with focused tests for TEAM control parser precedence and storage null-return edge cases
+
+---
+## 2026-02-18T13:41:24Z | codex
+### Summary
+- Added regression coverage for codex env sanitization
+
+### Changes
+- Updated tests/adapters/codex-resume.test.ts with buildCodexSpawnEnv case and reran full validation
+
+### Risks
+- No functional runtime risk; test-only follow-up after hardening patch
+
+### Next
+- Bridge state now reflects final validation: typecheck pass, npm test 216/216
+
+---
+## 2026-02-18T13:43:00Z | codex
+### Summary
+- Added regressions for adapter-mode restore and recent team prompt tail
+
+### Changes
+- Extended tests/engine/team-mode.test.ts with two new checks (mode restoration after team completion; newest user-tail in team prompt); reran full suite
+
+### Risks
+- No runtime risk; test-only hardening to lock in bugfixes
+
+### Next
+- Final validation green: npm run typecheck + npm test (218/218)
+
+---

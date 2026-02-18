@@ -633,9 +633,416 @@ internal/
 - Validation:
   - `npm run typecheck` PASS
   - `npm test` PASS (**176/176**)
-  - Manual sanity checks:
+- Manual sanity checks:
     - no-flag startup shows `mode=cli`
     - config with `mode=persistent` remains `mode=persistent` without CLI override
 
+## What Changed This Session (Codex — v0.2 team runtime implementation)
+
+### Core runtime
+- Added `team` orchestration mode and team-run lifecycle types:
+  - `TeamStrategy`, `TeamRunStatus`, `TeamRunStage`, and team domain entities in `internal/events/types.ts`
+- Added `agentic` adapter mode with optional `workspaceCwd` in adapter config.
+- Implemented `TeamPolicy` (`internal/orchestrator/team.ts`) and wired it through orchestrator factory/index.
+
+### Storage + session layer
+- Added new SQLite schema and APIs in `internal/storage/sqlite.ts`:
+  - `team_runs`, `team_steps`, `team_feedback_queue`, `team_checks`
+  - partial unique index for one active team run per room (`active|waiting_user_input`)
+  - CRUD/list/update APIs for runs, steps, feedback, checks.
+- Added session wrappers and prompt builder in `internal/session/service.ts`:
+  - team run accessors
+  - feedback queue wrappers
+  - `buildTeamPrompt(...)` for goal + recent steps + pending feedback + context tail.
+
+### Engine + CLI
+- Extended `ChatEngine` with team runtime controls:
+  - `startTeamRun`, `teamStatus`, `teamLog`, `teamResume`, `teamApprove`, `teamStop`, `queueTeamFeedback`, `shutdown`
+  - background team loop with `debate|pipeline` execution paths
+  - proposal gate (`waiting_user_input`) and manual approve (`done`)
+  - pipeline checks execution (`npm run typecheck`, `npm test`) with skip when script missing.
+- Added prompt-based internal dispatch path for team steps (supports persistent and agentic adapters).
+- Extended CLI (`cmd/agoryx/main.ts`):
+  - `/mode` supports `team`
+  - added `/team start|status|log|resume|approve|stop`
+  - `/adapter` and `--adapter-mode` support `agentic`
+  - non-command input in team mode now auto-starts run or queues feedback.
+
+### Adapter updates
+- Codex adapter now runs with workspace cwd (`workspaceCwd ?? process.cwd()`).
+- Claude adapter:
+  - keeps isolated cwd for `cli|persistent`
+  - uses workspace cwd in `agentic`
+  - `buildClaudeSpawnCwd` now supports mode-aware behavior.
+
+### Docs
+- Updated:
+  - `README.md` (team mode, agentic mode, new commands/config)
+  - `docs/ARCHITECTURE.md` (team policy/runtime additions)
+- Added:
+  - `docs/plans/2026-02-18-team-runtime-design.md`
+
+### Tests and validation
+- Added tests:
+  - `tests/orchestrator/team.test.ts`
+  - `tests/storage/team-runs.test.ts`
+  - `tests/storage/team-steps.test.ts`
+  - `tests/storage/team-checks.test.ts`
+  - `tests/engine/team-mode.test.ts`
+  - `tests/engine/team-resume.test.ts`
+  - `tests/cmd/team-command.test.ts`
+- Expanded existing tests for:
+  - `agentic` adapter mode path and CLI handling
+  - team config merge coverage
+  - Claude mode-aware cwd behavior
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**195/195**)
+
+## What Changed This Session (Codex — team runtime simplification)
+
+### Scope reduction (by product feedback)
+- Removed public `pipeline|debate` branching from team UX/API and collapsed to one deterministic team loop.
+- `/team start` no longer accepts `--strategy`; the command is now:
+  - `/team start <goal> [--no-checks]`
+
+### Runtime changes
+- `ChatEngine` team loop simplified to a single round-robin execution path + finalize/proposal gate.
+- Removed pipeline-specific execution branches and staged transition logic from engine.
+- `TeamPolicy` simplified to actor rotation only (no pipeline stage routing helpers).
+
+### Config and docs
+- Removed `team.defaultStrategy` from runtime config surface.
+- Updated docs/usage to remove `--strategy debate|pipeline` from team command examples and references.
+
+### Tests and validation
+- Updated and cleaned tests that depended on pipeline/defaultStrategy.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**193/193**)
+
+## What Changed This Session (Codex — team UX/runtime cleanup)
+
+### User-facing cleanup
+- Removed stale strategy wording from chat UX:
+  - auto-start message in team mode now prints `Team run started: <run_id>`
+  - `/team status` no longer prints `strategy: ...`
+- Removed `Strategy: ...` line from internal team prompts to avoid reinforcing old public strategy semantics.
+
+### Runtime behavior update
+- Team runs now auto-promote adapter mode from `cli` to `agentic` when needed:
+  - applied at chat startup when `--mode team` is used without explicit `--adapter-mode`
+  - applied defensively in `ChatEngine.startTeamRun(...)` so `/mode team` and `/team start` paths also use persistent turn flow.
+- Added `/mode team` feedback line when adapters are auto-switched to `agentic`.
+
+### Claude stream-noise fix
+- Hardened `parseClaudeChunk(...)` to ignore non-JSON diagnostic lines in stream-json mode.
+- Prevents leaking Claude internal runtime lines such as async-launch diagnostics into room messages.
+
+### Prompt quality tweak
+- Strengthened debate-step instruction to reduce repetitive check-ins and meta chatter:
+  - require one concrete step per turn
+  - require explicit teammate handoff when coordination is needed
+  - avoid internal tool/runtime log text in agent responses.
+
+### Tests and validation
+- Updated adapter parser test:
+  - `tests/adapters/claude-stream-parser.test.ts` (non-JSON lines are ignored)
+- Added team defaults/CLI behavior coverage:
+  - `tests/engine/team-mode.test.ts` (`cli` mode auto-promotes to agentic dispatch in team run)
+  - `tests/cmd/team-command.test.ts` (team startup auto-promotes default adapter modes)
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**196/196**)
+
+## What Changed This Session (Codex — team output noise hardening)
+
+### Runtime hardening for noisy agent output
+- Added team-specific system prompt overlay in `internal/engine/chat.ts` for internal team dispatches:
+  - instructs agents to output only final room-facing content
+  - bans bootstrap/process narration, raw file dumps, and system-reminder blocks.
+- Fixed persistent-turn gap by injecting system prompt into `sendTurn` prompt payload:
+  - team prompt constraints now apply in `agentic|persistent` paths too (not only legacy `send(...)` paths).
+- Added team output sanitizer pipeline in `internal/engine/chat.ts`:
+  - strips `<system-reminder>...</system-reminder>` blocks
+  - strips `N→...` numbered dump lines
+  - strips process-chatter lines (bootstrap/check/scan/re-run style progress narration)
+  - applies sanitized text before persisting assistant messages/team steps for team dispatches.
+
+### Prompt context cleanup
+- `internal/session/service.ts` team prompt now includes only recent **user** context in tail:
+  - prevents noisy assistant artifacts from being re-fed and amplified in subsequent team steps.
+
+### CLI render cleanup
+- `cmd/agoryx/main.ts` adapter delta renderer now filters:
+  - streaming `<system-reminder>` blocks (including split-chunk cases)
+  - numbered line-dump artifacts (`N→...`).
+  - process-chatter lines while room mode is `team`.
+- Keeps regular streaming output intact while reducing diagnostic/log spam in chat UI.
+
+### Tests and validation
+- Added new engine test:
+  - `tests/engine/team-mode.test.ts` → `team run sanitizes noisy assistant output`
+- Added new CLI render test:
+  - `tests/cmd/chat-cli.test.ts` → filters streamed `system-reminder` blocks
+- Added team CLI render coverage:
+  - `tests/cmd/chat-cli.test.ts` → filters process-chatter lines in team mode
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**199/199**)
+
+## What Changed This Session (Codex — mention-priority fix for team first actor)
+
+### Problem
+- In `team` mode, first step actor always started from agent order (`codex` first), so `@claude ...` goals still produced Codex as first responder.
+
+### Fix
+- Updated `TeamPolicy` (`internal/orchestrator/team.ts`) to seed first actor from goal mentions:
+  - parse first valid `@agent` mention from goal text (`@all` ignored)
+  - if run has no steps yet, first actor starts from mentioned agent index
+  - subsequent turns continue round-robin deterministically
+  - resume continuity improved by seeding from `stepCount` when run already has progress.
+
+### Tests and validation
+- Added/updated tests:
+  - `tests/orchestrator/team.test.ts` → `first actor follows direct @mention in goal`
+  - `tests/engine/team-mode.test.ts` → `team auto-start honors @mention for first actor`
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**201/201**)
+
+## What Changed This Session (Codex — modern CLI rendering baseline)
+
+### CLI UX improvements
+- Added modern CLI rendering dependencies:
+  - `ora` (TTY spinner)
+  - `picocolors` (colorized labels)
+  - `cli-cursor` (cursor hide/show lifecycle during live rendering)
+- Added render options to `cmd/agoryx/main.ts`:
+  - `--quiet-system` (hide generating/done/session status lines)
+  - `--plain-ui` (disable rich TTY rendering)
+  - `--no-color` (disable colorized output)
+- Kept non-TTY behavior stable for scripts/tests while enabling richer TTY output:
+  - spinner/status flow for live agent generation
+  - deferred session-binding status and safe spinner teardown
+  - explicit render cleanup on shutdown (stop spinner, restore cursor)
+
+### Tests and validation
+- Added `tests/cmd/chat-cli.test.ts` coverage:
+  - `chat hides system status lines when --quiet-system is enabled`
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**202/202**)
+
+## What Changed This Session (Codex — explicit team control events)
+
+### Problem observed in live team run
+- Agents could keep handing off in `debate` stage ("your turn"/"waiting for @ivan") without a deterministic stop condition.
+- Current loop relied on guardrails (`maxSteps`, `maxNoProgressSteps`, `maxDurationMs`) and did not require explicit completion/handoff events.
+
+### Runtime contract update
+- `team` debate loop now uses explicit control signals in agent output:
+  - `TEAM_DONE` (or stop words `AGORYX_STOP` / `TEAM_STOP`) => finish debate and move to finalize.
+  - `TEAM_NEXT:<agent>` => continue debate with the specified next actor.
+- If no `TEAM_NEXT` is emitted, Agoryx finalizes the run after the current debate step.
+- Added per-run next-actor override memory in engine (`teamNextActorByRun`) and cleanup on approve/stop/loop end.
+
+### Prompt update
+- Debate instruction now explicitly requires one control line at the end:
+  - `TEAM_NEXT:<agent>` to continue.
+  - `TEAM_DONE` to finish/handoff to user.
+
+### Tests and validation
+- Updated `tests/engine/team-mode.test.ts`:
+  - `team run finalizes after one debate step when no TEAM_NEXT is emitted`
+  - `TEAM_DONE control line finalizes run immediately`
+  - stabilized active-feedback test with explicit `TEAM_NEXT` in stub response.
+- Validation:
+  - `npx tsx --test tests/engine/team-mode.test.ts` PASS (**9/9**)
+  - `npm test` PASS (**204/204**)
+
+## What Changed This Session (Codex — live in-flight indicator after first delta)
+
+### Problem
+- In rich TTY UI, spinner status was hidden as soon as first `message.delta` arrived, so users lost visible "agent still working" feedback mid-stream.
+
+### Fix
+- Updated `cmd/agoryx/main.ts` rendering flow:
+  - on first delta, spinner now transitions via `stopAndPersist(...)` instead of being silently removed
+  - persisted line keeps `[agent] generating...` visible until completion
+  - completion/error paths continue to stop spinner safely and render final state.
+
+### Tests and validation
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**206/206**)
+
+## What Changed This Session (Codex — team interruption + correction control)
+
+### Runtime changes
+- Added `ChatEngine.interruptTeamRun(feedback?, runId?)`:
+  - queues optional user correction to `team_feedback_queue`
+  - best-effort cancels the currently active team dispatch (`adapter.cancel(requestId)`)
+  - returns structured status (`interrupted`, `feedbackQueued`).
+- Added active-dispatch tracking for team runs (`runId -> adapter/request/stage`) and interrupted-request markers.
+- Debate/finalize execution now handles user-cancelled requests as interruption events (avoids accidental finalize on missing `TEAM_NEXT` after cancel).
+- Guardrail finalize path now defers while pending human feedback exists, so correction can be applied in the next debate step.
+- `teamStop()` now triggers best-effort cancellation of in-flight team dispatch.
+
+### CLI/UX changes
+- In `team` mode, free-text input during an active run now does:
+  - **interrupt active step**
+  - **queue feedback**
+  instead of queue-only behavior.
+- Added explicit command: `/team interrupt [feedback]`.
+- Added `Esc` hotkey for interactive TTY:
+  - when a team run is active, pressing `Esc` interrupts the current team step.
+- Updated help/usage text to include `interrupt`.
+
+### Tests/docs
+- Updated tests:
+  - `tests/engine/team-mode.test.ts`:
+    - `interruptTeamRun cancels active step and injects feedback into the next step`
+  - `tests/cmd/team-command.test.ts`:
+    - usage includes `interrupt`
+    - `/team interrupt` no-active-run path.
+- Updated docs:
+  - `README.md`
+  - `docs/ARCHITECTURE.md`
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**206/206**)
+
+## What Changed This Session (Codex — removed finalize step from team loop)
+
+### Product change requested by Ivan
+- Team runtime should not perform a dedicated `finalize` agent call.
+- Completion must be driven by explicit control events in debate output (`TEAM_NEXT` / `TEAM_DONE`) with no extra summary round.
+
+### Runtime changes
+- `internal/engine/chat.ts`:
+  - removed `finalizeTeamRun(...)` dispatch path
+  - added direct completion path `completeTeamRun(...)`:
+    - sets run to `waiting_user_input` immediately
+    - stores `finalSummary` from current debate output (fallback to reason string)
+  - control behavior:
+    - `TEAM_DONE` (or stop words) => immediate completion
+    - missing `TEAM_NEXT` => immediate completion
+    - guardrail hit => immediate completion
+- Active team dispatch tracking now applies only to `debate` stage (no `finalize` stage dispatch remains).
+
+### Tests and docs
+- Updated `tests/engine/team-mode.test.ts` expectations:
+  - one debate call only for completion cases (no extra finalize call)
+  - step count remains `1` in completion scenarios
+  - interruption flow now expects two calls (stalled + corrected) instead of three.
+- Updated design note:
+  - `docs/plans/2026-02-18-team-runtime-design.md` now states direct transition to `waiting_user_input` from debate.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/engine/team-mode.test.ts` PASS (**10/10**)
+  - `npm test` PASS (**206/206**)
+
+## What Changed This Session (Codex — interactive agentic background sessions)
+
+### Runtime changes
+- `agentic` mode now keeps adapters alive between turns instead of spawn-per-turn resume:
+  - `internal/adapters/codex/index.ts`: added long-lived `codex app-server` transport with JSON-RPC turn dispatch (`sendUserMessage`), delta streaming, interrupt support, and session reuse.
+  - `internal/adapters/claude/index.ts`: added long-lived Claude stream-json transport (`--print --input-format stream-json --output-format stream-json`) with per-turn streaming input, delta/result parsing, and interrupt support.
+- Preserved existing behavior for non-agentic paths:
+  - `cli`/`persistent` still use existing one-shot spawn paths.
+- Added adapter lifecycle cleanup on shutdown:
+  - `internal/engine/chat.ts`: `shutdown()` now destroys active native adapter sessions when adapters implement `destroy(...)`.
+  - `internal/session/service.ts`: added `listActiveAgentSessions(...)` passthrough for shutdown cleanup.
+- Added utility:
+  - `internal/adapters/async-queue.ts` for internal async streaming coordination in interactive adapter paths.
+
+### Tests and validation
+- Added/updated tests:
+  - `tests/adapters/codex-resume.test.ts` — app-server args coverage.
+  - `tests/adapters/claude-resume.test.ts` — interactive spawn/input envelope coverage.
+  - `tests/engine/persistent-session.test.ts` — shutdown destroys active native session handles.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**211/211**)
+
+## What Changed This Session (Codex — interactive transport hotfixes)
+
+### Fixes
+- `internal/adapters/codex/index.ts`:
+  - Added `addConversationListener` binding in app-server runner initialization (with fallback request shape).
+  - Added parsing for `codex/event/*` envelope events:
+    - `agent_message_delta`, `agent_message`, `task_complete`, `turn_aborted`, `error`, `session_configured`.
+  - Added listener cleanup on shutdown.
+  - Result: prevents `agentic` Codex turns from hanging until timeout due missing completion events.
+- `internal/adapters/claude/index.ts`:
+  - Extended stream parser to read nested `stream_event` payloads.
+  - Added `event/data/delta` recursion paths in extraction helper.
+  - Result: restores streaming delta extraction where Claude emits nested stream events.
+- `internal/adapters/parse-output.ts`:
+  - Added generic support for nested `event` nodes in normalized text extraction.
+
+### Tests and validation
+- Updated parser coverage:
+  - `tests/adapters/parse-output.test.ts` adds `stream_event` nested delta case.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**212/212**)
+
+## What Changed This Session (Codex — addressed review findings)
+
+### Fix 1: shutdown now cancels in-flight team step before waiting
+- `internal/engine/chat.ts`
+  - `shutdown()` now calls `interruptTeamRun(...)` for active runs before awaiting team loop completion.
+  - This prevents `/quit` from hanging on long/stalled adapter turns until timeout.
+
+### Fix 2: do not enqueue feedback while run is `waiting_user_input`
+- `internal/engine/chat.ts`
+  - `processUserMessage()` now enqueues team feedback only when run status is `active`.
+  - If run status is `waiting_user_input`, message is saved to room history but not pushed to `team_feedback_queue`.
+- `cmd/agoryx/main.ts`
+  - Team free-text UX now reports `waiting for approval` instead of incorrectly saying feedback was queued.
+
+### Tests added
+- `tests/engine/team-mode.test.ts`
+  - `waiting_user_input run does not enqueue team feedback`
+  - `shutdown interrupts active team step before awaiting loop completion`
+- `tests/cmd/team-command.test.ts`
+  - `free-text in waiting_user_input run does not claim feedback was queued`
+
+### Validation
+- `npx tsx --test tests/engine/team-mode.test.ts tests/cmd/team-command.test.ts` PASS (**18/18**)
+- `npm test` PASS (**215/215**)
+
+## What Changed This Session (Codex — review hardening pass)
+
+### Scope
+- Verified Claude review items against current runtime implementation and fixed confirmed Critical + Important issues in adapters, engine, session, storage, and CLI.
+
+### Fixes delivered
+- `internal/adapters/claude/index.ts`, `internal/adapters/codex/index.ts`:
+  - fixed one-shot/resume close-listener race by capturing `exitPromise` immediately after spawn (all 4 occurrences).
+  - capped interactive stderr accumulation to avoid unbounded growth; snapshots remain tail-based.
+  - removed request-status race under overlap via active-request accounting.
+  - improved `cancel()` semantics by waiting for request cleanup after kill/interrupt.
+- `internal/adapters/codex/index.ts`:
+  - added `buildCodexSpawnEnv(...)` and switched codex spawn/app-server paths to sanitized env (parity with Claude env filtering).
+- `internal/engine/chat.ts`:
+  - fixed team adapter mode leakage: added snapshot/restore so temporary CLI→agentic promotion is reverted when run completes/stops/fails/approved/shutdown.
+  - fixed `teamStop()` fire-and-forget unhandled rejection risk with explicit catch.
+- `internal/session/service.ts`:
+  - `buildTeamPrompt()` now uses recent messages path, so tail context is newest user context (not oldest window).
+- `internal/storage/sqlite.ts`:
+  - enabled `PRAGMA foreign_keys = ON`.
+- `cmd/agoryx/main.ts`:
+  - removed `engine!` temporal hazard via safe engine reference in callback.
+  - `/team start` failure now logs to stderr.
+  - `/team status` elapsed time now guards invalid timestamps (no `NaN` output).
+  - Esc interrupt hotkey now guards against unhandled promise rejection.
+
+### Validation
+- `npm run typecheck` PASS
+- `npm test` PASS (**218/218**)
+
 ## Last Updated
-2026-02-18T08:05:00Z by codex
+2026-02-18T13:42:49Z by codex

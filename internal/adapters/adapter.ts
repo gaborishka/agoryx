@@ -8,13 +8,14 @@ import type {
 } from "../events/types.js";
 
 export type AdapterStatus = "ready" | "busy" | "error" | "not_authenticated";
-export type AdapterMode = "stub" | "cli" | "persistent";
+export type AdapterMode = "stub" | "cli" | "persistent" | "agentic";
 
 export interface AdapterConfig {
   mode: AdapterMode;
   timeoutMs: number;
   maxTokens: number;
   systemPrompt?: string;
+  workspaceCwd?: string;
 }
 
 export interface AgentInput {

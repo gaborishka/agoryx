@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildCodexAppServerArgs,
   buildCodexSpawnArgs,
+  buildCodexSpawnEnv,
   extractCodexThreadId,
 } from "../../internal/adapters/codex/index.js";
 
@@ -13,6 +15,22 @@ test("buildCodexSpawnArgs cold: exec --json <prompt>", () => {
 test("buildCodexSpawnArgs resume: exec resume <id> --json <prompt>", () => {
   const args = buildCodexSpawnArgs("hello", "thread_abc");
   assert.deepEqual(args, ["exec", "resume", "thread_abc", "--json", "hello"]);
+});
+
+test("buildCodexAppServerArgs starts app-server transport", () => {
+  const args = buildCodexAppServerArgs();
+  assert.deepEqual(args, ["app-server"]);
+});
+
+test("buildCodexSpawnEnv strips CLAUDECODE and preserves other vars", () => {
+  const env = buildCodexSpawnEnv({
+    PATH: "/usr/bin",
+    CLAUDECODE: "1",
+    HOME: "/tmp/home",
+  });
+  assert.equal(env.CLAUDECODE, undefined);
+  assert.equal(env.PATH, "/usr/bin");
+  assert.equal(env.HOME, "/tmp/home");
 });
 
 test("extractCodexThreadId extracts thread_id from thread.started event", () => {

@@ -10,6 +10,7 @@ import type { Dispatch, OrchestrationContext, OrchestrationPolicy } from "./poli
 import { ManualPolicy } from "./manual.js";
 import { RoundRobinPolicy } from "./round-robin.js";
 import { AutoPolicy } from "./auto.js";
+import { TeamPolicy } from "./team.js";
 
 export class Orchestrator {
   private readonly policies = new Map<string, OrchestrationPolicy>();
@@ -19,6 +20,7 @@ export class Orchestrator {
     this.registerPolicy(new ManualPolicy());
     this.registerPolicy(new RoundRobinPolicy());
     this.registerPolicy(new AutoPolicy());
+    this.registerPolicy(new TeamPolicy());
     this.activeMode = initialMode;
   }
 
@@ -65,4 +67,5 @@ export class Orchestrator {
 export { ManualPolicy } from "./manual.js";
 export { RoundRobinPolicy } from "./round-robin.js";
 export { AutoPolicy } from "./auto.js";
+export { TeamPolicy } from "./team.js";
 export type { Dispatch, OrchestrationContext, OrchestrationPolicy } from "./policy.js";

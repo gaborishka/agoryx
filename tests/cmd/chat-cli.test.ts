@@ -136,6 +136,87 @@ test("chat prints live agent status lines while streaming", async (t) => {
   assert.match(result.stdout, /\[codex\] done/);
 });
 
+test("chat hides system status lines when --quiet-system is enabled", async (t) => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-quiet-system-"));
+  t.after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const dbPath = join(tmpDir, "chat.db");
+  const result = await runChatCli(
+    [
+      "--agents",
+      "codex",
+      "--mode",
+      "manual",
+      "--adapter-mode",
+      "stub",
+      "--quiet-system",
+      "--db",
+      dbPath,
+    ],
+    "@codex hello\n/quit\n",
+  );
+
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /codex:/);
+  assert.doesNotMatch(result.stdout, /\[codex\] generating\.\.\./);
+  assert.doesNotMatch(result.stdout, /\[codex\] done/);
+});
+
+test("chat renderer filters system-reminder blocks from streamed output", async (t) => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-filter-reminder-"));
+  t.after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const dbPath = join(tmpDir, "chat.db");
+  const result = await runChatCli(
+    [
+      "--agents",
+      "codex",
+      "--mode",
+      "manual",
+      "--adapter-mode",
+      "stub",
+      "--db",
+      dbPath,
+    ],
+    "@codex <system-reminder>hidden</system-reminder> hello\n/quit\n",
+  );
+
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.doesNotMatch(result.stdout, /system-reminder/i);
+});
+
+test("chat renderer filters process-chatter lines in team mode", async (t) => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-filter-chatter-"));
+  t.after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const dbPath = join(tmpDir, "chat.db");
+  const result = await runChatCli(
+    [
+      "--agents",
+      "codex",
+      "--mode",
+      "team",
+      "--adapter-mode",
+      "stub",
+      "--db",
+      dbPath,
+    ],
+    "I'll read docs first\n/quit\n",
+  );
+
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.doesNotMatch(result.stdout, /i.?ll read docs first/i);
+});
+
 test("chat keeps config-defined adapter mode when --adapter-mode is not provided", async (t) => {
   const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-config-mode-"));
   t.after(() => {

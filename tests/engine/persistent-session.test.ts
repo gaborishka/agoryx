@@ -24,13 +24,15 @@ function makeStubPersistentAdapter(
     nativeSessionId?: string;
     errorClass?: "SESSION_EXPIRED" | "PROCESS_CRASH";
   }>,
-): PersistentAdapter & { sendTurnCalls: SendTurnInput[] } {
+): PersistentAdapter & { sendTurnCalls: SendTurnInput[]; destroyCalls: string[] } {
   const sendTurnCalls: SendTurnInput[] = [];
+  const destroyCalls: string[] = [];
   let turnIndex = 0;
 
   return {
     name,
     sendTurnCalls,
+    destroyCalls,
     async *send(input) {
       const base = {
         roomId: input.roomId,
@@ -83,6 +85,9 @@ function makeStubPersistentAdapter(
       yield messageCompleted(base, payload);
     },
     async cancel() {},
+    async destroy(nativeSessionId: string) {
+      destroyCalls.push(nativeSessionId);
+    },
     async health() {
       return "ready" as const;
     },
@@ -248,6 +253,80 @@ test("stub mode: uses send() not sendTurn()", async () => {
     await engine.processUserMessage("@claude hi");
 
     assert.equal(adapter.sendTurnCalls.length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("agentic mode: uses sendTurn()", async () => {
+  const adapter = makeStubPersistentAdapter("claude", [{ text: "agentic" }]);
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    const session = new SessionService(store);
+    const config: ChatRuntimeConfig = {
+      dbPath: ":memory:",
+      mode: "manual",
+      roomName: "test-room",
+      agents: ["claude"],
+      roomConfig: {
+        mode: "manual",
+        checkpointThreshold: 50,
+        maxHistoryMessages: 100,
+        maxContextTokens: 8000,
+      },
+      adapterConfig: {
+        claude: {
+          mode: "agentic",
+          timeoutMs: 5000,
+          maxTokens: 4000,
+        },
+      },
+      team: {
+        profile: "enthusiast",
+        maxSteps: 8,
+        maxNoProgressSteps: 2,
+        maxDurationMs: 900_000,
+        checksEnabledByDefault: true,
+        checkCommands: ["npm run typecheck", "npm test"],
+        strict: {
+          maxSteps: 8,
+          maxNoProgressSteps: 2,
+          maxDurationMs: 900_000,
+          checksEnabledByDefault: true,
+        },
+        finalGate: "proposal",
+        singleActive: true,
+        trigger: {
+          autoOnMessage: true,
+          commandStart: true,
+        },
+      },
+      agentSkills: {},
+    };
+
+    const engine = new ChatEngine(session, { claude: adapter }, config);
+    engine.init();
+
+    await engine.processUserMessage("@claude hi");
+
+    assert.equal(adapter.sendTurnCalls.length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("shutdown destroys active adapter session by nativeSessionId", async () => {
+  const adapter = makeStubPersistentAdapter("claude", [
+    { text: "hello", nativeSessionId: "sid-shutdown-1" },
+  ]);
+  const { engine, store } = makeEngine(adapter);
+
+  try {
+    await engine.processUserMessage("@claude hi");
+    await engine.shutdown();
+    assert.deepEqual(adapter.destroyCalls, ["sid-shutdown-1"]);
   } finally {
     store.close();
   }

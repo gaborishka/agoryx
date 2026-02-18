@@ -17,7 +17,10 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1"
+    "better-sqlite3": "^11.8.1",
+    "cli-cursor": "^5.0.0",
+    "ora": "^9.3.0",
+    "picocolors": "^1.1.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

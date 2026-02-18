@@ -7,9 +7,9 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { OrchestrationMode, RoomConfig } from "../events/types.js";
+import type { OrchestrationMode, RoomConfig, TeamConfig } from "../events/types.js";
 import type { AdapterConfig, AdapterMode } from "../adapters/adapter.js";
-import type { ChatRuntimeConfig } from "./default.js";
+import { defaultTeamConfig, type ChatRuntimeConfig } from "./default.js";
 
 // ---------------------------------------------------------------------------
 // Config schema
@@ -35,6 +35,26 @@ export interface AgoryxConfig {
   };
   session: {
     dbPath: string;
+  };
+  team: {
+    profile: "enthusiast" | "strict";
+    maxSteps: number;
+    maxNoProgressSteps: number;
+    maxDurationMs: number;
+    checksEnabledByDefault: boolean;
+    checkCommands: string[];
+    strict: {
+      maxSteps: number;
+      maxNoProgressSteps: number;
+      maxDurationMs: number;
+      checksEnabledByDefault: boolean;
+    };
+    finalGate: "proposal";
+    singleActive: boolean;
+    trigger: {
+      autoOnMessage: boolean;
+      commandStart: boolean;
+    };
   };
 }
 
@@ -74,6 +94,7 @@ export const DEFAULT_CONFIG: AgoryxConfig = {
   session: {
     dbPath: "./agoryx.db",
   },
+  team: defaultTeamConfig(),
 };
 
 // ---------------------------------------------------------------------------
@@ -141,12 +162,31 @@ function mergeAgents(
 }
 
 function mergeConfig(partial: Partial<AgoryxConfig>): AgoryxConfig {
+  const teamDefaults = DEFAULT_CONFIG.team;
+  const teamTrigger = partial.team?.trigger;
+  const strictDefaults = teamDefaults.strict;
+  const strictOverrides = partial.team?.strict;
   return {
     version: partial.version ?? DEFAULT_CONFIG.version,
     defaultMode: partial.defaultMode ?? DEFAULT_CONFIG.defaultMode,
     agents: mergeAgents(DEFAULT_CONFIG.agents, partial.agents as Record<string, Partial<AgentEntry>> | undefined),
     context: { ...DEFAULT_CONFIG.context, ...partial.context },
     session: { ...DEFAULT_CONFIG.session, ...partial.session },
+    team: {
+      ...teamDefaults,
+      ...partial.team,
+      trigger: {
+        ...teamDefaults.trigger,
+        ...teamTrigger,
+      },
+      strict: {
+        ...strictDefaults,
+        ...strictOverrides,
+      },
+      checkCommands:
+        partial.team?.checkCommands?.filter((command) => command.trim().length > 0) ??
+        teamDefaults.checkCommands,
+    },
   };
 }
 
@@ -237,5 +277,29 @@ export function toRuntimeConfig(
     roomName: overrides.roomName ?? "default",
     resumeRoomId: overrides.resumeRoomId,
     agentSkills: resolveAgentSkills(config, agentNames),
+    team: toTeamConfig(config),
+  };
+}
+
+function toTeamConfig(config: AgoryxConfig): TeamConfig {
+  return {
+    profile: config.team.profile,
+    maxSteps: config.team.maxSteps,
+    maxNoProgressSteps: config.team.maxNoProgressSteps,
+    maxDurationMs: config.team.maxDurationMs,
+    checksEnabledByDefault: config.team.checksEnabledByDefault,
+    checkCommands: [...config.team.checkCommands],
+    strict: {
+      maxSteps: config.team.strict.maxSteps,
+      maxNoProgressSteps: config.team.strict.maxNoProgressSteps,
+      maxDurationMs: config.team.strict.maxDurationMs,
+      checksEnabledByDefault: config.team.strict.checksEnabledByDefault,
+    },
+    finalGate: "proposal",
+    singleActive: config.team.singleActive,
+    trigger: {
+      autoOnMessage: config.team.trigger.autoOnMessage,
+      commandStart: config.team.trigger.commandStart,
+    },
   };
 }

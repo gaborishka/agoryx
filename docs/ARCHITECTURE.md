@@ -17,7 +17,7 @@ Provide one shared multi-agent conversation using existing local LLM CLIs, with 
 │                   CLI / Web UI                   │
 ├─────────────────────────────────────────────────┤
 │              Orchestration Layer                 │
-│         (policies: manual, round-robin, auto)    │
+│      (policies: manual, round-robin, auto, team) │
 ├─────────────────────────────────────────────────┤
 │                Session Layer                     │
 │      (rooms, messages, context, summaries)       │
@@ -40,26 +40,43 @@ Every adapter implements the following interface:
 ```typescript
 interface Adapter {
   name: string;                           // e.g. "codex", "claude"
-  send(input: AgentInput): AsyncStream<Event>;
+  send(input: AgentInput): AsyncGenerator<AdapterEvent>;
   cancel(requestId: string): Promise<void>;
   health(): Promise<AdapterStatus>;
 }
 
+// PersistentAdapter extends Adapter for persistent/agentic modes
+interface PersistentAdapter extends Adapter {
+  sendTurn(input: SendTurnInput): AsyncGenerator<AdapterEvent>;
+  destroy?(nativeSessionId: string): Promise<void>;
+}
+
 interface AgentInput {
+  roomId: string;
+  sessionId: string;
   requestId: string;
   messages: Message[];         // conversation history (already context-managed)
-  systemPrompt?: string;       // role/persona instructions
-  config: AdapterConfig;       // timeout, max tokens, etc.
+  config: AdapterConfig;       // mode, timeout, max tokens, systemPrompt, workspaceCwd
+}
+
+interface SendTurnInput {
+  roomId: string;
+  sessionId: string;
+  requestId: string;
+  nativeSessionId: string | null;
+  prompt: string;
+  config: AdapterConfig;
 }
 
 type AdapterStatus = "ready" | "busy" | "error" | "not_authenticated";
+type AdapterMode = "stub" | "cli" | "persistent" | "agentic";
 ```
 
 ### Initial Adapters
 
 **codex-adapter:** Wraps `codex exec --json` or the `@openai/codex-sdk` Node.js SDK. Parses JSON output events, maps them to internal event types. Handles Codex-specific authentication (ChatGPT plan login).
 
-**claude-adapter:** Wraps `claude -p --output-format stream-json`. Parses streaming JSON events, maps them to internal event types. Detects whether `ANTHROPIC_API_KEY` is set (API billing) vs. subscription-based auth (Claude Code login).
+**claude-adapter:** Wraps `claude -p --output-format stream-json --verbose --include-partial-messages`. Parses streaming JSON events, maps them to internal event types. Uses subscription-based auth (Claude Code login); runs in an isolated working directory to avoid loading workspace instructions.
 
 ### Adapter Rules
 
@@ -78,7 +95,7 @@ Room
 ├── id: string
 ├── name: string
 ├── participants: Participant[]     // user + agents
-├── orchestrationPolicy: string     // "manual" | "round-robin" | "auto"
+├── orchestrationPolicy: string     // "manual" | "round-robin" | "auto" | "team"
 ├── config: RoomConfig
 └── createdAt: timestamp
 
@@ -110,7 +127,7 @@ PinnedContext
 
 ### Storage
 
-Local SQLite database (single file, zero config). Tables: `rooms`, `messages`, `checkpoints`, `pinned_context`, `events_log`. The `events_log` table is append-only for debugging and replay.
+Local SQLite database (single file, zero config). Tables: `rooms`, `messages`, `checkpoints`, `pinned_context`, `events_log`, `agent_sessions`, `team_runs`, `team_steps`, `team_feedback_queue`, `team_checks`. The `events_log` table is append-only for debugging and replay.
 
 ### Context Building
 
@@ -160,6 +177,18 @@ interface Dispatch {
 **auto:** Select one best-fit agent per user message using deterministic routing heuristics (intent/keywords). Priority: `@mention` → skill keyword match → round-robin fallback. Goal: reduce noise and token cost versus broadcast while keeping useful autonomy. If no skill matches, the policy falls back to round-robin rotation (per-room, advances only on fallback).
 
 **Out of scope for v0.1:** agent-to-agent autonomous chaining/debate loops. Cross-agent autonomous turns are deferred to a later version behind explicit guardrails (step limits, loop prevention, budget caps).
+
+### v0.2 Team Policy
+
+**team:** Autonomous multi-step runtime with one deterministic round-robin discussion loop toward a goal.
+
+Behavior:
+
+- One active team run per room.
+- User messages during an active run are queued as feedback for the next step.
+- Run completion is proposal-gated: status becomes `waiting_user_input` and requires explicit user approval.
+- Resume after restart is manual (`/team resume`).
+- Defaults are intentionally relaxed for enthusiast workflows; stricter guardrails are opt-in.
 
 ### Message Flow — Manual Mode
 
@@ -228,13 +257,13 @@ User types: "What's the best approach for error handling?"
 
 ```json
 {
-  "event_id": "evt_abc123",
-  "room_id": "room_001",
-  "session_id": "sess_001",
+  "eventId": "evt_abc123",
+  "roomId": "room_001",
+  "sessionId": "sess_001",
   "timestamp": "2026-02-16T12:00:00Z",
   "source": "adapter.codex",
   "type": "message.delta",
-  "request_id": "req_789",
+  "requestId": "req_789",
   "payload": {}
 }
 ```
@@ -251,12 +280,13 @@ User types: "What's the best approach for error handling?"
 | `tool.call.completed` | Tool returned result |
 | `agent.status` | Health/availability change |
 | `session.checkpoint` | Summary checkpoint was created |
+| `session.bound` | Adapter bound a native CLI session ID (persistent/agentic modes) |
 
 ### Message Payload
 
 ```json
 {
-  "message_id": "msg_001",
+  "messageId": "msg_001",
   "author": "agent.codex",
   "role": "assistant",
   "text": "Here is my suggestion...",
@@ -264,8 +294,8 @@ User types: "What's the best approach for error handling?"
   "metadata": {
     "provider": "openai",
     "model": "codex",
-    "token_usage": { "input": 1200, "output": 450 },
-    "latency_ms": 3200
+    "tokenUsage": { "input": 1200, "output": 450 },
+    "latencyMs": 3200
   }
 }
 ```
@@ -283,113 +313,170 @@ User types: "What's the best approach for error handling?"
 | `TIMEOUT` | Response exceeded configured timeout | Cancel, notify, offer retry |
 | `PROCESS_CRASH` | CLI subprocess exited unexpectedly | Restart adapter, notify user |
 | `PROTOCOL_ERROR` | Unexpected output format from CLI | Log raw output, emit error event |
+| `SESSION_EXPIRED` | Native CLI session expired during persistent/agentic mode | One-shot cold retry; create new session |
 | `UNKNOWN` | Unclassified failure | Log everything, emit error event |
 
 ### Handling Rules
 
-Mark only the affected dispatch as failed. Emit `message.error` with typed class and raw stderr excerpt. Keep the room active — continue with remaining agents. Offer a retry command at the orchestration level (`/retry @codex`).
+Mark only the affected dispatch as failed. Emit `message.error` with typed class and raw stderr excerpt. Keep the room active — continue with remaining agents. Offer a retry command at the orchestration level (`/retry`).
 
 ---
 
 ## Configuration
 
-### Room Config File (agoryx.yaml)
+### Config File (agoryx.json)
 
-```yaml
-version: "0.1"
-default_mode: manual
-agents:
-  codex:
-    adapter: codex
-    timeout_seconds: 120
-    system_prompt: "You are a collaborative participant in a group discussion."
-  claude:
-    adapter: claude
-    timeout_seconds: 120
-    system_prompt: "You are a collaborative participant in a group discussion."
-context:
-  max_history_messages: 100
-  checkpoint_threshold: 50    # create summary after this many messages
-  max_context_tokens: 30000   # per-agent context budget
-session:
-  db_path: "./agoryx.db"
-  auto_save: true
+```json
+{
+  "defaultMode": "manual",
+  "agents": {
+    "codex": {
+      "mode": "cli",
+      "systemPrompt": "You are a collaborative participant in a group discussion.",
+      "skills": ["code", "debug", "test"]
+    },
+    "claude": {
+      "mode": "cli",
+      "systemPrompt": "You are a collaborative participant in a group discussion.",
+      "skills": ["architecture", "review", "explain"]
+    }
+  },
+  "context": {
+    "maxHistoryMessages": 100,
+    "checkpointThreshold": 50,
+    "maxContextTokens": 30000
+  },
+  "session": {
+    "dbPath": "./agoryx.db"
+  },
+  "team": {
+    "maxSteps": 24,
+    "maxNoProgressSteps": 8,
+    "maxDurationMs": 3600000,
+    "checksEnabledByDefault": false,
+    "checkCommands": ["npm run typecheck", "npm test"],
+    "strict": {
+      "maxSteps": 8,
+      "maxNoProgressSteps": 2,
+      "maxDurationMs": 900000,
+      "checksEnabledByDefault": true
+    },
+    "singleActive": true,
+    "trigger": {
+      "autoOnMessage": true,
+      "commandStart": true
+    }
+  }
+}
 ```
 
-### CLI Commands (v0.1)
+### CLI Commands
 
 ```bash
-# Start a new chat room
-agoryx chat --agents codex,claude --mode manual
+# Start a chat session
+npm run chat -- --mode manual          # you pick who responds with @agent
+npm run chat -- --mode round-robin     # agents alternate
+npm run chat -- --mode auto            # smart routing (default)
+npm run chat -- --mode team            # autonomous team runtime
+
+# Adapter transport
+npm run chat -- --adapter-mode cli       # default
+npm run chat -- --adapter-mode agentic   # persistent + workspace-aware cwd
 
 # Resume a previous session
-agoryx chat --resume <session_id>
+npm run chat -- --resume <session_id>
+
+# Custom config file
+npm run chat -- --config ./my-config.json
 
 # List past sessions
-agoryx sessions list
+npm run sessions -- list
 
 # Export a session
-agoryx sessions export <session_id> --format markdown
-
-# Check adapter health
-agoryx status
+npm run sessions -- export <room_or_session_id> --format markdown --out ./export.md
 ```
 
 ### In-Chat Commands
 
 ```
-@codex <message>         # direct message to codex
-@claude <message>        # direct message to claude
-@all <message>           # broadcast to all agents
-/mode round-robin        # switch orchestration mode
-/mode manual
-/pin <text>              # add to pinned context
-/unpin <id>              # remove pinned context
-/summary                 # generate checkpoint summary
-/retry @codex            # retry last failed request
-/export markdown         # export session
-/status                  # show adapter health
-/quit                    # end session
+@codex <message>                               # direct message to codex
+@claude <message>                              # direct message to claude
+@all <message>                                 # broadcast to all agents
+/mode <manual|round-robin|auto|team>           # switch orchestration mode
+/adapter <agent> <stub|cli|persistent|agentic> # switch adapter mode per agent
+/team start <goal> [--strict] [--no-checks]   # start autonomous team run
+/team status                                   # show active run status
+/team log [limit]                              # show recent team steps/checks
+/team resume                                   # resume latest team run
+/team approve [run_id]                         # approve proposal and mark done
+/team interrupt [feedback]                     # interrupt active team step and queue correction
+/team stop                                     # stop active team run
+/pin [label] <content>                         # pin persistent context
+/unpin <id>                                    # remove pinned context
+/pins                                          # list all pinned contexts
+/summary                                       # create checkpoint summary
+/checkpoint                                    # alias for /summary
+/history                                       # show conversation history
+/export [markdown|json] [--out file]           # export session
+/retry                                         # retry last failed agent request
+/help                                          # show available commands
+/quit or /exit                                 # end session
+Esc (TTY, team mode)                           # interrupt active team step
 ```
 
 ---
 
-## Suggested Project Layout
+## Project Layout
 
 ```
 agoryx/
 ├── cmd/
-│   └── agoryx/          # CLI entrypoint
-│       └── main.go      # (or main.ts — language TBD)
+│   └── agoryx/              # CLI entrypoints
+│       ├── main.ts          # chat + sessions commands
+│       └── session-export.ts # export rendering helpers
 ├── internal/
 │   ├── adapters/
-│   │   ├── adapter.go   # interface definition
-│   │   ├── codex/       # codex CLI adapter
-│   │   └── claude/      # claude CLI adapter
-│   ├── orchestrator/
-│   │   ├── policy.go    # policy interface
-│   │   ├── manual.go
-│   │   ├── roundrobin.go
-│   │   └── auto.go
-│   ├── session/
-│   │   ├── room.go
-│   │   ├── context.go   # context builder
-│   │   └── checkpoint.go
+│   │   ├── adapter.ts       # interface definition (Adapter, PersistentAdapter)
+│   │   ├── codex/           # codex CLI adapter
+│   │   ├── claude/          # claude CLI adapter
+│   │   ├── event-factory.ts
+│   │   ├── parse-output.ts
+│   │   └── registry.ts
+│   ├── config/
+│   │   ├── index.ts         # loader, mergeConfig, toRuntimeConfig
+│   │   └── default.ts       # ChatRuntimeConfig type and defaults
+│   ├── engine/
+│   │   └── chat.ts          # main chat loop, dispatch, retry, team runtime
 │   ├── events/
-│   │   └── types.go     # event envelope, payload types
+│   │   └── types.ts         # event envelope, payload types
+│   ├── orchestrator/
+│   │   ├── index.ts         # Orchestrator class
+│   │   ├── manual.ts
+│   │   ├── round-robin.ts
+│   │   ├── auto.ts
+│   │   ├── team.ts
+│   │   └── factory.ts
+│   ├── session/
+│   │   ├── context.ts       # context builder algorithm
+│   │   ├── service.ts       # SessionService (room, messages, checkpoints, team)
+│   │   └── ids.ts
 │   └── storage/
-│       └── sqlite.go    # SQLite persistence
-├── config/
-│   └── default.yaml
+│       └── sqlite.ts        # SQLite persistence (better-sqlite3)
 ├── docs/
 │   ├── VISION.md
 │   ├── ARCHITECTURE.md
-│   └── CONSENSUS.md
+│   ├── CONSENSUS.md
+│   └── plans/              # design docs for past and in-progress features
 ├── tests/
-│   ├── adapters/        # contract tests per adapter
-│   ├── orchestrator/    # policy logic tests
-│   └── integration/     # end-to-end with mock adapters
-├── go.mod               # (or package.json — language TBD)
+│   ├── adapters/           # adapter contract tests, parser tests
+│   ├── cmd/                # CLI integration tests
+│   ├── config/             # config merge/load tests
+│   ├── engine/             # chat engine and team runtime tests
+│   ├── orchestrator/       # policy logic tests
+│   ├── session/            # context builder, checkpoint, summary tests
+│   └── storage/            # SQLite store tests
+├── package.json
+├── tsconfig.json
 └── README.md
 ```
 
@@ -397,7 +484,7 @@ agoryx/
 
 ## Test Strategy
 
-**Unit tests:** Event normalization for each adapter. Policy decisions for manual, round-robin, and auto. Session context builder and checkpoint selection. Error classification and handling.
+**Unit tests:** Event normalization for each adapter. Policy decisions for manual, round-robin, auto, and team. Session context builder and checkpoint selection. Error classification and handling.
 
 **Contract tests:** Each adapter has a test suite that verifies: it produces valid internal events from sample CLI output; it handles error cases (timeout, crash, malformed output); it reports correct health status.
 
@@ -411,6 +498,6 @@ Keep transport adapters replaceable — adding Gemini CLI or Ollama should requi
 
 ---
 
-## Open Technical Questions for v0.2+
+## Open Technical Questions for v0.3+
 
-How to handle agent-to-agent direct conversation without user in the loop (autonomous mode). Whether to support shared file/tool context between agents. Strategy for multi-user rooms (collaborative sessions). Plugin system for community-contributed adapters and policies.
+Whether to support shared file/tool context between agents. Strategy for multi-user rooms (collaborative sessions). Plugin system for community-contributed adapters and policies. Web UI architecture for daemon-backed sessions.

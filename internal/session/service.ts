@@ -1,7 +1,21 @@
-import type { Message, PinnedContext, Room, RoomConfig } from "../events/types.js";
+import type {
+  Message,
+  PinnedContext,
+  Room,
+  RoomConfig,
+  TeamCheck,
+  TeamRun,
+  TeamRunStage,
+  TeamStep,
+} from "../events/types.js";
 import { createId, nowIso } from "./ids.js";
 import { SQLiteStore } from "../storage/sqlite.js";
-import type { AgentSession } from "../storage/sqlite.js";
+import type {
+  AgentSession,
+  CreateTeamCheckInput,
+  CreateTeamRunInput,
+  CreateTeamStepInput,
+} from "../storage/sqlite.js";
 import { buildContext, type BuiltContext } from "./context.js";
 
 // --- Stop words for topic extraction ---
@@ -244,6 +258,10 @@ export class SessionService {
     return this.store.listMessages(roomId, limit);
   }
 
+  public listRecentMessages(roomId: string, limit = 250): Message[] {
+    return this.store.listRecentMessages(roomId, limit);
+  }
+
   public addPinnedContext(
     roomId: string,
     label: string,
@@ -372,6 +390,10 @@ export class SessionService {
     );
   }
 
+  public listActiveAgentSessions(roomId: string): AgentSession[] {
+    return this.store.listActiveAgentSessions(roomId);
+  }
+
   public updateAgentSessionNativeId(id: string, nativeId: string): void {
     this.store.updateAgentSessionNativeId(id, nativeId);
   }
@@ -386,6 +408,143 @@ export class SessionService {
 
   public incrementAgentSessionFailCount(id: string): number {
     return this.store.incrementAgentSessionFailCount(id);
+  }
+
+  public createTeamRun(input: Omit<CreateTeamRunInput, "stage"> & { stage?: TeamRunStage }): TeamRun {
+    return this.store.createTeamRun({
+      ...input,
+      stage: input.stage ?? "debate",
+    });
+  }
+
+  public getTeamRun(runId: string): TeamRun | null {
+    return this.store.getTeamRun(runId);
+  }
+
+  public getActiveTeamRun(roomId: string): TeamRun | null {
+    return this.store.getActiveTeamRun(roomId);
+  }
+
+  public getLatestResumableTeamRun(roomId: string): TeamRun | null {
+    return this.store.getLatestResumableTeamRun(roomId);
+  }
+
+  public updateTeamRunStatus(
+    runId: string,
+    status: TeamRun["status"],
+    options?: { stage?: TeamRunStage; finalSummary?: string | null; completedAt?: string | null },
+  ): void {
+    this.store.updateTeamRunStatus(runId, status, options);
+  }
+
+  public updateTeamRunProgress(
+    runId: string,
+    updates: {
+      stage?: TeamRunStage;
+      stepCount?: number;
+      noProgressCount?: number;
+      finalSummary?: string | null;
+    },
+  ): void {
+    this.store.updateTeamRunProgress(runId, updates);
+  }
+
+  public addTeamStep(input: CreateTeamStepInput): TeamStep {
+    return this.store.addTeamStep(input);
+  }
+
+  public listTeamSteps(runId: string, limit = 50): TeamStep[] {
+    return this.store.listTeamSteps(runId, limit);
+  }
+
+  public enqueueTeamFeedback(runId: string, messageId: string, feedbackText: string): void {
+    this.store.enqueueTeamFeedback(runId, messageId, feedbackText);
+  }
+
+  public listPendingTeamFeedback(runId: string, limit = 20) {
+    return this.store.listPendingTeamFeedback(runId, limit);
+  }
+
+  public countPendingTeamFeedback(runId: string): number {
+    return this.store.countPendingTeamFeedback(runId);
+  }
+
+  public consumeTeamFeedback(ids: string[]): void {
+    this.store.consumeTeamFeedback(ids);
+  }
+
+  public addTeamCheck(input: CreateTeamCheckInput): TeamCheck {
+    return this.store.addTeamCheck(input);
+  }
+
+  public listTeamChecks(runId: string, limit = 20): TeamCheck[] {
+    return this.store.listTeamChecks(runId, limit);
+  }
+
+  public buildTeamPrompt(
+    room: Room,
+    run: TeamRun,
+    stage: TeamRunStage,
+    actor: string,
+    opts: {
+      instructions: string;
+      latestStepsLimit?: number;
+      pendingFeedbackLimit?: number;
+      tailMessagesLimit?: number;
+    },
+  ): string {
+    const latestSteps = this.listTeamSteps(run.id, opts.latestStepsLimit ?? 6);
+    const pendingFeedback = this.listPendingTeamFeedback(run.id, opts.pendingFeedbackLimit ?? 6);
+    const tailMessages = this.listRecentMessages(room.id, opts.tailMessagesLimit ?? 20)
+      .filter((message) => message.author === "user")
+      .slice(-6);
+
+    const parts: string[] = [
+      `[Team run ${run.id}]`,
+      `Stage: ${stage}`,
+      `Actor: ${actor}`,
+      `Goal: ${run.goal}`,
+      "",
+      "[Instructions]",
+      opts.instructions,
+    ];
+
+    if (latestSteps.length > 0) {
+      parts.push("", "[Recent team steps]");
+      for (const step of latestSteps) {
+        const preview = step.outputText.replace(/\s+/g, " ").slice(0, 320);
+        parts.push(
+          `- #${step.seq} ${step.stage} ${step.actor} result=${step.result}` +
+            (step.errorClass ? ` error=${step.errorClass}` : ""),
+        );
+        if (preview) {
+          parts.push(`  ${preview}`);
+        }
+      }
+    }
+
+    if (pendingFeedback.length > 0) {
+      parts.push("", "[Pending human feedback]");
+      for (const feedback of pendingFeedback) {
+        parts.push(`- (${feedback.messageId}) ${feedback.feedbackText}`);
+      }
+    }
+
+    if (tailMessages.length > 0) {
+      parts.push("", "[Recent user context]");
+      for (const message of tailMessages) {
+        parts.push(`- [${message.author}] ${message.text}`);
+      }
+    }
+
+    return parts.join("\n");
+  }
+
+  public consumeTeamFeedbackForRun(runId: string, limit = 20): string[] {
+    const items = this.listPendingTeamFeedback(runId, limit);
+    const ids = items.map((item) => item.id);
+    this.consumeTeamFeedback(ids);
+    return ids;
   }
 
   public maybeCreateCheckpoint(room: Room, force?: boolean): string | null {

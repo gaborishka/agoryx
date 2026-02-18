@@ -19,8 +19,8 @@ test("claude stream parser supports result-only payload", () => {
   assert.equal(parsed.resultText, "final");
 });
 
-test("claude stream parser preserves non-json lines as deltas", () => {
+test("claude stream parser ignores non-json diagnostic lines", () => {
   const parsed = parseClaudeChunk("plain output line");
-  assert.deepEqual(parsed.deltaParts, ["plain output line"]);
+  assert.deepEqual(parsed.deltaParts, []);
   assert.equal(parsed.resultText, null);
 });

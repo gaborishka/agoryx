@@ -44,7 +44,7 @@ These layers are independent. Changing an adapter does not affect the orchestrat
 
 ### 5. Orchestration as Configuration
 
-All interaction modes (manual, round-robin, debate, team-roles, etc.) are policies of one orchestration engine, not separate systems. This was explicitly agreed as a design principle.
+All interaction modes (manual, round-robin, auto, team, etc.) are policies of one orchestration engine, not separate systems. This was explicitly agreed as a design principle.
 
 ### 6. Error Isolation
 
@@ -53,6 +53,15 @@ A failing agent must not break the room. Errors are typed, contained to the affe
 ### 7. Context Management
 
 Each agent receives: its system prompt, pinned context, a summary of older conversation (if beyond threshold), and recent messages verbatim. Context is built per-request, respecting each adapter's token budget.
+
+### 8. v0.2 Product Principles
+
+The next iteration of Agoryx should prioritize agent collaboration with minimal constraints first, then evolve guardrails based on real usage feedback.
+
+- **Collaboration-first:** Codex and Claude are treated as equal participants without a forced hierarchy.
+- **Minimal core:** Keep only essential constraints in the core (safety, compatibility, stability).
+- **Layered logic:** Add stronger rules and orchestration behaviors as optional layers after feedback validates them.
+- **Enthusiast-first:** Preserve local-first workflows, transparency, and hackability for advanced users.
 
 ---
 
@@ -63,7 +72,7 @@ Each agent receives: its system prompt, pinned context, a summary of older conve
 | Daemon vs. CLI process | Proposed `agoryxd` daemon | Start simpler with CLI process | CLI first, daemon in v0.2+ |
 | v0.1 modes | manual + @mention | manual + round-robin + auto | All three included |
 | Tie-break on conflicts | Proposed moderation rules | Let the user decide | User as moderator for v0.1 |
-| Project layout language | Go-style layout (`cmd/`, `internal/`) | Language TBD | Layout agreed, language TBD |
+| Project layout language | Go-style layout (`cmd/`, `internal/`) | Language TBD | Layout agreed, language resolved: TypeScript |
 
 ---
 
@@ -72,10 +81,10 @@ Each agent receives: its system prompt, pinned context, a summary of older conve
 These questions were identified but intentionally deferred beyond v0.1:
 
 1. **Terms compliance** for scenarios beyond personal use.
-2. **Agent-to-agent autonomous conversation** without human in the loop.
+2. **Agent-to-agent autonomous conversation** without human in the loop — partially addressed by v0.2 team mode; fully autonomous open-ended loops remain deferred.
 3. **Shared file/tool context** between agents.
 4. **Multi-user rooms** (collaborative sessions with multiple humans).
-5. **Implementation language** — Go, TypeScript, or Rust. To be decided based on adapter ecosystem needs.
+5. **Implementation language** — ~~Go, TypeScript, or Rust~~ **Resolved: TypeScript** (Node.js, `tsx` for dev, `tsc` for production build).
 6. **Budget/cost controls** — token limits, per-session spending caps.
 
 ---

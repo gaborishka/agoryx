@@ -3,6 +3,7 @@ import { AutoPolicy } from "./auto.js";
 import { ManualPolicy } from "./manual.js";
 import type { OrchestrationPolicy } from "./policy.js";
 import { RoundRobinPolicy } from "./round-robin.js";
+import { TeamPolicy } from "./team.js";
 
 export interface PolicyOptions {
   agentSkills?: Record<string, string[]>;
@@ -19,6 +20,8 @@ export const createPolicy = (
       return new RoundRobinPolicy();
     case "auto":
       return new AutoPolicy(options?.agentSkills);
+    case "team":
+      return new TeamPolicy();
     default:
       return new ManualPolicy();
   }

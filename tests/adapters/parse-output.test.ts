@@ -40,6 +40,13 @@ test("parser extracts claude result field", () => {
   assert.equal(result, "final response");
 });
 
+test("parser extracts stream_event nested delta text", () => {
+  const result = extractTextFromJsonLine(
+    '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"chunk"}}}',
+  );
+  assert.equal(result, "chunk");
+});
+
 test("parser ignores codex reasoning items", () => {
   const result = extractTextFromJsonLine(
     '{"type":"item.completed","item":{"type":"reasoning","text":"internal thinking"}}',

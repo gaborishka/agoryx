@@ -1,7 +1,11 @@
 import process from "node:process";
 import readline from "node:readline/promises";
+import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { writeFileSync } from "node:fs";
+import ora, { type Ora } from "ora";
+import cliCursor from "cli-cursor";
+import pc from "picocolors";
 import { createAdapterRegistry } from "../../internal/adapters/registry.js";
 import {
   collectRoomExportData,
@@ -17,7 +21,89 @@ import type { OrchestrationMode } from "../../internal/events/types.js";
 import { SessionService } from "../../internal/session/service.js";
 import { SQLiteStore } from "../../internal/storage/sqlite.js";
 
-const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto"];
+const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team"];
+
+interface RenderOptions {
+  richUi: boolean;
+  hideSystem: boolean;
+  color: boolean;
+}
+
+const renderOptions: RenderOptions = {
+  richUi: output.isTTY,
+  hideSystem: false,
+  color: output.isTTY && process.env.NO_COLOR !== "1",
+};
+
+let cursorHidden = false;
+let escInterruptInFlight = false;
+
+function isEnabledFlag(value?: string): boolean {
+  if (!value) {
+    return false;
+  }
+  return value === "true" || value === "1";
+}
+
+function configureRenderOptions(next: RenderOptions): void {
+  renderOptions.richUi = next.richUi;
+  renderOptions.hideSystem = next.hideSystem;
+  renderOptions.color = next.color;
+}
+
+function shouldShowSystemLines(): boolean {
+  return !renderOptions.hideSystem;
+}
+
+function colorize(value: string, paint: (text: string) => string): string {
+  if (!renderOptions.color) {
+    return value;
+  }
+  return paint(value);
+}
+
+function formatStatusLabel(adapterName: string): string {
+  return colorize(`[${adapterName}]`, pc.cyan);
+}
+
+function formatAdapterName(adapterName: string): string {
+  return colorize(adapterName, pc.bold);
+}
+
+function formatInfoLabel(value: string): string {
+  return colorize(value, pc.dim);
+}
+
+function formatErrorText(value: string): string {
+  return colorize(value, pc.red);
+}
+
+function ensureCursorHidden(): void {
+  if (!renderOptions.richUi || cursorHidden) {
+    return;
+  }
+  cliCursor.hide(output);
+  cursorHidden = true;
+}
+
+function cleanupRenderState(): void {
+  for (const state of adapterRenderStates.values()) {
+    if (state.spinner?.isSpinning) {
+      state.spinner.stop();
+    }
+    state.spinner = null;
+    state.lineOpen = false;
+    state.sawContent = false;
+    state.pendingSessionId = null;
+    state.lastSessionId = null;
+    state.insideSystemReminder = false;
+    state.prefixPrinted = false;
+  }
+  if (cursorHidden) {
+    cliCursor.show(output);
+    cursorHidden = false;
+  }
+}
 
 async function main(): Promise<void> {
   const [, , command = "help", ...rest] = process.argv;
@@ -40,6 +126,12 @@ async function main(): Promise<void> {
 const runChat = async (argv: string[]): Promise<void> => {
   const parsed = parseArgs(argv);
   const args = parsed.options;
+  configureRenderOptions({
+    richUi: output.isTTY && !isEnabledFlag(args["plain-ui"]),
+    hideSystem: isEnabledFlag(args["quiet-system"]),
+    color: output.isTTY && !isEnabledFlag(args["no-color"]) && process.env.NO_COLOR !== "1",
+  });
+
   const cliAgents = args.agents
     ? args.agents
         .split(",")
@@ -73,7 +165,12 @@ const runChat = async (argv: string[]): Promise<void> => {
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
   const adapterMode = args["adapter-mode"];
-  if (adapterMode === "cli" || adapterMode === "stub" || adapterMode === "persistent") {
+  if (
+    adapterMode === "cli" ||
+    adapterMode === "stub" ||
+    adapterMode === "persistent" ||
+    adapterMode === "agentic"
+  ) {
     for (const agent of config.agents) {
       if (config.adapterConfig[agent]) {
         config.adapterConfig[agent] = {
@@ -82,6 +179,8 @@ const runChat = async (argv: string[]): Promise<void> => {
         };
       }
     }
+  } else if (mode === "team") {
+    promoteCliAdaptersToAgentic(config);
   }
 
   const store = new SQLiteStore(config.dbPath);
@@ -89,11 +188,17 @@ const runChat = async (argv: string[]): Promise<void> => {
   const session = new SessionService(store);
   const adapters = createAdapterRegistry();
 
+  let engineRef: ChatEngine | null = null;
   const engine = new ChatEngine(session, adapters, config, {
     onAdapterEvent: (adapterName, event) => {
-      renderAdapterEvent(adapterName, event);
+      renderAdapterEvent(
+        adapterName,
+        event,
+        () => engineRef?.getState().room.config.mode ?? config.mode,
+      );
     },
   });
+  engineRef = engine;
 
   const initialized = engine.init();
   printBanner(
@@ -105,6 +210,7 @@ const runChat = async (argv: string[]): Promise<void> => {
   );
 
   const rl = readline.createInterface({ input, output });
+  const teardownEscHotkey = setupEscInterruptHotkey(engine);
 
   try {
     if (!input.isTTY) {
@@ -134,7 +240,10 @@ const runChat = async (argv: string[]): Promise<void> => {
       }
     }
   } finally {
+    teardownEscHotkey();
     rl.close();
+    cleanupRenderState();
+    await engine.shutdown();
     store.close();
   }
 };
@@ -154,8 +263,36 @@ const processChatInputLine = async (
     return handleCommand(line, engine, config, store);
   }
 
+  const mode = engine.getState().room.config.mode;
+  const teamStatusBefore = mode === "team" ? engine.teamStatus() : null;
+  const activeRunBefore =
+    teamStatusBefore?.run.status === "active" ? teamStatusBefore.run.id : null;
+  if (mode === "team" && activeRunBefore) {
+    const interrupted = await engine.interruptTeamRun(line, activeRunBefore);
+    if (interrupted) {
+      if (interrupted.interrupted) {
+        console.log(`Team run interrupted: ${interrupted.run.id}. Feedback queued.`);
+      } else {
+        console.log(`Feedback queued for team run ${interrupted.run.id}.`);
+      }
+      return true;
+    }
+  }
+
   const results = await engine.processUserMessage(line);
   if (results.length === 0) {
+    if (mode === "team") {
+      const status = engine.teamStatus();
+      if (status && !teamStatusBefore) {
+        console.log(`Team run started: ${status.run.id}`);
+      } else if (status?.run.status === "active") {
+        console.log(`Feedback queued for team run ${status.run.id}.`);
+      } else if (status?.run.status === "waiting_user_input") {
+        console.log(`Team run ${status.run.id} is waiting for approval. Use /team approve.`);
+      }
+      return true;
+    }
+
     console.log("No dispatch generated. In manual mode, mention an agent (e.g. @codex).");
     return true;
   }
@@ -251,11 +388,15 @@ const handleCommand = async (
     case "/mode": {
       const target = normalizeMode(rest[0]);
       if (!target) {
-        console.log("Usage: /mode <manual|round-robin|auto>");
+        console.log("Usage: /mode <manual|round-robin|auto|team>");
         return true;
       }
+      const promoted = target === "team" ? promoteCliAdaptersToAgentic(config) : [];
       engine.setMode(target);
       console.log(`Mode switched to: ${target}`);
+      if (promoted.length > 0) {
+        console.log(`Auto-switched adapters to agentic for team mode: ${promoted.join(", ")}`);
+      }
       return true;
     }
     case "/status": {
@@ -269,8 +410,11 @@ const handleCommand = async (
     }
     case "/adapter": {
       const [agent, mode] = rest;
-      if (!agent || (mode !== "stub" && mode !== "cli" && mode !== "persistent")) {
-        console.log("Usage: /adapter <codex|claude> <stub|cli|persistent>");
+      if (
+        !agent ||
+        (mode !== "stub" && mode !== "cli" && mode !== "persistent" && mode !== "agentic")
+      ) {
+        console.log("Usage: /adapter <codex|claude> <stub|cli|persistent|agentic>");
         return true;
       }
       if (!config.adapterConfig[agent]) {
@@ -283,6 +427,9 @@ const handleCommand = async (
       };
       console.log(`Adapter ${agent} switched to mode=${mode}`);
       return true;
+    }
+    case "/team": {
+      return handleTeamCommand(rest, engine);
     }
     case "/pin": {
       const text = rest.join(" ").trim();
@@ -395,11 +542,166 @@ const handleCommand = async (
   }
 };
 
+const handleTeamCommand = async (
+  args: string[],
+  engine: ChatEngine,
+): Promise<boolean> => {
+  const [subcommand, ...rest] = args;
+  switch (subcommand) {
+    case "start": {
+      const parsed = parseTeamStartArgs(rest);
+      if (!parsed) {
+        console.log("Usage: /team start <goal> [--strict] [--no-checks]");
+        return true;
+      }
+
+      try {
+        const run = engine.startTeamRun(parsed.goal, {
+          strict: parsed.strict,
+          checksEnabled: parsed.checksEnabled,
+        });
+        console.log(`Team run started: ${run.id}`);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : "Failed to start team run.");
+      }
+      return true;
+    }
+    case "status": {
+      const status = engine.teamStatus();
+      if (!status) {
+        console.log("No active team run.");
+        return true;
+      }
+      const run = status.run;
+      const startedAtMs = Date.parse(run.startedAt);
+      const elapsed = Number.isFinite(startedAtMs)
+        ? Math.max(0, Date.now() - startedAtMs)
+        : 0;
+      console.log(`run_id: ${run.id}`);
+      console.log(`status: ${run.status}`);
+      console.log(`stage: ${run.stage}`);
+      console.log(`steps: ${run.stepCount}/${run.maxSteps}`);
+      console.log(`no_progress: ${run.noProgressCount}/${run.maxNoProgressSteps}`);
+      console.log(`elapsed_ms: ${elapsed}`);
+      console.log(`pending_feedback: ${status.pendingFeedback}`);
+      return true;
+    }
+    case "log": {
+      const requested = Number(rest[0] ?? "20");
+      const limit = Number.isFinite(requested) && requested > 0 ? requested : 20;
+      const log = engine.teamLog(limit);
+      if (!log) {
+        console.log("No team run logs.");
+        return true;
+      }
+      console.log(`run_id: ${log.run.id}`);
+      console.log("steps:");
+      for (const step of log.steps) {
+        console.log(
+          `- #${step.seq} ${step.stage} ${step.actor} result=${step.result}` +
+            (step.errorClass ? ` error=${step.errorClass}` : ""),
+        );
+      }
+      console.log("checks:");
+      for (const check of log.checks) {
+        console.log(
+          `- ${check.command}: ${check.status}` +
+            (check.exitCode !== null ? ` (exit=${check.exitCode})` : ""),
+        );
+      }
+      return true;
+    }
+    case "resume": {
+      const run = engine.teamResume();
+      if (!run) {
+        console.log("No resumable team run.");
+      } else {
+        console.log(`Team run resumed: ${run.id} (status=${run.status})`);
+      }
+      return true;
+    }
+    case "approve": {
+      const run = engine.teamApprove(rest[0]);
+      if (!run) {
+        console.log("No waiting team run to approve.");
+      } else {
+        console.log(`Team run approved: ${run.id}`);
+      }
+      return true;
+    }
+    case "interrupt": {
+      const feedback = rest.join(" ").trim();
+      const result = await engine.interruptTeamRun(feedback || undefined);
+      if (!result) {
+        console.log("No active team run to interrupt.");
+        return true;
+      }
+      if (result.interrupted) {
+        if (result.feedbackQueued) {
+          console.log(`Team run interrupted: ${result.run.id}. Feedback queued.`);
+        } else {
+          console.log(`Team run interrupted: ${result.run.id}.`);
+        }
+      } else if (result.feedbackQueued) {
+        console.log(`Feedback queued for team run ${result.run.id}.`);
+      } else {
+        console.log(`No active team step to interrupt for run ${result.run.id}.`);
+      }
+      return true;
+    }
+    case "stop": {
+      const run = engine.teamStop(rest[0]);
+      if (!run) {
+        console.log("No active team run to stop.");
+      } else {
+        console.log(`Team run stopped: ${run.id}`);
+      }
+      return true;
+    }
+    default:
+      console.log(
+        "Usage: /team <start|status|log|resume|approve|interrupt|stop> ...",
+      );
+      return true;
+  }
+};
+
+const parseTeamStartArgs = (
+  args: string[],
+): { goal: string; strict?: boolean; checksEnabled?: boolean } | null => {
+  let strict: boolean | undefined;
+  let checksEnabled: boolean | undefined;
+  const goalParts: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === "--strict") {
+      strict = true;
+      continue;
+    }
+    if (token === "--no-checks") {
+      checksEnabled = false;
+      continue;
+    }
+    goalParts.push(token);
+  }
+
+  const goal = goalParts.join(" ").trim();
+  if (!goal) {
+    return null;
+  }
+
+  return { goal, strict, checksEnabled };
+};
+
 interface AdapterRenderState {
   lineOpen: boolean;
   sawContent: boolean;
   pendingSessionId: string | null;
   lastSessionId: string | null;
+  insideSystemReminder: boolean;
+  prefixPrinted: boolean;
+  spinner: Ora | null;
 }
 
 const adapterRenderStates = new Map<string, AdapterRenderState>();
@@ -414,24 +716,59 @@ const getAdapterRenderState = (adapterName: string): AdapterRenderState => {
     sawContent: false,
     pendingSessionId: null,
     lastSessionId: null,
+    insideSystemReminder: false,
+    prefixPrinted: false,
+    spinner: null,
   };
   adapterRenderStates.set(adapterName, created);
   return created;
 };
 
-const renderAdapterEvent = (adapterName: string, event: AdapterEvent): void => {
+const renderAdapterEvent = (
+  adapterName: string,
+  event: AdapterEvent,
+  resolveMode: () => OrchestrationMode = () => "manual",
+): void => {
   const state = getAdapterRenderState(adapterName);
   switch (event.type) {
     case "message.started": {
+      stopAdapterSpinner(state);
       state.lineOpen = true;
       state.sawContent = false;
       state.pendingSessionId = null;
-      output.write(`\n[${adapterName}] generating...\n${adapterName}: `);
+      state.prefixPrinted = false;
+      if (renderOptions.richUi) {
+        if (shouldShowSystemLines()) {
+          ensureCursorHidden();
+          state.spinner = ora({
+            stream: output,
+            text: `${formatStatusLabel(adapterName)} generating...`,
+            discardStdin: false,
+          }).start();
+        }
+        return;
+      }
+      if (shouldShowSystemLines()) {
+        output.write(`\n[${adapterName}] generating...\n`);
+      } else {
+        output.write("\n");
+      }
+      output.write(`${adapterName}: `);
+      state.prefixPrinted = true;
       return;
     }
     case "message.delta": {
-      const text = extractPayloadText(event.payload);
+      const text = sanitizeRenderedDelta(
+        extractPayloadText(event.payload),
+        state,
+        resolveMode(),
+      );
       if (text) {
+        if (!state.prefixPrinted) {
+          persistAdapterGeneratingStatus(adapterName, state);
+          output.write(`\n${formatAdapterName(adapterName)}: `);
+          state.prefixPrinted = true;
+        }
         state.sawContent = true;
         output.write(text);
       }
@@ -444,6 +781,11 @@ const renderAdapterEvent = (adapterName: string, event: AdapterEvent): void => {
         return;
       }
 
+      if (!shouldShowSystemLines()) {
+        state.lastSessionId = nativeSessionId;
+        return;
+      }
+
       if (state.lineOpen && state.sawContent) {
         // Defer non-text status to avoid interrupting streamed answer text.
         state.pendingSessionId = nativeSessionId;
@@ -452,61 +794,101 @@ const renderAdapterEvent = (adapterName: string, event: AdapterEvent): void => {
 
       const label = describeSessionBinding(state.lastSessionId, nativeSessionId);
       state.lastSessionId = nativeSessionId;
+      const renderedStatus = `${formatStatusLabel(adapterName)} ${label} (${formatSessionId(
+        nativeSessionId,
+      )})`;
 
-      if (state.lineOpen && !state.sawContent) {
-        output.write(
-          `\n[${adapterName}] ${label} (${formatSessionId(nativeSessionId)})\n${adapterName}: `,
-        );
+      if (state.spinner?.isSpinning) {
+        state.spinner.text = renderedStatus;
         return;
       }
 
-      output.write(
-        `\n[${adapterName}] ${label} (${formatSessionId(nativeSessionId)})\n`,
-      );
+      if (state.lineOpen && !state.sawContent) {
+        output.write(`\n${renderedStatus}\n${formatAdapterName(adapterName)}: `);
+        state.prefixPrinted = true;
+        return;
+      }
+
+      output.write(`\n${renderedStatus}\n`);
       return;
     }
-    case "message.completed":
-      if (state.lineOpen) {
+    case "message.completed": {
+      stopAdapterSpinner(state);
+      if (state.lineOpen && state.prefixPrinted) {
         output.write("\n");
       }
       if (state.pendingSessionId) {
         const label = describeSessionBinding(state.lastSessionId, state.pendingSessionId);
         state.lastSessionId = state.pendingSessionId;
-        output.write(
-          `[${adapterName}] ${label} (${formatSessionId(state.pendingSessionId)})\n`,
-        );
+        output.write(`${formatStatusLabel(adapterName)} ${label} (${formatSessionId(state.pendingSessionId)})\n`);
         state.pendingSessionId = null;
       }
       state.lineOpen = false;
       state.sawContent = false;
-      output.write(`[${adapterName}] done\n`);
-      output.write("\n");
+      state.prefixPrinted = false;
+      if (shouldShowSystemLines()) {
+        output.write(`${formatStatusLabel(adapterName)} done\n`);
+        output.write("\n");
+      }
       return;
+    }
     case "message.error": {
+      stopAdapterSpinner(state);
       const payload = event.payload as { class?: string; message?: string };
-      if (state.lineOpen) {
+      if (state.lineOpen && state.prefixPrinted) {
         output.write("\n");
       }
       if (state.pendingSessionId) {
         const label = describeSessionBinding(state.lastSessionId, state.pendingSessionId);
         state.lastSessionId = state.pendingSessionId;
-        output.write(
-          `[${adapterName}] ${label} (${formatSessionId(state.pendingSessionId)})\n`,
-        );
+        if (shouldShowSystemLines()) {
+          output.write(`${formatStatusLabel(adapterName)} ${label} (${formatSessionId(state.pendingSessionId)})\n`);
+        }
         state.pendingSessionId = null;
       }
       state.lineOpen = false;
       state.sawContent = false;
+      state.prefixPrinted = false;
       output.write(
-        `\n${adapterName} error (${payload.class ?? "UNKNOWN"}): ${
+        `\n${formatErrorText(`${adapterName} error (${payload.class ?? "UNKNOWN"}): ${
           payload.message ?? "unknown"
-        }\n`,
+        }`)}\n`,
       );
       return;
     }
     default:
       return;
   }
+};
+
+const stopAdapterSpinner = (state: AdapterRenderState): void => {
+  if (!state.spinner) {
+    return;
+  }
+  if (state.spinner.isSpinning) {
+    state.spinner.stop();
+  }
+  state.spinner = null;
+};
+
+const persistAdapterGeneratingStatus = (
+  adapterName: string,
+  state: AdapterRenderState,
+): void => {
+  if (!state.spinner) {
+    return;
+  }
+  if (state.spinner.isSpinning) {
+    if (shouldShowSystemLines()) {
+      state.spinner.stopAndPersist({
+        symbol: colorize("●", pc.cyan),
+        text: `${formatStatusLabel(adapterName)} generating...`,
+      });
+    } else {
+      state.spinner.stop();
+    }
+  }
+  state.spinner = null;
 };
 
 const describeSessionBinding = (
@@ -537,6 +919,90 @@ const extractPayloadText = (payload: unknown): string => {
   return typeof text === "string" ? text : "";
 };
 
+const sanitizeRenderedDelta = (
+  text: string,
+  state: AdapterRenderState,
+  mode: OrchestrationMode,
+): string => {
+  if (!text) {
+    return "";
+  }
+
+  const withoutReminders = stripSystemReminder(text, state);
+  if (!withoutReminders) {
+    return "";
+  }
+
+  return withoutReminders
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        return true;
+      }
+      return !/^\d+→/.test(trimmed);
+    })
+    .filter((line) => {
+      if (mode !== "team") {
+        return true;
+      }
+      const trimmed = line.trim();
+      if (!trimmed) {
+        return true;
+      }
+      return !isTeamProcessChatterLine(trimmed);
+    })
+    .join("\n");
+};
+
+const stripSystemReminder = (
+  text: string,
+  state: AdapterRenderState,
+): string => {
+  let remaining = text;
+  let outputText = "";
+
+  while (remaining.length > 0) {
+    if (state.insideSystemReminder) {
+      const closeIndex = remaining.toLowerCase().indexOf("</system-reminder>");
+      if (closeIndex === -1) {
+        return outputText;
+      }
+      remaining = remaining.slice(closeIndex + "</system-reminder>".length);
+      state.insideSystemReminder = false;
+      continue;
+    }
+
+    const openIndex = remaining.toLowerCase().indexOf("<system-reminder>");
+    if (openIndex === -1) {
+      outputText += remaining;
+      break;
+    }
+
+    outputText += remaining.slice(0, openIndex);
+    const afterOpen = remaining.slice(openIndex + "<system-reminder>".length);
+    const closeIndex = afterOpen.toLowerCase().indexOf("</system-reminder>");
+    if (closeIndex === -1) {
+      state.insideSystemReminder = true;
+      break;
+    }
+
+    remaining = afterOpen.slice(closeIndex + "</system-reminder>".length);
+  }
+
+  return outputText;
+};
+
+const TEAM_PROCESS_CHATTER_PATTERNS = [
+  /\b(i(?:'|’)m|i am|i(?:'|’)ll|i will)\b.*\b(read|scan|check|review|verify|grep|bootstrap|cross-check|inspect|prepare|gather|collect|re-?run|search)\b/i,
+  /\b(i hit|quick bootstrap|first pass|next i(?:'|’)m|now i(?:'|’)m)\b/i,
+  /\b(зараз|спершу|далі|потім|наступним кроком)\b.*\b(перевір|звір|прочита|скан|подив|підгот|запущ|зроблю)\b/i,
+  /\bя\b.*\b(перевірю|прочитаю|запущу|зроблю швидкий)\b/i,
+];
+
+const isTeamProcessChatterLine = (line: string): boolean =>
+  TEAM_PROCESS_CHATTER_PATTERNS.some((pattern) => pattern.test(line));
+
 const normalizeMode = (value?: string): OrchestrationMode | null => {
   if (!value) {
     return null;
@@ -545,6 +1011,22 @@ const normalizeMode = (value?: string): OrchestrationMode | null => {
     return value as OrchestrationMode;
   }
   return null;
+};
+
+const promoteCliAdaptersToAgentic = (config: ChatRuntimeConfig): string[] => {
+  const promoted: string[] = [];
+  for (const agent of config.agents) {
+    const entry = config.adapterConfig[agent];
+    if (!entry || entry.mode !== "cli") {
+      continue;
+    }
+    config.adapterConfig[agent] = {
+      ...entry,
+      mode: "agentic",
+    };
+    promoted.push(agent);
+  }
+  return promoted;
 };
 
 const isReadlineClosedError = (error: unknown): boolean => {
@@ -558,10 +1040,71 @@ const isReadlineClosedError = (error: unknown): boolean => {
   return typeof maybeError.message === "string" && maybeError.message.includes("readline was closed");
 };
 
+const setupEscInterruptHotkey = (engine: ChatEngine): (() => void) => {
+  if (!input.isTTY) {
+    return () => {};
+  }
+
+  emitKeypressEvents(input);
+  const ttyInput = input as NodeJS.ReadStream & {
+    isRaw?: boolean;
+    setRawMode?: (mode: boolean) => void;
+  };
+  const wasRaw = Boolean(ttyInput.isRaw);
+  if (!wasRaw) {
+    ttyInput.setRawMode?.(true);
+  }
+
+  const onKeypress = (
+    _str: string,
+    key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean },
+  ): void => {
+    if (key.name !== "escape" || key.ctrl || key.meta || key.shift) {
+      return;
+    }
+    void triggerEscInterrupt(engine).catch(() => {
+      // Best-effort hotkey handler; explicit command path still reports errors.
+    });
+  };
+  input.on("keypress", onKeypress);
+
+  return () => {
+    input.off("keypress", onKeypress);
+    if (!wasRaw) {
+      ttyInput.setRawMode?.(false);
+    }
+  };
+};
+
+const triggerEscInterrupt = async (engine: ChatEngine): Promise<void> => {
+  if (escInterruptInFlight) {
+    return;
+  }
+  const status = engine.teamStatus();
+  if (!status || status.run.status !== "active") {
+    return;
+  }
+
+  escInterruptInFlight = true;
+  try {
+    const result = await engine.interruptTeamRun();
+    if (!result) {
+      return;
+    }
+    if (result.interrupted) {
+      output.write(`\n[team] Interrupted run ${result.run.id}. Add correction and press Enter.\n`);
+      return;
+    }
+    output.write(`\n[team] No active step to interrupt for run ${result.run.id}.\n`);
+  } finally {
+    escInterruptInFlight = false;
+  }
+};
+
 const printUsage = (): void => {
   console.log(`
 Usage:
-  agoryx chat [--agents codex,claude] [--mode manual|round-robin|auto]
+  agoryx chat [--agents codex,claude] [--mode manual|round-robin|auto|team]
   agoryx sessions list [--limit 20] [--db ./agoryx.db]
   agoryx sessions export <room_or_session_id> [--format markdown|json] [--out file] [--db ./agoryx.db]
 
@@ -570,7 +1113,10 @@ Options:
   --mode         Orchestration mode (default: manual)
   --config       Path to agoryx.json config file (default: ./agoryx.json)
   --db           SQLite path (default: ./agoryx.db)
-  --adapter-mode Global adapter mode: stub|cli|persistent (default: cli)
+  --adapter-mode Global adapter mode: stub|cli|persistent|agentic (default: cli)
+  --quiet-system Hide generating/done/session status lines
+  --plain-ui     Disable rich TTY UI (spinner and live status rendering)
+  --no-color     Disable colored output
   --resume       Resume existing room by id
   --room-name    Room title
 `);
@@ -588,9 +1134,16 @@ const printChatHelp = (): void => {
   console.log(`
 In-chat commands:
   /help
-  /mode <manual|round-robin|auto>
+  /mode <manual|round-robin|auto|team>
   /status
-  /adapter <codex|claude> <stub|cli|persistent>
+  /adapter <codex|claude> <stub|cli|persistent|agentic>
+  /team start <goal> [--strict] [--no-checks]
+  /team status
+  /team log [limit]
+  /team resume
+  /team approve [run_id]
+  /team interrupt [feedback]
+  /team stop
   /pin <label>: <content>
   /unpin <pin_id>
   /pins [list]
@@ -599,6 +1152,7 @@ In-chat commands:
   /history [count]
   /retry @codex
   /export [markdown|json] [--out <file>]
+  Esc (TTY, team mode): interrupt active team step
   /quit
 `);
 };
@@ -610,15 +1164,17 @@ const printBanner = (
   agents: string[],
   adapterConfig: ChatRuntimeConfig["adapterConfig"],
 ): void => {
-  console.log("Agoryx v0.1-dev");
-  console.log(`Room: ${roomId}`);
-  console.log(`Session: ${sessionId}`);
-  console.log(`Mode: ${mode}`);
-  console.log(`Agents: ${agents.join(", ")}`);
+  console.log(colorize("Agoryx v0.1-dev", pc.bold));
+  console.log(`${formatInfoLabel("Room:")} ${roomId}`);
+  console.log(`${formatInfoLabel("Session:")} ${sessionId}`);
+  console.log(`${formatInfoLabel("Mode:")} ${mode}`);
+  console.log(`${formatInfoLabel("Agents:")} ${agents.join(", ")}`);
   for (const agent of agents) {
-    console.log(`- ${agent}: mode=${adapterConfig[agent]?.mode ?? "stub"}`);
+    console.log(
+      `${formatInfoLabel("-")} ${formatAdapterName(agent)}: mode=${adapterConfig[agent]?.mode ?? "stub"}`,
+    );
   }
-  console.log("Type /help for commands.\n");
+  console.log(`${formatInfoLabel("Type /help for commands.")}\n`);
 };
 
 interface ParsedArgs {

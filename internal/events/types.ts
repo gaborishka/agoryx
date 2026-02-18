@@ -1,6 +1,15 @@
-export type OrchestrationMode = "manual" | "round-robin" | "auto";
+export type OrchestrationMode = "manual" | "round-robin" | "auto" | "team";
 export type MessageRole = "user" | "assistant" | "system";
 export type MessageFormat = "markdown" | "plain";
+export type TeamStrategy = "debate";
+export type TeamProfile = "enthusiast" | "strict";
+export type TeamRunStatus =
+  | "active"
+  | "waiting_user_input"
+  | "done"
+  | "failed"
+  | "stopped";
+export type TeamRunStage = "debate" | "plan" | "implement" | "checks" | "finalize";
 
 export type ErrorClass =
   | "AUTH_ERROR"
@@ -106,4 +115,85 @@ export interface MessageErrorPayload {
 
 export interface SessionBoundPayload {
   nativeSessionId: string;
+}
+
+export interface TeamConfig {
+  profile: TeamProfile;
+  maxSteps: number;
+  maxNoProgressSteps: number;
+  maxDurationMs: number;
+  checksEnabledByDefault: boolean;
+  checkCommands: string[];
+  strict: {
+    maxSteps: number;
+    maxNoProgressSteps: number;
+    maxDurationMs: number;
+    checksEnabledByDefault: boolean;
+  };
+  finalGate: "proposal";
+  singleActive: boolean;
+  trigger: {
+    autoOnMessage: boolean;
+    commandStart: boolean;
+  };
+}
+
+export interface TeamRun {
+  id: string;
+  roomId: string;
+  strategy: TeamStrategy;
+  status: TeamRunStatus;
+  stage: TeamRunStage;
+  goal: string;
+  participants: string[];
+  stepCount: number;
+  noProgressCount: number;
+  maxSteps: number;
+  maxNoProgressSteps: number;
+  maxDurationMs: number;
+  checksEnabled: boolean;
+  createdBy: string;
+  createdAt: string;
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  finalSummary: string | null;
+}
+
+export interface TeamStep {
+  id: string;
+  runId: string;
+  seq: number;
+  stage: TeamRunStage;
+  actor: string;
+  dispatchId: string;
+  requestId: string;
+  inputText: string;
+  outputText: string;
+  result: "ok" | "error" | "stopped";
+  errorClass: ErrorClass | null;
+  createdAt: string;
+}
+
+export interface TeamFeedback {
+  id: string;
+  runId: string;
+  messageId: string;
+  feedbackText: string;
+  status: "pending" | "consumed";
+  createdAt: string;
+  consumedAt: string | null;
+}
+
+export interface TeamCheck {
+  id: string;
+  runId: string;
+  stepId: string | null;
+  command: string;
+  status: "passed" | "failed" | "timeout" | "skipped";
+  exitCode: number | null;
+  stdoutText: string;
+  stderrText: string;
+  durationMs: number;
+  createdAt: string;
 }

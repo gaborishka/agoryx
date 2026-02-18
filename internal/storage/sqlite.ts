@@ -6,6 +6,13 @@ import type {
   PinnedContext,
   Room,
   RoomConfig,
+  TeamCheck,
+  TeamRun,
+  TeamRunStage,
+  TeamRunStatus,
+  TeamStep,
+  TeamStrategy,
+  TeamFeedback,
 } from "../events/types.js";
 import { createId, nowIso } from "../session/ids.js";
 
@@ -73,6 +80,43 @@ export interface AgentSession {
   lastTurnAt: number | null;
 }
 
+export interface CreateTeamRunInput {
+  roomId: string;
+  strategy: TeamStrategy;
+  stage: TeamRunStage;
+  goal: string;
+  participants: string[];
+  maxSteps: number;
+  maxNoProgressSteps: number;
+  maxDurationMs: number;
+  checksEnabled: boolean;
+  createdBy: string;
+}
+
+export interface CreateTeamStepInput {
+  runId: string;
+  seq: number;
+  stage: TeamRunStage;
+  actor: string;
+  dispatchId: string;
+  requestId: string;
+  inputText: string;
+  outputText: string;
+  result: TeamStep["result"];
+  errorClass?: TeamStep["errorClass"];
+}
+
+export interface CreateTeamCheckInput {
+  runId: string;
+  stepId?: string | null;
+  command: string;
+  status: TeamCheck["status"];
+  exitCode?: number | null;
+  stdoutText?: string;
+  stderrText?: string;
+  durationMs?: number;
+}
+
 interface AgentSessionRow {
   id: string;
   room_id: string;
@@ -86,11 +130,72 @@ interface AgentSessionRow {
   last_turn_at: number | null;
 }
 
+interface TeamRunRow {
+  id: string;
+  room_id: string;
+  strategy: TeamStrategy;
+  status: TeamRunStatus;
+  stage: TeamRunStage;
+  goal: string;
+  participants_json: string;
+  step_count: number;
+  no_progress_count: number;
+  max_steps: number;
+  max_no_progress_steps: number;
+  max_duration_ms: number;
+  checks_enabled: number;
+  created_by: string;
+  created_at: string;
+  started_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  final_summary: string | null;
+}
+
+interface TeamStepRow {
+  id: string;
+  run_id: string;
+  seq: number;
+  stage: TeamRunStage;
+  actor: string;
+  dispatch_id: string;
+  request_id: string;
+  input_text: string;
+  output_text: string;
+  result: TeamStep["result"];
+  error_class: string | null;
+  created_at: string;
+}
+
+interface TeamFeedbackRow {
+  id: string;
+  run_id: string;
+  message_id: string;
+  feedback_text: string;
+  status: TeamFeedback["status"];
+  created_at: string;
+  consumed_at: string | null;
+}
+
+interface TeamCheckRow {
+  id: string;
+  run_id: string;
+  step_id: string | null;
+  command: string;
+  status: TeamCheck["status"];
+  exit_code: number | null;
+  stdout_text: string;
+  stderr_text: string;
+  duration_ms: number;
+  created_at: string;
+}
+
 export class SQLiteStore {
   private readonly db: Database.Database;
 
   public constructor(dbPath: string) {
     this.db = new Database(dbPath);
+    this.db.pragma("foreign_keys = ON");
     this.db.pragma("journal_mode = WAL");
   }
 
@@ -181,6 +286,91 @@ export class SQLiteStore {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_active
         ON agent_sessions(room_id, agent_name)
         WHERE status = 'active';
+
+      CREATE TABLE IF NOT EXISTS team_runs (
+        id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        strategy TEXT NOT NULL
+          CHECK(strategy IN ('debate', 'pipeline')),
+        status TEXT NOT NULL
+          CHECK(status IN ('active', 'waiting_user_input', 'done', 'failed', 'stopped')),
+        stage TEXT NOT NULL
+          CHECK(stage IN ('debate', 'plan', 'implement', 'checks', 'finalize')),
+        goal TEXT NOT NULL,
+        participants_json TEXT NOT NULL,
+        step_count INTEGER NOT NULL DEFAULT 0,
+        no_progress_count INTEGER NOT NULL DEFAULT 0,
+        max_steps INTEGER NOT NULL,
+        max_no_progress_steps INTEGER NOT NULL,
+        max_duration_ms INTEGER NOT NULL,
+        checks_enabled INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        final_summary TEXT,
+        FOREIGN KEY(room_id) REFERENCES rooms(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS team_steps (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        stage TEXT NOT NULL
+          CHECK(stage IN ('debate', 'plan', 'implement', 'checks', 'finalize')),
+        actor TEXT NOT NULL,
+        dispatch_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        input_text TEXT NOT NULL,
+        output_text TEXT NOT NULL,
+        result TEXT NOT NULL
+          CHECK(result IN ('ok', 'error', 'stopped')),
+        error_class TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES team_runs(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS team_feedback_queue (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        feedback_text TEXT NOT NULL,
+        status TEXT NOT NULL
+          CHECK(status IN ('pending', 'consumed')),
+        created_at TEXT NOT NULL,
+        consumed_at TEXT,
+        FOREIGN KEY(run_id) REFERENCES team_runs(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS team_checks (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        step_id TEXT,
+        command TEXT NOT NULL,
+        status TEXT NOT NULL
+          CHECK(status IN ('passed', 'failed', 'timeout', 'skipped')),
+        exit_code INTEGER,
+        stdout_text TEXT NOT NULL,
+        stderr_text TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES team_runs(id),
+        FOREIGN KEY(step_id) REFERENCES team_steps(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_team_runs_room_status_updated
+      ON team_runs(room_id, status, updated_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_team_steps_run_seq
+      ON team_steps(run_id, seq ASC);
+
+      CREATE INDEX IF NOT EXISTS idx_team_feedback_run_status
+      ON team_feedback_queue(run_id, status, created_at ASC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_team_runs_single_active
+      ON team_runs(room_id)
+      WHERE status IN ('active', 'waiting_user_input');
     `);
   }
 
@@ -725,6 +915,304 @@ export class SQLiteStore {
     return row?.fail_count ?? 0;
   }
 
+  public createTeamRun(input: CreateTeamRunInput): TeamRun {
+    const now = nowIso();
+    const id = createId("teamrun");
+    this.db
+      .prepare(
+        `
+      INSERT INTO team_runs (
+        id, room_id, strategy, status, stage, goal, participants_json,
+        step_count, no_progress_count, max_steps, max_no_progress_steps, max_duration_ms,
+        checks_enabled, created_by, created_at, started_at, updated_at
+      ) VALUES (?, ?, ?, 'active', ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      )
+      .run(
+        id,
+        input.roomId,
+        input.strategy,
+        input.stage,
+        input.goal,
+        JSON.stringify(input.participants),
+        input.maxSteps,
+        input.maxNoProgressSteps,
+        input.maxDurationMs,
+        input.checksEnabled ? 1 : 0,
+        input.createdBy,
+        now,
+        now,
+        now,
+      );
+
+    return this.getTeamRun(id)!;
+  }
+
+  public getTeamRun(runId: string): TeamRun | null {
+    const row = this.db
+      .prepare(`SELECT * FROM team_runs WHERE id = ?`)
+      .get(runId) as TeamRunRow | undefined;
+    return row ? teamRunRowToDomain(row) : null;
+  }
+
+  public getActiveTeamRun(roomId: string): TeamRun | null {
+    const row = this.db
+      .prepare(
+        `
+      SELECT * FROM team_runs
+      WHERE room_id = ?
+        AND status IN ('active', 'waiting_user_input')
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+      )
+      .get(roomId) as TeamRunRow | undefined;
+    return row ? teamRunRowToDomain(row) : null;
+  }
+
+  public getLatestResumableTeamRun(roomId: string): TeamRun | null {
+    const row = this.db
+      .prepare(
+        `
+      SELECT * FROM team_runs
+      WHERE room_id = ?
+        AND status IN ('active', 'waiting_user_input')
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+      )
+      .get(roomId) as TeamRunRow | undefined;
+    return row ? teamRunRowToDomain(row) : null;
+  }
+
+  public updateTeamRunStatus(
+    runId: string,
+    status: TeamRunStatus,
+    options: { stage?: TeamRunStage; finalSummary?: string | null; completedAt?: string | null } = {},
+  ): void {
+    const now = nowIso();
+    this.db
+      .prepare(
+        `
+      UPDATE team_runs
+      SET status = ?,
+          stage = COALESCE(?, stage),
+          final_summary = CASE
+            WHEN ? IS NOT NULL THEN ?
+            ELSE final_summary
+          END,
+          completed_at = COALESCE(?, completed_at),
+          updated_at = ?
+      WHERE id = ?
+    `,
+      )
+      .run(
+        status,
+        options.stage ?? null,
+        options.finalSummary ?? null,
+        options.finalSummary ?? null,
+        options.completedAt ?? null,
+        now,
+        runId,
+      );
+  }
+
+  public updateTeamRunProgress(
+    runId: string,
+    updates: {
+      stage?: TeamRunStage;
+      stepCount?: number;
+      noProgressCount?: number;
+      finalSummary?: string | null;
+    },
+  ): void {
+    const now = nowIso();
+    this.db
+      .prepare(
+        `
+      UPDATE team_runs
+      SET stage = COALESCE(?, stage),
+          step_count = COALESCE(?, step_count),
+          no_progress_count = COALESCE(?, no_progress_count),
+          final_summary = CASE
+            WHEN ? IS NOT NULL THEN ?
+            ELSE final_summary
+          END,
+          updated_at = ?
+      WHERE id = ?
+    `,
+      )
+      .run(
+        updates.stage ?? null,
+        updates.stepCount ?? null,
+        updates.noProgressCount ?? null,
+        updates.finalSummary ?? null,
+        updates.finalSummary ?? null,
+        now,
+        runId,
+      );
+  }
+
+  public addTeamStep(input: CreateTeamStepInput): TeamStep {
+    const id = createId("teamstep");
+    const createdAt = nowIso();
+    this.db
+      .prepare(
+        `
+      INSERT INTO team_steps (
+        id, run_id, seq, stage, actor, dispatch_id, request_id,
+        input_text, output_text, result, error_class, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      )
+      .run(
+        id,
+        input.runId,
+        input.seq,
+        input.stage,
+        input.actor,
+        input.dispatchId,
+        input.requestId,
+        input.inputText,
+        input.outputText,
+        input.result,
+        input.errorClass ?? null,
+        createdAt,
+      );
+
+    const row = this.db
+      .prepare(`SELECT * FROM team_steps WHERE id = ?`)
+      .get(id) as TeamStepRow;
+    return teamStepRowToDomain(row);
+  }
+
+  public listTeamSteps(runId: string, limit = 50): TeamStep[] {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT * FROM team_steps
+      WHERE run_id = ?
+      ORDER BY seq DESC
+      LIMIT ?
+    `,
+      )
+      .all(runId, limit) as TeamStepRow[];
+
+    return rows.reverse().map(teamStepRowToDomain);
+  }
+
+  public enqueueTeamFeedback(
+    runId: string,
+    messageId: string,
+    feedbackText: string,
+  ): TeamFeedback {
+    const id = createId("teamfb");
+    const createdAt = nowIso();
+    this.db
+      .prepare(
+        `
+      INSERT INTO team_feedback_queue (
+        id, run_id, message_id, feedback_text, status, created_at
+      ) VALUES (?, ?, ?, ?, 'pending', ?)
+    `,
+      )
+      .run(id, runId, messageId, feedbackText, createdAt);
+
+    const row = this.db
+      .prepare(`SELECT * FROM team_feedback_queue WHERE id = ?`)
+      .get(id) as TeamFeedbackRow;
+    return teamFeedbackRowToDomain(row);
+  }
+
+  public listPendingTeamFeedback(runId: string, limit = 20): TeamFeedback[] {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT * FROM team_feedback_queue
+      WHERE run_id = ?
+        AND status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT ?
+    `,
+      )
+      .all(runId, limit) as TeamFeedbackRow[];
+    return rows.map(teamFeedbackRowToDomain);
+  }
+
+  public countPendingTeamFeedback(runId: string): number {
+    const row = this.db
+      .prepare(
+        `
+      SELECT COUNT(*) AS cnt FROM team_feedback_queue
+      WHERE run_id = ? AND status = 'pending'
+    `,
+      )
+      .get(runId) as { cnt: number } | undefined;
+    return row?.cnt ?? 0;
+  }
+
+  public consumeTeamFeedback(ids: string[]): void {
+    if (ids.length === 0) {
+      return;
+    }
+    const placeholders = ids.map(() => "?").join(", ");
+    const now = nowIso();
+    this.db
+      .prepare(
+        `
+      UPDATE team_feedback_queue
+      SET status = 'consumed',
+          consumed_at = ?
+      WHERE id IN (${placeholders})
+    `,
+      )
+      .run(now, ...ids);
+  }
+
+  public addTeamCheck(input: CreateTeamCheckInput): TeamCheck {
+    const id = createId("teamchk");
+    const createdAt = nowIso();
+    this.db
+      .prepare(
+        `
+      INSERT INTO team_checks (
+        id, run_id, step_id, command, status, exit_code, stdout_text, stderr_text, duration_ms, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      )
+      .run(
+        id,
+        input.runId,
+        input.stepId ?? null,
+        input.command,
+        input.status,
+        input.exitCode ?? null,
+        input.stdoutText ?? "",
+        input.stderrText ?? "",
+        input.durationMs ?? 0,
+        createdAt,
+      );
+
+    const row = this.db
+      .prepare(`SELECT * FROM team_checks WHERE id = ?`)
+      .get(id) as TeamCheckRow;
+    return teamCheckRowToDomain(row);
+  }
+
+  public listTeamChecks(runId: string, limit = 20): TeamCheck[] {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT * FROM team_checks
+      WHERE run_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `,
+      )
+      .all(runId, limit) as TeamCheckRow[];
+    return rows.reverse().map(teamCheckRowToDomain);
+  }
+
   private getAgentSessionById(id: string): AgentSession | null {
     const row = this.db
       .prepare(`SELECT * FROM agent_sessions WHERE id = ?`)
@@ -780,4 +1268,64 @@ const agentSessionRowToDomain = (row: AgentSessionRow): AgentSession => ({
   failCount: row.fail_count,
   createdAt: row.created_at,
   lastTurnAt: row.last_turn_at,
+});
+
+const teamRunRowToDomain = (row: TeamRunRow): TeamRun => ({
+  id: row.id,
+  roomId: row.room_id,
+  strategy: row.strategy,
+  status: row.status,
+  stage: row.stage,
+  goal: row.goal,
+  participants: tryParseJson<string[]>(row.participants_json, []),
+  stepCount: row.step_count,
+  noProgressCount: row.no_progress_count,
+  maxSteps: row.max_steps,
+  maxNoProgressSteps: row.max_no_progress_steps,
+  maxDurationMs: row.max_duration_ms,
+  checksEnabled: row.checks_enabled === 1,
+  createdBy: row.created_by,
+  createdAt: row.created_at,
+  startedAt: row.started_at,
+  updatedAt: row.updated_at,
+  completedAt: row.completed_at,
+  finalSummary: row.final_summary,
+});
+
+const teamStepRowToDomain = (row: TeamStepRow): TeamStep => ({
+  id: row.id,
+  runId: row.run_id,
+  seq: row.seq,
+  stage: row.stage,
+  actor: row.actor,
+  dispatchId: row.dispatch_id,
+  requestId: row.request_id,
+  inputText: row.input_text,
+  outputText: row.output_text,
+  result: row.result,
+  errorClass: row.error_class as TeamStep["errorClass"],
+  createdAt: row.created_at,
+});
+
+const teamFeedbackRowToDomain = (row: TeamFeedbackRow): TeamFeedback => ({
+  id: row.id,
+  runId: row.run_id,
+  messageId: row.message_id,
+  feedbackText: row.feedback_text,
+  status: row.status,
+  createdAt: row.created_at,
+  consumedAt: row.consumed_at,
+});
+
+const teamCheckRowToDomain = (row: TeamCheckRow): TeamCheck => ({
+  id: row.id,
+  runId: row.run_id,
+  stepId: row.step_id,
+  command: row.command,
+  status: row.status,
+  exitCode: row.exit_code,
+  stdoutText: row.stdout_text,
+  stderrText: row.stderr_text,
+  durationMs: row.duration_ms,
+  createdAt: row.created_at,
 });

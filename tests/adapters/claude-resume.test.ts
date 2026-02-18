@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildClaudeInteractiveInput,
+  buildClaudeInteractiveSpawnArgs,
   buildClaudeSpawnArgs,
   extractClaudeSessionId,
 } from "../../internal/adapters/claude/index.js";
@@ -29,6 +31,50 @@ test("buildClaudeSpawnArgs resume: --resume <id> -p <prompt>", () => {
     "--verbose",
     "--include-partial-messages",
   ]);
+});
+
+test("buildClaudeInteractiveSpawnArgs cold: stream-json stdin/stdout mode", () => {
+  const args = buildClaudeInteractiveSpawnArgs(null);
+  assert.deepEqual(args, [
+    "--print",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+  ]);
+});
+
+test("buildClaudeInteractiveSpawnArgs resume: --resume prefix preserved", () => {
+  const args = buildClaudeInteractiveSpawnArgs("session_abc");
+  assert.deepEqual(args, [
+    "--resume",
+    "session_abc",
+    "--print",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+  ]);
+});
+
+test("buildClaudeInteractiveInput builds user message envelope", () => {
+  const payload = buildClaudeInteractiveInput("hello");
+  assert.deepEqual(payload, {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: "hello",
+        },
+      ],
+    },
+  });
 });
 
 test("extractClaudeSessionId extracts session_id from stream json", () => {

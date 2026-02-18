@@ -37,3 +37,8 @@ test("claude CLI cwd defaults to tmpdir and allows AGORYX_CLAUDE_CWD override", 
   const custom = buildClaudeSpawnCwd({ AGORYX_CLAUDE_CWD: "/tmp/custom-claude-cwd" });
   assert.equal(custom, "/tmp/custom-claude-cwd");
 });
+
+test("claude agentic mode uses workspace cwd", () => {
+  const cwd = buildClaudeSpawnCwd({}, "agentic", "/tmp/workspace");
+  assert.equal(cwd, "/tmp/workspace");
+});

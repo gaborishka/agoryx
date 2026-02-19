@@ -190,6 +190,31 @@ interface TeamCheckRow {
   created_at: string;
 }
 
+export interface MemoryLogEntry {
+  id: number;
+  eventId: string;
+  roomId: string;
+  timestamp: string;
+  source: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+}
+
+export interface AppendMemoryEventInput {
+  eventId: string;
+  roomId: string;
+  source: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+}
+
+export interface MemoryLogFilter {
+  eventType?: string;
+  source?: string;
+  since?: string;
+  limit?: number;
+}
+
 export class SQLiteStore {
   private readonly db: Database.Database;
 
@@ -369,6 +394,22 @@ export class SQLiteStore {
       ON team_feedback_queue(run_id, status, created_at ASC);
 
       DROP INDEX IF EXISTS idx_team_runs_single_active;
+
+      CREATE TABLE IF NOT EXISTS memory_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT UNIQUE NOT NULL,
+        room_id TEXT NOT NULL REFERENCES rooms(id),
+        timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        source TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK(event_type IN (
+          'dispatch_start', 'dispatch_end', 'team_step', 'error',
+          'decision', 'note', 'cancel', 'retry', 'merge_attempt',
+          'worktree_create', 'worktree_remove'
+        )),
+        payload TEXT NOT NULL CHECK(json_valid(payload))
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_log_room
+      ON memory_log(room_id, id);
     `);
   }
 
@@ -1228,6 +1269,51 @@ export class SQLiteStore {
     return rows.reverse().map(teamCheckRowToDomain);
   }
 
+  public appendMemoryEvent(input: AppendMemoryEventInput): MemoryLogEntry | null {
+    const stmt = this.db.prepare(`
+      INSERT INTO memory_log (event_id, room_id, source, event_type, payload)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(event_id) DO NOTHING
+    `);
+    const result = stmt.run(
+      input.eventId, input.roomId, input.source,
+      input.eventType, JSON.stringify(input.payload),
+    );
+    if (result.changes === 0) return null;
+    return this.getMemoryLogEntry(result.lastInsertRowid as number);
+  }
+
+  private getMemoryLogEntry(id: number): MemoryLogEntry {
+    const row = this.db.prepare("SELECT * FROM memory_log WHERE id = ?").get(id) as any;
+    return memoryRowToEntry(row);
+  }
+
+  public listMemoryEvents(roomId: string, filter?: MemoryLogFilter): MemoryLogEntry[] {
+    let sql = "SELECT * FROM memory_log WHERE room_id = ?";
+    const params: unknown[] = [roomId];
+    if (filter?.eventType) { sql += " AND event_type = ?"; params.push(filter.eventType); }
+    if (filter?.source) { sql += " AND source = ?"; params.push(filter.source); }
+    if (filter?.since) { sql += " AND timestamp >= ?"; params.push(filter.since); }
+    sql += " ORDER BY id ASC";
+    if (filter?.limit != null) { sql += " LIMIT ?"; params.push(filter.limit); }
+    const rows = this.db.prepare(sql).all(...params) as any[];
+    return rows.map(memoryRowToEntry);
+  }
+
+  public listMemoryEventsAfter(roomId: string, afterId: number): MemoryLogEntry[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM memory_log WHERE room_id = ? AND id > ? ORDER BY id ASC"
+    ).all(roomId, afterId) as any[];
+    return rows.map(memoryRowToEntry);
+  }
+
+  public getMaxMemoryLogId(roomId: string): number | null {
+    const row = this.db.prepare(
+      "SELECT MAX(id) as max_id FROM memory_log WHERE room_id = ?"
+    ).get(roomId) as any;
+    return row?.max_id ?? null;
+  }
+
   private getAgentSessionById(id: string): AgentSession | null {
     const row = this.db
       .prepare(`SELECT * FROM agent_sessions WHERE id = ?`)
@@ -1335,6 +1421,16 @@ const teamFeedbackRowToDomain = (row: TeamFeedbackRow): TeamFeedback => ({
   status: row.status,
   createdAt: row.created_at,
   consumedAt: row.consumed_at,
+});
+
+const memoryRowToEntry = (row: any): MemoryLogEntry => ({
+  id: row.id,
+  eventId: row.event_id,
+  roomId: row.room_id,
+  timestamp: row.timestamp,
+  source: row.source,
+  eventType: row.event_type,
+  payload: JSON.parse(row.payload),
 });
 
 const teamCheckRowToDomain = (row: TeamCheckRow): TeamCheck => ({

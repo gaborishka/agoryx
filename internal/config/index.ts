@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import type { OrchestrationMode, RoomConfig, TeamConfig } from "../events/types.js";
 import type { AdapterConfig, AdapterMode } from "../adapters/adapter.js";
 import { defaultTeamConfig, type ChatRuntimeConfig } from "./default.js";
+import { type WorkspaceConfig, DEFAULT_WORKSPACE_CONFIG } from "../workspace/collector.js";
 
 // ---------------------------------------------------------------------------
 // Config schema
@@ -57,6 +58,7 @@ export interface AgoryxConfig {
       commandStart: boolean;
     };
   };
+  workspace: WorkspaceConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +98,7 @@ export const DEFAULT_CONFIG: AgoryxConfig = {
     dbPath: "./agoryx.db",
   },
   team: defaultTeamConfig(),
+  workspace: { ...DEFAULT_WORKSPACE_CONFIG },
 };
 
 // ---------------------------------------------------------------------------
@@ -210,6 +213,7 @@ function mergeConfig(partial: Partial<AgoryxConfig>): AgoryxConfig {
         teamDefaults.checkCommands,
       ),
     },
+    workspace: { ...DEFAULT_WORKSPACE_CONFIG, ...partial.workspace },
   };
 }
 
@@ -302,6 +306,7 @@ export function toRuntimeConfig(
     resumeRoomId: overrides.resumeRoomId,
     agentSkills: resolveAgentSkills(config, agentNames),
     team: toTeamConfig(config),
+    workspace: { ...config.workspace },
   };
 }
 

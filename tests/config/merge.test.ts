@@ -178,6 +178,51 @@ test("skills merge: mixed-case and whitespace skills are normalized", () => {
   rmSync(dir, { recursive: true });
 });
 
+test("workspace config merges partial overrides with defaults", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      workspace: {
+        enabled: false,
+        diffLines: 10,
+      },
+    }),
+  );
+
+  const config = loadConfig(configPath);
+  assert.equal(config.workspace.enabled, false);
+  assert.equal(config.workspace.diffLines, 10);
+  // Defaults preserved for unset fields
+  assert.equal(config.workspace.statusLines, DEFAULT_CONFIG.workspace.statusLines);
+  assert.equal(config.workspace.treeLines, DEFAULT_CONFIG.workspace.treeLines);
+  assert.equal(config.workspace.pinnedDocBytesPerFile, DEFAULT_CONFIG.workspace.pinnedDocBytesPerFile);
+
+  rmSync(dir, { recursive: true });
+});
+
+test("workspace config propagates to ChatRuntimeConfig", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      workspace: {
+        treeLines: 50,
+      },
+    }),
+  );
+
+  const config = loadConfig(configPath);
+  const runtime = toRuntimeConfig(config);
+  assert.ok(runtime.workspace, "runtime config should have workspace section");
+  assert.equal(runtime.workspace.treeLines, 50);
+  assert.equal(runtime.workspace.enabled, true); // default
+
+  rmSync(dir, { recursive: true });
+});
+
 test("team config merge applies overrides and keeps trigger defaults", () => {
   const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
   const configPath = join(dir, "agoryx.json");

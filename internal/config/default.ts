@@ -1,5 +1,6 @@
 import type { AdapterConfig } from "../adapters/adapter.js";
 import type { OrchestrationMode, RoomConfig, TeamConfig } from "../events/types.js";
+import type { WorkspaceConfig } from "../workspace/collector.js";
 
 export interface ChatRuntimeConfig {
   dbPath: string;
@@ -11,6 +12,7 @@ export interface ChatRuntimeConfig {
   resumeRoomId?: string;
   agentSkills?: Record<string, string[]>;
   team: TeamConfig;
+  workspace: WorkspaceConfig;
 }
 
 export const defaultRoomConfig = (mode: OrchestrationMode): RoomConfig => ({

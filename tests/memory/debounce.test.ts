@@ -40,7 +40,7 @@ test("multiple rapid semantic events trigger one debounced render", async () => 
     await wait(150);
     assert.equal(writes.length, 1);
   } finally {
-    service?.dispose();
+    await service?.dispose();
     store.close();
   }
 });
@@ -66,7 +66,7 @@ test("decision event triggers memory render after debounce window", async () => 
     assert.equal(writes.length, 1);
     assert.match(writes[0], /Use shared renderer/);
   } finally {
-    service?.dispose();
+    await service?.dispose();
     store.close();
   }
 });
@@ -92,7 +92,38 @@ test("worktree_create event triggers memory render after debounce window", async
     assert.equal(writes.length, 1);
     assert.match(writes[0], /\| engine \| worktree_create \|/);
   } finally {
-    service?.dispose();
+    await service?.dispose();
+    store.close();
+  }
+});
+
+test("dispose waits for in-flight debounced render before store close", async () => {
+  const store = makeStore();
+  let writes = 0;
+  let service: MemoryService | null = null;
+  try {
+    const room = store.createRoom("debounce-dispose", ["user"], ROOM_CONFIG);
+    service = new MemoryService(store, {
+      rootDir: "/tmp/agoryx-memory",
+      debounceMs: 1,
+      writer: () => {
+        writes += 1;
+        return "/tmp/agoryx-memory/.agoryx/memory.md";
+      },
+    });
+
+    void service.withRoomLock(room.id, async () => {
+      await wait(80);
+    });
+    service.recordDecision(room.id, "Dispose ordering");
+    await wait(10);
+
+    const startedAt = Date.now();
+    await service.dispose();
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed >= 50, `dispose should wait for in-flight render lock, elapsed=${elapsed}`);
+    assert.equal(writes, 0);
+  } finally {
     store.close();
   }
 });

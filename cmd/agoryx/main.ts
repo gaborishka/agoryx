@@ -200,8 +200,14 @@ const runChat = async (argv: string[]): Promise<void> => {
     },
   });
   const adapters = createAdapterRegistry();
+  const configuredMemoryRoot = process.env.AGORYX_MEMORY_ROOT?.trim();
+  const configuredDebounce = Number(process.env.AGORYX_MEMORY_DEBOUNCE_MS ?? "");
+  const memoryDebounceMs = Number.isFinite(configuredDebounce) && configuredDebounce >= 0
+    ? configuredDebounce
+    : undefined;
   const memoryService = new MemoryService(store, {
-    rootDir: process.cwd(),
+    rootDir: configuredMemoryRoot || process.cwd(),
+    debounceMs: memoryDebounceMs,
   });
   const worktreeManager = new WorktreeManager(process.cwd());
 
@@ -275,7 +281,7 @@ const runChat = async (argv: string[]): Promise<void> => {
     rl.close();
     cleanupRenderState();
     await engine.shutdown();
-    memoryService.dispose();
+    await memoryService.dispose();
     store.close();
   }
 };
@@ -893,8 +899,21 @@ const handleMemoryCommand = async (
       return true;
     }
     case "render": {
-      const content = memoryService.renderToFile(roomId) ?? memoryService.renderMarkdown(roomId);
-      console.log(content);
+      try {
+        const content = memoryService.renderToFile(roomId) ?? memoryService.renderMarkdown(roomId);
+        console.log(content);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error(`Failed to render memory file: ${reason}`);
+        try {
+          console.log(memoryService.renderMarkdown(roomId));
+        } catch (fallbackError) {
+          const fallbackReason = fallbackError instanceof Error
+            ? fallbackError.message
+            : String(fallbackError);
+          console.error(`Failed to render memory snapshot: ${fallbackReason}`);
+        }
+      }
       return true;
     }
     default:

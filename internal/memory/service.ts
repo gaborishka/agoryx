@@ -28,6 +28,7 @@ export interface MemoryServiceOptions {
 export class MemoryService {
   private readonly roomLocks = new Map<string, Promise<void>>();
   private readonly renderTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly inFlightRenders = new Set<Promise<void>>();
   private readonly rootDir?: string;
   private readonly debounceMs: number;
   private readonly now: () => string;
@@ -35,6 +36,7 @@ export class MemoryService {
   private readonly writer: typeof defaultWriteMemoryFile;
   private readonly onRendered?: MemoryServiceOptions["onRendered"];
   private readonly onRenderError?: MemoryServiceOptions["onRenderError"];
+  private disposed = false;
 
   constructor(
     private readonly store: SQLiteStore,
@@ -70,6 +72,9 @@ export class MemoryService {
   }
 
   public recordDecision(roomId: string, text: string): void {
+    if (this.disposed) {
+      return;
+    }
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -81,6 +86,9 @@ export class MemoryService {
   }
 
   public recordNote(roomId: string, text: string, source: string = "user"): void {
+    if (this.disposed) {
+      return;
+    }
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -112,6 +120,9 @@ export class MemoryService {
   }
 
   public recordWorktreeCreate(roomId: string, agent: string, path: string, branch: string): void {
+    if (this.disposed) {
+      return;
+    }
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -123,6 +134,9 @@ export class MemoryService {
   }
 
   public recordWorktreeRemove(roomId: string, agent: string, path: string): void {
+    if (this.disposed) {
+      return;
+    }
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -208,11 +222,15 @@ export class MemoryService {
     return content;
   }
 
-  public dispose(): void {
+  public async dispose(): Promise<void> {
+    this.disposed = true;
     for (const timer of this.renderTimers.values()) {
       clearTimeout(timer);
     }
     this.renderTimers.clear();
+    if (this.inFlightRenders.size > 0) {
+      await Promise.allSettled(this.inFlightRenders);
+    }
   }
 
   public async withRoomLock<T>(
@@ -290,7 +308,7 @@ export class MemoryService {
   }
 
   private scheduleRender(roomId: string): void {
-    if (!this.rootDir) {
+    if (!this.rootDir || this.disposed) {
       return;
     }
 
@@ -301,7 +319,14 @@ export class MemoryService {
 
     const timer = setTimeout(() => {
       this.renderTimers.delete(roomId);
-      void this.withRoomLock(roomId, () => {
+      if (this.disposed) {
+        return;
+      }
+
+      const renderPromise = this.withRoomLock(roomId, () => {
+        if (this.disposed) {
+          return;
+        }
         this.renderToFile(roomId);
       }).catch((error: unknown) => {
         if (this.onRenderError) {
@@ -310,6 +335,10 @@ export class MemoryService {
         }
         const reason = error instanceof Error ? error.message : String(error);
         console.error(`[memory] Failed to auto-render memory file for ${roomId}: ${reason}`);
+      });
+      this.inFlightRenders.add(renderPromise);
+      void renderPromise.finally(() => {
+        this.inFlightRenders.delete(renderPromise);
       });
     }, this.debounceMs);
 

@@ -10,6 +10,7 @@ import type {
   SessionBoundPayload,
   TeamStep,
 } from "../events/types.js";
+import type { MemoryService } from "../memory/service.js";
 import type { Dispatch } from "../orchestrator/policy.js";
 import { createId } from "../session/ids.js";
 import { SessionService } from "../session/service.js";
@@ -28,6 +29,7 @@ interface DispatchEngineOptions {
   getState: () => EngineState;
   onAdapterEvent?: (adapterName: string, event: AdapterEvent) => void;
   logger: EngineLogger;
+  memoryService?: MemoryService;
 }
 
 export class DispatchEngine implements TeamDispatchApi {
@@ -40,6 +42,7 @@ export class DispatchEngine implements TeamDispatchApi {
     event: AdapterEvent,
   ) => void;
   private readonly logger: EngineLogger;
+  private readonly memoryService?: MemoryService;
 
   public constructor(options: DispatchEngineOptions) {
     this.session = options.session;
@@ -48,6 +51,7 @@ export class DispatchEngine implements TeamDispatchApi {
     this.getState = options.getState;
     this.onAdapterEvent = options.onAdapterEvent;
     this.logger = options.logger;
+    this.memoryService = options.memoryService;
   }
 
   public getLastFailedRequest(adapter: string): string | null {
@@ -189,12 +193,16 @@ export class DispatchEngine implements TeamDispatchApi {
       reason: dispatch.reason,
     });
 
+    this.memoryService?.recordDispatchStart(state.room.id, dispatch.targetAdapter, dispatch.requestId);
+
     const adapterConfig = this.resolveAdapterConfig(dispatch.targetAdapter);
     const isPersistent =
       (adapterConfig.mode === "persistent" || adapterConfig.mode === "agentic") &&
       "sendTurn" in adapter;
+
+    let result: DispatchResult;
     if (isPersistent) {
-      return this.session.acquireTurnLock(
+      result = await this.session.acquireTurnLock(
         state.room.id,
         dispatch.targetAdapter,
         () =>
@@ -205,9 +213,17 @@ export class DispatchEngine implements TeamDispatchApi {
             isSessionRetry,
           ),
       );
+    } else {
+      result = await this.runLegacyDispatch(dispatch, adapter, adapterConfig);
     }
 
-    return this.runLegacyDispatch(dispatch, adapter, adapterConfig);
+    if (result.success) {
+      this.memoryService?.recordDispatchEnd(state.room.id, dispatch.targetAdapter, "done", []);
+    } else {
+      this.memoryService?.recordError(state.room.id, dispatch.targetAdapter, result.error ?? "unknown error");
+    }
+
+    return result;
   }
 
   private async runLegacyDispatch(

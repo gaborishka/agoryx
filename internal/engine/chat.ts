@@ -1,6 +1,7 @@
 import type { Adapter } from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
 import type { Message, OrchestrationMode, PinnedContext, Room } from "../events/types.js";
+import type { MemoryService } from "../memory/service.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import { SessionService } from "../session/service.js";
 import { DispatchEngine } from "./dispatch-engine.js";
@@ -37,6 +38,7 @@ export class ChatEngine {
     private readonly adapters: Record<string, Adapter>,
     private readonly config: ChatRuntimeConfig,
     private readonly hooks: ChatEngineHooks = {},
+    private readonly memoryService?: MemoryService,
   ) {
     const logger = hooks.logger ?? createDefaultEngineLogger();
 
@@ -47,6 +49,7 @@ export class ChatEngine {
       getState: () => this.getState(),
       onAdapterEvent: this.hooks.onAdapterEvent,
       logger,
+      memoryService: this.memoryService,
     });
 
     this.team = new TeamOrchestrator({
@@ -60,6 +63,7 @@ export class ChatEngine {
       dispatchApi: this.dispatchEngine,
       hooks: this.hooks,
       logger,
+      memoryService: this.memoryService,
     });
 
     this.lifecycle = new EngineLifecycle({

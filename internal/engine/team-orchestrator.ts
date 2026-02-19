@@ -7,6 +7,7 @@ import type {
   Message,
   SessionBoundPayload,
 } from "../events/types.js";
+import type { MemoryService } from "../memory/service.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import { TeamPolicy } from "../orchestrator/team.js";
 import { createId } from "../session/ids.js";
@@ -32,6 +33,7 @@ interface TeamOrchestratorOptions {
   dispatchApi: TeamDispatchApi;
   hooks: ChatEngineHooks;
   logger: EngineLogger;
+  memoryService?: MemoryService;
 }
 
 interface ActiveTeamDispatch {
@@ -56,6 +58,7 @@ export class TeamOrchestrator {
   private readonly dispatchApi: TeamDispatchApi;
   private readonly hooks: ChatEngineHooks;
   private readonly logger: EngineLogger;
+  private readonly memoryService?: MemoryService;
 
   public constructor(options: TeamOrchestratorOptions) {
     this.session = options.session;
@@ -66,6 +69,7 @@ export class TeamOrchestrator {
     this.dispatchApi = options.dispatchApi;
     this.hooks = options.hooks;
     this.logger = options.logger;
+    this.memoryService = options.memoryService;
   }
 
   public startRun(
@@ -491,6 +495,13 @@ export class TeamOrchestrator {
       result: result.success ? "ok" : "error",
       errorClass: normalizeErrorClass(result.error),
     });
+
+    this.memoryService?.recordTeamStep(
+      run.roomId,
+      run.id,
+      actor,
+      result.text.slice(0, 200),
+    );
 
     const control = parseTeamDebateControl(result.text);
     const nextActor =

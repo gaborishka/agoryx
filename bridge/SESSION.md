@@ -1208,5 +1208,22 @@ internal/
 - v0.4 is tracked as MCP-first productization (daemon/back-end orchestration shape), after v0.3 reliability baseline is proven.
 - Source document: `docs/plans/2026-02-18-v0.3-cli-first-v0.4-mcp-first.md`.
 
+## v0.3 Implementation Progress
+
+**Branch:** `feat/v0.3`
+**Baseline:** 252 tests → **Current:** 273 tests, 0 failures
+
+### Completed Tasks
+- Task 1: Memory Log Schema + CRUD (9 tests)
+- Task 2: Memory Snapshot Schema + CRUD (4 tests)
+- Task 3: MemoryService with auto-capture and recovery (8 tests)
+
+### Review Fixes Applied
+- [P2] `checkAndRecover()` detects stale snapshot when log is empty — deletes orphaned snapshot
+- [P3] `listMemoryEvents()` limit check uses `!= null` — `limit: 0` returns empty array
+
+### Next
+- Task 4: Engine Auto-Capture (last task before Phase 1 gate)
+
 ## Last Updated
-2026-02-18T17:11:00Z by codex
+2026-02-19T12:00:00Z by claude

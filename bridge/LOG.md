@@ -1294,3 +1294,22 @@
 - If approved, convert this direction into a concrete v0.3 CLI command contract and implementation backlog
 
 ---
+## 2026-02-19T12:00:00Z | claude
+### Summary
+- Implemented v0.3 Phase 1 Tasks 1-3 (Memory Core, excluding engine integration)
+- Applied 2 review fixes (P2: stale snapshot detection, P3: limit:0 handling)
+
+### Changes
+- Modified: `internal/storage/sqlite.ts` — added `memory_log` table, `memory_snapshot` table, CRUD methods, `deleteMemorySnapshot()`
+- Created: `internal/memory/service.ts` — `MemoryService` class with record/rebuild/recover methods
+- Created: `tests/storage/memory-log.test.ts` (9 tests)
+- Created: `tests/storage/memory-snapshot.test.ts` (4 tests)
+- Created: `tests/memory/service.test.ts` (8 tests)
+- Updated: `docs/plans/2026-02-19-v0.3-plan.md` — progress section, Tasks 1-3 marked done
+
+### Risks
+- No blockers. All 273 tests pass, typecheck green.
+
+### Next
+- Task 4: Engine Auto-Capture — wire MemoryService into DispatchEngine and TeamOrchestrator
+---

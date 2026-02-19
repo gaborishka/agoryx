@@ -190,6 +190,32 @@ interface TeamCheckRow {
   created_at: string;
 }
 
+export interface MemorySnapshot {
+  roomId: string;
+  currentGoal: string;
+  activeBranch: string;
+  activeWorktrees: unknown[];
+  keyDecisions: string[];
+  blockers: string[];
+  nextActions: string[];
+  taskStatus: Record<string, string>;
+  lastLogId: number;
+  reducerVersion: number;
+  updatedAt: string;
+}
+
+export interface UpsertSnapshotInput {
+  currentGoal: string;
+  activeBranch: string;
+  activeWorktrees: unknown[];
+  keyDecisions: string[];
+  blockers: string[];
+  nextActions: string[];
+  taskStatus: Record<string, string>;
+  lastLogId: number;
+  reducerVersion: number;
+}
+
 export interface MemoryLogEntry {
   id: number;
   eventId: string;
@@ -410,6 +436,20 @@ export class SQLiteStore {
       );
       CREATE INDEX IF NOT EXISTS idx_memory_log_room
       ON memory_log(room_id, id);
+
+      CREATE TABLE IF NOT EXISTS memory_snapshot (
+        room_id TEXT PRIMARY KEY REFERENCES rooms(id),
+        current_goal TEXT NOT NULL DEFAULT '',
+        active_branch TEXT NOT NULL DEFAULT '',
+        active_worktrees TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(active_worktrees)),
+        key_decisions TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(key_decisions)),
+        blockers TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(blockers)),
+        next_actions TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(next_actions)),
+        task_status TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(task_status)),
+        last_log_id INTEGER NOT NULL DEFAULT 0,
+        reducer_version INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
     `);
   }
 
@@ -1269,6 +1309,47 @@ export class SQLiteStore {
     return rows.reverse().map(teamCheckRowToDomain);
   }
 
+  public getMemorySnapshot(roomId: string): MemorySnapshot | null {
+    const row = this.db.prepare(
+      "SELECT * FROM memory_snapshot WHERE room_id = ?"
+    ).get(roomId) as any;
+    if (!row) return null;
+    return snapshotRowToDomain(row);
+  }
+
+  public upsertMemorySnapshot(roomId: string, input: UpsertSnapshotInput): MemorySnapshot {
+    const existing = this.getMemorySnapshot(roomId);
+    if (existing && input.lastLogId < existing.lastLogId) {
+      throw new Error(`Monotonic violation: new lastLogId ${input.lastLogId} < current ${existing.lastLogId}`);
+    }
+    this.db.prepare(`
+      INSERT INTO memory_snapshot (room_id, current_goal, active_branch, active_worktrees,
+        key_decisions, blockers, next_actions, task_status, last_log_id, reducer_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(room_id) DO UPDATE SET
+        current_goal = excluded.current_goal,
+        active_branch = excluded.active_branch,
+        active_worktrees = excluded.active_worktrees,
+        key_decisions = excluded.key_decisions,
+        blockers = excluded.blockers,
+        next_actions = excluded.next_actions,
+        task_status = excluded.task_status,
+        last_log_id = excluded.last_log_id,
+        reducer_version = excluded.reducer_version,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    `).run(
+      roomId, input.currentGoal, input.activeBranch,
+      JSON.stringify(input.activeWorktrees), JSON.stringify(input.keyDecisions),
+      JSON.stringify(input.blockers), JSON.stringify(input.nextActions),
+      JSON.stringify(input.taskStatus), input.lastLogId, input.reducerVersion,
+    );
+    return this.getMemorySnapshot(roomId)!;
+  }
+
+  public deleteMemorySnapshot(roomId: string): void {
+    this.db.prepare("DELETE FROM memory_snapshot WHERE room_id = ?").run(roomId);
+  }
+
   public appendMemoryEvent(input: AppendMemoryEventInput): MemoryLogEntry | null {
     const stmt = this.db.prepare(`
       INSERT INTO memory_log (event_id, room_id, source, event_type, payload)
@@ -1431,6 +1512,20 @@ const memoryRowToEntry = (row: any): MemoryLogEntry => ({
   source: row.source,
   eventType: row.event_type,
   payload: JSON.parse(row.payload),
+});
+
+const snapshotRowToDomain = (row: any): MemorySnapshot => ({
+  roomId: row.room_id,
+  currentGoal: row.current_goal,
+  activeBranch: row.active_branch,
+  activeWorktrees: JSON.parse(row.active_worktrees),
+  keyDecisions: JSON.parse(row.key_decisions),
+  blockers: JSON.parse(row.blockers),
+  nextActions: JSON.parse(row.next_actions),
+  taskStatus: JSON.parse(row.task_status),
+  lastLogId: row.last_log_id,
+  reducerVersion: row.reducer_version,
+  updatedAt: row.updated_at,
 });
 
 const teamCheckRowToDomain = (row: TeamCheckRow): TeamCheck => ({

@@ -115,7 +115,13 @@ export class WorktreeManager {
   }
 
   public reconcile(): void {
-    const porcelain = this.parseWorktreeList();
+    let porcelain: Array<{ path: string; branch: string; head: string }>;
+    try {
+      porcelain = this.parseWorktreeList();
+    } catch {
+      // Not a git repository — nothing to reconcile
+      return;
+    }
     this.agentMap.clear();
     for (const wt of porcelain) {
       // Match paths like .agoryx/worktrees/<agent>

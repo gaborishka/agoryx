@@ -11,6 +11,8 @@ import type { OrchestrationMode, RoomConfig, TeamConfig } from "../events/types.
 import type { AdapterConfig, AdapterMode } from "../adapters/adapter.js";
 import { defaultTeamConfig, type ChatRuntimeConfig } from "./default.js";
 import { type WorkspaceConfig, DEFAULT_WORKSPACE_CONFIG } from "../workspace/collector.js";
+export type { WorkspaceConfig };
+export { DEFAULT_WORKSPACE_CONFIG };
 
 // ---------------------------------------------------------------------------
 // Config schema

@@ -203,3 +203,15 @@ test("reconcile() prunes stale entries after external worktree removal", () => {
     cleanup(repo);
   }
 });
+
+test("reconcile() is safe in non-git directory", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-wt-nongit-"));
+  try {
+    const mgr = new WorktreeManager(dir);
+    // Should not throw
+    mgr.reconcile();
+    assert.equal(mgr.list().length, 0);
+  } finally {
+    cleanup(dir);
+  }
+});

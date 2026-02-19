@@ -1213,8 +1213,8 @@ internal/
 
 ## v0.3 Implementation Progress
 
-**Branch:** `feat/v0.3`
-**Baseline:** 252 tests → **Current:** 344 tests, 0 failures
+**Branch:** `main`
+**Baseline:** 252 tests → **Current:** 345 tests, 0 failures
 
 ### Completed Tasks
 - Task 1: Memory Log Schema + CRUD (9 tests)
@@ -1233,6 +1233,9 @@ internal/
 - Task 14: `memory.md` autogen renderer + atomic writer (`internal/memory/renderer.ts`, 6 tests)
 - Task 15: debounced `memory.md` regeneration for semantic events (`tests/memory/debounce.test.ts`, 3 tests)
 - Task 16: startup recovery on engine init (`checkAndRecover` + `reconcile`) and `/help` surface verification (`tests/engine/startup-recovery.test.ts`, 3 tests)
+- Task 17: end-to-end v0.3 lifecycle smoke test (`tests/e2e/v0.3-smoke.test.ts`)
+- Task 18: bridge deprecation notice (`bridge/SESSION.md`) + Quick Start migration in `CLAUDE.md`
+- Task 19: final validation (`npm run typecheck`, `npm run build`, `npm test`, stub CLI smoke command)
 
 ### Review Fixes Applied
 - [P2] `checkAndRecover()` detects stale snapshot when log is empty — deletes orphaned snapshot
@@ -1244,7 +1247,7 @@ internal/
 - Minor: `/memory log` supports `--limit` and returns latest N filtered entries
 
 ### Next
-- Task 17: end-to-end v0.3 smoke (dispatch → memory capture → decision → restart → recovery)
+- Create pre-release tag `v0.3.0-alpha` and start next planning cycle.
 
 ## Last Updated
-2026-02-19T16:22:00Z by codex
+2026-02-19T16:29:43Z by codex

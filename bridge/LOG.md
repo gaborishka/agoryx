@@ -1399,3 +1399,30 @@
 - Task 16: wire startup recovery checks in engine init and add startup-recovery tests.
 
 ---
+## 2026-02-19T16:22:00Z | codex
+### Summary
+- Completed v0.3 Task 16: startup recovery wiring + /help verification, with additional memory shutdown/render hardening from follow-up review findings.
+
+### Changes
+- Updated `internal/engine/chat.ts`:
+  - `init()` now calls `memoryService.checkAndRecover(roomId)` for the active room before normal operation.
+  - kept startup `worktreeManager.reconcile()` path and added dedicated test coverage.
+- Hardened memory lifecycle and CLI handling:
+  - `internal/memory/service.ts`: `dispose()` is now async and awaits in-flight debounced renders; added disposed/in-flight guards.
+  - `cmd/agoryx/main.ts`: startup memory config supports `AGORYX_MEMORY_ROOT` and `AGORYX_MEMORY_DEBOUNCE_MS` for controlled integration tests; shutdown now `await memoryService.dispose()`; `/memory render` now catches file-write errors and prints fallback markdown.
+- Added `tests/engine/startup-recovery.test.ts` (3):
+  - init calls `checkAndRecover()` and replays snapshot gap,
+  - init calls `worktreeManager.reconcile()`,
+  - `/help` includes `/memory`, `/worktree`, `/workspace` surface.
+- Extended regressions:
+  - `tests/cmd/memory-command.test.ts`: verifies autogen file emission after `/memory decision`; verifies graceful `/memory render` behavior on write failure.
+  - `tests/memory/debounce.test.ts`: verifies `dispose()` waits for in-flight debounced render lock path.
+- Updated progress docs: `docs/plans/2026-02-19-v0.3-plan.md`, `bridge/SESSION.md`.
+
+### Risks
+- Startup recovery currently runs synchronously in `init()`; acceptable for current local CLI usage but recovery latency scales with log size.
+
+### Next
+- Task 17: implement and validate end-to-end v0.3 smoke test flow.
+
+---

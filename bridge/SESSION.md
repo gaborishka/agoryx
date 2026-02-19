@@ -1211,7 +1211,7 @@ internal/
 ## v0.3 Implementation Progress
 
 **Branch:** `feat/v0.3`
-**Baseline:** 252 tests → **Current:** 338 tests, 0 failures
+**Baseline:** 252 tests → **Current:** 344 tests, 0 failures
 
 ### Completed Tasks
 - Task 1: Memory Log Schema + CRUD (9 tests)
@@ -1229,6 +1229,7 @@ internal/
 - Task 13: `/workspace` command surface with show/full/json (4 tests)
 - Task 14: `memory.md` autogen renderer + atomic writer (`internal/memory/renderer.ts`, 6 tests)
 - Task 15: debounced `memory.md` regeneration for semantic events (`tests/memory/debounce.test.ts`, 3 tests)
+- Task 16: startup recovery on engine init (`checkAndRecover` + `reconcile`) and `/help` surface verification (`tests/engine/startup-recovery.test.ts`, 3 tests)
 
 ### Review Fixes Applied
 - [P2] `checkAndRecover()` detects stale snapshot when log is empty — deletes orphaned snapshot
@@ -1236,10 +1237,11 @@ internal/
 - [I-1] `/memory rebuild` is now guarded by room-level lock (`MemoryService.withRoomLock`)
 - [I-3] removed eager `checkAndRecover()` calls after `/memory decision|note` writes
 - [I-2] removed inline markdown duplication in `cmd/agoryx/main.ts` by delegating `/memory render` to `MemoryService` renderer path
+- follow-up hardening: async `MemoryService.dispose()` now waits for in-flight debounced renders; `/memory render` now degrades gracefully on file write failures
 - Minor: `/memory log` supports `--limit` and returns latest N filtered entries
 
 ### Next
-- Task 16: engine startup recovery wiring + `/help` finalization
+- Task 17: end-to-end v0.3 smoke (dispatch → memory capture → decision → restart → recovery)
 
 ## Last Updated
-2026-02-19T16:04:56Z by codex
+2026-02-19T16:22:00Z by codex

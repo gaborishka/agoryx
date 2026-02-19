@@ -105,6 +105,7 @@ export class ChatEngine {
       availableAgents: enabledAgents,
     };
 
+    this.memoryService?.checkAndRecover(this.state.room.id);
     this.worktreeManager?.reconcile();
 
     return {

@@ -256,7 +256,7 @@ test("/memory decision auto-generates memory.md file after debounce", async (t) 
     baseArgs(join(dir, "test.db")),
     [
       { input: "/memory decision Auto-generated entry\n" },
-      { delayMs: 250, input: "/quit\n" },
+      { delayMs: 1_000, input: "/quit\n" },
     ],
     {
       env: {

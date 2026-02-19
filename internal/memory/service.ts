@@ -12,6 +12,8 @@ export interface RecoveryResult {
 }
 
 export class MemoryService {
+  private readonly roomLocks = new Map<string, Promise<void>>();
+
   constructor(private readonly store: SQLiteStore) {}
 
   public recordDispatchStart(roomId: string, agent: string, requestId: string): void {
@@ -147,6 +149,27 @@ export class MemoryService {
       snapshotVersion: REDUCER_VERSION,
       durationMs: Date.now() - start,
     };
+  }
+
+  public async withRoomLock<T>(
+    roomId: string,
+    fn: () => Promise<T> | T,
+  ): Promise<T> {
+    const previous = this.roomLocks.get(roomId) ?? Promise.resolve();
+    const current = previous.then(fn, fn);
+    const settled = current.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.roomLocks.set(roomId, settled);
+
+    try {
+      return await current;
+    } finally {
+      if (this.roomLocks.get(roomId) === settled) {
+        this.roomLocks.delete(roomId);
+      }
+    }
   }
 
   private reduceEvents(events: MemoryLogEntry[]): UpsertSnapshotInput {

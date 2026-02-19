@@ -1313,3 +1313,59 @@
 ### Next
 - Task 4: Engine Auto-Capture — wire MemoryService into DispatchEngine and TeamOrchestrator
 ---
+## 2026-02-19T15:32:44Z | codex
+### Summary
+- Completed v0.3 Task 10 workspace injection
+
+### Changes
+- Injected [Workspace] into buildContext/buildDeltaPrompt/buildTeamPrompt, added tests/session/workspace-inject.test.ts (5 tests), wired SessionService workspace options in cmd/agoryx/main.ts, and silenced git stderr capture in internal/workspace/collector.ts
+
+### Risks
+- Low risk: prompt payloads are larger when workspace enabled; existing suite still green
+
+### Next
+- Implement Task 11 (/memory CLI commands) with command tests and help updates
+
+---
+## 2026-02-19T15:36:07Z | codex
+### Summary
+- Completed v0.3 Task 11 memory CLI surface
+
+### Changes
+- Added /memory show|decision|note|log|rebuild|render in cmd/agoryx/main.ts with log filters (--source/--type/--since/--json), added tests/cmd/memory-command.test.ts (9), and updated /help command list
+
+### Risks
+- Low risk: memory render output is currently inline markdown (file autogen arrives in Task 14)
+
+### Next
+- Implement Task 12 (/worktree commands) and its command tests
+
+---
+## 2026-02-19T15:52:08Z | codex
+### Summary
+- Completed v0.3 Task 12 worktree CLI + memory review hardening
+
+### Changes
+- Added /worktree list|create|remove|status with --json and --force handling in cmd/agoryx/main.ts, added tests/cmd/worktree-command.test.ts (7), added MemoryService.withRoomLock and used it for /memory rebuild, removed eager checkAndRecover after decision/note, and added --limit for /memory log with tests
+
+### Risks
+- Low risk: /worktree command tests operate against the main repo working tree but clean up unique agent worktrees after each test
+
+### Next
+- Implement Task 13 (/workspace show|full commands) and corresponding command tests
+
+---
+## 2026-02-19T15:54:29Z | codex
+### Summary
+- Completed v0.3 Task 13 workspace CLI surface
+
+### Changes
+- Added /workspace show|full commands with --json output in cmd/agoryx/main.ts, added tests/cmd/workspace-command.test.ts (4), and validated command integration with existing /memory and /worktree handlers
+
+### Risks
+- Low risk: workspace commands execute multiple synchronous git calls and can be slower on large repos
+
+### Next
+- Implement Task 14 memory.md autogen renderer and atomic write path
+
+---

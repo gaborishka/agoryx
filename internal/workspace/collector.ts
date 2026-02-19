@@ -47,7 +47,11 @@ function truncateLines(text: string, maxLines: number): string {
 }
 
 function gitExec(args: string[], cwd: string): string {
-  return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
 }
 
 export class WorkspaceCollector {

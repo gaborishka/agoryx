@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as wait } from "node:timers/promises";
 import { SQLiteStore } from "../../internal/storage/sqlite.js";
 import { MemoryService, REDUCER_VERSION } from "../../internal/memory/service.js";
 import type { RoomConfig } from "../../internal/events/types.js";
@@ -148,5 +149,28 @@ test("checkAndRecover resets stale snapshot when log is empty", () => {
     assert.equal(result.action, "full_replay");
     const snapAfter = store.getMemorySnapshot(room.id);
     assert.equal(snapAfter, null, "stale snapshot should be deleted when log is empty");
+  } finally { store.close(); }
+});
+
+test("withRoomLock serializes concurrent operations for same room", async () => {
+  const store = makeStore();
+  try {
+    const room = store.createRoom("mem-svc", ["user"], ROOM_CONFIG);
+    const svc = new MemoryService(store);
+    const order: string[] = [];
+
+    const first = svc.withRoomLock(room.id, async () => {
+      await wait(25);
+      order.push("first");
+      return "first";
+    });
+    const second = svc.withRoomLock(room.id, async () => {
+      order.push("second");
+      return "second";
+    });
+
+    const values = await Promise.all([first, second]);
+    assert.deepEqual(values, ["first", "second"]);
+    assert.deepEqual(order, ["first", "second"]);
   } finally { store.close(); }
 });

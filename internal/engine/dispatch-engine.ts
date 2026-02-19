@@ -250,7 +250,11 @@ export class DispatchEngine implements TeamDispatchApi {
     const state = this.getState();
     const messages =
       messagesOverride ??
-      this.session.buildContextMessages(state.room, adapterConfig.systemPrompt);
+      this.session.buildContextMessages(
+        state.room,
+        adapterConfig.systemPrompt,
+        dispatch.targetAdapter,
+      );
     let finalText = "";
     let failed: { errorClass: string; message: string } | undefined;
 

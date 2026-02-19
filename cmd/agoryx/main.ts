@@ -23,6 +23,7 @@ import { SessionService } from "../../internal/session/service.js";
 import { SQLiteStore } from "../../internal/storage/sqlite.js";
 import { MemoryService } from "../../internal/memory/service.js";
 import { WorktreeManager } from "../../internal/worktree/manager.js";
+import { WorkspaceCollector } from "../../internal/workspace/collector.js";
 
 const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team"];
 const require = createRequire(import.meta.url);
@@ -191,7 +192,13 @@ const runChat = async (argv: string[]): Promise<void> => {
 
   const store = new SQLiteStore(config.dbPath);
   store.init();
-  const session = new SessionService(store);
+  const session = new SessionService(store, {
+    workspace: {
+      config: config.workspace,
+      rootCwd: process.cwd(),
+      resolveAgentCwd: (agentName) => config.adapterConfig[agentName]?.workspaceCwd,
+    },
+  });
   const adapters = createAdapterRegistry();
   const memoryService = new MemoryService(store);
   const worktreeManager = new WorktreeManager(process.cwd());
@@ -223,7 +230,14 @@ const runChat = async (argv: string[]): Promise<void> => {
   try {
     if (!input.isTTY) {
       for await (const rawLine of rl) {
-        const shouldContinue = await processChatInputLine(rawLine, engine, config, store);
+        const shouldContinue = await processChatInputLine(
+          rawLine,
+          engine,
+          config,
+          store,
+          memoryService,
+          worktreeManager,
+        );
         if (!shouldContinue) {
           break;
         }
@@ -242,7 +256,14 @@ const runChat = async (argv: string[]): Promise<void> => {
         throw error;
       }
 
-      const shouldContinue = await processChatInputLine(rawLine, engine, config, store);
+      const shouldContinue = await processChatInputLine(
+        rawLine,
+        engine,
+        config,
+        store,
+        memoryService,
+        worktreeManager,
+      );
       if (!shouldContinue) {
         break;
       }
@@ -261,6 +282,8 @@ const processChatInputLine = async (
   engine: ChatEngine,
   config: ChatRuntimeConfig,
   store: SQLiteStore,
+  memoryService: MemoryService,
+  worktreeManager: WorktreeManager,
 ): Promise<boolean> => {
   const line = rawLine.trim();
   if (!line) {
@@ -268,7 +291,7 @@ const processChatInputLine = async (
   }
 
   if (line.startsWith("/")) {
-    return handleCommand(line, engine, config, store);
+    return handleCommand(line, engine, config, store, memoryService, worktreeManager);
   }
 
   const mode = engine.getState().room.config.mode;
@@ -384,6 +407,8 @@ const handleCommand = async (
   engine: ChatEngine,
   config: ChatRuntimeConfig,
   store: SQLiteStore,
+  memoryService: MemoryService,
+  worktreeManager: WorktreeManager,
 ): Promise<boolean> => {
   const [command, ...rest] = line.split(/\s+/);
   switch (command) {
@@ -438,6 +463,15 @@ const handleCommand = async (
     }
     case "/team": {
       return handleTeamCommand(rest, engine);
+    }
+    case "/memory": {
+      return handleMemoryCommand(rest, engine, store, memoryService);
+    }
+    case "/worktree": {
+      return handleWorktreeCommand(rest, engine, worktreeManager, memoryService);
+    }
+    case "/workspace": {
+      return handleWorkspaceCommand(rest, config);
     }
     case "/pin": {
       const text = rest.join(" ").trim();
@@ -672,6 +706,452 @@ const handleTeamCommand = async (
       );
       return true;
   }
+};
+
+interface MemoryLogCommandOptions {
+  source?: string;
+  eventType?: string;
+  since?: string;
+  limit?: number;
+  json: boolean;
+}
+
+const parseMemoryLogCommandArgs = (
+  args: string[],
+): MemoryLogCommandOptions | null => {
+  const parsed: MemoryLogCommandOptions = { json: false };
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === "--json") {
+      parsed.json = true;
+      continue;
+    }
+    if (token === "--source") {
+      const value = args[i + 1];
+      if (!value) {
+        return null;
+      }
+      parsed.source = value;
+      i += 1;
+      continue;
+    }
+    if (token === "--type") {
+      const value = args[i + 1];
+      if (!value) {
+        return null;
+      }
+      parsed.eventType = value;
+      i += 1;
+      continue;
+    }
+    if (token === "--since") {
+      const value = args[i + 1];
+      if (!value) {
+        return null;
+      }
+      parsed.since = value;
+      i += 1;
+      continue;
+    }
+    if (token === "--limit") {
+      const value = Number(args[i + 1] ?? "");
+      if (!Number.isFinite(value) || value < 0) {
+        return null;
+      }
+      parsed.limit = value;
+      i += 1;
+      continue;
+    }
+    return null;
+  }
+  return parsed;
+};
+
+const renderMemorySnapshot = (snapshot: ReturnType<SQLiteStore["getMemorySnapshot"]>): string => {
+  if (!snapshot) {
+    return "No memory snapshot yet.";
+  }
+
+  const decisions = snapshot.keyDecisions.length > 0
+    ? snapshot.keyDecisions.map((item) => `  - ${item}`).join("\n")
+    : "  - (none)";
+  const blockers = snapshot.blockers.length > 0
+    ? snapshot.blockers.map((item) => `  - ${item}`).join("\n")
+    : "  - (none)";
+  const nextActions = snapshot.nextActions.length > 0
+    ? snapshot.nextActions.map((item) => `  - ${item}`).join("\n")
+    : "  - (none)";
+  const worktrees = snapshot.activeWorktrees.length > 0
+    ? snapshot.activeWorktrees.map((item) => `  - ${String(item)}`).join("\n")
+    : "  - (none)";
+
+  return [
+    "Memory snapshot:",
+    `- current_goal: ${snapshot.currentGoal || "(empty)"}`,
+    `- active_branch: ${snapshot.activeBranch || "(empty)"}`,
+    "- active_worktrees:",
+    worktrees,
+    "- key_decisions:",
+    decisions,
+    "- blockers:",
+    blockers,
+    "- next_actions:",
+    nextActions,
+    `- last_log_id: ${snapshot.lastLogId}`,
+    `- reducer_version: ${snapshot.reducerVersion}`,
+    `- updated_at: ${snapshot.updatedAt}`,
+  ].join("\n");
+};
+
+const renderMemoryMarkdown = (
+  snapshot: ReturnType<SQLiteStore["getMemorySnapshot"]>,
+  events: ReturnType<SQLiteStore["listMemoryEvents"]>,
+): string => {
+  const keyDecisions = snapshot?.keyDecisions ?? [];
+  const blockers = snapshot?.blockers ?? [];
+  const nextActions = snapshot?.nextActions ?? [];
+  const recent = events.slice(-10);
+
+  return [
+    "# Agoryx Memory",
+    "",
+    "## Current State",
+    `- Current goal: ${snapshot?.currentGoal || "(empty)"}`,
+    `- Active branch: ${snapshot?.activeBranch || "(empty)"}`,
+    `- Last log id: ${snapshot?.lastLogId ?? 0}`,
+    "",
+    "## Key Decisions",
+    ...(keyDecisions.length > 0 ? keyDecisions.map((item) => `- ${item}`) : ["- (none)"]),
+    "",
+    "## Blockers",
+    ...(blockers.length > 0 ? blockers.map((item) => `- ${item}`) : ["- (none)"]),
+    "",
+    "## Next Actions",
+    ...(nextActions.length > 0 ? nextActions.map((item) => `- ${item}`) : ["- (none)"]),
+    "",
+    "## Recent Log",
+    ...(recent.length > 0
+      ? recent.map(
+          (event) =>
+            `- [${event.id}] ${event.eventType} (${event.source}) ${JSON.stringify(event.payload)}`,
+        )
+      : ["- (none)"]),
+  ].join("\n");
+};
+
+const handleMemoryCommand = async (
+  args: string[],
+  engine: ChatEngine,
+  store: SQLiteStore,
+  memoryService: MemoryService,
+): Promise<boolean> => {
+  const [subcommand = "show", ...rest] = args;
+  const roomId = engine.getState().room.id;
+
+  switch (subcommand) {
+    case "show": {
+      memoryService.checkAndRecover(roomId);
+      const snapshot = store.getMemorySnapshot(roomId);
+      console.log(renderMemorySnapshot(snapshot));
+      return true;
+    }
+    case "decision": {
+      const text = rest.join(" ").trim();
+      if (!text) {
+        console.log("Usage: /memory decision <text>");
+        return true;
+      }
+      memoryService.recordDecision(roomId, text);
+      console.log("Memory decision recorded.");
+      return true;
+    }
+    case "note": {
+      const text = rest.join(" ").trim();
+      if (!text) {
+        console.log("Usage: /memory note <text>");
+        return true;
+      }
+      memoryService.recordNote(roomId, text);
+      console.log("Memory note recorded.");
+      return true;
+    }
+    case "log": {
+      const options = parseMemoryLogCommandArgs(rest);
+      if (!options) {
+        console.log("Usage: /memory log [--source <source>] [--type <event_type>] [--since <iso>] [--limit <n>] [--json]");
+        return true;
+      }
+
+      let events = store.listMemoryEvents(roomId, {
+        source: options.source,
+        eventType: options.eventType,
+        since: options.since,
+      });
+      if (options.limit != null) {
+        events = events.slice(-options.limit);
+      }
+
+      if (options.json) {
+        console.log(JSON.stringify(events, null, 2));
+        return true;
+      }
+
+      if (events.length === 0) {
+        console.log("No memory events.");
+        return true;
+      }
+
+      console.log("id\ttimestamp\tsource\ttype\tpayload");
+      for (const event of events) {
+        console.log(
+          `${event.id}\t${event.timestamp}\t${event.source}\t${event.eventType}\t${JSON.stringify(event.payload)}`,
+        );
+      }
+      return true;
+    }
+    case "rebuild": {
+      const payload = await memoryService.withRoomLock(roomId, async () => {
+        const startedAt = Date.now();
+        const snapshot = memoryService.rebuildSnapshot(roomId);
+        const durationMs = Date.now() - startedAt;
+        const processed = store.listMemoryEvents(roomId).length;
+        return {
+          processed,
+          deduped: 0,
+          snapshot_version: snapshot?.reducerVersion ?? 1,
+          duration_ms: durationMs,
+        };
+      });
+      console.log(`Memory rebuild: ${JSON.stringify(payload)}`);
+      return true;
+    }
+    case "render": {
+      memoryService.checkAndRecover(roomId);
+      const snapshot = store.getMemorySnapshot(roomId);
+      const events = store.listMemoryEvents(roomId);
+      console.log(renderMemoryMarkdown(snapshot, events));
+      return true;
+    }
+    default:
+      console.log("Usage: /memory <show|decision|note|log|rebuild|render> ...");
+      return true;
+  }
+};
+
+interface WorktreeCreateArgs {
+  agent: string;
+  json: boolean;
+}
+
+interface WorktreeRemoveArgs {
+  agent: string;
+  force: boolean;
+  json: boolean;
+}
+
+const parseWorktreeCreateArgs = (args: string[]): WorktreeCreateArgs | null => {
+  if (args.length === 0) {
+    return null;
+  }
+  const [agent, ...rest] = args;
+  if (!agent || agent.startsWith("--")) {
+    return null;
+  }
+  if (rest.length === 0) {
+    return { agent, json: false };
+  }
+  if (rest.length === 1 && rest[0] === "--json") {
+    return { agent, json: true };
+  }
+  return null;
+};
+
+const parseWorktreeRemoveArgs = (args: string[]): WorktreeRemoveArgs | null => {
+  if (args.length === 0) {
+    return null;
+  }
+
+  const [agent, ...rest] = args;
+  if (!agent || agent.startsWith("--")) {
+    return null;
+  }
+
+  let force = false;
+  let json = false;
+  for (const token of rest) {
+    if (token === "--force") {
+      force = true;
+      continue;
+    }
+    if (token === "--json") {
+      json = true;
+      continue;
+    }
+    return null;
+  }
+
+  return { agent, force, json };
+};
+
+const parseWorktreeListArgs = (args: string[]): { json: boolean } | null => {
+  if (args.length === 0) {
+    return { json: false };
+  }
+  if (args.length === 1 && args[0] === "--json") {
+    return { json: true };
+  }
+  return null;
+};
+
+const handleWorktreeCommand = async (
+  args: string[],
+  engine: ChatEngine,
+  worktreeManager: WorktreeManager,
+  memoryService: MemoryService,
+): Promise<boolean> => {
+  const [subcommand, ...rest] = args;
+  const roomId = engine.getState().room.id;
+
+  switch (subcommand) {
+    case "list": {
+      const parsed = parseWorktreeListArgs(rest);
+      if (!parsed) {
+        console.log("Usage: /worktree list [--json]");
+        return true;
+      }
+      const items = worktreeManager.list();
+      if (parsed.json) {
+        console.log(JSON.stringify(items, null, 2));
+        return true;
+      }
+      if (items.length === 0) {
+        console.log("No worktrees.");
+        return true;
+      }
+      console.log("agent\tpath\tbranch\thead");
+      for (const item of items) {
+        console.log(`${item.agent}\t${item.path}\t${item.branch}\t${item.head}`);
+      }
+      return true;
+    }
+    case "status": {
+      const parsed = parseWorktreeListArgs(rest);
+      if (!parsed) {
+        console.log("Usage: /worktree status [--json]");
+        return true;
+      }
+      const items = worktreeManager.status();
+      if (parsed.json) {
+        console.log(JSON.stringify(items, null, 2));
+        return true;
+      }
+      if (items.length === 0) {
+        console.log("No worktrees.");
+        return true;
+      }
+      console.log("agent\tdirty\tahead\tbehind\tpath");
+      for (const item of items) {
+        console.log(
+          `${item.agent}\t${item.dirty ? "yes" : "no"}\t${item.ahead}\t${item.behind}\t${item.path}`,
+        );
+      }
+      return true;
+    }
+    case "create": {
+      const parsed = parseWorktreeCreateArgs(rest);
+      if (!parsed) {
+        console.log("Usage: /worktree create <agent> [--json]");
+        return true;
+      }
+      const info = worktreeManager.create(parsed.agent);
+      memoryService.recordWorktreeCreate(roomId, parsed.agent, info.path, info.branch);
+      if (parsed.json) {
+        console.log(JSON.stringify(info, null, 2));
+      } else {
+        console.log(
+          `Worktree created for ${parsed.agent}: ${info.path} (branch=${info.branch})`,
+        );
+      }
+      return true;
+    }
+    case "remove": {
+      const parsed = parseWorktreeRemoveArgs(rest);
+      if (!parsed) {
+        console.log("Usage: /worktree remove <agent> [--force] [--json]");
+        return true;
+      }
+      const existing = worktreeManager.getForAgent(parsed.agent);
+      if (!existing) {
+        console.log(`Worktree for ${parsed.agent} not found.`);
+        return true;
+      }
+      try {
+        worktreeManager.remove(parsed.agent, parsed.force);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.log(message);
+        return true;
+      }
+      memoryService.recordWorktreeRemove(roomId, parsed.agent, existing.path);
+      if (parsed.json) {
+        console.log(JSON.stringify({ removed: true, ...existing }, null, 2));
+      } else {
+        console.log(`Worktree removed for ${parsed.agent}: ${existing.path}`);
+      }
+      return true;
+    }
+    default:
+      console.log("Usage: /worktree <list|create|remove|status> ...");
+      return true;
+  }
+};
+
+const parseWorkspaceArgs = (
+  args: string[],
+): { subcommand: "show" | "full"; json: boolean } | null => {
+  const [subcommand = "show", ...rest] = args;
+  if (subcommand !== "show" && subcommand !== "full") {
+    return null;
+  }
+  if (rest.length === 0) {
+    return { subcommand, json: false };
+  }
+  if (rest.length === 1 && rest[0] === "--json") {
+    return { subcommand, json: true };
+  }
+  return null;
+};
+
+const handleWorkspaceCommand = async (
+  args: string[],
+  config: ChatRuntimeConfig,
+): Promise<boolean> => {
+  const parsed = parseWorkspaceArgs(args);
+  if (!parsed) {
+    console.log("Usage: /workspace <show|full> [--json]");
+    return true;
+  }
+
+  const collector = new WorkspaceCollector(config.workspace);
+  const cwd = process.cwd();
+  const alwaysOn = collector.collectAlwaysOn(cwd);
+
+  if (parsed.subcommand === "show") {
+    if (parsed.json) {
+      console.log(JSON.stringify(alwaysOn, null, 2));
+    } else {
+      console.log(collector.format(alwaysOn));
+    }
+    return true;
+  }
+
+  const onDemand = collector.collectOnDemand(cwd);
+  if (parsed.json) {
+    console.log(JSON.stringify({ alwaysOn, onDemand }, null, 2));
+  } else {
+    console.log(collector.formatFull(alwaysOn, onDemand));
+  }
+  return true;
 };
 
 const parseTeamStartArgs = (
@@ -1160,6 +1640,18 @@ In-chat commands:
   /summary
   /checkpoint
   /history [count]
+  /memory [show]
+  /memory decision <text>
+  /memory note <text>
+  /memory log [--source <source>] [--type <event_type>] [--since <iso>] [--limit <n>] [--json]
+  /memory rebuild
+  /memory render
+  /worktree list [--json]
+  /worktree create <agent> [--json]
+  /worktree remove <agent> [--force] [--json]
+  /worktree status [--json]
+  /workspace show [--json]
+  /workspace full [--json]
   /retry @codex
   /export [markdown|json] [--out <file>]
   Esc (TTY, team mode): interrupt active team step

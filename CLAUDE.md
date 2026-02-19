@@ -25,6 +25,8 @@ The core problem: working with multiple LLMs today means manually copying text b
 
 ## Bridge Protocol
 
+> Deprecated for v0.3 daily workflow: prefer Agoryx memory (`/memory show`, `.agoryx/memory.md`). Bridge files remain for legacy handover history.
+
 We use a file-based bridge to sync context between agents. **On every substantial response:**
 
 1. **Read first:**
@@ -113,9 +115,9 @@ We use a file-based bridge to sync context between agents. **On every substantia
 
 ```
 1. Read CLAUDE.md (this file)
-2. Read bridge/SESSION.md
-3. Read last 2-3 entries in bridge/LOG.md
+2. Open current project memory via /memory show (or read .agoryx/memory.md)
+3. (Legacy only) read last 2-3 entries in bridge/LOG.md if extra handover context is needed
 4. Check what files exist: find internal/ -name "*.ts" | sort
 5. Start working on the task Ivan gives you
-6. After finishing: update SESSION.md + append to LOG.md
+6. After finishing: update project memory (/memory note or /memory decision); append bridge/LOG.md only if legacy bridge handover is still being used
 ```

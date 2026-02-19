@@ -1,5 +1,8 @@
 # Shared Session State
 
+> **DEPRECATED (v0.3):** This file is superseded by Agoryx project memory (`/memory show`).
+> See `.agoryx/memory.md` for auto-generated project state.
+
 ## Active Goal
 Launch MVP Agoryx as a local-first CLI for shared chat between `codex` and `claude` using existing CLI subscriptions.
 

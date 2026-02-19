@@ -200,7 +200,9 @@ const runChat = async (argv: string[]): Promise<void> => {
     },
   });
   const adapters = createAdapterRegistry();
-  const memoryService = new MemoryService(store);
+  const memoryService = new MemoryService(store, {
+    rootDir: process.cwd(),
+  });
   const worktreeManager = new WorktreeManager(process.cwd());
 
   let engineRef: ChatEngine | null = null;
@@ -273,6 +275,7 @@ const runChat = async (argv: string[]): Promise<void> => {
     rl.close();
     cleanupRenderState();
     await engine.shutdown();
+    memoryService.dispose();
     store.close();
   }
 };
@@ -803,42 +806,6 @@ const renderMemorySnapshot = (snapshot: ReturnType<SQLiteStore["getMemorySnapsho
   ].join("\n");
 };
 
-const renderMemoryMarkdown = (
-  snapshot: ReturnType<SQLiteStore["getMemorySnapshot"]>,
-  events: ReturnType<SQLiteStore["listMemoryEvents"]>,
-): string => {
-  const keyDecisions = snapshot?.keyDecisions ?? [];
-  const blockers = snapshot?.blockers ?? [];
-  const nextActions = snapshot?.nextActions ?? [];
-  const recent = events.slice(-10);
-
-  return [
-    "# Agoryx Memory",
-    "",
-    "## Current State",
-    `- Current goal: ${snapshot?.currentGoal || "(empty)"}`,
-    `- Active branch: ${snapshot?.activeBranch || "(empty)"}`,
-    `- Last log id: ${snapshot?.lastLogId ?? 0}`,
-    "",
-    "## Key Decisions",
-    ...(keyDecisions.length > 0 ? keyDecisions.map((item) => `- ${item}`) : ["- (none)"]),
-    "",
-    "## Blockers",
-    ...(blockers.length > 0 ? blockers.map((item) => `- ${item}`) : ["- (none)"]),
-    "",
-    "## Next Actions",
-    ...(nextActions.length > 0 ? nextActions.map((item) => `- ${item}`) : ["- (none)"]),
-    "",
-    "## Recent Log",
-    ...(recent.length > 0
-      ? recent.map(
-          (event) =>
-            `- [${event.id}] ${event.eventType} (${event.source}) ${JSON.stringify(event.payload)}`,
-        )
-      : ["- (none)"]),
-  ].join("\n");
-};
-
 const handleMemoryCommand = async (
   args: string[],
   engine: ChatEngine,
@@ -926,10 +893,8 @@ const handleMemoryCommand = async (
       return true;
     }
     case "render": {
-      memoryService.checkAndRecover(roomId);
-      const snapshot = store.getMemorySnapshot(roomId);
-      const events = store.listMemoryEvents(roomId);
-      console.log(renderMemoryMarkdown(snapshot, events));
+      const content = memoryService.renderToFile(roomId) ?? memoryService.renderMarkdown(roomId);
+      console.log(content);
       return true;
     }
     default:

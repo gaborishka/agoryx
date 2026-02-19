@@ -1211,7 +1211,7 @@ internal/
 ## v0.3 Implementation Progress
 
 **Branch:** `feat/v0.3`
-**Baseline:** 252 tests → **Current:** 329 tests, 0 failures
+**Baseline:** 252 tests → **Current:** 338 tests, 0 failures
 
 ### Completed Tasks
 - Task 1: Memory Log Schema + CRUD (9 tests)
@@ -1227,16 +1227,19 @@ internal/
 - Task 11: `/memory` command surface with filters/json/rebuild/render (9 tests)
 - Task 12: `/worktree` command surface with json/remove-force/status/list/create (7 tests)
 - Task 13: `/workspace` command surface with show/full/json (4 tests)
+- Task 14: `memory.md` autogen renderer + atomic writer (`internal/memory/renderer.ts`, 6 tests)
+- Task 15: debounced `memory.md` regeneration for semantic events (`tests/memory/debounce.test.ts`, 3 tests)
 
 ### Review Fixes Applied
 - [P2] `checkAndRecover()` detects stale snapshot when log is empty — deletes orphaned snapshot
 - [P3] `listMemoryEvents()` limit check uses `!= null` — `limit: 0` returns empty array
 - [I-1] `/memory rebuild` is now guarded by room-level lock (`MemoryService.withRoomLock`)
 - [I-3] removed eager `checkAndRecover()` calls after `/memory decision|note` writes
+- [I-2] removed inline markdown duplication in `cmd/agoryx/main.ts` by delegating `/memory render` to `MemoryService` renderer path
 - Minor: `/memory log` supports `--limit` and returns latest N filtered entries
 
 ### Next
-- Task 14: `memory.md` autogen (`renderMemoryMarkdown` + atomic writer)
+- Task 16: engine startup recovery wiring + `/help` finalization
 
 ## Last Updated
-2026-02-19T15:54:00Z by codex
+2026-02-19T16:04:56Z by codex

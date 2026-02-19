@@ -1,5 +1,9 @@
 import type { SQLiteStore, MemorySnapshot, UpsertSnapshotInput, MemoryLogEntry } from "../storage/sqlite.js";
-import { createId } from "../session/ids.js";
+import { createId, nowIso } from "../session/ids.js";
+import {
+  renderMemoryMarkdown as defaultRenderMemoryMarkdown,
+  writeMemoryFile as defaultWriteMemoryFile,
+} from "./renderer.js";
 
 export const REDUCER_VERSION = 1;
 
@@ -11,10 +15,39 @@ export interface RecoveryResult {
   durationMs: number;
 }
 
+export interface MemoryServiceOptions {
+  rootDir?: string;
+  debounceMs?: number;
+  now?: () => string;
+  renderer?: typeof defaultRenderMemoryMarkdown;
+  writer?: typeof defaultWriteMemoryFile;
+  onRendered?: (roomId: string, content: string, path: string) => void;
+  onRenderError?: (roomId: string, error: unknown) => void;
+}
+
 export class MemoryService {
   private readonly roomLocks = new Map<string, Promise<void>>();
+  private readonly renderTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly rootDir?: string;
+  private readonly debounceMs: number;
+  private readonly now: () => string;
+  private readonly renderer: typeof defaultRenderMemoryMarkdown;
+  private readonly writer: typeof defaultWriteMemoryFile;
+  private readonly onRendered?: MemoryServiceOptions["onRendered"];
+  private readonly onRenderError?: MemoryServiceOptions["onRenderError"];
 
-  constructor(private readonly store: SQLiteStore) {}
+  constructor(
+    private readonly store: SQLiteStore,
+    options: MemoryServiceOptions = {},
+  ) {
+    this.rootDir = options.rootDir;
+    this.debounceMs = options.debounceMs ?? 1_000;
+    this.now = options.now ?? nowIso;
+    this.renderer = options.renderer ?? defaultRenderMemoryMarkdown;
+    this.writer = options.writer ?? defaultWriteMemoryFile;
+    this.onRendered = options.onRendered;
+    this.onRenderError = options.onRenderError;
+  }
 
   public recordDispatchStart(roomId: string, agent: string, requestId: string): void {
     this.store.appendMemoryEvent({
@@ -44,6 +77,7 @@ export class MemoryService {
       eventType: "decision",
       payload: { text },
     });
+    this.scheduleRender(roomId);
   }
 
   public recordNote(roomId: string, text: string, source: string = "user"): void {
@@ -54,6 +88,7 @@ export class MemoryService {
       eventType: "note",
       payload: { text },
     });
+    this.scheduleRender(roomId);
   }
 
   public recordError(roomId: string, agent: string, error: string): void {
@@ -84,6 +119,7 @@ export class MemoryService {
       eventType: "worktree_create",
       payload: { agent, path, branch },
     });
+    this.scheduleRender(roomId);
   }
 
   public recordWorktreeRemove(roomId: string, agent: string, path: string): void {
@@ -94,6 +130,7 @@ export class MemoryService {
       eventType: "worktree_remove",
       payload: { agent, path },
     });
+    this.scheduleRender(roomId);
   }
 
   public rebuildSnapshot(roomId: string): MemorySnapshot | null {
@@ -149,6 +186,33 @@ export class MemoryService {
       snapshotVersion: REDUCER_VERSION,
       durationMs: Date.now() - start,
     };
+  }
+
+  public renderMarkdown(roomId: string): string {
+    this.checkAndRecover(roomId);
+    const snapshot = this.store.getMemorySnapshot(roomId);
+    const events = this.store.listMemoryEvents(roomId);
+    return this.renderer(snapshot, events, {
+      generatedAt: this.now(),
+      roomId,
+    });
+  }
+
+  public renderToFile(roomId: string): string | null {
+    if (!this.rootDir) {
+      return null;
+    }
+    const content = this.renderMarkdown(roomId);
+    const path = this.writer(this.rootDir, content);
+    this.onRendered?.(roomId, content, path);
+    return content;
+  }
+
+  public dispose(): void {
+    for (const timer of this.renderTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.renderTimers.clear();
   }
 
   public async withRoomLock<T>(
@@ -223,5 +287,32 @@ export class MemoryService {
       lastLogId,
       reducerVersion: REDUCER_VERSION,
     };
+  }
+
+  private scheduleRender(roomId: string): void {
+    if (!this.rootDir) {
+      return;
+    }
+
+    const active = this.renderTimers.get(roomId);
+    if (active) {
+      clearTimeout(active);
+    }
+
+    const timer = setTimeout(() => {
+      this.renderTimers.delete(roomId);
+      void this.withRoomLock(roomId, () => {
+        this.renderToFile(roomId);
+      }).catch((error: unknown) => {
+        if (this.onRenderError) {
+          this.onRenderError(roomId, error);
+          return;
+        }
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error(`[memory] Failed to auto-render memory file for ${roomId}: ${reason}`);
+      });
+    }, this.debounceMs);
+
+    this.renderTimers.set(roomId, timer);
   }
 }

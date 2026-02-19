@@ -1247,7 +1247,7 @@ internal/
 - Minor: `/memory log` supports `--limit` and returns latest N filtered entries
 
 ### Next
-- Create pre-release tag `v0.3.0-alpha` and start next planning cycle.
+- Start next planning cycle.
 
 ## Last Updated
-2026-02-19T16:29:43Z by codex
+2026-02-19T16:32:33Z by codex

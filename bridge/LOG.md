@@ -1452,3 +1452,20 @@
 - Create pre-release tag `v0.3.0-alpha`.
 
 ---
+## 2026-02-19T16:32:33Z | codex
+### Summary
+- Created pre-release tag for completed v0.3 plan.
+
+### Changes
+- Created git tag: `v0.3.0-alpha` at commit `f2155ed`.
+- Updated status lines in:
+  - `docs/plans/2026-02-19-v0.3-plan.md`
+  - `bridge/SESSION.md`
+
+### Risks
+- None.
+
+### Next
+- Start next planning cycle.
+
+---

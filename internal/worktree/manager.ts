@@ -116,6 +116,7 @@ export class WorktreeManager {
 
   public reconcile(): void {
     const porcelain = this.parseWorktreeList();
+    this.agentMap.clear();
     for (const wt of porcelain) {
       // Match paths like .agoryx/worktrees/<agent>
       if (!wt.path.includes(join(".agoryx", "worktrees"))) continue;

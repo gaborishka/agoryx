@@ -128,14 +128,18 @@ export class DispatchEngine implements TeamDispatchApi {
       };
     }
 
+    this.memoryService?.recordDispatchStart(state.room.id, dispatch.targetAdapter, dispatch.requestId);
+
     const adapterConfig = withTeamSystemPrompt(
       this.resolveAdapterConfig(dispatch.targetAdapter),
     );
     const persistentLikeMode =
       (adapterConfig.mode === "persistent" || adapterConfig.mode === "agentic") &&
       "sendTurn" in adapter;
+
+    let result: DispatchResult;
     if (persistentLikeMode) {
-      return this.session.acquireTurnLock(
+      result = await this.session.acquireTurnLock(
         state.room.id,
         dispatch.targetAdapter,
         () =>
@@ -151,22 +155,30 @@ export class DispatchEngine implements TeamDispatchApi {
             },
           ),
       );
+    } else {
+      const syntheticMessage: Message = {
+        id: createId("msg"),
+        roomId: state.room.id,
+        author: "team.system",
+        role: "user",
+        text: prompt,
+        format: "plain",
+        metadata: {},
+        createdAt: new Date().toISOString(),
+      };
+
+      result = await this.runLegacyDispatch(dispatch, adapter, adapterConfig, [syntheticMessage], {
+        outputTransform: options?.outputTransform,
+      });
     }
 
-    const syntheticMessage: Message = {
-      id: createId("msg"),
-      roomId: state.room.id,
-      author: "team.system",
-      role: "user",
-      text: prompt,
-      format: "plain",
-      metadata: {},
-      createdAt: new Date().toISOString(),
-    };
+    if (result.success) {
+      this.memoryService?.recordDispatchEnd(state.room.id, dispatch.targetAdapter, "done", []);
+    } else {
+      this.memoryService?.recordError(state.room.id, dispatch.targetAdapter, result.error ?? "unknown error");
+    }
 
-    return this.runLegacyDispatch(dispatch, adapter, adapterConfig, [syntheticMessage], {
-      outputTransform: options?.outputTransform,
-    });
+    return result;
   }
 
   public async runDispatch(

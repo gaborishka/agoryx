@@ -21,6 +21,8 @@ import type { AdapterEvent } from "../../internal/adapters/adapter.js";
 import type { OrchestrationMode } from "../../internal/events/types.js";
 import { SessionService } from "../../internal/session/service.js";
 import { SQLiteStore } from "../../internal/storage/sqlite.js";
+import { MemoryService } from "../../internal/memory/service.js";
+import { WorktreeManager } from "../../internal/worktree/manager.js";
 
 const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team"];
 const require = createRequire(import.meta.url);
@@ -191,6 +193,8 @@ const runChat = async (argv: string[]): Promise<void> => {
   store.init();
   const session = new SessionService(store);
   const adapters = createAdapterRegistry();
+  const memoryService = new MemoryService(store);
+  const worktreeManager = new WorktreeManager(process.cwd());
 
   let engineRef: ChatEngine | null = null;
   const engine = new ChatEngine(session, adapters, config, {
@@ -201,7 +205,7 @@ const runChat = async (argv: string[]): Promise<void> => {
         () => engineRef?.getState().room.config.mode ?? config.mode,
       );
     },
-  });
+  }, memoryService, worktreeManager);
   engineRef = engine;
 
   const initialized = engine.init();

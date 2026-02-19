@@ -179,3 +179,27 @@ test("reconcile() recovers agent map from git worktree list", () => {
     cleanup(repo);
   }
 });
+
+test("reconcile() prunes stale entries after external worktree removal", () => {
+  const repo = createTempGitRepo();
+  try {
+    const mgr = new WorktreeManager(repo);
+    mgr.create("codex");
+    mgr.create("claude");
+    assert.equal(mgr.list().length, 2);
+
+    // Externally remove one worktree (simulates `git worktree remove` outside agoryx)
+    const codexInfo = mgr.getForAgent("codex")!;
+    execFileSync("git", ["worktree", "remove", "--force", codexInfo.path], { cwd: repo });
+
+    // Before reconcile, agentMap still has the stale entry
+    assert.equal(mgr.list().length, 2, "stale entry still in map before reconcile");
+
+    mgr.reconcile();
+    assert.equal(mgr.list().length, 1, "stale entry should be pruned after reconcile");
+    assert.equal(mgr.getForAgent("codex"), null, "codex should be gone");
+    assert.ok(mgr.getForAgent("claude"), "claude should remain");
+  } finally {
+    cleanup(repo);
+  }
+});

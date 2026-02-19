@@ -74,6 +74,26 @@ export class MemoryService {
     });
   }
 
+  public recordWorktreeCreate(roomId: string, agent: string, path: string, branch: string): void {
+    this.store.appendMemoryEvent({
+      eventId: createId("mev"),
+      roomId,
+      source: "engine",
+      eventType: "worktree_create",
+      payload: { agent, path, branch },
+    });
+  }
+
+  public recordWorktreeRemove(roomId: string, agent: string, path: string): void {
+    this.store.appendMemoryEvent({
+      eventId: createId("mev"),
+      roomId,
+      source: "engine",
+      eventType: "worktree_remove",
+      payload: { agent, path },
+    });
+  }
+
   public rebuildSnapshot(roomId: string): MemorySnapshot | null {
     const events = this.store.listMemoryEvents(roomId);
     if (events.length === 0) return null;

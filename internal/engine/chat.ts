@@ -2,6 +2,7 @@ import type { Adapter } from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
 import type { Message, OrchestrationMode, PinnedContext, Room } from "../events/types.js";
 import type { MemoryService } from "../memory/service.js";
+import type { WorktreeManager } from "../worktree/manager.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import { SessionService } from "../session/service.js";
 import { DispatchEngine } from "./dispatch-engine.js";
@@ -39,6 +40,7 @@ export class ChatEngine {
     private readonly config: ChatRuntimeConfig,
     private readonly hooks: ChatEngineHooks = {},
     private readonly memoryService?: MemoryService,
+    private readonly worktreeManager?: WorktreeManager,
   ) {
     const logger = hooks.logger ?? createDefaultEngineLogger();
 
@@ -64,6 +66,7 @@ export class ChatEngine {
       hooks: this.hooks,
       logger,
       memoryService: this.memoryService,
+      worktreeManager: this.worktreeManager,
     });
 
     this.lifecycle = new EngineLifecycle({
@@ -101,6 +104,8 @@ export class ChatEngine {
       }),
       availableAgents: enabledAgents,
     };
+
+    this.worktreeManager?.reconcile();
 
     return {
       room: this.state.room,

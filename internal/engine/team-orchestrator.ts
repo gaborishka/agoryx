@@ -8,6 +8,7 @@ import type {
   SessionBoundPayload,
 } from "../events/types.js";
 import type { MemoryService } from "../memory/service.js";
+import type { WorktreeManager } from "../worktree/manager.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import { TeamPolicy } from "../orchestrator/team.js";
 import { createId } from "../session/ids.js";
@@ -34,6 +35,7 @@ interface TeamOrchestratorOptions {
   hooks: ChatEngineHooks;
   logger: EngineLogger;
   memoryService?: MemoryService;
+  worktreeManager?: WorktreeManager;
 }
 
 interface ActiveTeamDispatch {
@@ -59,6 +61,7 @@ export class TeamOrchestrator {
   private readonly hooks: ChatEngineHooks;
   private readonly logger: EngineLogger;
   private readonly memoryService?: MemoryService;
+  private readonly worktreeManager?: WorktreeManager;
 
   public constructor(options: TeamOrchestratorOptions) {
     this.session = options.session;
@@ -70,6 +73,7 @@ export class TeamOrchestrator {
     this.hooks = options.hooks;
     this.logger = options.logger;
     this.memoryService = options.memoryService;
+    this.worktreeManager = options.worktreeManager;
   }
 
   public startRun(
@@ -115,6 +119,34 @@ export class TeamOrchestrator {
     }
     if (Object.keys(modeSnapshot).length > 0) {
       this.teamAdapterModeSnapshot = modeSnapshot;
+    }
+
+    // Auto-create worktrees for each agent
+    if (this.worktreeManager) {
+      for (const agent of state.availableAgents) {
+        try {
+          const wt = this.worktreeManager.create(agent);
+          // Set workspaceCwd for the agent's adapter config
+          const agentConfig = this.config.adapterConfig[agent];
+          if (agentConfig) {
+            this.config.adapterConfig[agent] = {
+              ...agentConfig,
+              workspaceCwd: wt.path,
+            };
+          }
+          this.memoryService?.recordWorktreeCreate(
+            state.room.id,
+            agent,
+            wt.path,
+            wt.branch,
+          );
+        } catch (error: unknown) {
+          this.logger.log("warn", "team.worktree_create_failed", {
+            agent,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     }
 
     if (state.room.config.mode !== "team") {

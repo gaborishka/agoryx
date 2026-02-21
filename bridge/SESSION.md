@@ -1246,8 +1246,420 @@ internal/
 - follow-up hardening: async `MemoryService.dispose()` now waits for in-flight debounced renders; `/memory render` now degrades gracefully on file write failures
 - Minor: `/memory log` supports `--limit` and returns latest N filtered entries
 
+### Post-Validation Consistency Fixes (2026-02-19)
+- Found release metadata mismatch during quality audit: CLI banner still showed `Agoryx v0.2.0` after v0.3 completion and `v0.3.0-alpha` tag creation.
+- Synced version metadata to `0.3.0-alpha` in:
+  - `package.json`
+  - `package-lock.json`
+- Re-validated:
+  - `npm run typecheck` PASS
+  - `npm run build` PASS
+  - `npm test` PASS (**345/345**)
+  - stub CLI smoke PASS (`/memory show`, `/memory decision`, `/workspace show`, `/worktree list`) with banner `Agoryx v0.3.0-alpha`.
+
+### Post-Validation Audit Hardening (2026-02-19)
+- Found real runtime quality issue despite green plan status: non-git startup printed noisy `fatal: not a git repository` before CLI banner.
+- Root cause: `WorktreeManager` git calls did not suppress stderr in reconcile/startup path.
+- Fixes delivered:
+  - `internal/worktree/manager.ts`: all `execFileSync("git", ...)` calls now run with `stdio: ["ignore", "pipe", "pipe"]` to keep degraded mode quiet.
+  - `tests/worktree/manager.test.ts`: added regression `reconcile() in non-git directory does not print git fatal noise`.
+- Re-validated:
+  - targeted: `npx tsx --test tests/worktree/manager.test.ts` PASS (**12/12**)
+  - targeted integration: `npx tsx --test tests/cmd/worktree-command.test.ts tests/engine/startup-recovery.test.ts tests/engine/worktree-integration.test.ts` PASS (**14/14**)
+  - full suite: `npm test` PASS (**346/346**)
+  - non-git CLI smoke PASS: `/workspace show`, `@codex hi`, `/quit` without stderr fatal noise.
+  - plan smoke PASS: `/memory show`, `/memory decision`, `/workspace show`, `/worktree list`, `/quit`.
+
+### Global CLI Command Availability (2026-02-19)
+- Implemented global command entrypoint so `agoryx` can be executed from any working directory.
+- Changes:
+  - `package.json`: added `"bin": { "agoryx": "bin/agoryx.js" }` and `"prepare": "npm run build"`.
+  - `bin/agoryx.js`: new Node shebang launcher that resolves real symlink path, loads `dist/cmd/agoryx/main.js`, and falls back to `tsx` source entrypoint if dist is unavailable.
+- Operational step executed:
+  - `npm link` completed successfully, installing global symlink (`/opt/homebrew/bin/agoryx`).
+- Validation:
+  - `node bin/agoryx.js --help` PASS
+  - `cd /tmp && agoryx --help` PASS
+  - `cd /tmp && printf '/quit\n' | agoryx chat --adapter-mode stub --mode manual --agents codex --db /tmp/agoryx-global-chat.db` PASS
+
+### Global CWD Context Fix (2026-02-19)
+- Found critical runtime mismatch: launched from another repo, Agoryx could still use Agoryx repo context due launcher fallback behavior.
+- Root cause:
+  - `dist/cmd/agoryx/main.js` failed to load `../../package.json` (path invalid after compile), forcing launcher fallback.
+  - fallback run used wrong cwd behavior for cross-repo usage.
+- Fixes delivered:
+  - `cmd/agoryx/main.ts`: replaced static `require("../../package.json")` with upward package.json discovery (`resolveAppVersion`) that works in both source and dist layouts.
+  - `bin/agoryx.js`: fallback now uses absolute tsx loader path (`node_modules/tsx/dist/loader.mjs`) and no forced repo-root cwd.
+- Re-validated:
+  - `npm run build` PASS
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/chat-cli.test.ts` PASS (**7/7**)
+  - `node dist/cmd/agoryx/main.js --help` PASS
+  - `cd /tmp && agoryx --help` PASS
+  - `cd <temp git repo> && /workspace show` now lists local repo files (confirmed `API_CART.md` marker), not Agoryx files.
+  - `team` flow in temp repo creates worktrees under that repo path and uses local workspace context.
+
+### CLI UX Improvements (2026-02-19)
+- Implemented top-level chat default entrypoint:
+  - `agoryx` now starts chat directly (no required `chat` subcommand).
+  - `agoryx sessions ...` and `agoryx help` remain explicit subcommands.
+- Improved in-chat mode UX:
+  - `/mode` without args now prints current mode + usage.
+  - mode switching inside chat remains supported (`/mode team`, `/mode manual`, etc.).
+- Added slash-command discoverability:
+  - entering `/` in chat now prints command suggestions.
+  - unknown slash commands now return suggestion list.
+  - readline slash autocomplete added (`/` + `Tab`) in TTY.
+- Updated help/usage text:
+  - usage now documents default chat behavior (`agoryx [chat] ...`).
+  - in-chat help includes slash autocomplete tips.
+- Validation:
+  - targeted: `npx tsx --test tests/cmd/command-handler.test.ts tests/cmd/chat-cli.test.ts` PASS (**29/29**)
+  - `npm run typecheck` PASS
+  - `npm run build` PASS
+  - `npm test` PASS (**348/348**)
+  - smoke: `agoryx --agents codex,claude --adapter-mode stub ...` PASS with `/mode` and `/` suggestions.
+
+### Interactive Slash Picker (2026-02-19)
+- Implemented interactive slash command selector for TTY (no `/` + Enter required):
+  - typing `/` on empty prompt opens picker automatically after a short debounce.
+  - picker supports live filtering by typing, navigation with `↑/↓`, accept with `Enter`/`Tab`, cancel with `Esc`.
+  - selected command is inserted back into prompt for further editing/execution.
+- Internal wiring:
+  - `cmd/agoryx/main.ts`: replaced `setupEscInterruptHotkey` with `setupInputHotkeys(engine, rl)` to coordinate Esc team interrupt + slash picker trigger.
+  - added sentinel flow (`__AGORYX_SLASH_PICKER__`) and picker renderer using terminal cursor control from `node:readline`.
+- Stability fixes included in the same pass:
+  - resolved strict typecheck failures in interactive adapters by making idle-timeout touch logic explicit in:
+    - `internal/adapters/codex/index.ts`
+    - `internal/adapters/claude/index.ts`
+- Re-validated:
+  - `npm run typecheck` PASS
+  - targeted: `npx tsx --test tests/cmd/command-handler.test.ts tests/cmd/chat-cli.test.ts tests/adapters/codex-resume.test.ts tests/adapters/claude-resume.test.ts` PASS (**52/52**)
+  - full suite: `npm test` PASS (**348/348**)
+  - smoke: `printf '/\n/quit\n' | agoryx ...` still prints fallback slash list in non-interactive stdin mode.
+
+### Dispatch timeout + live status line hardening (2026-02-19)
+- Fixed false-positive timeout behavior while adapters are actively producing events:
+  - added `internal/adapters/idle-timeout.ts` and switched Codex/Claude adapters to inactivity-based timeout resets on stream activity.
+  - applied to one-shot CLI dispatch and interactive (`agentic`) turns for both adapters.
+- Reduced team-mode chat spam from process narration:
+  - `cmd/agoryx/main.ts` now converts filtered process-chatter deltas into one live spinner status line (updated in place) instead of printing those lines into answer text.
+  - extended chatter detection patterns (including Ukrainian phrasing like `зараз ... перегляну`, `далі ... перевіряю`, `аналізую`).
+- Added regression coverage:
+  - `tests/adapters/idle-timeout.test.ts` (3 tests for fire/reset/clear semantics).
+  - `tests/cmd/chat-cli.test.ts` new Ukrainian chatter filter case.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/adapters/idle-timeout.test.ts tests/adapters/codex-resume.test.ts tests/adapters/claude-resume.test.ts tests/cmd/chat-cli.test.ts` PASS (**34/34**)
+  - `npm test` PASS (**352/352**)
+
+### Interactive Slash Picker UX polish (2026-02-19)
+- Removed sentinel echo from the picker trigger path in TTY chat:
+  - replaced `__AGORYX_SLASH_PICKER__` transport with internal request flag + programmatic Enter on the active prompt.
+  - picker still opens on bare `/` without Enter, supports `↑/↓` navigation, `Enter/Tab` apply, `Esc` cancel.
+- Preserved non-interactive behavior:
+  - `/` command and `/`+`Enter` list suggestions in piped/non-TTY runs.
+  - slash autocomplete (`Tab`) continues to work via readline completer.
+  - `/help` now documents interactive picker trigger (`Press / on an empty prompt ...`).
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/command-handler.test.ts tests/cmd/chat-cli.test.ts` PASS (**30/30**)
+  - TTY smoke PASS via `node dist/cmd/agoryx/main.js ...` and global `agoryx ...` from `/tmp`, confirming no sentinel text is printed.
+
+### Slash Picker redraw fix (2026-02-19)
+- Fixed duplicated picker header on arrow navigation:
+  - root cause: redraw cleanup started from line below the rendered block and did not clear the first row.
+  - `clearRenderedBlock()` now first moves cursor up to the last rendered line, then clears all picker rows.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/command-handler.test.ts tests/cmd/chat-cli.test.ts` PASS (**30/30**)
+  - TTY smoke in global `agoryx` from `/tmp`: `/` then multiple `↑` no longer leaves accumulated headers.
+
+### Team mode @all coverage fix (2026-02-19)
+- Fixed team-mode behavior where `@all` could still finish after the first agent response (`TEAM_DONE` / missing `TEAM_NEXT`).
+- `internal/engine/team-orchestrator.ts` now enforces mention coverage:
+  - extracts goal mentions, including `@all`.
+  - while mentioned coverage is incomplete, next step is forced to the next missing mentioned actor.
+  - debate limits do not finalize the run early while required mentioned actors are still pending.
+- Added regression test:
+  - `tests/engine/team-mode.test.ts` — `@all in team goal forces at least one turn from each agent`.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/engine/team-mode.test.ts tests/orchestrator/team.test.ts` PASS (**20/20**)
+  - `npx tsx --test tests/cmd/team-command.test.ts tests/engine/team-resume.test.ts tests/engine/worktree-integration.test.ts` PASS (**11/11**)
+
+### Full TTY migration to Ink (2026-02-19)
+- Replaced readline-based interactive TTY UI with Ink:
+  - added `cmd/agoryx/ink-chat.tsx` with a single declarative UI loop for prompt input, slash picker, adapter event feed, and status lines.
+  - interactive slash picker now runs inside Ink (`/` on empty prompt, filter typing, up/down, Enter/Tab apply, Esc cancel).
+  - team Esc-interrupt is now handled via Ink input and routed through shared interrupt helper.
+- `cmd/agoryx/main.ts` changes:
+  - TTY path now calls `runInkChat(...)`.
+  - non-TTY path remains line-based for tests/pipes.
+  - removed legacy TTY-only picker/hotkey codepaths (`setupInputHotkeys`, terminal cursor redraw helpers, picker sentinel flow).
+  - cleanup pass removed remaining dead readline TTY helper functions after switch-over.
+- Toolchain changes:
+  - `package.json`: added runtime deps `ink`, `react`; dev dep `@types/react`.
+  - `tsconfig.json`: enabled `jsx: react-jsx` and included `cmd/**/*.tsx`.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm run build` PASS
+  - `npx tsx --test tests/cmd/command-handler.test.ts tests/cmd/chat-cli.test.ts tests/engine/team-mode.test.ts` PASS (**48/48**)
+  - `npm test` PASS (**353/353**)
+  - TTY smoke PASS (`node dist/cmd/agoryx/main.js ...` and global `agoryx` from `/tmp`).
+
+### Ink response visibility and progress feedback hardening (2026-02-19)
+- Fixed "looks stuck / no answer visible" behavior in interactive Ink chat:
+  - added active adapter live panel with animated spinner frame, current status text, elapsed/idle seconds, and live response preview.
+  - moved team/process chatter and `<system-reminder>` filtering into Ink stream rendering path for parity with classic renderer.
+  - deduplicated repeated `session.bound` lines (especially from Claude stream-json bursts).
+  - added explicit fallback render for empty completions: `(<empty response>)` is shown as an agent message instead of silent completion.
+- Restored TTY option semantics in Ink mode:
+  - `--quiet-system` now hides generating/session/done and active progress section in Ink.
+  - `--plain-ui` now disables rich animated status panel and falls back to plain status line updates.
+- UX clarity update:
+  - submitted user input is now echoed in message log (`> ...`) before async processing so it is clear the turn was accepted.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm run build` PASS
+  - `npm test` PASS (**353/353**)
+
+### Ink readability pass: multiline streaming and message block output (2026-02-19)
+- Addressed one-line unreadable output in interactive view:
+  - active streaming preview now preserves line breaks and renders multiple preview lines (instead of a single whitespace-collapsed tail).
+  - finalized assistant output is rendered as two blocks (`agent:` header + message body) to improve readability for long answers.
+  - preview now explicitly labeled (`preview:`) to avoid confusion with finalized output.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test -- tests/cmd/chat-cli.test.ts tests/cmd/command-handler.test.ts tests/engine/team-mode.test.ts` PASS (and full suite remains green).
+
+### Team waiting @mention direct-dispatch fix (2026-02-19)
+- Fixed the case where `team` mode showed no visible reply after `TEAM_DONE`/`waiting_user_input` when user typed `@claude ...`:
+  - `internal/engine/team-orchestrator.ts`: in `waiting_user_input`, `@agent`/`@all` now triggers direct dispatches (instead of silent no-op).
+  - non-mention text behavior in waiting state remains unchanged (message is saved, no feedback queue).
+- API contract alignment:
+  - `internal/engine/types.ts`: `TeamDispatchApi` now exposes `runDispatch(...)` for this path.
+- Added regression coverage:
+  - `tests/engine/team-mode.test.ts`: `waiting_user_input run allows direct @mention dispatch`.
+  - `tests/cmd/team-command.test.ts`: `@mention in waiting_user_input run triggers direct adapter response`.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/engine/team-mode.test.ts tests/cmd/team-command.test.ts` PASS (**26/26**)
+  - `npm test` PASS (**355/355**)
+
 ### Next
 - Start next planning cycle.
 
+### CLI best-practices audit (2026-02-19)
+- Audited Agoryx CLI behavior against CLIG, BetterCLI, GNU CLI conventions, and XDG Base Directory.
+- Captured empirical outputs for root/sessions/chat help paths, stdout/stderr separation, and exit-code behavior.
+- Identified highest-impact gaps: `--help` routing bug at root, missing `--version`, permissive unknown-flag parsing, and non-XDG default paths.
+- No source-code changes were applied in this pass; findings and remediation plan were delivered in chat.
+
+### CLI standards hardening implementation (2026-02-19)
+- Implemented strict CLI argument validation in `cmd/agoryx/main.ts`:
+  - unknown options now fail with clear diagnostics and exit code `2`.
+  - root `--help`/`--version` now return metadata-only output with no chat/session side effects.
+  - added root commands: `config explain`, `completion <bash|zsh|fish>`, `man`.
+  - added dedicated usage outputs for `chat`, `sessions`, `sessions list`, and `sessions export`.
+- Standardized error behavior:
+  - usage errors go to stderr and include command-specific usage hints.
+  - malformed config files now fail fast (`loadConfig` throws) instead of silent fallback to defaults.
+- Added XDG defaults:
+  - config auto-resolution: `$XDG_CONFIG_HOME/agoryx/config.json` with legacy `./agoryx.json` auto-detection.
+  - DB default: `$XDG_STATE_HOME/agoryx/agoryx.db`.
+  - CLI runtime state defaults use workspace-scoped XDG roots for memory/worktrees, with env overrides preserved (`AGORYX_MEMORY_ROOT`, `AGORYX_WORKTREE_ROOT`).
+- Added distribution UX artifacts:
+  - completion files: `completions/agoryx.bash`, `completions/agoryx.zsh`, `completions/agoryx.fish`.
+  - manpage source: `docs/man/agoryx.1`.
+- Documentation updates:
+  - `README.md` now documents root help/version, install/link flow, completion/manpage, XDG paths, and config precedence.
+- Test coverage added/updated:
+  - new `tests/cmd/root-cli.test.ts` (root help/version, strict unknown flags, sessions help behavior, invalid config fail-fast).
+  - updated `tests/cmd/worktree-command.test.ts` for XDG worktree defaults.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm run build` PASS
+  - `npm test` PASS (**363/363**)
+
+### Ink UI style pass: Claude-like compact layout (2026-02-19)
+- Updated `cmd/agoryx/ink-chat.tsx` visual structure to a compact terminal style closer to Claude Code:
+  - top status headline (`* ...`) with elapsed time + token estimate,
+  - tip line (`└ Tip: ...`),
+  - horizontal separators framing content and prompt,
+  - minimal prompt prefix (`›`) and compact bottom running line (`... · esc to interrupt`).
+- Reduced visual noise from old multi-line banner/status panel while preserving command flow and adapter streaming behavior.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/chat-cli.test.ts` PASS (**9/9**)
+  - `npm run build` PASS
+
+### PatternFly-inspired CLI UX pass + emoji style (2026-02-19)
+- Applied consistent CLI feedback model in `cmd/agoryx/main.ts`:
+  - usage failures now print a stable pattern: error + actionable hint (+ command usage when available),
+  - added typo suggestion for unknown root commands (`Did you mean ...`),
+  - strengthened hint text for key usage failures (`sessions`, `completion`, mode/format validation).
+- Improved in-chat command ergonomics (non-breaking text-compatible):
+  - standardized informational/success/warn/error outputs using shared formatting helpers,
+  - preserved previous key substrings to keep existing tests and automation stable.
+- Expanded Claude-like TTY presentation with emoji accents in `cmd/agoryx/ink-chat.tsx`:
+  - emoji status markers for user input, agent output, progress, success, and errors,
+  - compact header/tip/prompt style retained; emojis are TTY-only and can be disabled via `AGORYX_NO_EMOJI=1` or `NO_EMOJI=1`.
+- Documentation:
+  - updated `README.md` with `CLI UX Defaults` section and emoji toggle behavior.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/root-cli.test.ts` PASS (**8/8**)
+  - `npx tsx --test tests/cmd/chat-cli.test.ts` PASS (**9/9**)
+  - `npx tsx --test tests/cmd/team-command.test.ts` PASS (**7/7**)
+  - `npm test` PASS (**365/365**)
+
+### Team TTY UX stabilization after Ivan feedback (2026-02-19)
+- Fixed team-input behavior in `cmd/agoryx/main.ts`:
+  - removed automatic `interruptTeamRun(...)` on every user Enter while a team run is active.
+  - free-text now follows team runtime queue semantics via `processUserMessage`, so normal typing no longer cancels active adapter turns.
+- Fixed Ink visibility/clarity in `cmd/agoryx/ink-chat.tsx`:
+  - header now includes active adapter identity (e.g., `codex: ...`) instead of ambiguous `session ready` state.
+  - added explicit active adapter lines (`adapter: status · session ...`) in rich TTY.
+  - tip text is now static by mode (no rapid rotation tied to frame ticks).
+- Fixed noisy cancellation/error UX:
+  - expected cancellation errors (`PROCESS_CRASH` + `cancelled`) are rendered as status (`cancelled`) instead of red hard errors.
+- Esc handling hardening:
+  - added team-mode gate + cooldown debounce for Esc interrupts to avoid rapid repeated interrupts.
+  - kept Esc behavior in slash picker (close picker) unchanged.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/team-command.test.ts` PASS (**7/7**)
+  - `npx tsx --test tests/cmd/chat-cli.test.ts` PASS (**9/9**)
+  - `npm test` PASS (**365/365**)
+
+### Emoji density reduction (2026-02-19)
+- Switched emoji mode to plain-by-default for both root CLI and Ink TTY:
+  - `cmd/agoryx/main.ts`: emoji enabled only when `AGORYX_EMOJI=1` (or `AGORYX_USE_EMOJI=1`), still overridable by `AGORYX_NO_EMOJI=1` / `NO_EMOJI=1`.
+  - `cmd/agoryx/ink-chat.tsx`: same opt-in behavior for visual markers.
+- Updated docs:
+  - `README.md` (`CLI UX Defaults`) now documents emoji as opt-in.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/root-cli.test.ts` PASS (**8/8**)
+  - `npx tsx --test tests/cmd/chat-cli.test.ts` PASS (**9/9**)
+
+### Full emoji removal (2026-02-19)
+- Removed emoji support completely from CLI output paths:
+  - deleted emoji helper usage and emoji/env toggles from `cmd/agoryx/main.ts`.
+  - deleted emoji helper usage and emoji/env toggles from `cmd/agoryx/ink-chat.tsx`.
+  - all status/help/banner/TTY lines are now plain text only.
+- Docs cleanup:
+  - removed emoji references from `README.md` (`CLI UX Defaults` section).
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/root-cli.test.ts` PASS (**8/8**)
+  - `npx tsx --test tests/cmd/chat-cli.test.ts tests/cmd/team-command.test.ts` PASS (**16/16**)
+  - `npm test` PASS (**365/365**)
+
+### OpenCode-inspired Ink UX pass (2026-02-20)
+- Researched `anomalyco/opencode` TUI patterns and applied practical CLI UX ideas to `cmd/agoryx/ink-chat.tsx`:
+  - added command palette trigger via `Ctrl+P` with searchable command list (command + description matching),
+  - improved draft input editing with cursor support (`←/→`, `Ctrl+A`, `Ctrl+E`, `Ctrl+U`, `Ctrl+K`),
+  - added in-session prompt history navigation via `↑/↓` (last 50 entries, with draft restore),
+  - enhanced footer discoverability with shortcut hints (`ctrl+p`, `/`, `tab`, `↑/↓`) and mode-aware interrupt hint.
+- Kept existing slash-picker flow and non-TTY behavior unchanged.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**365/365**)
+
+### Backspace terminal compatibility fix (2026-02-20)
+- Fixed Ink input deletion for terminals that send raw DEL/BS sequences instead of `key.backspace`:
+  - in `cmd/agoryx/ink-chat.tsx`, backspace now handles:
+    - `key.backspace`,
+    - DEL (`\\u007f`),
+    - BS / Ctrl+H (`\\u0008`).
+  - applied in both prompt editor and picker query input.
+- Rebuilt `dist` and verified no emoji glyphs remain in compiled CLI output.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm run build` PASS
+  - `npx tsx --test tests/cmd/chat-cli.test.ts tests/cmd/team-command.test.ts` PASS (**16/16**)
+
+### Review regression fixes (2026-02-20)
+- Fixed DB path handling in `cmd/agoryx/main.ts`:
+  - added `normalizeDbPath(...)` to convert `file:` DB URIs into real filesystem paths via `fileURLToPath`.
+  - applied normalization consistently for chat/sessions/config code paths before SQLite open.
+  - `ensureDbPathReady(...)` now prepares the normalized path and no longer creates stray local `file:` directories.
+- Fixed Claude interactive timeout floor in `internal/adapters/claude/index.ts`:
+  - added `normalizeInteractiveTimeoutMs(...)` with a strict minimum of `1000ms`.
+  - interactive runner now uses this normalized timeout before creating idle timeout controller.
+- Added regression tests:
+  - `tests/cmd/root-cli.test.ts`: `sessions list --db file:/...` does not create a local `file:` directory.
+  - `tests/adapters/claude-cli.test.ts`: validates timeout normalization floor and finite-value handling.
+- Validation:
+  - `npx tsx --test tests/adapters/claude-cli.test.ts tests/cmd/root-cli.test.ts` PASS (**15/15**)
+  - `npm test` PASS (**368/368**)
+
+### Pre-merge safety fixes from Claude review (2026-02-20)
+- Fixed worktree path traversal risk (`C1`):
+  - `internal/worktree/manager.ts` now normalizes and validates agent names with `^[a-z0-9._-]+$` before path construction.
+  - `cmd/agoryx/main.ts` now validates `--agents` input and normalized runtime agents with the same rule.
+  - `/worktree create` and `/worktree remove` argument parsing now rejects invalid agent names.
+- Fixed conservative dirty-check behavior (`C2`):
+  - `internal/worktree/manager.ts:isDirty()` now returns `true` when `git status --porcelain` fails.
+  - This blocks non-force removal when cleanliness cannot be verified.
+- Fixed Ink async error handling (`M5`) and console sink safety (`M6`):
+  - `cmd/agoryx/ink-chat.tsx` now catches errors inside `submitDraft()` and `triggerInterrupt()` and surfaces them via `pushLine("error", ...)`.
+  - console monkey-patch sink calls are wrapped in `try/catch` with fallback to original console methods.
+- Added regression coverage:
+  - `tests/worktree/manager.test.ts`:
+    - `create() rejects invalid agent names`
+    - `remove() treats git status failures as dirty without force`
+  - `tests/cmd/chat-cli.test.ts`:
+    - `chat rejects invalid --agents names`
+  - `tests/cmd/worktree-command.test.ts`:
+    - `/worktree create rejects invalid agent name`
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/worktree/manager.test.ts tests/cmd/chat-cli.test.ts tests/cmd/worktree-command.test.ts` PASS (**32/32**)
+  - `npm test` PASS (**372/372**)
+
+### Follow-up fixes after re-review (2026-02-20)
+- Fixed duplicated sanitization logic (`M1`) by extracting shared rendering sanitizers:
+  - new module `internal/rendering/sanitize.ts` with:
+    - `sanitizeRenderedDelta(...)`
+    - `sanitizeTeamOutput(...)`
+    - shared team chatter patterns + system-reminder stripping
+  - `cmd/agoryx/main.ts`, `cmd/agoryx/ink-chat.tsx`, and `internal/engine/team-orchestrator.ts` now use the shared implementation.
+  - Added Unicode-safe Ukrainian chatter matching (`/iu`) in shared patterns.
+- Fixed user visibility for worktree creation failures in team runs (`M4`):
+  - `internal/engine/team-orchestrator.ts` now records run-start warnings when worktree isolation setup fails.
+  - `internal/engine/chat.ts` exposes `consumeTeamRunStartWarnings(runId)`.
+  - `cmd/agoryx/main.ts` now prints `Team run warning: ...` right after run start (both `/team start` and auto-start path).
+- Fixed one-shot spawn error handling (`Medium #2`):
+  - `internal/adapters/claude/index.ts` and `internal/adapters/codex/index.ts` now listen for child process `error` and emit `message.error` (`PROCESS_CRASH`) instead of risking unhandled ENOENT crashes.
+  - Also integrated idle-timeout touch in one-shot streams for consistency.
+- Additional worktree robustness:
+  - `internal/worktree/manager.ts` now limits legacy `/.agoryx/worktrees/` reconcile fallback to default-root mode only (custom worktree roots no longer auto-import legacy paths).
+- Added regression tests:
+  - `tests/adapters/spawn-error.test.ts`: missing CLI binaries produce `message.error` events.
+  - `tests/cmd/team-command.test.ts`: team start prints worktree isolation warning when setup fails.
+  - `tests/engine/worktree-integration.test.ts`: engine surfaces run-start worktree warnings.
+  - `tests/engine/parse-team-control.test.ts`: Ukrainian chatter line stripping.
+  - `tests/worktree/manager.test.ts`: custom-root reconcile does not import legacy default-root worktrees.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/adapters/spawn-error.test.ts tests/engine/parse-team-control.test.ts tests/cmd/team-command.test.ts tests/worktree/manager.test.ts` PASS (**51/51**)
+  - `npm test` PASS (**377/377**)
+
+### Review + pre-commit validation (2026-02-21)
+- Reviewed critical v0.3 diffs with focus on:
+  - `cmd/agoryx/main.ts` (strict CLI parsing, XDG path handling, command UX),
+  - `cmd/agoryx/ink-chat.tsx` (TTY input/state/event sink integration),
+  - `internal/adapters/{claude,codex}/index.ts` (+ idle-timeout + spawn error handling),
+  - `internal/engine/team-orchestrator.ts` and `internal/worktree/manager.ts`.
+- Validation re-run in this session:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**377/377**)
+  - `npm run build` PASS
+- No blocking findings identified for commit.
+- Residual note: tests still print non-failing `git fatal` cleanup noise in temporary worktree scenarios.
+
 ## Last Updated
-2026-02-19T16:32:33Z by codex
+2026-02-21T09:42:36Z by codex

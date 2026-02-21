@@ -194,6 +194,79 @@ test("team run auto-creates worktrees per agent", async () => {
   }
 });
 
+test("team run surfaces worktree isolation warnings when creation fails", async () => {
+  const repo = createTempGitRepo();
+  const adapter = makeAdapter("codex");
+  const store = new SQLiteStore(":memory:");
+  store.init();
+  const session = new SessionService(store);
+  const memoryService = new MemoryService(store);
+  const worktreeManager = new WorktreeManager(repo, join(repo, "README.md"));
+
+  const config: ChatRuntimeConfig = {
+    dbPath: ":memory:",
+    mode: "team",
+    roomName: "wt-test",
+    agents: ["codex"],
+    roomConfig: {
+      mode: "team",
+      checkpointThreshold: 50,
+      maxHistoryMessages: 100,
+      maxContextTokens: 30_000,
+    },
+    adapterConfig: {
+      codex: {
+        mode: "agentic",
+        timeoutMs: 30_000,
+        maxTokens: 4_000,
+      },
+    },
+    team: {
+      profile: "enthusiast",
+      maxSteps: 1,
+      maxNoProgressSteps: 2,
+      maxDurationMs: 900_000,
+      checksEnabledByDefault: false,
+      checkCommands: [],
+      strict: {
+        maxSteps: 8,
+        maxNoProgressSteps: 2,
+        maxDurationMs: 900_000,
+        checksEnabledByDefault: true,
+      },
+      finalGate: "proposal",
+      singleActive: true,
+      trigger: {
+        autoOnMessage: true,
+        commandStart: true,
+      },
+    },
+    agentSkills: {},
+  };
+
+  const engine = new ChatEngine(
+    session,
+    { codex: adapter },
+    config,
+    {},
+    memoryService,
+    worktreeManager,
+  );
+  engine.init();
+
+  try {
+    const run = engine.startTeamRun("Collect warnings");
+    const warnings = engine.consumeTeamRunStartWarnings(run.id);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0] ?? "", /Worktree isolation disabled for codex/i);
+    assert.equal(engine.consumeTeamRunStartWarnings(run.id).length, 0);
+  } finally {
+    await engine.shutdown();
+    store.close();
+    cleanupRepo(repo);
+  }
+});
+
 test("workspaceCwd set to worktree path per-dispatch", async () => {
   const repo = createTempGitRepo();
   const adapter = makeAdapter("codex");

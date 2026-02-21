@@ -1469,3 +1469,423 @@
 - Start next planning cycle.
 
 ---
+## 2026-02-19T16:42:31Z | codex
+### Summary
+- Audited v0.3 plan completion and fixed release metadata mismatch.
+
+### Changes
+- Verified Task 1-19 completion, reran typecheck/build/test (345/345), synced package.json + package-lock.json to 0.3.0-alpha, reran stub CLI smoke for /memory /workspace /worktree.
+
+### Risks
+- No functional regressions observed; only metadata consistency issue was found and fixed.
+
+### Next
+- Proceed with next planning cycle or cut release artifacts from current main.
+
+---
+## 2026-02-19T16:54:27Z | codex
+### Summary
+- Ran strict v0.3 DoD audit and fixed non-git startup stderr noise.
+
+### Changes
+- Added stderr-suppressed git exec options in internal/worktree/manager.ts, added regression test in tests/worktree/manager.test.ts, reran targeted and full tests (346/346), reran CLI smoke in both repo and non-git cwd.
+
+### Risks
+- Low risk: behavior unchanged except removed fatal stderr noise in degraded mode.
+
+### Next
+- Proceed with release/cut; optionally clean noisy fatal output from test helpers themselves in a separate non-product cleanup pass.
+
+---
+## 2026-02-19T16:59:11Z | codex
+### Summary
+- Made agoryx globally executable from any directory.
+
+### Changes
+- Added bin/agoryx.js launcher, wired package.json bin+prepare scripts, executed npm link, validated agoryx --help and agoryx chat from /tmp.
+
+### Risks
+- Low risk: launcher falls back to tsx only when dist is unavailable.
+
+### Next
+- If needed, add a short README section for global install/uninstall (npm link / npm unlink -g agoryx).
+
+---
+## 2026-02-19T17:08:34Z | codex
+### Summary
+- Fixed cross-repo context leak in global agoryx launcher.
+
+### Changes
+- Patched cmd/agoryx/main.ts package version lookup for source+dist, updated bin/agoryx.js fallback loader/cwd semantics, validated dist entrypoint and workspace context in temp git repos.
+
+### Risks
+- Low risk: affects launcher/version resolution only; core orchestration logic unchanged.
+
+### Next
+- Optional: add dedicated integration test that runs compiled dist CLI from external cwd.
+
+---
+## 2026-02-19T17:15:26Z | codex
+### Summary
+- Added default top-level chat entrypoint and slash command suggestions UX.
+
+### Changes
+- Updated cmd/agoryx/main.ts to default to chat when no subcommand is provided, added / command suggestions + unknown-command suggestions + readline slash autocomplete, improved /mode output, and updated usage/help text; added tests in tests/cmd/chat-cli.test.ts and tests/cmd/command-handler.test.ts.
+
+### Risks
+- Low risk: command dispatch unchanged for existing explicit subcommands; UX-only additions in chat input path.
+
+### Next
+- Optionally add integration test coverage for interactive Tab completion behavior if we want stricter TTY-level guarantees.
+
+---
+## 2026-02-19T17:28:01Z | codex
+### Summary
+- Hardened dispatch timeout and reduced team stream spam
+
+### Changes
+- Added idle-timeout controller and wired codex/claude adapters to reset timeout on activity; updated team renderer to keep process chatter in one live status line; added tests/adapters/idle-timeout.test.ts and Ukrainian chatter regression in tests/cmd/chat-cli.test.ts; validated npm run typecheck plus npm test (352/352).
+
+### Risks
+- Low risk: timeout semantics are now idle-based; long-running silent requests still terminate after inactivity as intended.
+
+### Next
+- Optionally tune team chatter regexes/status truncation after additional real-adapter smoke logs.
+
+---
+## 2026-02-19T17:31:48Z | codex
+### Summary
+- Polished slash picker to open without Enter and removed sentinel echo
+
+### Changes
+- Updated cmd/agoryx/main.ts picker trigger to use internal request flag instead of visible sentinel; validated tty picker behavior in dist and global agoryx from /tmp; reran typecheck and cmd chat tests (30/30).
+
+### Risks
+- Low risk: TTY input path changed; non-TTY command handling unchanged.
+
+### Next
+- Optional follow-up: add a focused TTY integration test harness for picker key navigation.
+
+---
+## 2026-02-19T17:33:09Z | codex
+### Summary
+- Documented interactive slash picker in /help output
+
+### Changes
+- Added chat help tip: 'Press / on an empty prompt to open interactive command picker (TTY)' in cmd/agoryx/main.ts; rebuilt dist; validated with piped /help output through global agoryx from /tmp.
+
+### Risks
+- No runtime behavior change; documentation-only UX cue.
+
+### Next
+- No further action required.
+
+---
+## 2026-02-19T19:51:40Z | codex
+### Summary
+- Fixed slash picker header duplication on arrow navigation
+
+### Changes
+- Patched cmd/agoryx/main.ts clearRenderedBlock() to move cursor to last rendered picker row before clearing, preventing residual first header line; rebuilt dist and rechecked picker behavior in global agoryx from /tmp.
+
+### Risks
+- Low risk: affects only TTY slash picker redraw path.
+
+### Next
+- Optional: add a dedicated PTY snapshot-style test for picker redraw semantics.
+
+---
+## 2026-02-19T19:55:19Z | codex
+### Summary
+- Fixed team mode @all so both agents are guaranteed to participate
+
+### Changes
+- Updated internal/engine/team-orchestrator.ts to enforce mention coverage before finalize (including @all), added regression test in tests/engine/team-mode.test.ts, and validated targeted team/cmd test suites.
+
+### Risks
+- Low risk: behavior change is scoped to team runs with explicit mentions; default no-mention flow unchanged.
+
+### Next
+- Optional follow-up: tune whether single explicit mention (e.g. @claude) should enforce one-turn-only semantics or allow broader debate continuation.
+
+---
+## 2026-02-19T20:13:19Z | codex
+### Summary
+- Completed full TTY CLI migration from readline flow to Ink
+
+### Changes
+- Added cmd/agoryx/ink-chat.tsx, switched cmd/agoryx/main.ts interactive TTY path to Ink, removed legacy TTY picker/hotkey redraw functions, added ink/react deps and TS JSX config, and validated with typecheck/build/targeted/full tests plus tty smoke.
+
+### Risks
+- Moderate risk: TTY rendering/input path is substantially changed; non-TTY behavior remains stable and covered by existing CLI tests.
+
+### Next
+- Optional follow-up: add PTY-level golden tests for Ink picker navigation and Esc interrupt UX.
+
+---
+## 2026-02-19T20:14:00Z | codex
+### Summary
+- Cleaned residual readline TTY helpers after Ink migration
+
+### Changes
+- Removed unused legacy interactive functions and cursor/key handling code from cmd/agoryx/main.ts (setupInputHotkeys/openSlashCommandPicker/etc), keeping non-TTY line mode only; revalidated typecheck and command-handler tests.
+
+### Risks
+- Low risk: dead-code cleanup only; no behavior change in active paths.
+
+### Next
+- Optional: add explicit docs note that --plain-ui no longer controls TTY fallback (Ink is default TTY path).
+
+---
+## 2026-02-19T21:50:23Z | codex
+### Summary
+- Hardened Ink team UX to show progress and prevent silent completions
+
+### Changes
+- Updated cmd/agoryx/ink-chat.tsx with live animated adapter panel, stream sanitization parity, session.bound dedupe, and empty-response fallback; wired cmd/agoryx/main.ts to pass richUi/hideSystem into Ink.
+
+### Risks
+- Low risk: scoped to TTY Ink rendering path; non-TTY chat/session/export flows unchanged.
+
+### Next
+- Optional follow-up: add PTY snapshot tests for active panel animation and quiet/plain flag behavior.
+
+---
+## 2026-02-19T21:54:13Z | codex
+### Summary
+- Improved Ink readability for long agent replies
+
+### Changes
+- Updated cmd/agoryx/ink-chat.tsx: multiline streaming preview, explicit preview label, and block-style finalized response rendering (agent header + body).
+
+### Risks
+- Low risk: rendering-only change in Ink TTY path.
+
+### Next
+- If needed, add PTY golden tests for multiline preview wrapping and final message layout.
+
+---
+## 2026-02-19T22:05:23Z | codex
+### Summary
+- Fixed no-reply after @mention in team waiting state
+
+### Changes
+- Updated internal/engine/team-orchestrator.ts to dispatch @agent/@all while run status is waiting_user_input; extended TeamDispatchApi in internal/engine/types.ts with runDispatch; added regressions in tests/engine/team-mode.test.ts and tests/cmd/team-command.test.ts; validated npm run typecheck, targeted tests (26/26), and full npm test (355/355).
+
+### Risks
+- Low risk: behavior change is scoped to waiting_user_input with explicit mentions; non-mention waiting behavior remains unchanged.
+
+### Next
+- Optionally add a small UX hint in chat output that mentions can be used during waiting approval.
+
+---
+## 2026-02-19T22:05:28Z | codex
+### Summary
+- Completed CLI best-practices audit against CLIG/BetterCLI/GNU/XDG
+
+### Changes
+- Collected real root/sessions/chat help outputs, stdout/stderr samples, and exit-code behavior; identified argument parsing and discoverability gaps; no product code edits
+
+### Risks
+- Low implementation risk (analysis-only), medium product risk if P0/P1 gaps remain before broader release
+
+### Next
+- Prioritize 1-day fixes: correct --help/--version routing, strict unknown-flag errors, subcommand help parity, and XDG path migration plan
+
+---
+## 2026-02-19T22:19:32Z | codex
+### Summary
+- Implemented full CLI standards hardening from audit
+
+### Changes
+- Added strict arg parser with usage exit code 2, fixed root --help/--version side-effects, added config/completion/man commands, enabled XDG defaults with legacy config fallback, updated worktree runtime roots, added completion/man artifacts, refreshed README, and added root-cli/worktree tests
+
+### Risks
+- Medium: CLI surface changed (strict unknown-flag behavior + XDG defaults) and may affect existing scripts relying on permissive parsing or old paths
+
+### Next
+- If desired, add migration notes/changelog entry and optionally introduce a temporary compatibility mode flag for permissive parsing
+
+---
+## 2026-02-19T22:21:06Z | codex
+### Summary
+- Validated CLI standards hardening end-to-end
+
+### Changes
+- Ran npm run typecheck, npm run build, and npm test after strict parser + XDG + completion/man changes; all tests pass (365/365)
+
+### Risks
+- Known low-noise test artifact remains: git prints fatal lines from temp-worktree cleanup paths, but assertions pass and non-git reconcile stderr regression is covered
+
+### Next
+- Optional follow-up: suppress residual git fatal lines in worktree test harness for cleaner CI output
+
+---
+## 2026-02-19T22:28:32Z | codex
+### Summary
+- Applied Claude-like Ink terminal styling
+
+### Changes
+- Refactored cmd/agoryx/ink-chat.tsx layout to compact headline/tip/rule/prompt/running-line presentation; removed verbose banner-style rendering while preserving interactions
+
+### Risks
+- Low risk: TTY visual layer changed significantly; functional command handling remains unchanged
+
+### Next
+- Optional next: tune exact color palette/wording of headline and tips after visual feedback from Ivan
+
+---
+## 2026-02-19T22:39:55Z | codex
+### Summary
+- Implemented PatternFly-style CLI UX pass with emoji-friendly TTY output
+
+### Changes
+- Unified usage-error + hint formatting, added unknown root command suggestion, upgraded in-chat status/success/warn/error text consistency in cmd/agoryx/main.ts, and expanded Ink TTY emoji markers in cmd/agoryx/ink-chat.tsx; updated README CLI UX Defaults + AGORYX_NO_EMOJI docs
+
+### Risks
+- Low-to-medium risk: user-visible text changed in interactive flows; non-TTY compatibility preserved and full test suite is green
+
+### Next
+- Optional next: add dedicated TTY snapshot/golden tests for emoji/no-emoji toggles and headline rendering
+
+---
+## 2026-02-19T22:45:58Z | codex
+### Summary
+- Stabilized team TTY UX after Ivan bug report
+
+### Changes
+- Removed auto-interrupt-on-enter in cmd/agoryx/main.ts, made Ink tip static, surfaced active adapter in header/active lines, added Esc debounce+team gating, and downgraded expected cancellation PROCESS_CRASH messages to status in cmd/agoryx/ink-chat.tsx
+
+### Risks
+- Low risk: behavior change scoped to interactive team UX; full suite remains green
+
+### Next
+- Optional next: add PTY regression tests for Esc debounce and static tip behavior
+
+---
+## 2026-02-19T22:48:02Z | codex
+### Summary
+- Reduced emoji density to plain-by-default CLI
+
+### Changes
+- Switched emoji rendering to opt-in mode via AGORYX_EMOJI=1 in cmd/agoryx/main.ts and cmd/agoryx/ink-chat.tsx; updated README CLI UX Defaults to reflect opt-in + NO_EMOJI override
+
+### Risks
+- Low risk: visual-only default change, no behavioral runtime impact
+
+### Next
+- Optional next: expose a persisted config flag (e.g., ui.emoji) instead of env-only control
+
+---
+## 2026-02-19T22:52:15Z | codex
+### Summary
+- Removed emojis from CLI and Ink UI entirely
+
+### Changes
+- Deleted emoji wrappers and all emoji-marked output in cmd/agoryx/main.ts and cmd/agoryx/ink-chat.tsx, removed emoji env toggles, and updated README CLI UX Defaults to plain-text-only wording
+
+### Risks
+- Low risk: visual/output wording only; behavior unchanged
+
+### Next
+- Optional next: if desired, tighten color palette to even closer Claude-style minimalism
+
+---
+## 2026-02-20T09:09:48Z | codex
+### Summary
+- Implemented OpenCode-inspired Ink UX improvements
+
+### Changes
+- Updated cmd/agoryx/ink-chat.tsx with Ctrl+P command palette, improved input editing cursor controls (arrow/home/end/kill), in-session prompt history navigation (up/down, max 50), and clearer bottom shortcut hints; validated with npm run typecheck and npm test (365/365).
+
+### Risks
+- Medium UX-path risk: changes are concentrated in interactive Ink input handling (TTY path), while non-TTY flows remain unchanged and test suite is green.
+
+### Next
+- Optional follow-up: add PTY-level regression snapshots for cursor editing, history navigation, and command palette interactions.
+
+---
+## 2026-02-20T09:30:13Z | codex
+### Summary
+- Fixed Ink backspace for DEL/BS terminals and confirmed no-emoji dist
+
+### Changes
+- Added backspace normalization in cmd/agoryx/ink-chat.tsx (supports key.backspace + DEL + Ctrl+H), rebuilt dist, and verified compiled output contains no emoji glyphs
+
+### Risks
+- Low risk: input handling-only update in TTY path
+
+### Next
+- If Ivan still reproduces, capture exact key bytes with cat -v to map terminal-specific sequence
+
+---
+## 2026-02-20T09:31:50Z | codex
+### Summary
+- Fixed Backspace mapped as key.delete in Ink terminals
+
+### Changes
+- Updated cmd/agoryx/ink-chat.tsx so key.delete is treated as backspace (plus DEL/Ctrl+H), and moved forward-delete behavior to Ctrl+D to keep deletion predictable across terminals
+
+### Risks
+- Low risk: TTY input handling change only
+
+### Next
+- If still failing, capture TERM and raw key bytes to map terminal-specific sequence
+
+---
+## 2026-02-20T09:59:53Z | codex
+### Summary
+- Fixed review regressions in DB URI handling and Claude interactive timeout
+
+### Changes
+- Normalized file: DB paths to filesystem paths in cmd/agoryx/main.ts (no stray file: dirs, sessions/chat/config all use normalized path), added min interactive timeout clamp in internal/adapters/claude/index.ts, and added regressions in tests/cmd/root-cli.test.ts + tests/adapters/claude-cli.test.ts.
+
+### Risks
+- Low risk: behavior change is scoped to DB path normalization and Claude interactive timeout floor; covered by targeted and full tests.
+
+### Next
+- Optional: add same timeout-normalization helper in Codex adapter for explicit symmetry, though behavior already matches via local clamp.
+
+---
+## 2026-02-20T10:50:20Z | codex
+### Summary
+- Patched pre-merge safety issues from Claude review
+
+### Changes
+- Validated agent names at CLI/worktree boundaries, made isDirty fail-safe, guarded Ink submit/interrupt + console sink errors, and added regressions in worktree/chat CLI tests
+
+### Risks
+- Low-to-medium: stricter agent validation now rejects malformed names that previously slipped through
+
+### Next
+- Optionally continue with next-priority items (shared sanitization module and surfacing team worktree creation failures in user-facing output)
+
+---
+## 2026-02-20T11:20:00Z | codex
+### Summary
+- Closed next re-review batch (M1, M4, Medium #2)
+
+### Changes
+- Extracted shared sanitizer module and removed duplicate chatter/reminder logic from main/ink/team orchestrator; surfaced team worktree setup failures to CLI users via run-start warnings; added one-shot spawn error handlers in codex/claude adapters; tightened custom-root worktree reconcile behavior
+
+### Risks
+- Low-to-medium: output filtering and team-start messaging changed; adapter spawn failures now surface as PROCESS_CRASH message.error events
+
+### Next
+- Remaining major backlog unchanged: M2 (main.ts split) and M3 (team config mutation overlay)
+
+---
+## 2026-02-21T09:40:27Z | codex
+### Summary
+- Review + pre-commit validation for feat/0.3 batch
+
+### Changes
+- Ran bootstrap checks, reviewed critical diffs (CLI parser, Ink UI, adapters, team/worktree), executed npm run typecheck, npm test (377 pass), npm run build; no blocking findings.
+
+### Risks
+- Residual low risk: test output still contains non-failing git fatal noise from temp-worktree cleanup paths.
+
+### Next
+- Ready to commit current v0.3 change-set.
+
+---

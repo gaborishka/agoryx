@@ -90,6 +90,7 @@ test("/help lists available commands", async (t) => {
   assert.match(result.stdout, /\/retry/);
   assert.match(result.stdout, /\/export/);
   assert.match(result.stdout, /\/quit/);
+  assert.match(result.stdout, /Type \/ and press Tab to autocomplete commands/);
 });
 
 // ---------------------------------------------------------------------------
@@ -253,6 +254,7 @@ test("/mode without argument prints usage", async (t) => {
   );
 
   assert.equal(result.code, 0);
+  assert.match(result.stdout, /Current mode: manual/);
   assert.match(result.stdout, /Usage: \/mode/);
 });
 
@@ -354,6 +356,19 @@ test("unknown command prints error with /help hint", async (t) => {
   assert.equal(result.code, 0);
   assert.match(result.stdout, /Unknown command: \/foobar/);
   assert.match(result.stdout, /\/help/);
+});
+
+test("slash root command prints command suggestions", async (t) => {
+  const dir = makeTmpDir(t, "agoryx-cmd-slash-root-");
+  const result = await runChat(
+    baseArgs(join(dir, "test.db")),
+    "/\n/quit\n",
+  );
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Slash commands:/);
+  assert.match(result.stdout, /\/mode/);
+  assert.match(result.stdout, /\/team/);
 });
 
 // ---------------------------------------------------------------------------

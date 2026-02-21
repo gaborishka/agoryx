@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { resolveDefaultWorktreeDir } from "../../internal/config/paths.js";
 
 interface ChatRunResult {
   code: number | null;
@@ -73,8 +74,10 @@ const baseArgs = (dbPath: string): string[] => [
 const uniqueAgent = (prefix: string): string =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const defaultWorktreeDir = resolveDefaultWorktreeDir(process.cwd());
+
 const cleanupWorktreeAgent = (agent: string): void => {
-  const worktreePath = join(process.cwd(), ".agoryx", "worktrees", agent);
+  const worktreePath = join(defaultWorktreeDir, agent);
   try {
     if (existsSync(worktreePath)) {
       execFileSync("git", ["worktree", "remove", "--force", worktreePath], {
@@ -123,7 +126,20 @@ test("/worktree create <agent> creates worktree", async (t) => {
 
   assert.equal(result.code, 0);
   assert.match(result.stdout, new RegExp(`Worktree created for ${agent}`));
-  assert.match(result.stdout, new RegExp(`\\.agoryx/worktrees/${agent}`));
+  assert.match(result.stdout, new RegExp(`worktrees/${agent}`));
+});
+
+test("/worktree create rejects invalid agent name", async (t) => {
+  const dir = makeTmpDir(t, "agoryx-cmd-worktree-create-invalid-");
+
+  const result = await runChat(
+    baseArgs(join(dir, "test.db")),
+    "/worktree create ../../tmp/evil\n/quit\n",
+  );
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Usage: \/worktree create <agent> \[--json\]/);
+  assert.doesNotMatch(result.stdout, /Worktree created for/);
 });
 
 test("/worktree list shows all worktrees", async (t) => {
@@ -153,7 +169,7 @@ test("/worktree list --json outputs JSON", async (t) => {
 
   assert.equal(result.code, 0);
   assert.match(result.stdout, new RegExp(`\"agent\":\\s*\"${agent}\"`));
-  assert.match(result.stdout, /"path":\s*".*\.agoryx\/worktrees\//);
+  assert.match(result.stdout, /"path":\s*".*\/worktrees\//);
 });
 
 test("/worktree remove <agent> fails if worktree is dirty", async (t) => {
@@ -167,7 +183,7 @@ test("/worktree remove <agent> fails if worktree is dirty", async (t) => {
   );
   assert.equal(first.code, 0);
 
-  const dirtyFile = join(process.cwd(), ".agoryx", "worktrees", agent, "dirty.txt");
+  const dirtyFile = join(defaultWorktreeDir, agent, "dirty.txt");
   writeFileSync(dirtyFile, "dirty\n", "utf8");
 
   const second = await runChat(
@@ -190,7 +206,7 @@ test("/worktree remove <agent> --force removes even if dirty", async (t) => {
   );
   assert.equal(first.code, 0);
 
-  const dirtyFile = join(process.cwd(), ".agoryx", "worktrees", agent, "dirty.txt");
+  const dirtyFile = join(defaultWorktreeDir, agent, "dirty.txt");
   writeFileSync(dirtyFile, "dirty\n", "utf8");
 
   const second = await runChat(

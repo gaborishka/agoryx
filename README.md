@@ -31,28 +31,33 @@ Working with multiple LLMs today means copying text between apps and re-explaini
 
 ```bash
 npm install
+npm run build
 npm run chat -- --mode auto
 ```
 
 ## CLI Usage
 
 ```bash
+# Root help/version
+agoryx --help
+agoryx --version
+
 # Start a chat session
-npm run chat -- --mode manual          # you pick who responds with @agent
-npm run chat -- --mode round-robin     # agents alternate
-npm run chat -- --mode auto            # smart routing (recommended)
-npm run chat -- --mode team            # autonomous team runtime
+agoryx --mode manual          # you pick who responds with @agent
+agoryx --mode round-robin     # agents alternate
+agoryx --mode auto            # smart routing (recommended)
+agoryx --mode team            # autonomous team runtime
 
 # Adapter transport modes
-npm run chat -- --adapter-mode cli       # default for non-team modes
-npm run chat -- --adapter-mode agentic   # explicit persistent+workspace mode
+agoryx --adapter-mode cli       # default for non-team modes
+agoryx --adapter-mode agentic   # explicit persistent+workspace mode
 # In team mode, cli adapters are auto-promoted to agentic unless overridden
 
 # Resume a previous session
-npm run chat -- --resume <session_id>
+agoryx --resume <session_id>
 
 # Custom config file
-npm run chat -- --config ./my-config.json
+agoryx --config ./my-config.json
 ```
 
 ## In-Chat Commands
@@ -84,14 +89,49 @@ npm run chat -- --config ./my-config.json
 
 In interactive TTY sessions, pressing `Esc` in `team` mode also interrupts the active team step.
 
+## CLI UX Defaults
+
+- Human-friendly errors follow a consistent pattern: what failed + a fix hint.
+- In interactive TTY mode, Agoryx uses compact status lines.
+- Machine-oriented flows (piped/non-TTY) stay plain-text and script-friendly.
+
 ## Session Management
 
 ```bash
 # List recent sessions
-npm run sessions -- list --limit 20
+agoryx sessions list --limit 20
 
 # Export a session
-npm run sessions -- export <room_or_session_id> --format markdown --out ./export.md
+agoryx sessions export <room_or_session_id> --format markdown --out ./export.md
+```
+
+## Installation
+
+```bash
+# Link local build globally
+npm install
+npm run build
+npm link
+
+# Remove global link
+npm unlink -g agoryx
+```
+
+## Completion & Man Page
+
+```bash
+# Print completion scripts
+agoryx completion bash
+agoryx completion zsh
+agoryx completion fish
+
+# Also available as files:
+# completions/agoryx.bash
+# completions/agoryx.zsh
+# completions/agoryx.fish
+
+# Manual page source
+# docs/man/agoryx.1
 ```
 
 ## Project Structure
@@ -106,13 +146,22 @@ internal/
   orchestrator/      Policies (manual, round-robin, auto, team), factory
   session/           Context builder, session service, checkpoint summaries
   storage/           SQLite persistence
-tests/               Comprehensive suite (245 tests)
+tests/               Comprehensive suite (365 tests)
 docs/                Architecture, vision, consensus, design plans
 ```
 
 ## Configuration
 
-Create `agoryx.json` in the project root to customize defaults:
+Config precedence: **flags > env > config file > defaults**.
+
+Default config path:
+- `$XDG_CONFIG_HOME/agoryx/config.json`
+- fallback legacy path: `./agoryx.json` (if present in current working directory)
+
+Default state path:
+- `$XDG_STATE_HOME/agoryx/agoryx.db`
+
+Create a config file to customize defaults:
 
 ```json
 {
@@ -135,7 +184,7 @@ Create `agoryx.json` in the project root to customize defaults:
     "maxContextTokens": 30000
   },
   "session": {
-    "dbPath": "./agoryx.db"
+    "dbPath": "/absolute/path/to/agoryx.db"
   },
   "team": {
     "profile": "enthusiast",

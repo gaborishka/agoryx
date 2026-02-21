@@ -51,6 +51,10 @@ export interface ChatEngineFacade {
 
 export interface TeamDispatchApi {
   createInternalDispatch(targetAdapter: string, reason: string): Dispatch;
+  runDispatch(
+    dispatch: Dispatch,
+    isSessionRetry?: boolean,
+  ): Promise<DispatchResult>;
   runPromptDispatch(
     dispatch: Dispatch,
     prompt: string,

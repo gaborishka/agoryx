@@ -55,6 +55,49 @@ const runChatCli = (
     child.stdin.end(stdinInput);
   });
 
+const runCli = (
+  args: string[],
+  stdinInput: string,
+  timeoutMs = 20_000,
+): Promise<ChatRunResult> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "cmd/agoryx/main.ts", ...args],
+      {
+        cwd: process.cwd(),
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("top-level CLI test timed out"));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stdout, stderr });
+    });
+
+    child.stdin.end(stdinInput);
+  });
+
 test("chat exits cleanly when stdin closes after one message", async (t) => {
   const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-eof-"));
   t.after(() => {
@@ -165,6 +208,32 @@ test("chat hides system status lines when --quiet-system is enabled", async (t) 
   assert.doesNotMatch(result.stdout, /\[codex\] done/);
 });
 
+test("chat rejects invalid --agents names", async (t) => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-invalid-agents-"));
+  t.after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const dbPath = join(tmpDir, "chat.db");
+  const result = await runChatCli(
+    [
+      "--agents",
+      "codex,../../tmp/evil",
+      "--mode",
+      "manual",
+      "--adapter-mode",
+      "stub",
+      "--db",
+      dbPath,
+    ],
+    "",
+  );
+
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /Invalid agent name in --agents/i);
+});
+
 test("chat renderer filters system-reminder blocks from streamed output", async (t) => {
   const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-filter-reminder-"));
   t.after(() => {
@@ -217,6 +286,33 @@ test("chat renderer filters process-chatter lines in team mode", async (t) => {
   assert.doesNotMatch(result.stdout, /i.?ll read docs first/i);
 });
 
+test("chat renderer filters Ukrainian process-chatter lines in team mode", async (t) => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-filter-chatter-ua-"));
+  t.after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const dbPath = join(tmpDir, "chat.db");
+  const result = await runChatCli(
+    [
+      "--agents",
+      "codex",
+      "--mode",
+      "team",
+      "--adapter-mode",
+      "stub",
+      "--db",
+      dbPath,
+    ],
+    "Зараз швидко перегляну README і далі перевіряю маршрути\n/quit\n",
+  );
+
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.doesNotMatch(result.stdout, /зараз швидко перегляну/i);
+  assert.doesNotMatch(result.stdout, /далі перевіряю/i);
+});
+
 test("chat keeps config-defined adapter mode when --adapter-mode is not provided", async (t) => {
   const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-chat-config-mode-"));
   t.after(() => {
@@ -258,4 +354,31 @@ test("chat keeps config-defined adapter mode when --adapter-mode is not provided
   assert.equal(result.signal, null);
   assert.equal(result.code, 0);
   assert.match(result.stdout, /- codex: mode=persistent/);
+});
+
+test("top-level agoryx command defaults to chat mode", async (t) => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-top-level-chat-"));
+  t.after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const dbPath = join(tmpDir, "chat.db");
+  const result = await runCli(
+    [
+      "--agents",
+      "codex",
+      "--mode",
+      "manual",
+      "--adapter-mode",
+      "stub",
+      "--db",
+      dbPath,
+    ],
+    "/quit\n",
+  );
+
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Agoryx v/);
+  assert.match(result.stdout, /Type \/help for commands/);
 });

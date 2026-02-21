@@ -208,6 +208,34 @@ test("waiting_user_input run does not enqueue team feedback", async () => {
   }
 });
 
+test("waiting_user_input run allows direct @mention dispatch", async () => {
+  const adapter = makeAdapter("claude");
+  const { engine, store } = createEngine(adapter, { maxSteps: 1 });
+  try {
+    await engine.processUserMessage("Prepare rollout plan");
+    await waitForRunStatus(engine, "waiting_user_input");
+
+    const before = engine.teamStatus();
+    assert.ok(before);
+    assert.equal(before.pendingFeedback, 0);
+    assert.equal(adapter.calls.length, 1);
+
+    const results = await engine.processUserMessage("@claude what do you think?");
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.adapter, "claude");
+    assert.equal(results[0]?.success, true);
+    assert.equal(adapter.calls.length, 2);
+
+    const after = engine.teamStatus();
+    assert.ok(after);
+    assert.equal(after.run.status, "waiting_user_input");
+    assert.equal(after.pendingFeedback, 0);
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
 test("shutdown interrupts active team step before awaiting loop completion", async () => {
   const stalledByRequest = new Map<string, () => void>();
   const cancelledRequests = new Set<string>();
@@ -834,6 +862,67 @@ test("team auto-start honors @mention for first actor", async () => {
     await waitForRunStatus(engine, "waiting_user_input");
     assert.equal(codex.calls.length, 0);
     assert.equal(claude.calls.length, 1);
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("@all in team goal forces at least one turn from each agent", async () => {
+  const codex = makeAdapter("codex", 0, () => "Codex summary\nTEAM_DONE");
+  const claude = makeAdapter("claude", 0, () => "Claude summary\nTEAM_DONE");
+  const store = new SQLiteStore(":memory:");
+  store.init();
+  const session = new SessionService(store);
+  const config: ChatRuntimeConfig = {
+    dbPath: ":memory:",
+    mode: "team",
+    roomName: "team-room",
+    agents: ["codex", "claude"],
+    roomConfig: {
+      mode: "team",
+      checkpointThreshold: 50,
+      maxHistoryMessages: 100,
+      maxContextTokens: 30_000,
+    },
+    adapterConfig: {
+      codex: { mode: "agentic", timeoutMs: 30_000, maxTokens: 4_000 },
+      claude: { mode: "agentic", timeoutMs: 30_000, maxTokens: 4_000 },
+    },
+    team: {
+      profile: "enthusiast",
+      maxSteps: 1,
+      maxNoProgressSteps: 2,
+      maxDurationMs: 900_000,
+      checksEnabledByDefault: false,
+      checkCommands: ["npm run typecheck", "npm test"],
+      strict: {
+        maxSteps: 8,
+        maxNoProgressSteps: 2,
+        maxDurationMs: 900_000,
+        checksEnabledByDefault: true,
+      },
+      finalGate: "proposal",
+      singleActive: true,
+      trigger: {
+        autoOnMessage: true,
+        commandStart: true,
+      },
+    },
+    agentSkills: {},
+  };
+
+  const engine = new ChatEngine(session, { codex, claude }, config);
+  engine.init();
+  try {
+    await engine.processUserMessage("@all describe this repo");
+    await waitForRunStatus(engine, "waiting_user_input");
+
+    assert.equal(codex.calls.length, 1);
+    assert.equal(claude.calls.length, 1);
+    const log = engine.teamLog(10);
+    assert.ok(log);
+    assert.equal(log.run.stepCount, 2);
   } finally {
     await engine.shutdown();
     store.close();

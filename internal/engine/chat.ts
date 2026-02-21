@@ -183,6 +183,10 @@ export class ChatEngine {
     return this.team.status(runId);
   }
 
+  public consumeTeamRunStartWarnings(runId: string): string[] {
+    return this.team.consumeRunStartWarnings(runId);
+  }
+
   public teamLog(limit = 20, runId?: string): TeamLogResult | null {
     return this.team.log(limit, runId);
   }

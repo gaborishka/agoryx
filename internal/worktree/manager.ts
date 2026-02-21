@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { join, basename } from "node:path";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export interface WorktreeInfo {
@@ -10,45 +10,69 @@ export interface WorktreeInfo {
   head: string;
 }
 
+export const WORKTREE_AGENT_NAME_PATTERN = /^[a-z0-9._-]+$/;
+
+export const normalizeWorktreeAgentName = (agent: string): string =>
+  agent.trim().toLowerCase();
+
+export const isValidWorktreeAgentName = (agent: string): boolean =>
+  WORKTREE_AGENT_NAME_PATTERN.test(agent);
+
 export class WorktreeManager {
   private readonly worktreeDir: string;
+  private readonly includeLegacyDefaultWorktreePaths: boolean;
   private readonly agentMap = new Map<string, WorktreeInfo>();
   private locked = false;
 
-  public constructor(private readonly repoRoot: string) {
-    this.worktreeDir = join(repoRoot, ".agoryx", "worktrees");
+  public constructor(
+    private readonly repoRoot: string,
+    worktreeDir?: string,
+  ) {
+    this.includeLegacyDefaultWorktreePaths = !worktreeDir;
+    this.worktreeDir = worktreeDir ? resolve(worktreeDir) : join(repoRoot, ".agoryx", "worktrees");
   }
 
   public create(agent: string): WorktreeInfo {
-    const existing = this.agentMap.get(agent);
+    const normalizedAgent = normalizeWorktreeAgentName(agent);
+    if (!isValidWorktreeAgentName(normalizedAgent)) {
+      throw new Error(
+        `Invalid agent name '${agent}'. Allowed characters: a-z, 0-9, dot, underscore, hyphen.`,
+      );
+    }
+
+    const existing = this.agentMap.get(normalizedAgent);
     if (existing && existsSync(existing.path)) {
       return existing;
     }
 
     this.acquireLock();
     try {
-      const wtPath = join(this.worktreeDir, agent);
+      const wtPath = join(this.worktreeDir, normalizedAgent);
       if (existsSync(wtPath)) {
         // Worktree directory exists from a previous run; reconcile and return
-        this.reconcileOne(wtPath, agent);
-        const info = this.agentMap.get(agent);
+        this.reconcileOne(wtPath, normalizedAgent);
+        const info = this.agentMap.get(normalizedAgent);
         if (info) return info;
       }
 
       mkdirSync(this.worktreeDir, { recursive: true });
 
       const shortId = randomUUID().slice(0, 8);
-      const branch = `agoryx/${agent}-${shortId}`;
+      const branch = `agoryx/${normalizedAgent}-${shortId}`;
 
       execFileSync(
         "git",
         ["worktree", "add", "-b", branch, wtPath],
-        { cwd: this.repoRoot, encoding: "utf-8" },
+        {
+          cwd: this.repoRoot,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
 
       const head = this.getHead(wtPath);
-      const info: WorktreeInfo = { agent, path: wtPath, branch, head };
-      this.agentMap.set(agent, info);
+      const info: WorktreeInfo = { agent: normalizedAgent, path: wtPath, branch, head };
+      this.agentMap.set(normalizedAgent, info);
       return info;
     } finally {
       this.releaseLock();
@@ -60,11 +84,12 @@ export class WorktreeManager {
   }
 
   public getForAgent(agent: string): WorktreeInfo | null {
-    return this.agentMap.get(agent) ?? null;
+    return this.agentMap.get(normalizeWorktreeAgentName(agent)) ?? null;
   }
 
   public remove(agent: string, force = false): void {
-    const info = this.agentMap.get(agent);
+    const normalizedAgent = normalizeWorktreeAgentName(agent);
+    const info = this.agentMap.get(normalizedAgent);
     if (!info) return;
 
     this.acquireLock();
@@ -78,7 +103,11 @@ export class WorktreeManager {
       execFileSync(
         "git",
         ["worktree", "remove", ...(force ? ["--force"] : []), info.path],
-        { cwd: this.repoRoot, encoding: "utf-8" },
+        {
+          cwd: this.repoRoot,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
 
       // Clean up the branch
@@ -86,13 +115,17 @@ export class WorktreeManager {
         execFileSync(
           "git",
           ["branch", "-D", info.branch],
-          { cwd: this.repoRoot, encoding: "utf-8" },
+          {
+            cwd: this.repoRoot,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
         );
       } catch {
         // Branch may not exist if it was already deleted
       }
 
-      this.agentMap.delete(agent);
+      this.agentMap.delete(normalizedAgent);
     } finally {
       this.releaseLock();
     }
@@ -107,7 +140,7 @@ export class WorktreeManager {
   }
 
   public ensureClean(agent: string): void {
-    const info = this.agentMap.get(agent);
+    const info = this.agentMap.get(normalizeWorktreeAgentName(agent));
     if (!info) return;
     if (this.isDirty(info.path)) {
       throw new Error(`Worktree for ${agent} has uncommitted changes.`);
@@ -124,25 +157,25 @@ export class WorktreeManager {
     }
     this.agentMap.clear();
     for (const wt of porcelain) {
-      // Match paths like .agoryx/worktrees/<agent>
-      if (!wt.path.includes(join(".agoryx", "worktrees"))) continue;
+      if (!this.isManagedWorktreePath(wt.path)) continue;
 
-      const agent = basename(wt.path);
-      if (!agent) continue;
+      const normalizedAgent = normalizeWorktreeAgentName(basename(wt.path));
+      if (!isValidWorktreeAgentName(normalizedAgent)) continue;
 
       const info: WorktreeInfo = {
-        agent,
+        agent: normalizedAgent,
         path: wt.path,
         branch: wt.branch,
         head: wt.head,
       };
-      this.agentMap.set(agent, info);
+      this.agentMap.set(normalizedAgent, info);
     }
   }
 
   private reconcileOne(path: string, agent: string): void {
+    const requested = this.normalizePath(path);
     const porcelain = this.parseWorktreeList();
-    const wt = porcelain.find((w) => w.path === path);
+    const wt = porcelain.find((item) => this.normalizePath(item.path) === requested);
     if (wt) {
       this.agentMap.set(agent, {
         agent,
@@ -157,7 +190,11 @@ export class WorktreeManager {
     const output = execFileSync(
       "git",
       ["worktree", "list", "--porcelain"],
-      { cwd: this.repoRoot, encoding: "utf-8" },
+      {
+        cwd: this.repoRoot,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     );
 
     const blocks = output.split("\n\n").filter(Boolean);
@@ -187,11 +224,33 @@ export class WorktreeManager {
     return results;
   }
 
+  private isManagedWorktreePath(candidatePath: string): boolean {
+    const normalizedCandidate = this.normalizePath(candidatePath);
+    const normalizedRoot = this.normalizePath(this.worktreeDir);
+    if (
+      normalizedCandidate === normalizedRoot ||
+      normalizedCandidate.startsWith(`${normalizedRoot}/`)
+    ) {
+      return true;
+    }
+    return this.includeLegacyDefaultWorktreePaths &&
+      normalizedCandidate.includes("/.agoryx/worktrees/");
+  }
+
+  private normalizePath(path: string): string {
+    const resolved = resolve(path);
+    if (existsSync(resolved)) {
+      return realpathSync(resolved).replace(/\\/g, "/");
+    }
+    return resolved.replace(/\\/g, "/");
+  }
+
   private getHead(cwd: string): string {
     try {
       return execFileSync("git", ["rev-parse", "HEAD"], {
         cwd,
         encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
       }).trim();
     } catch {
       return "";
@@ -203,10 +262,11 @@ export class WorktreeManager {
       const output = execFileSync("git", ["status", "--porcelain"], {
         cwd,
         encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
       });
       return output.trim().length > 0;
     } catch {
-      return false;
+      return true;
     }
   }
 
@@ -216,7 +276,11 @@ export class WorktreeManager {
       const output = execFileSync(
         "git",
         ["rev-list", "--left-right", "--count", `${defaultBranch}...HEAD`],
-        { cwd, encoding: "utf-8" },
+        {
+          cwd,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
       const [behind, ahead] = output.trim().split(/\s+/).map(Number);
       return { ahead: ahead ?? 0, behind: behind ?? 0 };
@@ -230,7 +294,11 @@ export class WorktreeManager {
       const ref = execFileSync(
         "git",
         ["symbolic-ref", "refs/remotes/origin/HEAD"],
-        { cwd: this.repoRoot, encoding: "utf-8" },
+        {
+          cwd: this.repoRoot,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       ).trim();
       return ref.replace("refs/remotes/origin/", "");
     } catch {

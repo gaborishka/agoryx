@@ -1,0 +1,27 @@
+.TH AGORYX 1 "2026-02-19" "Agoryx" "User Commands"
+.SH NAME
+agoryx \- local-first multi-agent CLI chat orchestrator
+.SH SYNOPSIS
+.B agoryx
+.RI [ chat ]
+.RI [ options ]
+.br
+.B agoryx sessions
+.RI "<list|export> [options]"
+.br
+.B agoryx config explain
+.RI "[--config <path>] [--db <path>]"
+.br
+.B agoryx completion
+.RI "<bash|zsh|fish>"
+.SH DESCRIPTION
+Agoryx runs Codex and Claude in one shared local session with SQLite persistence.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/agoryx/config.json
+Primary configuration file (legacy ./agoryx.json is auto-detected).
+.TP
+.I $XDG_STATE_HOME/agoryx/agoryx.db
+Default SQLite state database.
+.SH SEE ALSO
+.BR agoryx (1) " --help"

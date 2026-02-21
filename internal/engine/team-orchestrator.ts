@@ -11,6 +11,7 @@ import type { MemoryService } from "../memory/service.js";
 import type { WorktreeManager } from "../worktree/manager.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import { TeamPolicy } from "../orchestrator/team.js";
+import { sanitizeTeamOutput } from "../rendering/sanitize.js";
 import { createId } from "../session/ids.js";
 import { SessionService } from "../session/service.js";
 import type { EngineLogger } from "./logger.js";
@@ -24,6 +25,8 @@ import type {
   TeamLogResult,
   TeamStatusResult,
 } from "./types.js";
+
+export { sanitizeTeamOutput } from "../rendering/sanitize.js";
 
 interface TeamOrchestratorOptions {
   session: SessionService;
@@ -49,6 +52,7 @@ export class TeamOrchestrator {
   private readonly teamStopFlags = new Set<string>();
   private readonly teamNextActorByRun = new Map<string, string>();
   private readonly teamActiveDispatchByRun = new Map<string, ActiveTeamDispatch>();
+  private readonly runStartWarningsByRun = new Map<string, string[]>();
   private readonly interruptedRequestIds = new Set<string>();
   private teamAdapterModeSnapshot: Partial<Record<string, AdapterConfig["mode"]>> | null = null;
 
@@ -121,6 +125,8 @@ export class TeamOrchestrator {
       this.teamAdapterModeSnapshot = modeSnapshot;
     }
 
+    const runStartWarnings: string[] = [];
+
     // Auto-create worktrees for each agent
     if (this.worktreeManager) {
       for (const agent of state.availableAgents) {
@@ -141,9 +147,13 @@ export class TeamOrchestrator {
             wt.branch,
           );
         } catch (error: unknown) {
+          const reason = error instanceof Error ? error.message : String(error);
+          runStartWarnings.push(
+            `Worktree isolation disabled for ${agent}: ${reason}. Using main repository workspace.`,
+          );
           this.logger.log("warn", "team.worktree_create_failed", {
             agent,
-            error: error instanceof Error ? error.message : String(error),
+            error: reason,
           });
         }
       }
@@ -178,8 +188,21 @@ export class TeamOrchestrator {
       strictProfile,
     });
 
+    if (runStartWarnings.length > 0) {
+      this.runStartWarningsByRun.set(run.id, runStartWarnings);
+    }
+
     this.launchLoop(run.id, run.roomId);
     return run;
+  }
+
+  public consumeRunStartWarnings(runId: string): string[] {
+    const warnings = this.runStartWarningsByRun.get(runId);
+    if (!warnings || warnings.length === 0) {
+      return [];
+    }
+    this.runStartWarningsByRun.delete(runId);
+    return [...warnings];
   }
 
   public status(runId?: string): TeamStatusResult | null {
@@ -353,7 +376,20 @@ export class TeamOrchestrator {
     }
     if (activeRun?.status === "waiting_user_input") {
       this.session.saveUserMessage(state.room.id, text);
-      return [];
+      const mentionTargets = resolveMentionTargets(text, state.availableAgents);
+      if (mentionTargets.length === 0) {
+        return [];
+      }
+
+      const results: DispatchResult[] = [];
+      for (const target of mentionTargets) {
+        const dispatch = this.dispatchApi.createInternalDispatch(
+          target,
+          `team:waiting_mention:${target}`,
+        );
+        results.push(await this.dispatchApi.runDispatch(dispatch));
+      }
+      return results;
     }
 
     if (this.config.team.trigger.autoOnMessage) {
@@ -450,7 +486,8 @@ export class TeamOrchestrator {
       }
 
       const hasPendingFeedback = this.session.countPendingTeamFeedback(run.id) > 0;
-      if (this.shouldFinalizeRun(run) && !hasPendingFeedback) {
+      const pendingMentionActor = this.getNextMentionCoverageActor(run);
+      if (this.shouldFinalizeRun(run) && !hasPendingFeedback && !pendingMentionActor) {
         this.completeRun(run, "Debate limits reached.");
         return;
       }
@@ -570,6 +607,11 @@ export class TeamOrchestrator {
       this.teamNextActorByRun.delete(updated.id);
       return;
     }
+    const forcedMentionActor = this.getNextMentionCoverageActor(updated);
+    if (forcedMentionActor) {
+      this.teamNextActorByRun.set(updated.id, forcedMentionActor);
+      return;
+    }
     if (control.done) {
       this.completeRun(updated, "TEAM_DONE control event.", result.text);
       return;
@@ -648,51 +690,53 @@ export class TeamOrchestrator {
     this.interruptedRequestIds.delete(requestId);
     return true;
   }
-}
 
-export const sanitizeTeamOutput = (text: string): string => {
-  if (!text) {
-    return text;
+  private getNextMentionCoverageActor(run: TeamRun): string | null {
+    const requiredActors = this.getRequiredMentionActors(run);
+    if (requiredActors.length <= 1) {
+      return null;
+    }
+
+    const steps = this.session.listTeamSteps(run.id, Math.max(1, run.stepCount + 1));
+    const spokenActors = new Set<string>();
+    for (const step of steps) {
+      if (step.result === "ok") {
+        spokenActors.add(step.actor);
+      }
+    }
+
+    for (const actor of requiredActors) {
+      if (!spokenActors.has(actor)) {
+        return actor;
+      }
+    }
+
+    return null;
   }
 
-  const withoutReminders = text.replace(
-    /<system-reminder>[\s\S]*?<\/system-reminder>/gi,
-    "",
-  );
-  const filteredLines = withoutReminders
-    .split(/\r?\n/)
-    .filter((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return true;
+  private getRequiredMentionActors(run: TeamRun): string[] {
+    const mentions = extractGoalMentions(run.goal);
+    if (mentions.length === 0) {
+      return [];
+    }
+
+    if (mentions.includes("all")) {
+      return [...run.participants];
+    }
+
+    const requiredActors: string[] = [];
+    for (const mention of mentions) {
+      if (!run.participants.includes(mention)) {
+        continue;
       }
-
-      if (/^\d+→/.test(trimmed)) {
-        return false;
+      if (requiredActors.includes(mention)) {
+        continue;
       }
-      if (/^now appending to the bridge log:?$/i.test(trimmed)) {
-        return false;
-      }
-      if (isTeamProcessChatterLine(trimmed)) {
-        return false;
-      }
-
-      return true;
-    });
-
-  const cleaned = filteredLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  return cleaned;
-};
-
-const TEAM_PROCESS_CHATTER_PATTERNS = [
-  /\b(i(?:'|’)m|i am|i(?:'|’)ll|i will)\b.*\b(read|scan|check|review|verify|grep|bootstrap|cross-check|inspect|prepare|gather|collect|re-?run|search)\b/i,
-  /\b(i hit|quick bootstrap|first pass|next i(?:'|’)m|now i(?:'|’)m)\b/i,
-  /\b(зараз|спершу|далі|потім|наступним кроком)\b.*\b(перевір|звір|прочита|скан|подив|підгот|запущ|зроблю)\b/i,
-  /\bя\b.*\b(перевірю|прочитаю|запущу|зроблю швидкий)\b/i,
-];
-
-const isTeamProcessChatterLine = (line: string): boolean =>
-  TEAM_PROCESS_CHATTER_PATTERNS.some((pattern) => pattern.test(line));
+      requiredActors.push(mention);
+    }
+    return requiredActors;
+  }
+}
 
 interface TeamDebateControl {
   done: boolean;
@@ -706,6 +750,8 @@ const TEAM_STOP_WORD_PATTERNS = [
   /^\s*TEAM_STOP\s*$/i,
 ];
 const INLINE_CODE_WRAPPER_PATTERN = /^(`{1,3})([^`]+)\1$/;
+const GOAL_MENTION_PATTERN = /@([a-z0-9._-]+)/g;
+const USER_MENTION_PATTERN = /@([a-z0-9._-]+)/g;
 
 /** Max number of trailing lines to scan for control directives. */
 const CONTROL_TAIL_LINES = 5;
@@ -750,4 +796,42 @@ const normalizeTeamControlLine = (line: string): string => {
     return trimmed;
   }
   return inlineCodeMatch[2]?.trim() ?? trimmed;
+};
+
+const extractGoalMentions = (text: string): string[] => {
+  const normalized = text.toLowerCase();
+  const mentions: string[] = [];
+  for (const match of normalized.matchAll(GOAL_MENTION_PATTERN)) {
+    const mention = match[1];
+    if (!mention || mentions.includes(mention)) {
+      continue;
+    }
+    mentions.push(mention);
+  }
+  return mentions;
+};
+
+const resolveMentionTargets = (
+  text: string,
+  availableAgents: string[],
+): string[] => {
+  const normalized = text.toLowerCase();
+  const targets: string[] = [];
+  for (const match of normalized.matchAll(USER_MENTION_PATTERN)) {
+    const mention = match[1];
+    if (!mention) {
+      continue;
+    }
+    if (mention === "all") {
+      return [...availableAgents];
+    }
+    if (!availableAgents.includes(mention)) {
+      continue;
+    }
+    if (targets.includes(mention)) {
+      continue;
+    }
+    targets.push(mention);
+  }
+  return targets;
 };

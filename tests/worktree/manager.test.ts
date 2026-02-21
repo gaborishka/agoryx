@@ -59,6 +59,18 @@ test("create() creates worktree for agent", () => {
   }
 });
 
+test("create() rejects invalid agent names", () => {
+  const repo = createTempGitRepo();
+  try {
+    const mgr = new WorktreeManager(repo);
+    assert.throws(() => {
+      mgr.create("../../tmp/evil");
+    }, /invalid agent name/i);
+  } finally {
+    cleanup(repo);
+  }
+});
+
 test("create() is idempotent — same agent returns existing", () => {
   const repo = createTempGitRepo();
   try {
@@ -144,6 +156,30 @@ test("remove() fails on dirty worktree without force", () => {
   }
 });
 
+test("remove() treats git status failures as dirty without force", () => {
+  const repo = createTempGitRepo();
+  try {
+    const mgr = new WorktreeManager(repo);
+    const invalidPath = join(repo, "nonexistent-worktree");
+    (
+      mgr as unknown as {
+        agentMap: Map<string, { agent: string; path: string; branch: string; head: string }>;
+      }
+    ).agentMap.set("codex", {
+      agent: "codex",
+      path: invalidPath,
+      branch: "agoryx/codex-fake",
+      head: "",
+    });
+
+    assert.throws(() => {
+      mgr.remove("codex", false);
+    }, /uncommitted changes/i);
+  } finally {
+    cleanup(repo);
+  }
+});
+
 test("remove() with force succeeds on dirty worktree", () => {
   const repo = createTempGitRepo();
   try {
@@ -175,6 +211,20 @@ test("reconcile() recovers agent map from git worktree list", () => {
     assert.equal(list.length, 2, "reconcile should recover 2 worktrees");
     const agents = list.map((w) => w.agent).sort();
     assert.deepEqual(agents, ["claude", "codex"]);
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test("reconcile() with custom root does not import legacy default-root worktrees", () => {
+  const repo = createTempGitRepo();
+  try {
+    const defaultMgr = new WorktreeManager(repo);
+    defaultMgr.create("codex");
+
+    const customMgr = new WorktreeManager(repo, join(repo, "custom-worktrees"));
+    customMgr.reconcile();
+    assert.equal(customMgr.list().length, 0);
   } finally {
     cleanup(repo);
   }
@@ -212,6 +262,32 @@ test("reconcile() is safe in non-git directory", () => {
     mgr.reconcile();
     assert.equal(mgr.list().length, 0);
   } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcile() in non-git directory does not print git fatal noise", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-wt-nongit-"));
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  let stderrOutput = "";
+  (process.stderr as any).write = (chunk: unknown, ...args: unknown[]) => {
+    stderrOutput += String(chunk);
+    if (typeof args[args.length - 1] === "function") {
+      (args[args.length - 1] as (error?: Error | null) => void)(null);
+    }
+    return true;
+  };
+
+  try {
+    const mgr = new WorktreeManager(dir);
+    mgr.reconcile();
+    assert.equal(mgr.list().length, 0);
+    assert.ok(
+      !/fatal:\s+not a git repository/i.test(stderrOutput),
+      `unexpected git fatal noise: ${stderrOutput}`,
+    );
+  } finally {
+    (process.stderr as any).write = originalWrite;
     cleanup(dir);
   }
 });

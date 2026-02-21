@@ -7,7 +7,7 @@ import {
   resolveAgentSkills,
   toRuntimeConfig,
 } from "../../internal/config/index.js";
-import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -256,4 +256,60 @@ test("team config merge applies overrides and keeps trigger defaults", () => {
   assert.equal(runtime.team.trigger.commandStart, true);
 
   rmSync(dir, { recursive: true });
+});
+
+test("loadConfig auto-detects legacy ./agoryx.json in cwd", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-legacy-cwd-"));
+  const previousCwd = process.cwd();
+  try {
+    const legacyPath = join(dir, "agoryx.json");
+    writeFileSync(
+      legacyPath,
+      JSON.stringify({
+        defaultMode: "auto",
+      }),
+    );
+    process.chdir(dir);
+
+    const config = loadConfig();
+    assert.equal(config.defaultMode, "auto");
+  } finally {
+    process.chdir(previousCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig falls back to XDG config path when legacy file is absent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-xdg-config-"));
+  const xdgConfigHome = join(dir, "xdg-config");
+  const xdgConfigDir = join(xdgConfigHome, "agoryx");
+  const xdgConfigPath = join(xdgConfigDir, "config.json");
+  const cwd = join(dir, "workspace");
+  const previousCwd = process.cwd();
+  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME;
+
+  try {
+    mkdirSync(xdgConfigDir, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(
+      xdgConfigPath,
+      JSON.stringify({
+        defaultMode: "round-robin",
+      }),
+    );
+
+    process.env.XDG_CONFIG_HOME = xdgConfigHome;
+    process.chdir(cwd);
+
+    const config = loadConfig();
+    assert.equal(config.defaultMode, "round-robin");
+  } finally {
+    if (previousXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME;
+    } else {
+      process.env.XDG_CONFIG_HOME = previousXdgConfigHome;
+    }
+    process.chdir(previousCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -1,9 +1,9 @@
 import process from "node:process";
 import readline from "node:readline/promises";
-import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
-import { writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import ora, { type Ora } from "ora";
 import cliCursor from "cli-cursor";
 import pc from "picocolors";
@@ -14,21 +14,147 @@ import {
   parseExportCommandArgs,
   renderSessionExport,
 } from "./session-export.js";
+import { runInkChat } from "./ink-chat.js";
 import type { ChatRuntimeConfig } from "../../internal/config/default.js";
 import { loadConfig, toRuntimeConfig } from "../../internal/config/index.js";
+import {
+  ensureParentDirectory,
+  resolveConfigPathForLoad,
+  resolveDefaultDbPath,
+  resolveDefaultWorktreeDir,
+  resolveWorkspaceStateRoot,
+} from "../../internal/config/paths.js";
 import { ChatEngine } from "../../internal/engine/chat.js";
 import type { AdapterEvent } from "../../internal/adapters/adapter.js";
 import type { OrchestrationMode } from "../../internal/events/types.js";
 import { SessionService } from "../../internal/session/service.js";
 import { SQLiteStore } from "../../internal/storage/sqlite.js";
 import { MemoryService } from "../../internal/memory/service.js";
-import { WorktreeManager } from "../../internal/worktree/manager.js";
+import {
+  isValidWorktreeAgentName,
+  normalizeWorktreeAgentName,
+  WorktreeManager,
+} from "../../internal/worktree/manager.js";
 import { WorkspaceCollector } from "../../internal/workspace/collector.js";
+import { sanitizeRenderedDelta } from "../../internal/rendering/sanitize.js";
 
 const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team"];
-const require = createRequire(import.meta.url);
-const packageMeta = require("../../package.json") as { version?: string };
-const APP_VERSION = packageMeta.version ?? "dev";
+const ROOT_COMMANDS = ["chat", "sessions", "config", "completion", "man", "help"] as const;
+const APP_VERSION = resolveAppVersion();
+const EXIT_USAGE_ERROR = 2;
+
+type OutputWriter = (line?: string) => void;
+
+interface OptionSpec {
+  long: string;
+  short?: string;
+  takesValue: boolean;
+}
+
+const CHAT_OPTION_SPECS: OptionSpec[] = [
+  { long: "help", short: "h", takesValue: false },
+  { long: "agents", takesValue: true },
+  { long: "mode", short: "m", takesValue: true },
+  { long: "config", short: "c", takesValue: true },
+  { long: "db", takesValue: true },
+  { long: "adapter-mode", takesValue: true },
+  { long: "quiet-system", takesValue: false },
+  { long: "plain-ui", takesValue: false },
+  { long: "no-color", takesValue: false },
+  { long: "resume", takesValue: true },
+  { long: "room-name", takesValue: true },
+];
+
+const SESSIONS_LIST_OPTION_SPECS: OptionSpec[] = [
+  { long: "help", short: "h", takesValue: false },
+  { long: "limit", takesValue: true },
+  { long: "db", takesValue: true },
+  { long: "config", takesValue: true },
+];
+
+const SESSIONS_EXPORT_OPTION_SPECS: OptionSpec[] = [
+  { long: "help", short: "h", takesValue: false },
+  { long: "format", takesValue: true },
+  { long: "out", takesValue: true },
+  { long: "db", takesValue: true },
+  { long: "config", takesValue: true },
+];
+
+const COMPLETION_OPTION_SPECS: OptionSpec[] = [
+  { long: "help", short: "h", takesValue: false },
+];
+
+class CliUsageError extends Error {
+  public readonly exitCode = EXIT_USAGE_ERROR;
+
+  public constructor(
+    message: string,
+    public readonly usage?: (write?: OutputWriter) => void,
+    public readonly hint?: string,
+  ) {
+    super(message);
+    this.name = "CliUsageError";
+  }
+}
+
+interface SlashCommandHint {
+  command: string;
+  description: string;
+}
+
+const SLASH_COMMAND_HINTS: SlashCommandHint[] = [
+  { command: "/help", description: "show in-chat command help" },
+  { command: "/mode", description: "switch orchestration mode" },
+  { command: "/status", description: "show adapter health and mode" },
+  { command: "/adapter", description: "change adapter mode for an agent" },
+  { command: "/team", description: "team runtime commands" },
+  { command: "/pin", description: "pin persistent context" },
+  { command: "/unpin", description: "remove pinned context by id" },
+  { command: "/pins", description: "list pinned context entries" },
+  { command: "/summary", description: "create or show checkpoint summary" },
+  { command: "/checkpoint", description: "alias for /summary" },
+  { command: "/history", description: "print recent room messages" },
+  { command: "/memory", description: "memory log and snapshot commands" },
+  { command: "/worktree", description: "manage agent git worktrees" },
+  { command: "/workspace", description: "show workspace context block" },
+  { command: "/retry", description: "retry latest failed adapter request" },
+  { command: "/export", description: "export current session" },
+  { command: "/quit", description: "exit chat session" },
+  { command: "/exit", description: "exit chat session" },
+];
+
+function resolveAppVersion(): string {
+  const startDir = dirname(fileURLToPath(import.meta.url));
+  let current = startDir;
+
+  while (true) {
+    const candidate = resolve(current, "package.json");
+    if (existsSync(candidate)) {
+      try {
+        const parsed = JSON.parse(readFileSync(candidate, "utf-8")) as {
+          name?: string;
+          version?: string;
+        };
+        if (parsed.name === "agoryx" && typeof parsed.version === "string") {
+          const version = parsed.version.trim();
+          if (version.length > 0) {
+            return version;
+          }
+        }
+      } catch {
+        // Continue walking up the tree.
+      }
+    }
+
+    const parent = resolve(current, "..");
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+
+  return "dev";
+}
 
 interface RenderOptions {
   richUi: boolean;
@@ -39,7 +165,7 @@ interface RenderOptions {
 const renderOptions: RenderOptions = {
   richUi: output.isTTY,
   hideSystem: false,
-  color: output.isTTY && process.env.NO_COLOR !== "1",
+  color: output.isTTY && !("NO_COLOR" in process.env),
 };
 
 let cursorHidden = false;
@@ -51,6 +177,25 @@ function isEnabledFlag(value?: string): boolean {
   }
   return value === "true" || value === "1";
 }
+
+const parseAgentList = (raw: string): string[] =>
+  raw
+    .split(",")
+    .map((value) => normalizeWorktreeAgentName(value))
+    .filter(Boolean);
+
+const ensureValidAgentNames = (agents: string[], source: string): void => {
+  const invalid = agents.filter((agent) => !isValidWorktreeAgentName(agent));
+  if (invalid.length === 0) {
+    return;
+  }
+
+  throw new CliUsageError(
+    `Invalid agent name in ${source}: ${invalid.join(", ")}`,
+    printChatUsage,
+    "Allowed agent characters: a-z, 0-9, dot (.), underscore (_), and hyphen (-).",
+  );
+};
 
 function configureRenderOptions(next: RenderOptions): void {
   renderOptions.richUi = next.richUi;
@@ -85,6 +230,26 @@ function formatErrorText(value: string): string {
   return colorize(value, pc.red);
 }
 
+function formatInfoLine(value: string): string {
+  return colorize(value, pc.cyan);
+}
+
+function formatSuccessLine(value: string): string {
+  return colorize(value, pc.green);
+}
+
+function formatWarnLine(value: string): string {
+  return colorize(value, pc.yellow);
+}
+
+function formatHintLine(value: string): string {
+  return colorize(value, pc.yellow);
+}
+
+function formatUsageErrorLine(value: string): string {
+  return formatErrorText(value);
+}
+
 function ensureCursorHidden(): void {
   if (!renderOptions.richUi || cursorHidden) {
     return;
@@ -105,6 +270,7 @@ function cleanupRenderState(): void {
     state.lastSessionId = null;
     state.insideSystemReminder = false;
     state.prefixPrinted = false;
+    state.currentStatusText = "generating...";
   }
   if (cursorHidden) {
     cliCursor.show(output);
@@ -113,10 +279,42 @@ function cleanupRenderState(): void {
 }
 
 async function main(): Promise<void> {
-  const [, , command = "help", ...rest] = process.argv;
+  const [, , ...argv] = process.argv;
+  const [command, ...rest] = argv;
+
+  if (!command) {
+    await runChat(argv);
+    return;
+  }
+
+  if (command === "--help" || command === "-h") {
+    printUsage();
+    return;
+  }
+
+  if (command === "--version" || command === "-V") {
+    printVersion();
+    return;
+  }
+
+  if (command.startsWith("-")) {
+    await runChat(argv);
+    return;
+  }
+
   switch (command) {
     case "help":
-      printUsage();
+      if (rest[0] === "chat") {
+        printChatUsage();
+      } else if (rest[0] === "sessions") {
+        printSessionsUsage();
+      } else if (rest[0] === "config") {
+        printConfigUsage();
+      } else if (rest[0] === "completion") {
+        printCompletionUsage();
+      } else {
+        printUsage();
+      }
       return;
     case "chat":
       await runChat(rest);
@@ -124,27 +322,49 @@ async function main(): Promise<void> {
     case "sessions":
       runSessions(rest);
       return;
+    case "config":
+      runConfig(rest);
+      return;
+    case "completion":
+      runCompletion(rest);
+      return;
+    case "man":
+      printManPage();
+      return;
     default:
-      printUsage();
-      process.exit(1);
+      throw new CliUsageError(
+        renderUnknownCommandMessage(command),
+        printUsage,
+        "Run `agoryx help` or `agoryx --help` to see available commands.",
+      );
   }
 }
 
 const runChat = async (argv: string[]): Promise<void> => {
-  const parsed = parseArgs(argv);
+  const parsed = parseCliArgsOrThrow(argv, CHAT_OPTION_SPECS, printChatUsage);
+  if (isEnabledFlag(parsed.options.help)) {
+    printChatUsage();
+    return;
+  }
+  if (parsed.positionals.length > 0) {
+    throw new CliUsageError(
+      `Unexpected argument for chat command: ${parsed.positionals[0]}`,
+      printChatUsage,
+      "Remove extra positional args, or pipe input to stdin for non-interactive mode.",
+    );
+  }
+
   const args = parsed.options;
   configureRenderOptions({
     richUi: output.isTTY && !isEnabledFlag(args["plain-ui"]),
     hideSystem: isEnabledFlag(args["quiet-system"]),
-    color: output.isTTY && !isEnabledFlag(args["no-color"]) && process.env.NO_COLOR !== "1",
+    color: output.isTTY && !isEnabledFlag(args["no-color"]) && !("NO_COLOR" in process.env),
   });
 
-  const cliAgents = args.agents
-    ? args.agents
-        .split(",")
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean)
-    : undefined;
+  const cliAgents = args.agents ? parseAgentList(args.agents) : undefined;
+  if (cliAgents) {
+    ensureValidAgentNames(cliAgents, "--agents");
+  }
 
   const loadedConfig = loadConfig(args.config);
   const runtimeConfig = toRuntimeConfig(loadedConfig, {
@@ -155,7 +375,11 @@ const runChat = async (argv: string[]): Promise<void> => {
 
   const mode = normalizeMode(args.mode ?? runtimeConfig.mode);
   if (!mode) {
-    throw new Error(`Invalid mode: ${args.mode ?? runtimeConfig.mode}`);
+    throw new CliUsageError(
+      `Invalid mode '${args.mode ?? runtimeConfig.mode}'. Valid modes: ${MODES.join(", ")}`,
+      printChatUsage,
+      "Use one of: manual, round-robin, auto, team.",
+    );
   }
 
   const config: ChatRuntimeConfig = {
@@ -165,12 +389,15 @@ const runChat = async (argv: string[]): Promise<void> => {
       ...runtimeConfig.roomConfig,
       mode,
     },
-    dbPath: args.db ?? runtimeConfig.dbPath,
+    dbPath: normalizeDbPath(args.db ?? runtimeConfig.dbPath),
   };
 
+  ensureDbPathReady(config.dbPath);
+
   config.agents = config.agents
-    .map((value) => value.trim().toLowerCase())
+    .map((value) => normalizeWorktreeAgentName(value))
     .filter(Boolean);
+  ensureValidAgentNames(config.agents, "resolved agent list");
   const adapterMode = args["adapter-mode"];
   if (
     adapterMode === "cli" ||
@@ -201,19 +428,29 @@ const runChat = async (argv: string[]): Promise<void> => {
   });
   const adapters = createAdapterRegistry();
   const configuredMemoryRoot = process.env.AGORYX_MEMORY_ROOT?.trim();
+  const defaultWorkspaceStateRoot = resolveWorkspaceStateRoot(process.cwd());
   const configuredDebounce = Number(process.env.AGORYX_MEMORY_DEBOUNCE_MS ?? "");
   const memoryDebounceMs = Number.isFinite(configuredDebounce) && configuredDebounce >= 0
     ? configuredDebounce
     : undefined;
   const memoryService = new MemoryService(store, {
-    rootDir: configuredMemoryRoot || process.cwd(),
+    rootDir: configuredMemoryRoot || defaultWorkspaceStateRoot,
     debounceMs: memoryDebounceMs,
   });
-  const worktreeManager = new WorktreeManager(process.cwd());
+  const configuredWorktreeRoot = process.env.AGORYX_WORKTREE_ROOT?.trim();
+  const worktreeManager = new WorktreeManager(
+    process.cwd(),
+    configuredWorktreeRoot || resolveDefaultWorktreeDir(process.cwd()),
+  );
 
+  let inkAdapterEventSink: ((adapterName: string, event: AdapterEvent) => void) | null = null;
   let engineRef: ChatEngine | null = null;
   const engine = new ChatEngine(session, adapters, config, {
     onAdapterEvent: (adapterName, event) => {
+      if (inkAdapterEventSink) {
+        inkAdapterEventSink(adapterName, event);
+        return;
+      }
       renderAdapterEvent(
         adapterName,
         event,
@@ -224,19 +461,50 @@ const runChat = async (argv: string[]): Promise<void> => {
   engineRef = engine;
 
   const initialized = engine.init();
-  printBanner(
-    initialized.room.id,
-    initialized.sessionId,
-    initialized.mode,
-    config.agents,
-    config.adapterConfig,
-  );
-
-  const rl = readline.createInterface({ input, output });
-  const teardownEscHotkey = setupEscInterruptHotkey(engine);
 
   try {
-    if (!input.isTTY) {
+    if (input.isTTY) {
+      await runInkChat({
+        version: APP_VERSION,
+        roomId: initialized.room.id,
+        sessionId: initialized.sessionId,
+        mode: initialized.mode,
+        richUi: renderOptions.richUi,
+        hideSystem: renderOptions.hideSystem,
+        agents: config.agents,
+        adapterConfig: config.adapterConfig,
+        slashCommands: SLASH_COMMAND_HINTS,
+        getMode: () => engine.getState().room.config.mode,
+        submitLine: async (rawLine) =>
+          processChatInputLine(
+            rawLine,
+            engine,
+            config,
+            store,
+            memoryService,
+            worktreeManager,
+          ),
+        interruptActiveRun: () => interruptActiveTeamRun(engine),
+        attachAdapterEventSink: (sink) => {
+          inkAdapterEventSink = sink;
+        },
+      });
+      return;
+    }
+
+    printBanner(
+      initialized.room.id,
+      initialized.sessionId,
+      initialized.mode,
+      config.agents,
+      config.adapterConfig,
+    );
+
+    const rl = readline.createInterface({
+      input,
+      output,
+    });
+    try {
       for await (const rawLine of rl) {
         const shouldContinue = await processChatInputLine(
           rawLine,
@@ -250,35 +518,11 @@ const runChat = async (argv: string[]): Promise<void> => {
           break;
         }
       }
-      return;
-    }
-
-    while (true) {
-      let rawLine: string;
-      try {
-        rawLine = await rl.question("> ");
-      } catch (error) {
-        if (isReadlineClosedError(error)) {
-          break;
-        }
-        throw error;
-      }
-
-      const shouldContinue = await processChatInputLine(
-        rawLine,
-        engine,
-        config,
-        store,
-        memoryService,
-        worktreeManager,
-      );
-      if (!shouldContinue) {
-        break;
-      }
+    } finally {
+      rl.close();
     }
   } finally {
-    teardownEscHotkey();
-    rl.close();
+    inkAdapterEventSink = null;
     cleanupRenderState();
     await engine.shutdown();
     await memoryService.dispose();
@@ -305,41 +549,35 @@ const processChatInputLine = async (
 
   const mode = engine.getState().room.config.mode;
   const teamStatusBefore = mode === "team" ? engine.teamStatus() : null;
-  const activeRunBefore =
-    teamStatusBefore?.run.status === "active" ? teamStatusBefore.run.id : null;
-  if (mode === "team" && activeRunBefore) {
-    const interrupted = await engine.interruptTeamRun(line, activeRunBefore);
-    if (interrupted) {
-      if (interrupted.interrupted) {
-        console.log(`Team run interrupted: ${interrupted.run.id}. Feedback queued.`);
-      } else {
-        console.log(`Feedback queued for team run ${interrupted.run.id}.`);
-      }
-      return true;
-    }
-  }
 
   const results = await engine.processUserMessage(line);
   if (results.length === 0) {
     if (mode === "team") {
       const status = engine.teamStatus();
       if (status && !teamStatusBefore) {
-        console.log(`Team run started: ${status.run.id}`);
+        console.log(formatSuccessLine(`Team run started: ${status.run.id}`));
+        const warnings = engine.consumeTeamRunStartWarnings(status.run.id);
+        for (const warning of warnings) {
+          console.log(formatWarnLine(`Team run warning: ${warning}`));
+        }
       } else if (status?.run.status === "active") {
-        console.log(`Feedback queued for team run ${status.run.id}.`);
+        console.log(formatInfoLine(`Feedback queued for team run ${status.run.id}.`));
       } else if (status?.run.status === "waiting_user_input") {
-        console.log(`Team run ${status.run.id} is waiting for approval. Use /team approve.`);
+        console.log(
+          formatWarnLine(`Team run ${status.run.id} is waiting for approval. Use /team approve.`),
+        );
       }
       return true;
     }
 
-    console.log("No dispatch generated. In manual mode, mention an agent (e.g. @codex).");
+    console.log(formatWarnLine("No dispatch generated."));
+    console.log(formatHintLine("In manual mode, mention an agent (e.g. @codex)."));
     return true;
   }
 
   for (const result of results) {
     if (!result.success) {
-      console.error(`[${result.adapter}] error: ${result.error ?? "unknown error"}`);
+      console.error(formatUsageErrorLine(`[${result.adapter}] error: ${result.error ?? "unknown error"}`));
     }
   }
 
@@ -347,68 +585,215 @@ const processChatInputLine = async (
 };
 
 const runSessions = (argv: string[]): void => {
-  const parsed = parseArgs(argv);
-  const options = parsed.options;
-  const [subcommand, ...positionals] = parsed.positionals;
-  const loadedConfig = loadConfig(options.config);
-  const dbPath = options.db ?? loadedConfig.session.dbPath;
-  const store = new SQLiteStore(dbPath);
-  store.init();
-
-  try {
-    switch (subcommand) {
-      case "list": {
-        const parsedLimit = Number(options.limit ?? "20");
-        const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 20;
-        const sessions = store.listSessionRuns(limit);
-        if (sessions.length === 0) {
-          console.log("No sessions found.");
-          return;
-        }
-
-        console.log("session_id\troom_id\troom_name\tcreated_at");
-        for (const session of sessions) {
-          console.log(
-            `${session.id}\t${session.roomId}\t${session.roomName}\t${session.createdAt}`,
-          );
-        }
-        return;
-      }
-      case "export": {
-        const targetId = positionals[0];
-        if (!targetId) {
-          printSessionsUsage();
-          process.exitCode = 1;
-          return;
-        }
-
-        const format = options.format?.toLowerCase();
-        if (format && format !== "markdown" && format !== "json") {
-          throw new Error(`Unsupported export format: ${format}`);
-        }
-
-        const outputText = renderSessionExport(
-          collectTargetExportData(store, targetId),
-          format === "json" ? "json" : "markdown",
-        );
-
-        const outPath = options.out;
-        if (outPath) {
-          writeFileSync(outPath, outputText, "utf8");
-          console.log(`Session export written to ${outPath}`);
-          return;
-        }
-
-        console.log(outputText);
-        return;
-      }
-      default:
-        printSessionsUsage();
-        process.exitCode = 1;
-    }
-  } finally {
-    store.close();
+  if (argv.length === 0) {
+    throw new CliUsageError(
+      "Missing sessions subcommand.",
+      printSessionsUsage,
+      "Use `sessions list` or `sessions export <room_or_session_id>`.",
+    );
   }
+
+  const [subcommand, ...rest] = argv;
+  if (subcommand === "--help" || subcommand === "-h") {
+    printSessionsUsage();
+    return;
+  }
+
+  if (subcommand === "list") {
+    const parsed = parseCliArgsOrThrow(rest, SESSIONS_LIST_OPTION_SPECS, printSessionsListUsage);
+    if (isEnabledFlag(parsed.options.help)) {
+      printSessionsListUsage();
+      return;
+    }
+    if (parsed.positionals.length > 0) {
+      throw new CliUsageError(
+        `Unexpected positional argument for sessions list: ${parsed.positionals[0]}`,
+        printSessionsListUsage,
+        "Use only flags with `sessions list`.",
+      );
+    }
+
+    const loadedConfig = loadConfig(parsed.options.config);
+    const dbPath = normalizeDbPath(parsed.options.db ?? loadedConfig.session.dbPath);
+    ensureDbPathReady(dbPath);
+    const store = new SQLiteStore(dbPath);
+    store.init();
+    try {
+      const parsedLimit = Number(parsed.options.limit ?? "20");
+      if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+        throw new CliUsageError(
+          `Invalid value for --limit: ${parsed.options.limit ?? ""}`,
+          printSessionsListUsage,
+          "Provide a positive integer, for example `--limit 20`.",
+        );
+      }
+      const sessions = store.listSessionRuns(parsedLimit);
+      if (sessions.length === 0) {
+        console.log(formatInfoLine("No sessions found."));
+        return;
+      }
+
+      console.log("session_id\troom_id\troom_name\tcreated_at");
+      for (const session of sessions) {
+        console.log(
+          `${session.id}\t${session.roomId}\t${session.roomName}\t${session.createdAt}`,
+        );
+      }
+      return;
+    } finally {
+      store.close();
+    }
+  }
+
+  if (subcommand === "export") {
+    const parsed = parseCliArgsOrThrow(rest, SESSIONS_EXPORT_OPTION_SPECS, printSessionsExportUsage);
+    if (isEnabledFlag(parsed.options.help)) {
+      printSessionsExportUsage();
+      return;
+    }
+
+    const [targetId, ...extraPositionals] = parsed.positionals;
+    if (!targetId) {
+      throw new CliUsageError(
+        "Missing <room_or_session_id>.",
+        printSessionsExportUsage,
+        "Run `sessions list` first to copy a room/session id.",
+      );
+    }
+    if (extraPositionals.length > 0) {
+      throw new CliUsageError(
+        `Unexpected positional argument for sessions export: ${extraPositionals[0]}`,
+        printSessionsExportUsage,
+        "Use only one positional id: <room_or_session_id>.",
+      );
+    }
+
+    const format = parsed.options.format?.toLowerCase();
+    if (format && format !== "markdown" && format !== "json") {
+      throw new CliUsageError(
+        `Unsupported export format: ${format}`,
+        printSessionsExportUsage,
+        "Supported formats: markdown, json.",
+      );
+    }
+
+    const loadedConfig = loadConfig(parsed.options.config);
+    const dbPath = normalizeDbPath(parsed.options.db ?? loadedConfig.session.dbPath);
+    ensureDbPathReady(dbPath);
+    const store = new SQLiteStore(dbPath);
+    store.init();
+    try {
+      const outputText = renderSessionExport(
+        collectTargetExportData(store, targetId),
+        format === "json" ? "json" : "markdown",
+      );
+
+      const outPath = parsed.options.out;
+      if (outPath) {
+        writeFileSync(outPath, outputText, "utf8");
+        console.log(formatSuccessLine(`Session export written to ${outPath}`));
+        return;
+      }
+
+      console.log(outputText);
+      return;
+    } finally {
+      store.close();
+    }
+  }
+
+  throw new CliUsageError(
+    `Unknown sessions subcommand: ${subcommand}`,
+    printSessionsUsage,
+    "Use `sessions list` or `sessions export`.",
+  );
+};
+
+const runConfig = (argv: string[]): void => {
+  if (argv.length === 0 || argv[0] === "explain") {
+    const parsed = parseCliArgsOrThrow(argv[0] === "explain" ? argv.slice(1) : argv, [
+      { long: "help", short: "h", takesValue: false },
+      { long: "config", takesValue: true },
+      { long: "db", takesValue: true },
+    ], printConfigUsage);
+    if (isEnabledFlag(parsed.options.help)) {
+      printConfigUsage();
+      return;
+    }
+    if (parsed.positionals.length > 0) {
+      throw new CliUsageError(
+        `Unexpected positional argument for config explain: ${parsed.positionals[0]}`,
+        printConfigUsage,
+        "Use only flags with `config explain`.",
+      );
+    }
+
+    const resolvedConfigPath = resolveConfigPathForLoad(parsed.options.config);
+    const loadedConfig = loadConfig(parsed.options.config);
+    const resolvedDbPath = normalizeDbPath(parsed.options.db ?? loadedConfig.session.dbPath);
+    const workspaceStateRoot = resolveWorkspaceStateRoot(process.cwd());
+
+    console.log("Config precedence: flags > env > config file > defaults");
+    console.log(`Resolved config path: ${resolvedConfigPath}`);
+    console.log(`Resolved db path: ${resolvedDbPath}`);
+    console.log(`Workspace state root: ${workspaceStateRoot}`);
+    console.log(`Worktree root: ${process.env.AGORYX_WORKTREE_ROOT?.trim() || resolveDefaultWorktreeDir(process.cwd())}`);
+    console.log(`Memory root: ${process.env.AGORYX_MEMORY_ROOT?.trim() || workspaceStateRoot}`);
+    return;
+  }
+
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    printConfigUsage();
+    return;
+  }
+
+  throw new CliUsageError(
+    `Unknown config subcommand: ${argv[0]}`,
+    printConfigUsage,
+    "Only `config explain` is supported.",
+  );
+};
+
+const runCompletion = (argv: string[]): void => {
+  const parsed = parseCliArgsOrThrow(argv, COMPLETION_OPTION_SPECS, printCompletionUsage);
+  if (isEnabledFlag(parsed.options.help)) {
+    printCompletionUsage();
+    return;
+  }
+  const [shell, ...extra] = parsed.positionals;
+  if (!shell) {
+    throw new CliUsageError(
+      "Missing shell name (bash|zsh|fish).",
+      printCompletionUsage,
+      "Example: `agoryx completion zsh`.",
+    );
+  }
+  if (extra.length > 0) {
+    throw new CliUsageError(
+      `Unexpected positional argument: ${extra[0]}`,
+      printCompletionUsage,
+      "Provide exactly one shell argument.",
+    );
+  }
+
+  if (shell === "bash") {
+    console.log(renderBashCompletion());
+    return;
+  }
+  if (shell === "zsh") {
+    console.log(renderZshCompletion());
+    return;
+  }
+  if (shell === "fish") {
+    console.log(renderFishCompletion());
+    return;
+  }
+
+  throw new CliUsageError(
+    `Unsupported shell for completion: ${shell}`,
+    printCompletionUsage,
+    "Supported shells: bash, zsh, fish.",
+  );
 };
 
 const handleCommand = async (
@@ -421,6 +806,9 @@ const handleCommand = async (
 ): Promise<boolean> => {
   const [command, ...rest] = line.split(/\s+/);
   switch (command) {
+    case "/":
+      printSlashCommandSuggestions("/");
+      return true;
     case "/quit":
     case "/exit":
       return false;
@@ -428,16 +816,22 @@ const handleCommand = async (
       printChatHelp();
       return true;
     case "/mode": {
+      if (!rest[0]) {
+        console.log(formatInfoLine(`Current mode: ${engine.getState().room.config.mode}`));
+        console.log(formatHintLine("Usage: /mode <manual|round-robin|auto|team>"));
+        return true;
+      }
       const target = normalizeMode(rest[0]);
       if (!target) {
-        console.log("Usage: /mode <manual|round-robin|auto|team>");
+        console.log(formatWarnLine(`Unknown mode: ${rest[0]}`));
+        console.log(formatHintLine("Usage: /mode <manual|round-robin|auto|team>"));
         return true;
       }
       const promoted = target === "team" ? promoteCliAdaptersToAgentic(config) : [];
       engine.setMode(target);
-      console.log(`Mode switched to: ${target}`);
+      console.log(formatSuccessLine(`Mode switched to: ${target}`));
       if (promoted.length > 0) {
-        console.log(`Auto-switched adapters to agentic for team mode: ${promoted.join(", ")}`);
+        console.log(formatInfoLine(`Auto-switched adapters to agentic for team mode: ${promoted.join(", ")}`));
       }
       return true;
     }
@@ -456,18 +850,19 @@ const handleCommand = async (
         !agent ||
         (mode !== "stub" && mode !== "cli" && mode !== "persistent" && mode !== "agentic")
       ) {
-        console.log("Usage: /adapter <codex|claude> <stub|cli|persistent|agentic>");
+        console.log(formatHintLine("Usage: /adapter <codex|claude> <stub|cli|persistent|agentic>"));
         return true;
       }
       if (!config.adapterConfig[agent]) {
-        console.log(`Unknown adapter: ${agent}`);
+        console.log(formatWarnLine(`Unknown adapter: ${agent}`));
+        console.log(formatHintLine("Use /status to see available adapters."));
         return true;
       }
       config.adapterConfig[agent] = {
         ...config.adapterConfig[agent],
         mode,
       };
-      console.log(`Adapter ${agent} switched to mode=${mode}`);
+      console.log(formatSuccessLine(`Adapter ${agent} switched to mode=${mode}`));
       return true;
     }
     case "/team": {
@@ -485,7 +880,7 @@ const handleCommand = async (
     case "/pin": {
       const text = rest.join(" ").trim();
       if (!text) {
-        console.log("Usage: /pin <label>: <content>");
+        console.log(formatHintLine("Usage: /pin <label>: <content>"));
         return true;
       }
 
@@ -494,17 +889,21 @@ const handleCommand = async (
       const label = content ? maybeLabel.trim() : `pin-${Date.now()}`;
       const resolvedContent = content || maybeLabel.trim();
       const id = engine.addPinnedContext(label, resolvedContent);
-      console.log(`Pinned context created: ${id}`);
+      console.log(formatSuccessLine(`Pinned context created: ${id}`));
       return true;
     }
     case "/unpin": {
       const [pinId] = rest;
       if (!pinId) {
-        console.log("Usage: /unpin <pin_id>");
+        console.log(formatHintLine("Usage: /unpin <pin_id>"));
         return true;
       }
       const removed = engine.removePinnedContext(pinId);
-      console.log(removed ? `Removed pinned context ${pinId}` : `Pin ${pinId} not found`);
+      if (removed) {
+        console.log(formatSuccessLine(`Removed pinned context ${pinId}`));
+      } else {
+        console.log(formatWarnLine(`Pin ${pinId} not found`));
+      }
       return true;
     }
     case "/pins": {
@@ -516,7 +915,7 @@ const handleCommand = async (
 
       const pinned = engine.listPinnedContext();
       if (pinned.length === 0) {
-        console.log("No pinned context.");
+        console.log(formatInfoLine("No pinned context."));
         return true;
       }
 
@@ -530,9 +929,10 @@ const handleCommand = async (
     case "/checkpoint": {
       const summary = engine.checkpointNow();
       if (!summary) {
-        console.log("Not enough conversation history to create a checkpoint.");
+        console.log(formatWarnLine("Not enough conversation history to create a checkpoint."));
+        console.log(formatHintLine("Keep chatting and try /summary again."));
       } else {
-        console.log("Checkpoint created.");
+        console.log(formatSuccessLine("Checkpoint created."));
       }
       return true;
     }
@@ -549,21 +949,25 @@ const handleCommand = async (
       const [rawTarget] = rest;
       const target = rawTarget?.replace("@", "").trim();
       if (!target) {
-        console.log("Usage: /retry @codex");
+        console.log(formatHintLine("Usage: /retry @codex"));
         return true;
       }
       const retry = await engine.retryFailed(target);
       if (!retry) {
-        console.log(`No failed request found for ${target}.`);
+        console.log(formatInfoLine(`No failed request found for ${target}.`));
       } else if (!retry.success) {
         console.error(
-          `[${retry.adapter}] retry failed (${retry.failedRequestId} -> ${retry.requestId}): ${
-            retry.error ?? "unknown error"
-          }`,
+          formatUsageErrorLine(
+            `[${retry.adapter}] retry failed (${retry.failedRequestId} -> ${retry.requestId}): ${
+              retry.error ?? "unknown error"
+            }`,
+          ),
         );
       } else {
         console.log(
-          `[${retry.adapter}] retry succeeded (${retry.failedRequestId} -> ${retry.requestId})`,
+          formatSuccessLine(
+            `[${retry.adapter}] retry succeeded (${retry.failedRequestId} -> ${retry.requestId})`,
+          ),
         );
       }
       return true;
@@ -571,7 +975,7 @@ const handleCommand = async (
     case "/export": {
       const parsed = parseExportCommandArgs(rest);
       if (!parsed) {
-        console.log("Usage: /export [markdown|json] [--out <file>]");
+        console.log(formatHintLine("Usage: /export [markdown|json] [--out <file>]"));
         return true;
       }
 
@@ -580,7 +984,7 @@ const handleCommand = async (
       const outputText = renderSessionExport(exportData, parsed.format);
       if (parsed.outPath) {
         writeFileSync(parsed.outPath, outputText, "utf8");
-        console.log(`Session export written to ${parsed.outPath}`);
+        console.log(formatSuccessLine(`Session export written to ${parsed.outPath}`));
       } else {
         console.log(outputText);
       }
@@ -588,7 +992,9 @@ const handleCommand = async (
       return true;
     }
     default:
-      console.log(`Unknown command: ${command}. Use /help.`);
+      console.log(formatWarnLine(`Unknown command: ${command}.`));
+      console.log(formatHintLine("Use /help."));
+      printSlashCommandSuggestions(command);
       return true;
   }
 };
@@ -602,7 +1008,7 @@ const handleTeamCommand = async (
     case "start": {
       const parsed = parseTeamStartArgs(rest);
       if (!parsed) {
-        console.log("Usage: /team start <goal> [--strict] [--no-checks]");
+        console.log(formatHintLine("Usage: /team start <goal> [--strict] [--no-checks]"));
         return true;
       }
 
@@ -611,16 +1017,22 @@ const handleTeamCommand = async (
           strict: parsed.strict,
           checksEnabled: parsed.checksEnabled,
         });
-        console.log(`Team run started: ${run.id}`);
+        console.log(formatSuccessLine(`Team run started: ${run.id}`));
+        const warnings = engine.consumeTeamRunStartWarnings(run.id);
+        for (const warning of warnings) {
+          console.log(formatWarnLine(`Team run warning: ${warning}`));
+        }
       } catch (error) {
-        console.error(error instanceof Error ? error.message : "Failed to start team run.");
+        console.error(
+          formatUsageErrorLine(error instanceof Error ? error.message : "Failed to start team run."),
+        );
       }
       return true;
     }
     case "status": {
       const status = engine.teamStatus();
       if (!status) {
-        console.log("No active team run.");
+        console.log(formatInfoLine("No active team run."));
         return true;
       }
       const run = status.run;
@@ -642,7 +1054,7 @@ const handleTeamCommand = async (
       const limit = Number.isFinite(requested) && requested > 0 ? requested : 20;
       const log = engine.teamLog(limit);
       if (!log) {
-        console.log("No team run logs.");
+        console.log(formatInfoLine("No team run logs."));
         return true;
       }
       console.log(`run_id: ${log.run.id}`);
@@ -665,18 +1077,18 @@ const handleTeamCommand = async (
     case "resume": {
       const run = engine.teamResume();
       if (!run) {
-        console.log("No resumable team run.");
+        console.log(formatInfoLine("No resumable team run."));
       } else {
-        console.log(`Team run resumed: ${run.id} (status=${run.status})`);
+        console.log(formatSuccessLine(`Team run resumed: ${run.id} (status=${run.status})`));
       }
       return true;
     }
     case "approve": {
       const run = engine.teamApprove(rest[0]);
       if (!run) {
-        console.log("No waiting team run to approve.");
+        console.log(formatInfoLine("No waiting team run to approve."));
       } else {
-        console.log(`Team run approved: ${run.id}`);
+        console.log(formatSuccessLine(`Team run approved: ${run.id}`));
       }
       return true;
     }
@@ -684,35 +1096,33 @@ const handleTeamCommand = async (
       const feedback = rest.join(" ").trim();
       const result = await engine.interruptTeamRun(feedback || undefined);
       if (!result) {
-        console.log("No active team run to interrupt.");
+        console.log(formatInfoLine("No active team run to interrupt."));
         return true;
       }
       if (result.interrupted) {
         if (result.feedbackQueued) {
-          console.log(`Team run interrupted: ${result.run.id}. Feedback queued.`);
+          console.log(formatWarnLine(`Team run interrupted: ${result.run.id}. Feedback queued.`));
         } else {
-          console.log(`Team run interrupted: ${result.run.id}.`);
+          console.log(formatWarnLine(`Team run interrupted: ${result.run.id}.`));
         }
       } else if (result.feedbackQueued) {
-        console.log(`Feedback queued for team run ${result.run.id}.`);
+        console.log(formatInfoLine(`Feedback queued for team run ${result.run.id}.`));
       } else {
-        console.log(`No active team step to interrupt for run ${result.run.id}.`);
+        console.log(formatInfoLine(`No active team step to interrupt for run ${result.run.id}.`));
       }
       return true;
     }
     case "stop": {
       const run = engine.teamStop(rest[0]);
       if (!run) {
-        console.log("No active team run to stop.");
+        console.log(formatInfoLine("No active team run to stop."));
       } else {
-        console.log(`Team run stopped: ${run.id}`);
+        console.log(formatWarnLine(`Team run stopped: ${run.id}`));
       }
       return true;
     }
     default:
-      console.log(
-        "Usage: /team <start|status|log|resume|approve|interrupt|stop> ...",
-      );
+      console.log(formatHintLine("Usage: /team <start|status|log|resume|approve|interrupt|stop> ..."));
       return true;
   }
 };
@@ -938,14 +1348,15 @@ const parseWorktreeCreateArgs = (args: string[]): WorktreeCreateArgs | null => {
     return null;
   }
   const [agent, ...rest] = args;
-  if (!agent || agent.startsWith("--")) {
+  const normalizedAgent = normalizeWorktreeAgentName(agent ?? "");
+  if (!normalizedAgent || agent?.startsWith("--") || !isValidWorktreeAgentName(normalizedAgent)) {
     return null;
   }
   if (rest.length === 0) {
-    return { agent, json: false };
+    return { agent: normalizedAgent, json: false };
   }
   if (rest.length === 1 && rest[0] === "--json") {
-    return { agent, json: true };
+    return { agent: normalizedAgent, json: true };
   }
   return null;
 };
@@ -956,7 +1367,8 @@ const parseWorktreeRemoveArgs = (args: string[]): WorktreeRemoveArgs | null => {
   }
 
   const [agent, ...rest] = args;
-  if (!agent || agent.startsWith("--")) {
+  const normalizedAgent = normalizeWorktreeAgentName(agent ?? "");
+  if (!normalizedAgent || agent?.startsWith("--") || !isValidWorktreeAgentName(normalizedAgent)) {
     return null;
   }
 
@@ -974,7 +1386,7 @@ const parseWorktreeRemoveArgs = (args: string[]): WorktreeRemoveArgs | null => {
     return null;
   }
 
-  return { agent, force, json };
+  return { agent: normalizedAgent, force, json };
 };
 
 const parseWorktreeListArgs = (args: string[]): { json: boolean } | null => {
@@ -1173,6 +1585,7 @@ interface AdapterRenderState {
   lastSessionId: string | null;
   insideSystemReminder: boolean;
   prefixPrinted: boolean;
+  currentStatusText: string;
   spinner: Ora | null;
 }
 
@@ -1190,6 +1603,7 @@ const getAdapterRenderState = (adapterName: string): AdapterRenderState => {
     lastSessionId: null,
     insideSystemReminder: false,
     prefixPrinted: false,
+    currentStatusText: "generating...",
     spinner: null,
   };
   adapterRenderStates.set(adapterName, created);
@@ -1209,12 +1623,13 @@ const renderAdapterEvent = (
       state.sawContent = false;
       state.pendingSessionId = null;
       state.prefixPrinted = false;
+      state.currentStatusText = "generating...";
       if (renderOptions.richUi) {
         if (shouldShowSystemLines()) {
           ensureCursorHidden();
           state.spinner = ora({
             stream: output,
-            text: `${formatStatusLabel(adapterName)} generating...`,
+            text: `${formatStatusLabel(adapterName)} ${state.currentStatusText}`,
             discardStdin: false,
           }).start();
         }
@@ -1230,11 +1645,14 @@ const renderAdapterEvent = (
       return;
     }
     case "message.delta": {
-      const text = sanitizeRenderedDelta(
+      const { text, statusText } = sanitizeRenderedDelta(
         extractPayloadText(event.payload),
         state,
         resolveMode(),
       );
+      if (statusText) {
+        updateAdapterLiveStatus(adapterName, state, statusText);
+      }
       if (text) {
         if (!state.prefixPrinted) {
           persistAdapterGeneratingStatus(adapterName, state);
@@ -1269,6 +1687,7 @@ const renderAdapterEvent = (
       const renderedStatus = `${formatStatusLabel(adapterName)} ${label} (${formatSessionId(
         nativeSessionId,
       )})`;
+      state.currentStatusText = `${label} (${formatSessionId(nativeSessionId)})`;
 
       if (state.spinner?.isSpinning) {
         state.spinner.text = renderedStatus;
@@ -1298,6 +1717,7 @@ const renderAdapterEvent = (
       state.lineOpen = false;
       state.sawContent = false;
       state.prefixPrinted = false;
+      state.currentStatusText = "generating...";
       if (shouldShowSystemLines()) {
         output.write(`${formatStatusLabel(adapterName)} done\n`);
         output.write("\n");
@@ -1321,6 +1741,7 @@ const renderAdapterEvent = (
       state.lineOpen = false;
       state.sawContent = false;
       state.prefixPrinted = false;
+      state.currentStatusText = "generating...";
       output.write(
         `\n${formatErrorText(`${adapterName} error (${payload.class ?? "UNKNOWN"}): ${
           payload.message ?? "unknown"
@@ -1354,13 +1775,29 @@ const persistAdapterGeneratingStatus = (
     if (shouldShowSystemLines()) {
       state.spinner.stopAndPersist({
         symbol: colorize("●", pc.cyan),
-        text: `${formatStatusLabel(adapterName)} generating...`,
+        text: `${formatStatusLabel(adapterName)} ${state.currentStatusText}`,
       });
     } else {
       state.spinner.stop();
     }
   }
   state.spinner = null;
+};
+
+const updateAdapterLiveStatus = (
+  adapterName: string,
+  state: AdapterRenderState,
+  statusText: string,
+): void => {
+  const normalized = normalizeStatusText(statusText);
+  if (!normalized) {
+    return;
+  }
+
+  state.currentStatusText = normalized;
+  if (state.spinner?.isSpinning && shouldShowSystemLines()) {
+    state.spinner.text = `${formatStatusLabel(adapterName)} ${normalized}`;
+  }
 };
 
 const describeSessionBinding = (
@@ -1391,89 +1828,16 @@ const extractPayloadText = (payload: unknown): string => {
   return typeof text === "string" ? text : "";
 };
 
-const sanitizeRenderedDelta = (
-  text: string,
-  state: AdapterRenderState,
-  mode: OrchestrationMode,
-): string => {
-  if (!text) {
+const normalizeStatusText = (text: string): string => {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) {
     return "";
   }
-
-  const withoutReminders = stripSystemReminder(text, state);
-  if (!withoutReminders) {
-    return "";
+  if (compact.length <= 110) {
+    return compact;
   }
-
-  return withoutReminders
-    .split(/\r?\n/)
-    .filter((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return true;
-      }
-      return !/^\d+→/.test(trimmed);
-    })
-    .filter((line) => {
-      if (mode !== "team") {
-        return true;
-      }
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return true;
-      }
-      return !isTeamProcessChatterLine(trimmed);
-    })
-    .join("\n");
+  return `${compact.slice(0, 107)}...`;
 };
-
-const stripSystemReminder = (
-  text: string,
-  state: AdapterRenderState,
-): string => {
-  let remaining = text;
-  let outputText = "";
-
-  while (remaining.length > 0) {
-    if (state.insideSystemReminder) {
-      const closeIndex = remaining.toLowerCase().indexOf("</system-reminder>");
-      if (closeIndex === -1) {
-        return outputText;
-      }
-      remaining = remaining.slice(closeIndex + "</system-reminder>".length);
-      state.insideSystemReminder = false;
-      continue;
-    }
-
-    const openIndex = remaining.toLowerCase().indexOf("<system-reminder>");
-    if (openIndex === -1) {
-      outputText += remaining;
-      break;
-    }
-
-    outputText += remaining.slice(0, openIndex);
-    const afterOpen = remaining.slice(openIndex + "<system-reminder>".length);
-    const closeIndex = afterOpen.toLowerCase().indexOf("</system-reminder>");
-    if (closeIndex === -1) {
-      state.insideSystemReminder = true;
-      break;
-    }
-
-    remaining = afterOpen.slice(closeIndex + "</system-reminder>".length);
-  }
-
-  return outputText;
-};
-
-const TEAM_PROCESS_CHATTER_PATTERNS = [
-  /\b(i(?:'|’)m|i am|i(?:'|’)ll|i will)\b.*\b(read|scan|check|review|verify|grep|bootstrap|cross-check|inspect|prepare|gather|collect|re-?run|search)\b/i,
-  /\b(i hit|quick bootstrap|first pass|next i(?:'|’)m|now i(?:'|’)m)\b/i,
-  /\b(зараз|спершу|далі|потім|наступним кроком)\b.*\b(перевір|звір|прочита|скан|подив|підгот|запущ|зроблю)\b/i,
-  /\bя\b.*\b(перевірю|прочитаю|запущу|зроблю швидкий)\b/i,
-];
-
-const isTeamProcessChatterLine = (line: string): boolean =>
-  TEAM_PROCESS_CHATTER_PATTERNS.some((pattern) => pattern.test(line));
 
 const normalizeMode = (value?: string): OrchestrationMode | null => {
   if (!value) {
@@ -1483,6 +1847,48 @@ const normalizeMode = (value?: string): OrchestrationMode | null => {
     return value as OrchestrationMode;
   }
   return null;
+};
+
+const getSlashCommandSuggestions = (
+  query: string,
+  limit = 8,
+): SlashCommandHint[] => {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized || normalized === "/") {
+    return SLASH_COMMAND_HINTS.slice(0, limit);
+  }
+
+  const prefixed = normalized.startsWith("/") ? normalized : `/${normalized}`;
+  const prefixMatches = SLASH_COMMAND_HINTS.filter(({ command }) =>
+    command.startsWith(prefixed),
+  );
+  if (prefixMatches.length > 0) {
+    return prefixMatches.slice(0, limit);
+  }
+
+  const containsNeedle = prefixed.slice(1);
+  const containsMatches = SLASH_COMMAND_HINTS.filter(({ command }) =>
+    command.includes(containsNeedle),
+  );
+  return containsMatches.slice(0, limit);
+};
+
+const printSlashCommandSuggestions = (query: string): void => {
+  const suggestions = getSlashCommandSuggestions(query, 10);
+  if (suggestions.length === 0) {
+    console.log(formatWarnLine("No matching slash commands."));
+    console.log(formatHintLine("Use /help to list available commands."));
+    return;
+  }
+
+  const title =
+    query === "/"
+      ? "Slash commands:"
+      : `Slash command suggestions for "${query}":`;
+  console.log(title);
+  for (const entry of suggestions) {
+    console.log(`- ${entry.command}  ${entry.description}`);
+  }
 };
 
 const promoteCliAdaptersToAgentic = (config: ChatRuntimeConfig): string[] => {
@@ -1501,112 +1907,221 @@ const promoteCliAdaptersToAgentic = (config: ChatRuntimeConfig): string[] => {
   return promoted;
 };
 
-const isReadlineClosedError = (error: unknown): boolean => {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-  const maybeError = error as { code?: string; message?: string };
-  if (maybeError.code === "ERR_USE_AFTER_CLOSE") {
-    return true;
-  }
-  return typeof maybeError.message === "string" && maybeError.message.includes("readline was closed");
-};
-
-const setupEscInterruptHotkey = (engine: ChatEngine): (() => void) => {
-  if (!input.isTTY) {
-    return () => {};
-  }
-
-  emitKeypressEvents(input);
-  const ttyInput = input as NodeJS.ReadStream & {
-    isRaw?: boolean;
-    setRawMode?: (mode: boolean) => void;
-  };
-  const wasRaw = Boolean(ttyInput.isRaw);
-  if (!wasRaw) {
-    ttyInput.setRawMode?.(true);
-  }
-
-  const onKeypress = (
-    _str: string,
-    key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean },
-  ): void => {
-    if (key.name !== "escape" || key.ctrl || key.meta || key.shift) {
-      return;
-    }
-    void triggerEscInterrupt(engine).catch((error: unknown) => {
-      output.write(
-        `\n${formatErrorText(`[team] Interrupt failed: ${error instanceof Error ? error.message : String(error)}`)}\n`,
-      );
-    });
-  };
-  input.on("keypress", onKeypress);
-
-  return () => {
-    input.off("keypress", onKeypress);
-    if (!wasRaw) {
-      ttyInput.setRawMode?.(false);
-    }
-  };
-};
-
-const triggerEscInterrupt = async (engine: ChatEngine): Promise<void> => {
+const interruptActiveTeamRun = async (engine: ChatEngine): Promise<string | null> => {
   if (escInterruptInFlight) {
-    return;
+    return null;
   }
   const status = engine.teamStatus();
   if (!status || status.run.status !== "active") {
-    return;
+    return null;
   }
 
   escInterruptInFlight = true;
   try {
     const result = await engine.interruptTeamRun();
     if (!result) {
-      return;
+      return null;
     }
     if (result.interrupted) {
-      output.write(`\n[team] Interrupted run ${result.run.id}. Add correction and press Enter.\n`);
-      return;
+      return formatWarnLine(`[team] Interrupted run ${result.run.id}. Add correction and press Enter.`);
     }
-    output.write(`\n[team] No active step to interrupt for run ${result.run.id}.\n`);
+    return formatInfoLine(`[team] No active step to interrupt for run ${result.run.id}.`);
   } finally {
     escInterruptInFlight = false;
   }
 };
 
-const printUsage = (): void => {
-  console.log(`
-Usage:
-  agoryx chat [--agents codex,claude] [--mode manual|round-robin|auto|team]
-  agoryx sessions list [--limit 20] [--db ./agoryx.db]
-  agoryx sessions export <room_or_session_id> [--format markdown|json] [--out file] [--db ./agoryx.db]
-
-Options:
-  --agents       Comma-separated list of agents (default: codex,claude)
-  --mode         Orchestration mode (default: manual)
-  --config       Path to agoryx.json config file (default: ./agoryx.json)
-  --db           SQLite path (default: ./agoryx.db)
-  --adapter-mode Global adapter mode: stub|cli|persistent|agentic (default: cli)
-  --quiet-system Hide generating/done/session status lines
-  --plain-ui     Disable rich TTY UI (spinner and live status rendering)
-  --no-color     Disable colored output
-  --resume       Resume existing room by id
-  --room-name    Room title
-`);
+const printVersion = (write: OutputWriter = console.log): void => {
+  write(`agoryx ${APP_VERSION}`);
 };
 
-const printSessionsUsage = (): void => {
-  console.log(`
-Usage:
-  agoryx sessions list [--limit 20] [--db ./agoryx.db]
-  agoryx sessions export <room_or_session_id> [--format markdown|json] [--out file] [--db ./agoryx.db]
-`);
+const printUsage = (write: OutputWriter = console.log): void => {
+  const title = "agoryx — local-first multi-agent CLI chat orchestrator";
+  write([
+    title,
+    "",
+    "Usage:",
+    "  agoryx [chat] [options]",
+    "  agoryx sessions <list|export> [options]",
+    "  agoryx config explain [--config <path>] [--db <path>]",
+    "  agoryx completion <bash|zsh|fish>",
+    "  agoryx man",
+    "",
+    "Commands:",
+    "  chat         Start interactive/non-interactive chat (default command)",
+    "  sessions     List and export saved sessions",
+    "  config       Explain resolved configuration and path precedence",
+    "  completion   Print shell completion script",
+    "  man          Print manual page",
+    "  help         Show command help",
+    "",
+    "Global options:",
+    "  -h, --help      Show this help message and exit",
+    "  -V, --version   Print version and exit",
+    "",
+    "Quick start:",
+    "  agoryx                        Start chat in manual mode (default)",
+    "  agoryx -m auto                Start chat with smart routing",
+    "  agoryx --mode team            Start autonomous team runtime",
+    "",
+    "Examples:",
+    "  agoryx sessions list          List recent sessions",
+    "  agoryx config explain         Show resolved paths and config",
+    "",
+    "Notes:",
+    "  Config precedence: flags > env > config file > defaults",
+    "  Default config: $XDG_CONFIG_HOME/agoryx/config.json",
+    "  Default DB: $XDG_STATE_HOME/agoryx/agoryx.db",
+    "",
+    "Report bugs: https://github.com/nulfranchise/agoryx/issues",
+  ].join("\n"));
+};
+
+const printChatUsage = (write: OutputWriter = console.log): void => {
+  write([
+    "Start an interactive chat session with AI agents.",
+    "",
+    "Usage:",
+    "  agoryx chat [options]",
+    "  agoryx [options]",
+    "",
+    "Options:",
+    "  -h, --help                    Show this help message and exit",
+    "  --agents <name,...>           Comma-separated agent list (default: codex,claude)",
+    "  -m, --mode <mode>            Orchestration mode: manual, round-robin, auto, team",
+    "                                (default: manual)",
+    "  -c, --config <path>          Path to config file",
+    "                                (default: $XDG_CONFIG_HOME/agoryx/config.json)",
+    "  --db <path>                   Path to SQLite database",
+    "  --adapter-mode <mode>         Adapter transport: stub, cli, persistent, agentic",
+    "  --quiet-system                Hide system status messages during chat",
+    "  --plain-ui                    Disable rich TUI (spinners, cursor control)",
+    "  --no-color                    Disable color output (also: NO_COLOR env var)",
+    "  --resume <room_id>            Resume a previous session by room ID",
+    "  --room-name <name>            Set room display name (default: Agoryx Room)",
+    "",
+    "Examples:",
+    "  agoryx                        Start chat in manual mode",
+    "  agoryx -m auto                Smart routing — auto-selects best agent",
+    "  agoryx --mode team            Autonomous team runtime with proposal gate",
+    "  agoryx --resume abc123        Resume session abc123",
+    "  agoryx --agents codex         Chat with Codex only",
+    "  echo 'hello' | agoryx        Pipe input for non-interactive use",
+  ].join("\n"));
+};
+
+const printSessionsUsage = (write: OutputWriter = console.log): void => {
+  write([
+    "List and export saved chat sessions.",
+    "",
+    "Usage:",
+    "  agoryx sessions list [options]",
+    "  agoryx sessions export <room_or_session_id> [options]",
+    "",
+    "Subcommands:",
+    "  list         List recent sessions (tab-separated)",
+    "  export       Export one session in markdown or json",
+    "",
+    "Examples:",
+    "  agoryx sessions list",
+    "  agoryx sessions list --limit 5",
+    "  agoryx sessions export abc123 --format json --out ./export.json",
+  ].join("\n"));
+};
+
+const printSessionsListUsage = (write: OutputWriter = console.log): void => {
+  write([
+    "List recent chat sessions.",
+    "",
+    "Usage:",
+    "  agoryx sessions list [--limit <n>] [--db <path>] [--config <path>]",
+    "",
+    "Options:",
+    "  -h, --help           Show this help message and exit",
+    "  --limit <n>          Maximum number of sessions to show (default: 20)",
+    "  --db <path>          Path to SQLite database",
+    "  --config <path>      Path to config file",
+  ].join("\n"));
+};
+
+const printSessionsExportUsage = (write: OutputWriter = console.log): void => {
+  write([
+    "Export a chat session to markdown or json.",
+    "",
+    "Usage:",
+    "  agoryx sessions export <room_or_session_id> [options]",
+    "",
+    "Options:",
+    "  -h, --help                Show this help message and exit",
+    "  --format <markdown|json>  Output format (default: markdown)",
+    "  --out <file>              Write to file instead of stdout",
+    "  --db <path>               Path to SQLite database",
+    "  --config <path>           Path to config file",
+  ].join("\n"));
+};
+
+const printConfigUsage = (write: OutputWriter = console.log): void => {
+  write([
+    "Show resolved configuration paths and precedence.",
+    "",
+    "Usage:",
+    "  agoryx config explain [--config <path>] [--db <path>]",
+    "",
+    "Options:",
+    "  -h, --help           Show this help message and exit",
+    "  --config <path>      Path to config file",
+    "  --db <path>          Path to SQLite database",
+  ].join("\n"));
+};
+
+const printCompletionUsage = (write: OutputWriter = console.log): void => {
+  write([
+    "Print shell completion script to stdout.",
+    "",
+    "Usage:",
+    "  agoryx completion <bash|zsh|fish>",
+    "",
+    "Options:",
+    "  -h, --help           Show this help message and exit",
+    "",
+    "Examples:",
+    "  agoryx completion bash >> ~/.bashrc",
+    "  agoryx completion zsh > ~/.zsh/completions/_agoryx",
+    "  agoryx completion fish > ~/.config/fish/completions/agoryx.fish",
+  ].join("\n"));
+};
+
+const printManPage = (write: OutputWriter = console.log): void => {
+  write([
+    "AGORYX(1)",
+    "",
+    "NAME",
+    "  agoryx - local-first multi-agent CLI chat orchestrator",
+    "",
+    "SYNOPSIS",
+    "  agoryx [chat] [chat-options]",
+    "  agoryx sessions <list|export> [options]",
+    "  agoryx config explain [--config <path>] [--db <path>]",
+    "  agoryx completion <bash|zsh|fish>",
+    "",
+    "DESCRIPTION",
+    "  Agoryx runs Codex and Claude in one shared local session with SQLite persistence.",
+    "",
+    "FILES",
+    "  $XDG_CONFIG_HOME/agoryx/config.json",
+    "  $XDG_STATE_HOME/agoryx/agoryx.db",
+    "",
+    "SEE ALSO",
+    "  agoryx --help",
+    "  agoryx chat --help",
+    "  agoryx sessions --help",
+  ].join("\n"));
 };
 
 const printChatHelp = (): void => {
   console.log(`
 In-chat commands:
+  /               list slash commands
   /help
   /mode <manual|round-robin|auto|team>
   /status
@@ -1640,6 +2155,11 @@ In-chat commands:
   /export [markdown|json] [--out <file>]
   Esc (TTY, team mode): interrupt active team step
   /quit
+
+Slash tips:
+  Press / on an empty prompt to open interactive command picker (TTY).
+  Type / and press Tab to autocomplete commands.
+  Enter / to print available slash commands.
 `);
 };
 
@@ -1663,38 +2183,326 @@ const printBanner = (
   console.log(`${formatInfoLabel("Type /help for commands.")}\n`);
 };
 
+const normalizeDbPath = (dbPath: string): string => {
+  const normalized = dbPath.trim();
+  const lowered = normalized.toLowerCase();
+  if (lowered === ":memory:" || lowered.startsWith("file::memory:")) {
+    return normalized;
+  }
+  if (!lowered.startsWith("file:")) {
+    return normalized;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol === "file:") {
+      return fileURLToPath(parsed);
+    }
+  } catch {
+    // Keep the original value when it is not a valid file URI.
+  }
+  return normalized;
+};
+
 interface ParsedArgs {
   options: Record<string, string>;
   positionals: string[];
 }
 
-const parseArgs = (args: string[]): ParsedArgs => {
+const ensureDbPathReady = (dbPath: string): void => {
+  const normalizedPath = normalizeDbPath(dbPath).toLowerCase();
+  if (
+    normalizedPath === ":memory:" ||
+    normalizedPath.startsWith("file::memory:")
+  ) {
+    return;
+  }
+  ensureParentDirectory(normalizeDbPath(dbPath));
+};
+
+const parseCliArgs = (args: string[], specs: OptionSpec[]): ParsedArgs => {
   const options: Record<string, string> = {};
   const positionals: string[] = [];
+  const byLong = new Map(specs.map((spec) => [spec.long, spec] as const));
+  const byShort = new Map(
+    specs
+      .filter((spec): spec is OptionSpec & { short: string } => Boolean(spec.short))
+      .map((spec) => [spec.short, spec] as const),
+  );
+
   for (let i = 0; i < args.length; i += 1) {
     const token = args[i];
     if (!token) {
       continue;
     }
 
-    if (!token.startsWith("--")) {
-      positionals.push(token);
+    if (token === "--") {
+      positionals.push(...args.slice(i + 1));
+      break;
+    }
+
+    if (token.startsWith("--")) {
+      const withoutPrefix = token.slice(2);
+      const equalIndex = withoutPrefix.indexOf("=");
+      const key = equalIndex >= 0 ? withoutPrefix.slice(0, equalIndex) : withoutPrefix;
+      const inlineValue = equalIndex >= 0 ? withoutPrefix.slice(equalIndex + 1) : undefined;
+      const spec = byLong.get(key);
+      if (!spec) {
+        throw new CliUsageError(
+          renderUnknownOptionMessage(`--${key}`, specs),
+          undefined,
+          "Run with --help to see available options.",
+        );
+      }
+
+      if (spec.takesValue) {
+        if (inlineValue != null) {
+          options[spec.long] = inlineValue;
+          continue;
+        }
+
+        const next = args[i + 1];
+        if (next == null) {
+          throw new CliUsageError(
+            `Option --${spec.long} requires a value.`,
+            undefined,
+            `Provide a value, for example: --${spec.long} <value>.`,
+          );
+        }
+        options[spec.long] = next;
+        i += 1;
+        continue;
+      }
+
+      if (inlineValue != null) {
+        throw new CliUsageError(
+          `Option --${spec.long} does not take a value.`,
+          undefined,
+          `Remove the value and pass only --${spec.long}.`,
+        );
+      }
+      options[spec.long] = "true";
       continue;
     }
 
-    const key = token.slice(2);
-    const next = args[i + 1];
-    if (!next || next.startsWith("--")) {
-      options[key] = "true";
+    if (token.startsWith("-") && token !== "-") {
+      const short = token.slice(1);
+      if (short.length !== 1) {
+        throw new CliUsageError(
+          renderUnknownOptionMessage(token, specs),
+          undefined,
+          "Run with --help to see available options.",
+        );
+      }
+      const spec = byShort.get(short);
+      if (!spec) {
+        throw new CliUsageError(
+          renderUnknownOptionMessage(token, specs),
+          undefined,
+          "Run with --help to see available options.",
+        );
+      }
+      if (spec.takesValue) {
+        const next = args[i + 1];
+        if (next == null) {
+          throw new CliUsageError(
+            `Option -${short} requires a value.`,
+            undefined,
+            `Provide a value, for example: -${short} <value>.`,
+          );
+        }
+        options[spec.long] = next;
+        i += 1;
+      } else {
+        options[spec.long] = "true";
+      }
       continue;
     }
-    options[key] = next;
-    i += 1;
+
+    if (!token.startsWith("-")) {
+      positionals.push(token);
+      continue;
+    }
   }
   return { options, positionals };
 };
 
+const parseCliArgsOrThrow = (
+  args: string[],
+  specs: OptionSpec[],
+  usage: (write?: OutputWriter) => void,
+): ParsedArgs => {
+  try {
+    return parseCliArgs(args, specs);
+  } catch (error) {
+    if (error instanceof CliUsageError) {
+      throw new CliUsageError(error.message, usage, error.hint);
+    }
+    throw error;
+  }
+};
+
+const levenshteinDistance = (left: string, right: string): number => {
+  const matrix = Array.from({ length: left.length + 1 }, () => new Array<number>(right.length + 1).fill(0));
+  for (let i = 0; i <= left.length; i += 1) {
+    matrix[i][0] = i;
+  }
+  for (let j = 0; j <= right.length; j += 1) {
+    matrix[0][j] = j;
+  }
+  for (let i = 1; i <= left.length; i += 1) {
+    for (let j = 1; j <= right.length; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost,
+      );
+    }
+  }
+  return matrix[left.length][right.length];
+};
+
+const renderUnknownOptionMessage = (token: string, specs: OptionSpec[]): string => {
+  const candidates = specs.flatMap((spec) => [
+    `--${spec.long}`,
+    ...(spec.short ? [`-${spec.short}`] : []),
+  ]);
+  let bestCandidate: string | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const distance = levenshteinDistance(token, candidate);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestCandidate = candidate;
+    }
+  }
+
+  if (bestCandidate && bestDistance <= 3) {
+    return `Unknown option '${token}'. Did you mean '${bestCandidate}'?`;
+  }
+  return `Unknown option '${token}'.`;
+};
+
+const renderUnknownCommandMessage = (command: string): string => {
+  let bestCandidate: string | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of ROOT_COMMANDS) {
+    const distance = levenshteinDistance(command, candidate);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestCandidate = candidate;
+    }
+  }
+
+  if (bestCandidate && bestDistance <= 3) {
+    return `Unknown command '${command}'. Did you mean '${bestCandidate}'?`;
+  }
+  return `Unknown command '${command}'.`;
+};
+
+const renderBashCompletion = (): string => `# bash completion for agoryx
+_agoryx_complete() {
+  local cur prev words cword
+  _init_completion || return
+
+  local commands="chat sessions config completion man help"
+  if [[ $cword -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "$commands --help --version" -- "$cur") )
+    return
+  fi
+
+  case "\${words[1]}" in
+    sessions)
+      COMPREPLY=( $(compgen -W "list export --help" -- "$cur") )
+      ;;
+    config)
+      COMPREPLY=( $(compgen -W "explain --help --config --db" -- "$cur") )
+      ;;
+    completion)
+      COMPREPLY=( $(compgen -W "bash zsh fish --help" -- "$cur") )
+      ;;
+    chat|"")
+      COMPREPLY=( $(compgen -W "--help --agents --mode --config --db --adapter-mode --quiet-system --plain-ui --no-color --resume --room-name" -- "$cur") )
+      ;;
+    *)
+      COMPREPLY=()
+      ;;
+  esac
+}
+complete -F _agoryx_complete agoryx`;
+
+const renderZshCompletion = (): string => `#compdef agoryx
+_agoryx() {
+  local -a commands
+  commands=(
+    'chat:Start chat'
+    'sessions:Session management'
+    'config:Configuration diagnostics'
+    'completion:Shell completion'
+    'man:Manual page'
+    'help:Help'
+  )
+
+  _arguments -C \\
+    '(-h --help)'{-h,--help}'[Show help]' \\
+    '(-V --version)'{-V,--version}'[Show version]' \\
+    '1:command:->command' \\
+    '*::args:->args'
+
+  case $state in
+    command)
+      _describe -t commands 'agoryx command' commands
+      ;;
+    args)
+      case $words[2] in
+        sessions)
+          _values 'sessions subcommand' list export
+          ;;
+        completion)
+          _values 'shell' bash zsh fish
+          ;;
+      esac
+      ;;
+  esac
+}
+_agoryx "$@"`;
+
+const renderFishCompletion = (): string => `# fish completion for agoryx
+complete -c agoryx -f -n '__fish_use_subcommand' -a "chat sessions config completion man help"
+complete -c agoryx -l help -s h -d "Show help"
+complete -c agoryx -l version -s V -d "Show version"
+complete -c agoryx -n '__fish_seen_subcommand_from completion' -a "bash zsh fish"
+complete -c agoryx -n '__fish_seen_subcommand_from sessions' -a "list export"
+complete -c agoryx -n '__fish_seen_subcommand_from chat' -l agents -r
+complete -c agoryx -n '__fish_seen_subcommand_from chat' -l mode -r
+complete -c agoryx -n '__fish_seen_subcommand_from chat' -l db -r
+complete -c agoryx -n '__fish_seen_subcommand_from chat' -l config -r
+complete -c agoryx -n '__fish_seen_subcommand_from sessions' -l limit -r
+complete -c agoryx -n '__fish_seen_subcommand_from sessions' -l format -r
+complete -c agoryx -n '__fish_seen_subcommand_from sessions' -l out -r`;
+
+const printCliUsageError = (error: CliUsageError): void => {
+  console.error(formatUsageErrorLine(error.message));
+  if (error.hint) {
+    console.error(formatHintLine(error.hint));
+  } else {
+    console.error(formatHintLine("Use --help to see valid commands and options."));
+  }
+  if (error.usage) {
+    console.error("");
+    error.usage(console.error);
+  }
+};
+
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "Fatal error");
+  if (error instanceof CliUsageError) {
+    printCliUsageError(error);
+    process.exit(error.exitCode);
+  }
+
+  console.error(
+    formatUsageErrorLine(error instanceof Error ? error.message : "Fatal error"),
+  );
   process.exit(1);
 });

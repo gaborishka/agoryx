@@ -6,11 +6,11 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
 import type { OrchestrationMode, RoomConfig, TeamConfig } from "../events/types.js";
 import type { AdapterConfig, AdapterMode } from "../adapters/adapter.js";
 import { defaultTeamConfig, type ChatRuntimeConfig } from "./default.js";
 import { type WorkspaceConfig, DEFAULT_WORKSPACE_CONFIG } from "../workspace/collector.js";
+import { resolveConfigPathForLoad, resolveDefaultDbPath } from "./paths.js";
 export type { WorkspaceConfig };
 export { DEFAULT_WORKSPACE_CONFIG };
 
@@ -97,7 +97,7 @@ export const DEFAULT_CONFIG: AgoryxConfig = {
     maxContextTokens: 30_000,
   },
   session: {
-    dbPath: "./agoryx.db",
+    dbPath: resolveDefaultDbPath(),
   },
   team: defaultTeamConfig(),
   workspace: { ...DEFAULT_WORKSPACE_CONFIG },
@@ -108,7 +108,7 @@ export const DEFAULT_CONFIG: AgoryxConfig = {
 // ---------------------------------------------------------------------------
 
 export function loadConfig(configPath?: string): AgoryxConfig {
-  const path = configPath ?? resolve(process.cwd(), "agoryx.json");
+  const path = resolveConfigPathForLoad(configPath);
 
   if (!existsSync(path)) {
     return structuredClone(DEFAULT_CONFIG);
@@ -120,11 +120,7 @@ export function loadConfig(configPath?: string): AgoryxConfig {
     return mergeConfig(parsed);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    console.error(`\n*** WARNING: Failed to load config from ${path} — using defaults ***`);
-    console.error(`  Error: ${detail}`);
-    console.error(`  Your custom settings (agents, modes, team limits) are NOT applied.`);
-    console.error(`  Fix the file or remove it to use defaults.\n`);
-    return structuredClone(DEFAULT_CONFIG);
+    throw new Error(`Failed to load config from ${path}: ${detail}`);
   }
 }
 

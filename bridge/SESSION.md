@@ -1661,5 +1661,16 @@ internal/
 - No blocking findings identified for commit.
 - Residual note: tests still print non-failing `git fatal` cleanup noise in temporary worktree scenarios.
 
+### Post-review bugfixes (2026-02-21)
+- Fixed review findings in `cmd/agoryx/main.ts`:
+  - `/worktree remove` now clears stale `adapterConfig[agent].workspaceCwd` when it points to the removed worktree path.
+  - renderer state now resets `insideSystemReminder` on `message.started`, `message.completed`, and `message.error` to prevent cross-message suppression after unmatched reminder blocks.
+  - strict CLI parser now rejects flag tokens as missing values for value-taking options (e.g. `--limit --help`), instead of consuming them as values.
+- Added regression test:
+  - `tests/cmd/root-cli.test.ts`: `sessions list rejects flag used as --limit value`.
+- Validation:
+  - `npm test -- tests/cmd/root-cli.test.ts tests/cmd/worktree-command.test.ts` PASS (**378/378** in full suite run).
+  - `npm run typecheck` PASS.
+
 ## Last Updated
-2026-02-21T09:42:36Z by codex
+2026-02-21T09:52:46Z by codex

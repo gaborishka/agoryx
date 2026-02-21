@@ -113,6 +113,13 @@ test("sessions list unknown flag returns usage exit code", async () => {
   assert.match(result.stderr, /Unknown option '--limti'/);
 });
 
+test("sessions list rejects flag used as --limit value", async () => {
+  const result = await runCli(["sessions", "list", "--limit", "--help"]);
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /Option --limit requires a value/);
+});
+
 test("invalid config file fails fast", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agoryx-root-cli-bad-config-"));
   t.after(() => {

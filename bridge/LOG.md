@@ -1889,3 +1889,17 @@
 - Ready to commit current v0.3 change-set.
 
 ---
+## 2026-02-21T09:53:00Z | codex
+### Summary
+- Fixed review findings in main.ts
+
+### Changes
+- Cleared stale workspaceCwd on /worktree remove; reset system-reminder render state on message boundaries; parser now rejects flag tokens as missing option values; added root CLI regression test for --limit --help; validated npm test + typecheck.
+
+### Risks
+- Low: stricter value parsing now rejects malformed flag-as-value input.
+
+### Next
+- Ready for re-review or commit.
+
+---

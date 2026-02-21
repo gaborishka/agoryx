@@ -872,7 +872,7 @@ const handleCommand = async (
       return handleMemoryCommand(rest, engine, store, memoryService);
     }
     case "/worktree": {
-      return handleWorktreeCommand(rest, engine, worktreeManager, memoryService);
+      return handleWorktreeCommand(rest, engine, config, worktreeManager, memoryService);
     }
     case "/workspace": {
       return handleWorkspaceCommand(rest, config);
@@ -1402,6 +1402,7 @@ const parseWorktreeListArgs = (args: string[]): { json: boolean } | null => {
 const handleWorktreeCommand = async (
   args: string[],
   engine: ChatEngine,
+  config: ChatRuntimeConfig,
   worktreeManager: WorktreeManager,
   memoryService: MemoryService,
 ): Promise<boolean> => {
@@ -1487,6 +1488,11 @@ const handleWorktreeCommand = async (
         const message = error instanceof Error ? error.message : String(error);
         console.log(message);
         return true;
+      }
+      const adapterConfig = config.adapterConfig[parsed.agent];
+      if (adapterConfig?.workspaceCwd === existing.path) {
+        const { workspaceCwd: _workspaceCwd, ...restConfig } = adapterConfig;
+        config.adapterConfig[parsed.agent] = restConfig;
       }
       memoryService.recordWorktreeRemove(roomId, parsed.agent, existing.path);
       if (parsed.json) {
@@ -1622,6 +1628,7 @@ const renderAdapterEvent = (
       state.lineOpen = true;
       state.sawContent = false;
       state.pendingSessionId = null;
+      state.insideSystemReminder = false;
       state.prefixPrinted = false;
       state.currentStatusText = "generating...";
       if (renderOptions.richUi) {
@@ -1716,6 +1723,7 @@ const renderAdapterEvent = (
       }
       state.lineOpen = false;
       state.sawContent = false;
+      state.insideSystemReminder = false;
       state.prefixPrinted = false;
       state.currentStatusText = "generating...";
       if (shouldShowSystemLines()) {
@@ -1740,6 +1748,7 @@ const renderAdapterEvent = (
       }
       state.lineOpen = false;
       state.sawContent = false;
+      state.insideSystemReminder = false;
       state.prefixPrinted = false;
       state.currentStatusText = "generating...";
       output.write(
@@ -2262,7 +2271,7 @@ const parseCliArgs = (args: string[], specs: OptionSpec[]): ParsedArgs => {
         }
 
         const next = args[i + 1];
-        if (next == null) {
+        if (next == null || (next !== "-" && next.startsWith("-"))) {
           throw new CliUsageError(
             `Option --${spec.long} requires a value.`,
             undefined,
@@ -2304,7 +2313,7 @@ const parseCliArgs = (args: string[], specs: OptionSpec[]): ParsedArgs => {
       }
       if (spec.takesValue) {
         const next = args[i + 1];
-        if (next == null) {
+        if (next == null || (next !== "-" && next.startsWith("-"))) {
           throw new CliUsageError(
             `Option -${short} requires a value.`,
             undefined,

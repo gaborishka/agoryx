@@ -258,6 +258,28 @@ test("team config merge applies overrides and keeps trigger defaults", () => {
   rmSync(dir, { recursive: true });
 });
 
+test("team checkCommands rejects unsafe commands", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      team: {
+        checkCommands: [
+          "npm run typecheck",
+          "npm test && rm -rf /",
+        ],
+      },
+    }),
+  );
+
+  assert.throws(() => {
+    loadConfig(configPath);
+  }, /Invalid team\.checkCommands entry/i);
+
+  rmSync(dir, { recursive: true });
+});
+
 test("loadConfig auto-detects legacy ./agoryx.json in cwd", () => {
   const dir = mkdtempSync(join(tmpdir(), "agoryx-test-legacy-cwd-"));
   const previousCwd = process.cwd();

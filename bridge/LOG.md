@@ -1945,3 +1945,45 @@
 - Ready for re-review/merge; optional follow-up is reducing non-failing git fatal noise in tests by adjusting temporary repo setup.
 
 ---
+## 2026-02-21T12:49:50Z | codex
+### Summary
+- Fixed prompt deletion regression in Ink input
+
+### Changes
+- Adjusted key handling in cmd/agoryx/ink-chat.tsx: Backspace now works when terminal reports key.delete with empty value; forward delete remains on Ctrl+D; no other input semantics changed.
+
+### Risks
+- Low: terminals with dedicated Delete key may rely on Ctrl+D for forward-delete in this UI.
+
+### Next
+- Ask Ivan to retest Backspace in interactive chat; if needed, we can add optional explicit Delete-key mapping by terminal profile.
+
+---
+## 2026-02-21T13:01:59Z | codex
+### Summary
+- Fixed Backspace runtime path issue
+
+### Changes
+- Patched bin/agoryx.js to auto-fallback to source when cmd/agoryx/main.ts is newer than dist bundle, preventing stale dist from masking input fixes; rebuilt dist.
+
+### Risks
+- Low: startup now performs one extra stat check before launching dist.
+
+### Next
+- Ivan should retest Backspace via plain agoryx command; if still failing, capture terminal key bytes and map explicitly.
+
+---
+## 2026-02-21T13:14:12Z | codex
+### Summary
+- Closed remaining Claude review findings with hardening + regression tests
+
+### Changes
+- Patched workspace symlink/root checks and on-demand unavailable state; fixed launcher import fallback masking; hardened sqlite memory row mapping + critical parse validation; made engine init resilient to memory/worktree optional failures; made worktree status explicit (unknown/null sync state) and default branch detection robust; fail-fast checkCommands validation; surfaced shutdown destroy warnings; reduced adapter silent parse drops; updated DB URI parent-dir prep and added tests
+
+### Risks
+- Moderate: stricter config/sqlite validation may now surface previously hidden bad inputs as explicit errors; additional warning logs in degraded paths
+
+### Next
+- Ready for re-review/merge; optional follow-up is reducing non-failing git fatal cleanup noise in temporary worktree tests
+
+---

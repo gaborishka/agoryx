@@ -775,7 +775,7 @@ class ClaudeInteractiveRunner {
       this.activeTurn?.onSessionId(sessionId);
     }
 
-    const parsed = tryParseJsonObject(line);
+    const parsed = tryParseJsonObject(line, "interactive line");
     if (!parsed || !this.activeTurn) {
       return;
     }
@@ -1018,16 +1018,42 @@ export const shouldRestartClaudeInteractiveRunner = (
   return currentSessionId !== requestedSessionId;
 };
 
-const tryParseJsonObject = (line: string): Record<string, unknown> | null => {
+const tryParseJsonObject = (
+  line: string,
+  context?: string,
+): Record<string, unknown> | null => {
   try {
     const parsed = JSON.parse(line);
     if (!parsed || typeof parsed !== "object") {
       return null;
     }
     return parsed as Record<string, unknown>;
-  } catch {
+  } catch (error: unknown) {
+    if (context && looksLikeJsonPayload(line)) {
+      logClaudeJsonParseWarning(context, line, error);
+    }
     return null;
   }
+};
+
+const looksLikeJsonPayload = (line: string): boolean => {
+  const trimmed = line.trim();
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
+};
+
+const logClaudeJsonParseWarning = (
+  context: string,
+  line: string,
+  error: unknown,
+): void => {
+  const detail = error instanceof Error ? error.message : String(error);
+  const preview = line.length > 180 ? `${line.slice(0, 180)}...` : line;
+  console.error(
+    `[adapter.claude] Failed to parse JSON (${context}): ${detail}; line='${preview}'`,
+  );
 };
 
 const isClaudeResultEvent = (value: unknown): boolean => {

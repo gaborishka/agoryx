@@ -10,6 +10,13 @@ export interface WorktreeInfo {
   head: string;
 }
 
+export interface WorktreeStatus extends WorktreeInfo {
+  dirty: boolean;
+  ahead: number | null;
+  behind: number | null;
+  syncUnavailable: string | null;
+}
+
 export const WORKTREE_AGENT_NAME_PATTERN = /^[a-z0-9._-]+$/;
 
 export const normalizeWorktreeAgentName = (agent: string): string =>
@@ -134,11 +141,17 @@ export class WorktreeManager {
     }
   }
 
-  public status(): Array<WorktreeInfo & { dirty: boolean; ahead: number; behind: number }> {
+  public status(): WorktreeStatus[] {
     return this.list().map((info) => {
       const dirty = this.isDirty(info.path);
-      const { ahead, behind } = this.getAheadBehind(info.path);
-      return { ...info, dirty, ahead, behind };
+      const sync = this.getAheadBehind(info.path);
+      return {
+        ...info,
+        dirty,
+        ahead: sync.ahead,
+        behind: sync.behind,
+        syncUnavailable: sync.unavailable,
+      };
     });
   }
 
@@ -206,14 +219,14 @@ export class WorktreeManager {
     for (const block of blocks) {
       const lines = block.split("\n");
       let path = "";
-      let head = "";
+      let head = "unknown";
       let branch = "";
 
       for (const line of lines) {
         if (line.startsWith("worktree ")) {
           path = line.slice("worktree ".length);
         } else if (line.startsWith("HEAD ")) {
-          head = line.slice("HEAD ".length);
+          head = line.slice("HEAD ".length) || "unknown";
         } else if (line.startsWith("branch ")) {
           branch = line.slice("branch ".length).replace("refs/heads/", "");
         }
@@ -254,14 +267,15 @@ export class WorktreeManager {
 
   private getHead(cwd: string): string {
     try {
-      return execFileSync("git", ["rev-parse", "HEAD"], {
+      const value = execFileSync("git", ["rev-parse", "HEAD"], {
         cwd,
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "pipe"],
       }).trim();
+      return value || "unknown";
     } catch (error: unknown) {
       this.logGitFailure(`failed to read HEAD for '${cwd}'`, error);
-      return "";
+      return "unknown";
     }
   }
 
@@ -279,9 +293,19 @@ export class WorktreeManager {
     }
   }
 
-  private getAheadBehind(cwd: string): { ahead: number; behind: number } {
+  private getAheadBehind(
+    cwd: string,
+  ): { ahead: number | null; behind: number | null; unavailable: string | null } {
+    const defaultBranch = this.detectDefaultBranch();
+    if (!defaultBranch) {
+      return {
+        ahead: null,
+        behind: null,
+        unavailable: "default branch is unavailable",
+      };
+    }
+
     try {
-      const defaultBranch = this.detectDefaultBranch();
       const output = execFileSync(
         "git",
         ["rev-list", "--left-right", "--count", `${defaultBranch}...HEAD`],
@@ -291,15 +315,21 @@ export class WorktreeManager {
           stdio: ["ignore", "pipe", "pipe"],
         },
       );
-      const [behind, ahead] = output.trim().split(/\s+/).map(Number);
-      return { ahead: ahead ?? 0, behind: behind ?? 0 };
+      const [behindRaw, aheadRaw] = output.trim().split(/\s+/, 2);
+      const behind = Number(behindRaw);
+      const ahead = Number(aheadRaw);
+      if (!Number.isFinite(behind) || !Number.isFinite(ahead)) {
+        throw new Error(`unexpected rev-list output: '${output.trim()}'`);
+      }
+      return { ahead, behind, unavailable: null };
     } catch (error: unknown) {
       this.logGitFailure(`failed to compute ahead/behind for '${cwd}'`, error);
-      return { ahead: 0, behind: 0 };
+      const message = error instanceof Error ? error.message : String(error);
+      return { ahead: null, behind: null, unavailable: message };
     }
   }
 
-  private detectDefaultBranch(): string {
+  private detectDefaultBranch(): string | null {
     try {
       const ref = execFileSync(
         "git",
@@ -311,9 +341,52 @@ export class WorktreeManager {
         },
       ).trim();
       return ref.replace("refs/remotes/origin/", "");
-    } catch (error: unknown) {
-      this.logGitFailure("failed to detect remote default branch, using 'main'", error);
-      return "main";
+    } catch {
+      for (const candidate of ["main", "master"]) {
+        if (this.hasLocalBranch(candidate)) {
+          return candidate;
+        }
+      }
+
+      try {
+        const current = execFileSync(
+          "git",
+          ["rev-parse", "--abbrev-ref", "HEAD"],
+          {
+            cwd: this.repoRoot,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        ).trim();
+        if (current && current !== "HEAD") {
+          return current;
+        }
+      } catch {
+        // no-op; handled below
+      }
+
+      this.logGitFailure(
+        "failed to detect default branch",
+        "origin/HEAD missing and no local fallback branch found",
+      );
+      return null;
+    }
+  }
+
+  private hasLocalBranch(branch: string): boolean {
+    try {
+      execFileSync(
+        "git",
+        ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+        {
+          cwd: this.repoRoot,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      return true;
+    } catch {
+      return false;
     }
   }
 

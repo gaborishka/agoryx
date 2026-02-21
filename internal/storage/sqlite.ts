@@ -191,6 +191,30 @@ interface TeamCheckRow {
   created_at: string;
 }
 
+interface MemoryLogRow {
+  id: number;
+  event_id: string;
+  room_id: string;
+  timestamp: string;
+  source: string;
+  event_type: string;
+  payload: string;
+}
+
+interface MemorySnapshotRow {
+  room_id: string;
+  current_goal: string;
+  active_branch: string;
+  active_worktrees: string;
+  key_decisions: string;
+  blockers: string;
+  next_actions: string;
+  task_status: string;
+  last_log_id: number;
+  reducer_version: number;
+  updated_at: string;
+}
+
 export interface MemorySnapshot {
   roomId: string;
   currentGoal: string;
@@ -1337,7 +1361,7 @@ export class SQLiteStore {
   public getMemorySnapshot(roomId: string): MemorySnapshot | null {
     const row = this.db.prepare(
       "SELECT * FROM memory_snapshot WHERE room_id = ?"
-    ).get(roomId) as any;
+    ).get(roomId) as unknown;
     if (!row) return null;
     return snapshotRowToDomain(row);
   }
@@ -1399,7 +1423,7 @@ export class SQLiteStore {
   }
 
   private getMemoryLogEntry(id: number): MemoryLogEntry {
-    const row = this.db.prepare("SELECT * FROM memory_log WHERE id = ?").get(id) as any;
+    const row = this.db.prepare("SELECT * FROM memory_log WHERE id = ?").get(id) as unknown;
     return memoryRowToEntry(row);
   }
 
@@ -1411,21 +1435,21 @@ export class SQLiteStore {
     if (filter?.since) { sql += " AND timestamp >= ?"; params.push(filter.since); }
     sql += " ORDER BY id ASC";
     if (filter?.limit != null) { sql += " LIMIT ?"; params.push(filter.limit); }
-    const rows = this.db.prepare(sql).all(...params) as any[];
+    const rows = this.db.prepare(sql).all(...params) as unknown[];
     return rows.map(memoryRowToEntry);
   }
 
   public listMemoryEventsAfter(roomId: string, afterId: number): MemoryLogEntry[] {
     const rows = this.db.prepare(
       "SELECT * FROM memory_log WHERE room_id = ? AND id > ? ORDER BY id ASC"
-    ).all(roomId, afterId) as any[];
+    ).all(roomId, afterId) as unknown[];
     return rows.map(memoryRowToEntry);
   }
 
   public getMaxMemoryLogId(roomId: string): number | null {
     const row = this.db.prepare(
       "SELECT MAX(id) as max_id FROM memory_log WHERE room_id = ?"
-    ).get(roomId) as any;
+    ).get(roomId) as { max_id?: number | null } | undefined;
     return row?.max_id ?? null;
   }
 
@@ -1466,8 +1490,11 @@ interface ParseJsonContext {
   critical?: boolean;
 }
 
-const tryParseJson = <T>(value: string, fallback: T, context: ParseJsonContext = {}): T => {
+const tryParseJson = <T>(value: unknown, fallback: T, context: ParseJsonContext = {}): T => {
   try {
+    if (typeof value !== "string") {
+      throw new Error(`expected JSON string, received ${typeof value}`);
+    }
     return JSON.parse(value) as T;
   } catch (error: unknown) {
     const location = [
@@ -1478,7 +1505,8 @@ const tryParseJson = <T>(value: string, fallback: T, context: ParseJsonContext =
       .filter(Boolean)
       .join(", ");
     const reason = error instanceof Error ? error.message : String(error);
-    const message = `[storage] Failed to parse JSON${location ? ` (${location})` : ""}: ${reason} — value preview: ${value.slice(0, 100)}`;
+    const preview = typeof value === "string" ? value.slice(0, 100) : String(value).slice(0, 100);
+    const message = `[storage] Failed to parse JSON${location ? ` (${location})` : ""}: ${reason} — value preview: ${preview}`;
     if (context.critical) {
       throw new Error(message);
     }
@@ -1555,8 +1583,11 @@ const resolveFileUriFilename = (rawUri: string, parsed: URL | null): string => {
 
   try {
     return decodeURIComponent(pathPart);
-  } catch {
-    return pathPart;
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[storage] Invalid percent-encoded SQLite URI path '${rawUri}': ${reason}`,
+    );
   }
 };
 
@@ -1640,53 +1671,126 @@ const teamFeedbackRowToDomain = (row: TeamFeedbackRow): TeamFeedback => ({
   consumedAt: row.consumed_at,
 });
 
-const memoryRowToEntry = (row: any): MemoryLogEntry => ({
-  id: row.id,
-  eventId: row.event_id,
-  roomId: row.room_id,
-  timestamp: row.timestamp,
-  source: row.source,
-  eventType: row.event_type,
-  payload: tryParseJson(row.payload, {}, {
-    table: "memory_log",
-    column: "payload",
-    rowId: row.id,
-  }),
-});
+const memoryRowToEntry = (row: unknown): MemoryLogEntry => {
+  const typedRow = toMemoryLogRow(row);
+  return {
+    id: typedRow.id,
+    eventId: typedRow.event_id,
+    roomId: typedRow.room_id,
+    timestamp: typedRow.timestamp,
+    source: typedRow.source,
+    eventType: typedRow.event_type,
+    payload: tryParseJson(typedRow.payload, {}, {
+      table: "memory_log",
+      column: "payload",
+      rowId: typedRow.id,
+      critical: true,
+    }),
+  };
+};
 
-const snapshotRowToDomain = (row: any): MemorySnapshot => ({
-  roomId: row.room_id,
-  currentGoal: row.current_goal,
-  activeBranch: row.active_branch,
-  activeWorktrees: tryParseJson<string[]>(row.active_worktrees, [], {
-    table: "memory_snapshot",
-    column: "active_worktrees",
-    rowId: row.room_id,
-  }),
-  keyDecisions: tryParseJson<string[]>(row.key_decisions, [], {
-    table: "memory_snapshot",
-    column: "key_decisions",
-    rowId: row.room_id,
-  }),
-  blockers: tryParseJson<string[]>(row.blockers, [], {
-    table: "memory_snapshot",
-    column: "blockers",
-    rowId: row.room_id,
-  }),
-  nextActions: tryParseJson<string[]>(row.next_actions, [], {
-    table: "memory_snapshot",
-    column: "next_actions",
-    rowId: row.room_id,
-  }),
-  taskStatus: tryParseJson<Record<string, string>>(row.task_status, {}, {
-    table: "memory_snapshot",
-    column: "task_status",
-    rowId: row.room_id,
-  }),
-  lastLogId: row.last_log_id,
-  reducerVersion: row.reducer_version,
-  updatedAt: row.updated_at,
-});
+const snapshotRowToDomain = (row: unknown): MemorySnapshot => {
+  const typedRow = toMemorySnapshotRow(row);
+  return {
+    roomId: typedRow.room_id,
+    currentGoal: typedRow.current_goal,
+    activeBranch: typedRow.active_branch,
+    activeWorktrees: tryParseJson<string[]>(typedRow.active_worktrees, [], {
+      table: "memory_snapshot",
+      column: "active_worktrees",
+      rowId: typedRow.room_id,
+      critical: true,
+    }),
+    keyDecisions: tryParseJson<string[]>(typedRow.key_decisions, [], {
+      table: "memory_snapshot",
+      column: "key_decisions",
+      rowId: typedRow.room_id,
+      critical: true,
+    }),
+    blockers: tryParseJson<string[]>(typedRow.blockers, [], {
+      table: "memory_snapshot",
+      column: "blockers",
+      rowId: typedRow.room_id,
+      critical: true,
+    }),
+    nextActions: tryParseJson<string[]>(typedRow.next_actions, [], {
+      table: "memory_snapshot",
+      column: "next_actions",
+      rowId: typedRow.room_id,
+      critical: true,
+    }),
+    taskStatus: tryParseJson<Record<string, string>>(typedRow.task_status, {}, {
+      table: "memory_snapshot",
+      column: "task_status",
+      rowId: typedRow.room_id,
+      critical: true,
+    }),
+    lastLogId: typedRow.last_log_id,
+    reducerVersion: typedRow.reducer_version,
+    updatedAt: typedRow.updated_at,
+  };
+};
+
+const toMemoryLogRow = (row: unknown): MemoryLogRow => {
+  const obj = requireRowObject(row, "memory_log");
+  return {
+    id: readRequiredNumber(obj, "id", "memory_log"),
+    event_id: readRequiredString(obj, "event_id", "memory_log"),
+    room_id: readRequiredString(obj, "room_id", "memory_log"),
+    timestamp: readRequiredString(obj, "timestamp", "memory_log"),
+    source: readRequiredString(obj, "source", "memory_log"),
+    event_type: readRequiredString(obj, "event_type", "memory_log"),
+    payload: readRequiredString(obj, "payload", "memory_log"),
+  };
+};
+
+const toMemorySnapshotRow = (row: unknown): MemorySnapshotRow => {
+  const obj = requireRowObject(row, "memory_snapshot");
+  return {
+    room_id: readRequiredString(obj, "room_id", "memory_snapshot"),
+    current_goal: readRequiredString(obj, "current_goal", "memory_snapshot"),
+    active_branch: readRequiredString(obj, "active_branch", "memory_snapshot"),
+    active_worktrees: readRequiredString(obj, "active_worktrees", "memory_snapshot"),
+    key_decisions: readRequiredString(obj, "key_decisions", "memory_snapshot"),
+    blockers: readRequiredString(obj, "blockers", "memory_snapshot"),
+    next_actions: readRequiredString(obj, "next_actions", "memory_snapshot"),
+    task_status: readRequiredString(obj, "task_status", "memory_snapshot"),
+    last_log_id: readRequiredNumber(obj, "last_log_id", "memory_snapshot"),
+    reducer_version: readRequiredNumber(obj, "reducer_version", "memory_snapshot"),
+    updated_at: readRequiredString(obj, "updated_at", "memory_snapshot"),
+  };
+};
+
+const requireRowObject = (row: unknown, table: string): Record<string, unknown> => {
+  if (!row || typeof row !== "object" || Array.isArray(row)) {
+    throw new Error(`[storage] Invalid ${table} row: expected object`);
+  }
+  return row as Record<string, unknown>;
+};
+
+const readRequiredString = (
+  row: Record<string, unknown>,
+  field: string,
+  table: string,
+): string => {
+  const value = row[field];
+  if (typeof value !== "string") {
+    throw new Error(`[storage] Invalid ${table}.${field}: expected string`);
+  }
+  return value;
+};
+
+const readRequiredNumber = (
+  row: Record<string, unknown>,
+  field: string,
+  table: string,
+): number => {
+  const value = row[field];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`[storage] Invalid ${table}.${field}: expected finite number`);
+  }
+  return value;
+};
 
 const teamCheckRowToDomain = (row: TeamCheckRow): TeamCheck => ({
   id: row.id,

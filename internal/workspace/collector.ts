@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
 export interface WorkspaceConfig {
@@ -39,6 +39,7 @@ export interface AlwaysOnContext {
 export interface OnDemandContext {
   recentLog: string;
   branchDiffStat: string;
+  unavailable: string | null;
 }
 
 function truncateLines(text: string, maxLines: number): string {
@@ -106,6 +107,7 @@ export class WorkspaceCollector {
       };
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
+      this.logWorkspaceWarning(`collectAlwaysOn failed for '${cwd}'`, err);
       return {
         branch: "",
         status: "",
@@ -122,19 +124,26 @@ export class WorkspaceCollector {
     try {
       const recentLog = gitExec(["log", "--oneline", "-20"], cwd);
       let branchDiffStat = "";
+      let unavailable: string | null = null;
       try {
         const defaultBranch = this.detectDefaultBranch(cwd);
-        branchDiffStat = gitExec(["diff", "--stat", `${defaultBranch}...HEAD`], cwd);
+        if (!defaultBranch) {
+          unavailable = "default branch is unavailable";
+        } else {
+          branchDiffStat = gitExec(["diff", "--stat", `${defaultBranch}...HEAD`], cwd);
+        }
       } catch (error: unknown) {
+        unavailable = error instanceof Error ? error.message : String(error);
         this.logWorkspaceWarning(
           `collectOnDemand branch diff stat unavailable for '${cwd}'`,
           error,
         );
       }
-      return { recentLog, branchDiffStat };
+      return { recentLog, branchDiffStat, unavailable };
     } catch (error: unknown) {
+      const unavailable = error instanceof Error ? error.message : String(error);
       this.logWorkspaceWarning(`collectOnDemand failed for '${cwd}'`, error);
-      return { recentLog: "", branchDiffStat: "" };
+      return { recentLog: "", branchDiffStat: "", unavailable };
     }
   }
 
@@ -193,6 +202,10 @@ export class WorkspaceCollector {
       parts.push("", "Branch diff stat:", onDemand.branchDiffStat);
     }
 
+    if (onDemand.unavailable) {
+      parts.push("", `[Workspace on-demand unavailable: ${onDemand.unavailable}]`);
+    }
+
     return parts.join("\n");
   }
 
@@ -205,16 +218,40 @@ export class WorkspaceCollector {
     }
   }
 
-  private detectDefaultBranch(cwd: string): string {
+  private detectDefaultBranch(cwd: string): string | null {
     try {
       const ref = gitExec(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd);
       return ref.replace("refs/remotes/origin/", "");
-    } catch (error: unknown) {
+    } catch {
+      for (const candidate of ["main", "master"]) {
+        if (this.hasLocalBranch(cwd, candidate)) {
+          return candidate;
+        }
+      }
+
+      try {
+        const branch = gitExec(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+        if (branch && branch !== "HEAD") {
+          return branch;
+        }
+      } catch {
+        // no-op; handled below
+      }
+
       this.logWorkspaceWarning(
-        `failed to detect remote default branch for '${cwd}', using 'main'`,
-        error,
+        `failed to detect default branch for '${cwd}'`,
+        "origin/HEAD missing and no local fallback branch found",
       );
-      return "main";
+      return null;
+    }
+  }
+
+  private hasLocalBranch(cwd: string, branch: string): boolean {
+    try {
+      gitExec(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], cwd);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -248,13 +285,22 @@ export class WorkspaceCollector {
   }
 
   private isWithinWorkspaceRoot(candidatePath: string, rootCwd: string): boolean {
-    const normalizedRoot = resolve(rootCwd).replace(/\\/g, "/");
-    const normalizedCandidate = resolve(candidatePath).replace(/\\/g, "/");
+    const normalizedRoot = this.normalizePathForRootCheck(rootCwd);
+    const normalizedCandidate = this.normalizePathForRootCheck(candidatePath);
     if (normalizedCandidate === normalizedRoot) {
       return true;
     }
     const rootPrefix = normalizedRoot.endsWith("/") ? normalizedRoot : `${normalizedRoot}/`;
     return normalizedCandidate.startsWith(rootPrefix);
+  }
+
+  private normalizePathForRootCheck(path: string): string {
+    const resolvedPath = resolve(path);
+    try {
+      return realpathSync(resolvedPath).replace(/\\/g, "/");
+    } catch {
+      return resolvedPath.replace(/\\/g, "/");
+    }
   }
 
   private logWorkspaceWarning(context: string, error: unknown): void {

@@ -76,7 +76,7 @@ export const sanitizeRenderedDelta = <T extends SystemReminderState>(
   let statusText: string | null = null;
   for (const line of withoutReminders.split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (trimmed && /^\d+→/.test(trimmed)) {
+    if (mode === "team" && trimmed && /^\d+→/.test(trimmed)) {
       continue;
     }
 

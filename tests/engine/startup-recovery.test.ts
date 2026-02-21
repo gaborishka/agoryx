@@ -228,6 +228,62 @@ test("engine init calls worktreeManager.reconcile()", async () => {
   }
 });
 
+test("engine init continues when memory recovery fails", async () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+  const session = new SessionService(store);
+  const adapter = makeAdapter("codex");
+  const memoryService = new MemoryService(store);
+  (memoryService as unknown as { checkAndRecover: (roomId: string) => void }).checkAndRecover = () => {
+    throw new Error("forced memory failure");
+  };
+
+  const config = makeConfig("codex");
+  const engine = new ChatEngine(session, { codex: adapter }, config, {}, memoryService);
+
+  try {
+    const initialized = engine.init();
+    assert.ok(initialized.room.id.length > 0);
+  } finally {
+    await engine.shutdown();
+    await memoryService.dispose();
+    store.close();
+  }
+});
+
+test("engine init continues when worktree reconcile fails", async () => {
+  const repoRoot = createTempGitRepo();
+  const store = new SQLiteStore(":memory:");
+  store.init();
+  const session = new SessionService(store);
+  const adapter = makeAdapter("codex");
+  const memoryService = new MemoryService(store);
+  const worktreeManager = new WorktreeManager(repoRoot);
+  (worktreeManager as unknown as { reconcile: () => void }).reconcile = () => {
+    throw new Error("forced reconcile failure");
+  };
+
+  const config = makeConfig("codex");
+  const engine = new ChatEngine(
+    session,
+    { codex: adapter },
+    config,
+    {},
+    memoryService,
+    worktreeManager,
+  );
+
+  try {
+    const initialized = engine.init();
+    assert.ok(initialized.room.id.length > 0);
+  } finally {
+    await engine.shutdown();
+    await memoryService.dispose();
+    store.close();
+    cleanupRepo(repoRoot);
+  }
+});
+
 test("/help includes memory/worktree/workspace command surface", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agoryx-startup-recovery-help-"));
   t.after(() => {

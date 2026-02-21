@@ -830,7 +830,10 @@ class CodexAppServerRunner {
         return;
       }
       parsed = value as Record<string, unknown>;
-    } catch {
+    } catch (error: unknown) {
+      if (looksLikeJsonPayload(line)) {
+        logCodexJsonParseWarning("app-server line", line, error);
+      }
       return;
     }
 
@@ -1196,6 +1199,26 @@ const buildCodexNewConversationParams = (cwd: string): Record<string, unknown> =
 const buildCodexSpawnCwd = (workspaceCwd?: string): string =>
   workspaceCwd?.trim() || process.cwd();
 
+const looksLikeJsonPayload = (line: string): boolean => {
+  const trimmed = line.trim();
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
+};
+
+const logCodexJsonParseWarning = (
+  context: string,
+  line: string,
+  error: unknown,
+): void => {
+  const detail = error instanceof Error ? error.message : String(error);
+  const preview = line.length > 180 ? `${line.slice(0, 180)}...` : line;
+  console.error(
+    `[adapter.codex] Failed to parse JSON (${context}): ${detail}; line='${preview}'`,
+  );
+};
+
 export const extractCodexThreadId = (line: string): string | null => {
   const trimmed = line.trim();
   if (!trimmed) {
@@ -1211,7 +1234,10 @@ export const extractCodexThreadId = (line: string): string | null => {
     ) {
       return parsed.thread_id;
     }
-  } catch {
+  } catch (error: unknown) {
+    if (looksLikeJsonPayload(trimmed)) {
+      logCodexJsonParseWarning("thread id extraction", trimmed, error);
+    }
     return null;
   }
 

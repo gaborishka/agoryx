@@ -1732,5 +1732,72 @@ internal/
   - `npx tsx --test tests/engine/team-mode.test.ts tests/engine/worktree-integration.test.ts tests/storage/agent-sessions.test.ts tests/storage/team-runs.test.ts tests/storage/sqlite-store.test.ts tests/workspace/collector.test.ts` PASS (**67/67**)
   - `npm test` PASS (**391/391**)
 
+### Ink input hotfix (2026-02-21)
+- Fixed interactive prompt deletion regression in `cmd/agoryx/ink-chat.tsx`:
+  - terminals that map Backspace as `key.delete` (with empty value) now correctly delete previous character,
+  - forward-delete is now bound to `Ctrl+D` only (to avoid ambiguity with Backspace mappings).
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/chat-cli.test.ts tests/cmd/command-handler.test.ts` PASS (**31/31**)
+
+### CLI launcher freshness fix (2026-02-21)
+- Fixed stale-bundle launch behavior in `bin/agoryx.js`:
+  - launcher now compares mtimes of `cmd/agoryx/main.ts` and `dist/cmd/agoryx/main.js`,
+  - when source is newer than dist, it auto-runs source via tsx fallback instead of stale dist.
+- This prevents post-fix regressions where runtime still uses old compiled files.
+- Validation:
+  - `npm run build` PASS
+  - `node bin/agoryx.js --version` PASS
+
+### Claude review follow-up hardening (2026-02-21)
+- Addressed remaining review findings across workspace/worktree/storage/launcher/config/engine:
+  - `internal/workspace/collector.ts`
+    - pinned-doc root check now resolves real paths (symlink escape blocked),
+    - added missing catch-path logging in `collectAlwaysOn`,
+    - `collectOnDemand` now includes explicit `unavailable` state and avoids silent empty fallbacks.
+  - `bin/agoryx.js`
+    - separated dist `access()` from dynamic import; fallback now happens only for missing dist entry,
+    - dist import failures are surfaced to stderr before source fallback.
+  - `internal/storage/sqlite.ts`
+    - introduced strict `MemoryLogRow` / `MemorySnapshotRow` runtime validation (removed `any` row mappers),
+    - memory payload/snapshot JSON parsing is now critical (throws on corruption instead of silent empty fallbacks),
+    - `tryParseJson` now safely handles non-string inputs with explicit diagnostics,
+    - invalid percent-encoded SQLite `file:` URI segments now fail fast with clear error.
+  - `internal/worktree/manager.ts`
+    - `getHead` no longer returns empty string on failure (`unknown` sentinel),
+    - `status()` now reports `ahead/behind` as nullable + `syncUnavailable` diagnostics instead of false `0/0`,
+    - default-branch detection hardened (`origin/HEAD` → `main/master` local fallback → current branch).
+  - `internal/config/index.ts`
+    - `team.checkCommands` validation switched to fail-fast on unsafe command entries (no silent dropping).
+  - `internal/engine/chat.ts`
+    - `init()` now degrades gracefully when memory recovery or worktree reconcile fails (warn log, no startup crash).
+  - `internal/engine/lifecycle.ts` + `cmd/agoryx/main.ts`
+    - shutdown now returns destroy-failure report; CLI surfaces cleanup warnings to user.
+  - `internal/adapters/{codex,claude}/index.ts`
+    - removed silent JSON parse drops in critical interactive parsing paths via guarded warning logs.
+  - `internal/rendering/sanitize.ts`
+    - numbered dump-line stripping is now team-mode-scoped (reduces false positives in non-team modes).
+  - `internal/engine/dispatch-engine.ts`
+    - `extractPayloadText` now rejects array payloads explicitly.
+  - `cmd/agoryx/main.ts`
+    - version resolver now reports corrupted `package.json` parse failures instead of swallowing,
+    - DB path preparation now handles relative `file:` URI parent directories safely.
+- Added/updated regression tests:
+  - `tests/workspace/collector.test.ts`
+    - non-git on-demand unavailable marker,
+    - symlink pinned-doc escape rejection.
+  - `tests/config/merge.test.ts`
+    - unsafe `team.checkCommands` rejection.
+  - `tests/engine/startup-recovery.test.ts`
+    - engine init survives memory recovery failure,
+    - engine init survives worktree reconcile failure.
+  - `tests/worktree/manager.test.ts`
+    - status sync unavailable/null ahead-behind on git failures.
+  - `tests/cmd/root-cli.test.ts`
+    - relative `file:` DB URI parent directory preparation.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**398/398**)
+
 ## Last Updated
-2026-02-21T12:35:30Z by codex
+2026-02-21T13:13:48Z by codex

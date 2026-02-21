@@ -171,15 +171,19 @@ const CHECK_COMMAND_PATTERN = /^[a-zA-Z0-9_./-]+(\s+[^\s|;&`$()<>#]+)*$/;
 
 function validateCheckCommands(commands: string[]): string[] {
   const valid: string[] = [];
+  const invalid: string[] = [];
   for (const cmd of commands) {
     const trimmed = cmd.trim();
     if (CHECK_COMMAND_PATTERN.test(trimmed)) {
       valid.push(trimmed);
     } else {
-      console.error(
-        `[config] Rejected check command with unsafe characters: ${trimmed.slice(0, 80)}`,
-      );
+      invalid.push(trimmed.slice(0, 120));
     }
+  }
+  if (invalid.length > 0) {
+    throw new Error(
+      `[config] Invalid team.checkCommands entry: ${invalid.join(" | ")}`,
+    );
   }
   return valid;
 }

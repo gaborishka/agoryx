@@ -535,7 +535,7 @@ export class DispatchEngine implements TeamDispatchApi {
 }
 
 const extractPayloadText = (payload: unknown): string => {
-  if (!payload || typeof payload !== "object") {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return "";
   }
   const text = (payload as { text?: string }).text;

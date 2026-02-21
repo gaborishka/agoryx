@@ -180,6 +180,30 @@ test("remove() treats git status failures as dirty without force", () => {
   }
 });
 
+test("status() reports syncUnavailable when ahead/behind cannot be computed", () => {
+  const repo = createTempGitRepo();
+  try {
+    const mgr = new WorktreeManager(repo);
+    const info = mgr.create("codex");
+    (
+      mgr as unknown as {
+        agentMap: Map<string, { agent: string; path: string; branch: string; head: string }>;
+      }
+    ).agentMap.set("codex", {
+      ...info,
+      path: join(repo, "missing-worktree"),
+    });
+
+    const status = mgr.status();
+    assert.equal(status.length, 1);
+    assert.equal(status[0].ahead, null);
+    assert.equal(status[0].behind, null);
+    assert.ok(status[0].syncUnavailable);
+  } finally {
+    cleanup(repo);
+  }
+});
+
 test("remove() with force succeeds on dirty worktree", () => {
   const repo = createTempGitRepo();
   try {

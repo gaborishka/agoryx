@@ -146,8 +146,9 @@ function resolveAppVersion(): string {
             return version;
           }
         }
-      } catch {
-        // Continue walking up the tree.
+      } catch (error: unknown) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(`[cli] Failed to parse '${candidate}': ${detail}`);
       }
     }
 
@@ -529,7 +530,10 @@ const runChat = async (argv: string[]): Promise<void> => {
   } finally {
     inkAdapterEventSink = null;
     cleanupRenderState();
-    await engine.shutdown();
+    const shutdownReport = await engine.shutdown();
+    for (const failure of shutdownReport.destroyFailures) {
+      console.error(formatWarnLine(`Shutdown cleanup warning: ${failure}`));
+    }
     await memoryService.dispose();
     store.close();
   }
@@ -1453,9 +1457,14 @@ const handleWorktreeCommand = async (
       }
       console.log("agent\tdirty\tahead\tbehind\tpath");
       for (const item of items) {
+        const ahead = item.ahead == null ? "?" : String(item.ahead);
+        const behind = item.behind == null ? "?" : String(item.behind);
         console.log(
-          `${item.agent}\t${item.dirty ? "yes" : "no"}\t${item.ahead}\t${item.behind}\t${item.path}`,
+          `${item.agent}\t${item.dirty ? "yes" : "no"}\t${ahead}\t${behind}\t${item.path}`,
         );
+        if (item.syncUnavailable) {
+          console.log(`  sync unavailable: ${item.syncUnavailable}`);
+        }
       }
       return true;
     }
@@ -2189,23 +2198,66 @@ const normalizeDbPath = (dbPath: string): string => {
   return normalized;
 };
 
+const resolveDbPathForPreparation = (dbPath: string): string | null => {
+  const normalized = normalizeDbPath(dbPath);
+  const lowered = normalized.toLowerCase();
+  if (lowered === ":memory:" || lowered.startsWith("file::memory:")) {
+    return null;
+  }
+  if (!lowered.startsWith("file:")) {
+    return normalized;
+  }
+
+  const queryIndex = normalized.indexOf("?");
+  if (queryIndex >= 0) {
+    const hashIndex = normalized.indexOf("#", queryIndex + 1);
+    const query = normalized.slice(queryIndex + 1, hashIndex >= 0 ? hashIndex : undefined);
+    const mode = new URLSearchParams(query).get("mode")?.toLowerCase();
+    if (mode === "memory") {
+      return null;
+    }
+  }
+
+  const withoutPrefix = normalized.slice("file:".length);
+  const cutIndex = withoutPrefix.search(/[?#]/);
+  const pathPart = cutIndex >= 0 ? withoutPrefix.slice(0, cutIndex) : withoutPrefix;
+  if (!pathPart) {
+    return null;
+  }
+
+  if (pathPart.startsWith("/") || pathPart.startsWith("//")) {
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol === "file:") {
+        const withoutQuery = new URL(parsed.toString());
+        withoutQuery.search = "";
+        withoutQuery.hash = "";
+        return fileURLToPath(withoutQuery);
+      }
+    } catch {
+      // Fall through to return path part as-is.
+    }
+    return pathPart;
+  }
+
+  try {
+    return decodeURIComponent(pathPart);
+  } catch {
+    return pathPart;
+  }
+};
+
 interface ParsedArgs {
   options: Record<string, string>;
   positionals: string[];
 }
 
 const ensureDbPathReady = (dbPath: string): void => {
-  const normalizedPath = normalizeDbPath(dbPath).toLowerCase();
-  if (
-    normalizedPath === ":memory:" ||
-    normalizedPath.startsWith("file::memory:")
-  ) {
+  const fsPath = resolveDbPathForPreparation(dbPath);
+  if (!fsPath) {
     return;
   }
-  if (normalizedPath.startsWith("file:")) {
-    return;
-  }
-  ensureParentDirectory(normalizeDbPath(dbPath));
+  ensureParentDirectory(fsPath);
 };
 
 const parseCliArgs = (args: string[], specs: OptionSpec[]): ParsedArgs => {

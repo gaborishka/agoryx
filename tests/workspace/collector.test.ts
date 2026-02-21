@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -170,6 +170,20 @@ test("collectOnDemand returns log and branch diff", () => {
     assert.ok(typeof onDemand.recentLog === "string");
     assert.ok(onDemand.recentLog.includes("add b"), "log should include recent commit");
     assert.ok(onDemand.recentLog.includes("add a"), "log should include older commit");
+    assert.equal(onDemand.unavailable, null);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("collectOnDemand marks unavailable for non-git directory", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-ws-ondemand-nongit-"));
+  try {
+    const collector = new WorkspaceCollector(DEFAULT_WORKSPACE_CONFIG);
+    const onDemand = collector.collectOnDemand(dir);
+    assert.equal(onDemand.recentLog, "");
+    assert.equal(onDemand.branchDiffStat, "");
+    assert.ok(onDemand.unavailable);
   } finally {
     cleanup(dir);
   }
@@ -207,6 +221,27 @@ test("collectAlwaysOn skips pinned docs outside workspace root", () => {
 
     const collector = new WorkspaceCollector(DEFAULT_WORKSPACE_CONFIG);
     const ctx = collector.collectAlwaysOn(dir, [outsideDocPath]);
+
+    assert.equal(ctx.pinnedDocs.length, 0);
+  } finally {
+    cleanup(dir);
+    cleanup(outsideDir);
+  }
+});
+
+test("collectAlwaysOn rejects pinned symlink that resolves outside workspace root", () => {
+  const dir = makeTempGitRepo();
+  const outsideDir = mkdtempSync(join(tmpdir(), "agoryx-ws-symlink-outside-"));
+  try {
+    const outsideDocPath = join(outsideDir, "SECRET.md");
+    writeFileSync(outsideDocPath, "outside");
+
+    const docsDir = join(dir, "docs");
+    mkdirSync(docsDir);
+    symlinkSync(outsideDocPath, join(docsDir, "LEAK.md"));
+
+    const collector = new WorkspaceCollector(DEFAULT_WORKSPACE_CONFIG);
+    const ctx = collector.collectAlwaysOn(dir, ["docs/LEAK.md"]);
 
     assert.equal(ctx.pinnedDocs.length, 0);
   } finally {

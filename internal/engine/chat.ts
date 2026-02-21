@@ -7,7 +7,9 @@ import { createPolicy } from "../orchestrator/factory.js";
 import { SessionService } from "../session/service.js";
 import { DispatchEngine } from "./dispatch-engine.js";
 import { EngineLifecycle } from "./lifecycle.js";
+import type { EngineShutdownReport } from "./lifecycle.js";
 import { createDefaultEngineLogger } from "./logger.js";
+import type { EngineLogger } from "./logger.js";
 import { TeamOrchestrator } from "./team-orchestrator.js";
 import type {
   ChatEngineHooks,
@@ -33,6 +35,7 @@ export class ChatEngine {
   private readonly dispatchEngine: DispatchEngine;
   private readonly team: TeamOrchestrator;
   private readonly lifecycle: EngineLifecycle;
+  private readonly logger: EngineLogger;
 
   public constructor(
     private readonly session: SessionService,
@@ -43,6 +46,7 @@ export class ChatEngine {
     private readonly worktreeManager?: WorktreeManager,
   ) {
     const logger = hooks.logger ?? createDefaultEngineLogger();
+    this.logger = logger;
 
     this.dispatchEngine = new DispatchEngine({
       session: this.session,
@@ -105,8 +109,27 @@ export class ChatEngine {
       availableAgents: enabledAgents,
     };
 
-    this.memoryService?.checkAndRecover(this.state.room.id);
-    this.worktreeManager?.reconcile();
+    if (this.memoryService) {
+      try {
+        this.memoryService.checkAndRecover(this.state.room.id);
+      } catch (error: unknown) {
+        this.logger.log("warn", "engine.init_memory_recovery_failed", {
+          roomId: this.state.room.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (this.worktreeManager) {
+      try {
+        this.worktreeManager.reconcile();
+      } catch (error: unknown) {
+        this.logger.log("warn", "engine.init_worktree_reconcile_failed", {
+          roomId: this.state.room.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     return {
       room: this.state.room,
@@ -214,8 +237,8 @@ export class ChatEngine {
     return this.team.queueFeedback(text);
   }
 
-  public async shutdown(): Promise<void> {
-    await this.lifecycle.shutdown();
+  public async shutdown(): Promise<EngineShutdownReport> {
+    return this.lifecycle.shutdown();
   }
 
   public async processUserMessage(text: string): Promise<DispatchResult[]> {

@@ -1698,5 +1698,39 @@ internal/
   - `npx tsx --test tests/cmd/root-cli.test.ts` PASS (**14/14**)
   - `npm run typecheck` PASS
 
+### Claude review fixes batch (2026-02-21)
+- Fixed critical team runtime config mutation issues in `internal/engine/team-orchestrator.ts`:
+  - snapshot/restore now includes both adapter `mode` and `workspaceCwd`,
+  - restoration now runs when `createTeamRun(...)` fails,
+  - recoverable dispatch failures (`TIMEOUT`, `RATE_LIMIT`, `SESSION_EXPIRED`) now continue the run instead of immediate fail,
+  - consolidated duplicated mention regex constants.
+- Hardened storage behavior in `internal/storage/sqlite.ts`:
+  - `upsertMemorySnapshot(...)` now uses an explicit transaction,
+  - removed non-null assertion on snapshot read-back and replaced with explicit error,
+  - `UPDATE` paths now validate `result.changes` and throw on missing targets,
+  - JSON parse helper now logs table/column/row context and throws on critical corrupt columns.
+- Improved dispatch/adapters safety:
+  - `internal/engine/dispatch-engine.ts` now surfaces missing adapter config as explicit `CONFIG_ERROR` instead of silent stub fallback,
+  - `internal/adapters/{claude,codex}/index.ts` now removes one-shot spawn `error` listeners after request completion.
+- Improved filesystem/workspace robustness:
+  - `internal/workspace/collector.ts` now logs catch-path failures and rejects pinned docs outside workspace root,
+  - `internal/worktree/manager.ts` now logs previously silent catch paths with sanitized single-line details,
+  - `internal/memory/renderer.ts` now cleans up temp files if atomic rename fails.
+- CLI and shared rendering cleanup:
+  - extracted duplicated helpers into `cmd/agoryx/render-helpers.ts`,
+  - `cmd/agoryx/main.ts` now uses `console.error` for worktree remove failures and preserves non-Error fatal values with `String(error)`.
+- Memory dedup optimization:
+  - `internal/memory/service.ts` decision dedup now uses `Set`.
+- Added/updated regression coverage:
+  - `tests/engine/team-mode.test.ts` (recoverable retries, createTeamRun rollback restore, missing adapter config error path),
+  - `tests/engine/worktree-integration.test.ts` (workspaceCwd restored after run),
+  - `tests/storage/{agent-sessions,sqlite-store,team-runs}.test.ts`,
+  - `tests/workspace/collector.test.ts`,
+  - `tests/cmd/worktree-command.test.ts`.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/engine/team-mode.test.ts tests/engine/worktree-integration.test.ts tests/storage/agent-sessions.test.ts tests/storage/team-runs.test.ts tests/storage/sqlite-store.test.ts tests/workspace/collector.test.ts` PASS (**67/67**)
+  - `npm test` PASS (**391/391**)
+
 ## Last Updated
-2026-02-21T10:24:06Z by codex
+2026-02-21T12:35:30Z by codex

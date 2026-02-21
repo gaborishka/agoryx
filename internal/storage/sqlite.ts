@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { fileURLToPath } from "node:url";
 import type {
   Checkpoint,
   EventEnvelope,
@@ -245,7 +246,10 @@ export class SQLiteStore {
   private readonly db: Database.Database;
 
   public constructor(dbPath: string) {
-    this.db = new Database(dbPath);
+    const openTarget = resolveDbOpenTarget(dbPath);
+    this.db = openTarget.options
+      ? new Database(openTarget.filename, openTarget.options)
+      : new Database(openTarget.filename);
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("journal_mode = WAL");
   }
@@ -1433,6 +1437,77 @@ const tryParseJson = <T>(value: string, fallback: T): T => {
   }
 };
 
+interface DbOpenTarget {
+  filename: string;
+  options?: Database.Options;
+}
+
+const resolveDbOpenTarget = (dbPath: string): DbOpenTarget => {
+  const trimmed = dbPath.trim();
+  const lowered = trimmed.toLowerCase();
+
+  if (lowered === ":memory:" || lowered.startsWith("file::memory:")) {
+    return { filename: ":memory:" };
+  }
+  if (!lowered.startsWith("file:")) {
+    return { filename: trimmed };
+  }
+
+  const parsed = tryParseFileUri(trimmed);
+  const mode = parsed?.searchParams.get("mode")?.toLowerCase();
+  if (mode === "memory") {
+    return { filename: ":memory:" };
+  }
+
+  const options: Database.Options = {};
+  if (mode === "ro") {
+    options.readonly = true;
+  } else if (mode === "rw") {
+    options.fileMustExist = true;
+  }
+
+  const filename = resolveFileUriFilename(trimmed, parsed);
+  if (Object.keys(options).length === 0) {
+    return { filename };
+  }
+  return { filename, options };
+};
+
+const tryParseFileUri = (value: string): URL | null => {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "file:" ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const resolveFileUriFilename = (rawUri: string, parsed: URL | null): string => {
+  const withoutPrefix = rawUri.slice("file:".length);
+  const cutIndex = withoutPrefix.search(/[?#]/);
+  const pathPart = cutIndex >= 0 ? withoutPrefix.slice(0, cutIndex) : withoutPrefix;
+
+  if (!pathPart) {
+    return ":memory:";
+  }
+
+  if (pathPart.startsWith("/") || pathPart.startsWith("//")) {
+    if (parsed) {
+      const withoutQuery = new URL(parsed.toString());
+      withoutQuery.search = "";
+      withoutQuery.hash = "";
+      return fileURLToPath(withoutQuery);
+    }
+    return pathPart;
+  }
+
+  try {
+    return decodeURIComponent(pathPart);
+  } catch {
+    return pathPart;
+  }
+};
+
 const messageRowToDomain = (row: MessageRow): Message => ({
   id: row.id,
   roomId: row.room_id,
@@ -1511,18 +1586,18 @@ const memoryRowToEntry = (row: any): MemoryLogEntry => ({
   timestamp: row.timestamp,
   source: row.source,
   eventType: row.event_type,
-  payload: JSON.parse(row.payload),
+  payload: tryParseJson(row.payload, {}),
 });
 
 const snapshotRowToDomain = (row: any): MemorySnapshot => ({
   roomId: row.room_id,
   currentGoal: row.current_goal,
   activeBranch: row.active_branch,
-  activeWorktrees: JSON.parse(row.active_worktrees),
-  keyDecisions: JSON.parse(row.key_decisions),
-  blockers: JSON.parse(row.blockers),
-  nextActions: JSON.parse(row.next_actions),
-  taskStatus: JSON.parse(row.task_status),
+  activeWorktrees: tryParseJson<string[]>(row.active_worktrees, []),
+  keyDecisions: tryParseJson<string[]>(row.key_decisions, []),
+  blockers: tryParseJson<string[]>(row.blockers, []),
+  nextActions: tryParseJson<string[]>(row.next_actions, []),
+  taskStatus: tryParseJson<Record<string, string>>(row.task_status, {}),
   lastLogId: row.last_log_id,
   reducerVersion: row.reducer_version,
   updatedAt: row.updated_at,

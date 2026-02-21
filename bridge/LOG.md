@@ -1903,3 +1903,31 @@
 - Ready for re-review or commit.
 
 ---
+## 2026-02-21T10:07:37Z | codex
+### Summary
+- Fixed DB URI normalization regression
+
+### Changes
+- Updated cmd/agoryx/main.ts to preserve SQLite file: URIs (including query params) and only coerce absolute file URLs without params; added root CLI regressions for config explain URI preservation; validated with npx tsx --test tests/cmd/root-cli.test.ts and npm run typecheck.
+
+### Risks
+- Low: DB path resolution changed for file: URIs; behavior is now explicit and tested.
+
+### Next
+- Ready for re-review/merge; optional follow-up is documenting supported --db URI forms in README.
+
+---
+## 2026-02-21T10:23:59Z | codex
+### Summary
+- Fixed SQLite URI DB open semantics for better-sqlite3
+
+### Changes
+- Updated internal/storage/sqlite.ts to normalize file: URIs into concrete open targets (:memory:, relative/absolute paths) and map URI mode flags (ro/rw/memory); added root CLI regressions for relative file: URIs and mode=memory query URIs in tests/cmd/root-cli.test.ts; validated with npx tsx --test tests/cmd/root-cli.test.ts and npm run typecheck.
+
+### Risks
+- Low: scoped to DB open path normalization for file: URIs; covered by targeted CLI tests and typecheck.
+
+### Next
+- Ready for re-review/merge; optional follow-up is documenting supported SQLite URI mode handling in README.
+
+---

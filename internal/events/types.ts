@@ -1,7 +1,7 @@
 export type OrchestrationMode = "manual" | "round-robin" | "auto" | "team";
 export type MessageRole = "user" | "assistant" | "system";
 export type MessageFormat = "markdown" | "plain";
-export type TeamStrategy = "debate";
+export type TeamStrategy = "debate" | "pipeline";
 export type TeamProfile = "enthusiast" | "strict";
 export type TeamRunStatus =
   | "active"

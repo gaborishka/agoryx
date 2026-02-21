@@ -186,7 +186,7 @@ test("pinnedDocs are truncated with marker when exceeding limit", () => {
     execFileSync("git", ["add", "."], { cwd: dir });
     execFileSync("git", ["commit", "-m", "add docs"], { cwd: dir });
 
-    const config: WorkspaceConfig = { ...DEFAULT_WORKSPACE_CONFIG, pinnedDocBytesPerFile: 50 };
+    const config: WorkspaceConfig = { ...DEFAULT_WORKSPACE_CONFIG, pinnedDocCharsPerFile: 50 };
     const collector = new WorkspaceCollector(config);
     const ctx = collector.collectAlwaysOn(dir, [join(docsDir, "BIG.md")]);
 

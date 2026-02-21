@@ -233,8 +233,12 @@ export class WorktreeManager {
     ) {
       return true;
     }
-    return this.includeLegacyDefaultWorktreePaths &&
-      normalizedCandidate.includes("/.agoryx/worktrees/");
+    if (!this.includeLegacyDefaultWorktreePaths) {
+      return false;
+    }
+    const legacyRoot = this.normalizePath(join(this.repoRoot, ".agoryx", "worktrees"));
+    return normalizedCandidate === legacyRoot ||
+      normalizedCandidate.startsWith(`${legacyRoot}/`);
   }
 
   private normalizePath(path: string): string {

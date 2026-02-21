@@ -197,7 +197,7 @@ test("workspace config merges partial overrides with defaults", () => {
   // Defaults preserved for unset fields
   assert.equal(config.workspace.statusLines, DEFAULT_CONFIG.workspace.statusLines);
   assert.equal(config.workspace.treeLines, DEFAULT_CONFIG.workspace.treeLines);
-  assert.equal(config.workspace.pinnedDocBytesPerFile, DEFAULT_CONFIG.workspace.pinnedDocBytesPerFile);
+  assert.equal(config.workspace.pinnedDocCharsPerFile, DEFAULT_CONFIG.workspace.pinnedDocCharsPerFile);
 
   rmSync(dir, { recursive: true });
 });

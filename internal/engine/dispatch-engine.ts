@@ -307,8 +307,7 @@ export class DispatchEngine implements TeamDispatchApi {
       options?.outputTransform,
     );
 
-    const provider = dispatch.targetAdapter === "codex" ? "openai" : "anthropic";
-    const model = dispatch.targetAdapter === "codex" ? "codex" : "claude-code";
+    const { provider, model } = resolveAdapterProviderInfo(dispatch.targetAdapter);
     this.session.saveAssistantMessage(
       state.room.id,
       `agent.${dispatch.targetAdapter}`,
@@ -458,8 +457,7 @@ export class DispatchEngine implements TeamDispatchApi {
       options?.outputTransform,
     );
 
-    const provider = dispatch.targetAdapter === "codex" ? "openai" : "anthropic";
-    const model = dispatch.targetAdapter === "codex" ? "codex" : "claude-code";
+    const { provider, model } = resolveAdapterProviderInfo(dispatch.targetAdapter);
     this.session.saveAssistantMessage(
       state.room.id,
       `agent.${dispatch.targetAdapter}`,
@@ -547,6 +545,16 @@ const extractErrorInfo = (payload: unknown): { errorClass: string; message: stri
 
 const normalizeAdapterName = (value: string): string =>
   value.trim().toLowerCase();
+
+const ADAPTER_PROVIDER_MAP: Record<string, { provider: string; model: string }> = {
+  codex: { provider: "openai", model: "codex" },
+  claude: { provider: "anthropic", model: "claude-code" },
+};
+
+const resolveAdapterProviderInfo = (
+  adapterName: string,
+): { provider: string; model: string } =>
+  ADAPTER_PROVIDER_MAP[adapterName] ?? { provider: adapterName, model: adapterName };
 
 export const normalizeErrorClass = (error?: string): TeamStep["errorClass"] => {
   if (!error) {

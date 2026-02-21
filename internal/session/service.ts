@@ -10,6 +10,8 @@ import type {
 } from "../events/types.js";
 import { createId, nowIso } from "./ids.js";
 import { SQLiteStore } from "../storage/sqlite.js";
+
+const DELTA_PROMPT_MAX_CHARS = 20_000;
 import type {
   AgentSession,
   CreateTeamCheckInput,
@@ -372,7 +374,7 @@ export class SessionService {
       const prompt = messages
         .map((message) => `[${message.author}] ${message.text}`)
         .join("\n\n")
-        .slice(-20000);
+        .slice(-DELTA_PROMPT_MAX_CHARS);
       return { prompt, cutoffSeq };
     }
 

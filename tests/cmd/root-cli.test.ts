@@ -147,3 +147,45 @@ test("sessions list with file URI db path does not create local file: directory"
   assert.doesNotMatch(result.stderr, /datatype mismatch/i);
   assert.equal(existsSync(join(dir, "file:")), false);
 });
+
+test("sessions list with relative SQLite file URI resolves to regular db filename", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-root-cli-db-relative-uri-"));
+  t.after(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const result = await runCli(["sessions", "list", "--db", "file:test.db"], "", 20_000, dir);
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.equal(existsSync(join(dir, "test.db")), true);
+  assert.equal(existsSync(join(dir, "file:test.db")), false);
+});
+
+test("sessions list with SQLite URI mode=memory avoids literal file creation", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-root-cli-db-memory-uri-"));
+  t.after(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const dbUri = "file:test.db?mode=memory&cache=shared";
+  const result = await runCli(["sessions", "list", "--db", dbUri], "", 20_000, dir);
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.equal(existsSync(join(dir, "test.db")), false);
+  assert.equal(existsSync(join(dir, dbUri)), false);
+});
+
+test("config explain preserves relative SQLite file URI", async () => {
+  const result = await runCli(["config", "explain", "--db", "file:test.db"]);
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Resolved db path: file:test\.db/);
+});
+
+test("config explain preserves SQLite URI query parameters", async () => {
+  const dbUri = "file:test.db?mode=memory&cache=shared";
+  const result = await runCli(["config", "explain", "--db", dbUri]);
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Resolved db path: file:test\.db\?mode=memory&cache=shared/);
+});

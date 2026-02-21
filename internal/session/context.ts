@@ -92,6 +92,10 @@ export function buildContext(
   if (systemPrompt) {
     const promptTokens = estimateTokens(systemPrompt);
     tokenBudget -= promptTokens;
+    if (tokenBudget < 0) {
+      tokenBudget = 0;
+      truncated = true;
+    }
     result.push({
       id: "system-prompt",
       roomId,

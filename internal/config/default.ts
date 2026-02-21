@@ -18,7 +18,7 @@ export interface ChatRuntimeConfig {
 export const defaultRoomConfig = (mode: OrchestrationMode): RoomConfig => ({
   mode,
   checkpointThreshold: 50,
-  maxHistoryMessages: 200,
+  maxHistoryMessages: 100,
   maxContextTokens: 30_000,
 });
 

@@ -2202,6 +2202,16 @@ const normalizeDbPath = (dbPath: string): string => {
     return normalized;
   }
 
+  // Preserve SQLite URI forms (for example file:relative.db?mode=memory) as-is.
+  if (normalized.includes("?") || normalized.includes("#")) {
+    return normalized;
+  }
+
+  // Convert absolute file URLs to filesystem paths so directory preparation works.
+  if (!(normalized.startsWith("file:/") || normalized.startsWith("file://"))) {
+    return normalized;
+  }
+
   try {
     const parsed = new URL(normalized);
     if (parsed.protocol === "file:") {
@@ -2224,6 +2234,9 @@ const ensureDbPathReady = (dbPath: string): void => {
     normalizedPath === ":memory:" ||
     normalizedPath.startsWith("file::memory:")
   ) {
+    return;
+  }
+  if (normalizedPath.startsWith("file:")) {
     return;
   }
   ensureParentDirectory(normalizeDbPath(dbPath));

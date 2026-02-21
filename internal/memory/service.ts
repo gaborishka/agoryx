@@ -72,9 +72,6 @@ export class MemoryService {
   }
 
   public recordDecision(roomId: string, text: string): void {
-    if (this.disposed) {
-      return;
-    }
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -82,13 +79,12 @@ export class MemoryService {
       eventType: "decision",
       payload: { text },
     });
-    this.scheduleRender(roomId);
+    if (!this.disposed) {
+      this.scheduleRender(roomId);
+    }
   }
 
   public recordNote(roomId: string, text: string, source: string = "user"): void {
-    if (this.disposed) {
-      return;
-    }
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -96,7 +92,9 @@ export class MemoryService {
       eventType: "note",
       payload: { text },
     });
-    this.scheduleRender(roomId);
+    if (!this.disposed) {
+      this.scheduleRender(roomId);
+    }
   }
 
   public recordError(roomId: string, agent: string, error: string): void {
@@ -120,9 +118,6 @@ export class MemoryService {
   }
 
   public recordWorktreeCreate(roomId: string, agent: string, path: string, branch: string): void {
-    if (this.disposed) {
-      return;
-    }
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -130,13 +125,12 @@ export class MemoryService {
       eventType: "worktree_create",
       payload: { agent, path, branch },
     });
-    this.scheduleRender(roomId);
+    if (!this.disposed) {
+      this.scheduleRender(roomId);
+    }
   }
 
   public recordWorktreeRemove(roomId: string, agent: string, path: string): void {
-    if (this.disposed) {
-      return;
-    }
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -144,7 +138,9 @@ export class MemoryService {
       eventType: "worktree_remove",
       payload: { agent, path },
     });
-    this.scheduleRender(roomId);
+    if (!this.disposed) {
+      this.scheduleRender(roomId);
+    }
   }
 
   public rebuildSnapshot(roomId: string): MemorySnapshot | null {

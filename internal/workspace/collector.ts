@@ -7,7 +7,7 @@ export interface WorkspaceConfig {
   statusLines: number;
   diffLines: number;
   treeLines: number;
-  pinnedDocBytesPerFile: number;
+  pinnedDocCharsPerFile: number;
 }
 
 export const DEFAULT_WORKSPACE_CONFIG: WorkspaceConfig = {
@@ -16,7 +16,7 @@ export const DEFAULT_WORKSPACE_CONFIG: WorkspaceConfig = {
   statusLines: 50,
   diffLines: 30,
   treeLines: 200,
-  pinnedDocBytesPerFile: 4096,
+  pinnedDocCharsPerFile: 4096,
 };
 
 export interface PinnedDoc {
@@ -41,8 +41,8 @@ export interface OnDemandContext {
 }
 
 function truncateLines(text: string, maxLines: number): string {
-  const lines = text.split("\n").filter(Boolean);
-  if (lines.length <= maxLines) return lines.join("\n");
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) return text;
   return lines.slice(0, maxLines).join("\n");
 }
 
@@ -212,7 +212,7 @@ export class WorkspaceCollector {
     for (const path of paths) {
       try {
         const raw = readFileSync(path, "utf-8");
-        const limit = this.config.pinnedDocBytesPerFile;
+        const limit = this.config.pinnedDocCharsPerFile;
         if (raw.length > limit) {
           docs.push({ path, content: raw.slice(0, limit), truncated: true });
         } else {

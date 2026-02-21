@@ -1672,5 +1672,31 @@ internal/
   - `npm test -- tests/cmd/root-cli.test.ts tests/cmd/worktree-command.test.ts` PASS (**378/378** in full suite run).
   - `npm run typecheck` PASS.
 
+### DB URI normalization hotfix (2026-02-21)
+- Fixed SQLite DB path normalization regression in `cmd/agoryx/main.ts`:
+  - preserved SQLite URI forms as-is (`file:relative.db`, and any `file:` URI with `?`/`#` params),
+  - only converted absolute file URLs without URI params (`file:/...`, `file://...`) to filesystem paths,
+  - skipped parent-directory auto-create for unresolved `file:` URIs to avoid malformed path synthesis.
+- Added regression coverage:
+  - `tests/cmd/root-cli.test.ts`:
+    - `config explain preserves relative SQLite file URI`
+    - `config explain preserves SQLite URI query parameters`
+- Validation:
+  - `npx tsx --test tests/cmd/root-cli.test.ts` PASS (**12/12**)
+  - `npm run typecheck` PASS
+
+### SQLite URI open semantics fix (2026-02-21)
+- Fixed review finding for URI-style DB paths with `better-sqlite3` in `internal/storage/sqlite.ts`:
+  - added DB-open normalization for `file:` URIs before opening SQLite,
+  - maps URI memory forms (`file::memory:`, `mode=memory`) to `:memory:`,
+  - resolves relative and absolute file URIs to filesystem filenames to avoid literal `file:...?...` filenames,
+  - applies URI mode hints for supported cases (`mode=ro`, `mode=rw`) via open options.
+- Added regression coverage in `tests/cmd/root-cli.test.ts`:
+  - `sessions list with relative SQLite file URI resolves to regular db filename`
+  - `sessions list with SQLite URI mode=memory avoids literal file creation`
+- Validation:
+  - `npx tsx --test tests/cmd/root-cli.test.ts` PASS (**14/14**)
+  - `npm run typecheck` PASS
+
 ## Last Updated
-2026-02-21T09:52:46Z by codex
+2026-02-21T10:24:06Z by codex

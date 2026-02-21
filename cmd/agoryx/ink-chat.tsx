@@ -307,9 +307,10 @@ const isPrintableChar = (value: string): boolean =>
 
 const isBackspaceKey = (
   value: string,
-  key: { backspace?: boolean; ctrl?: boolean },
+  key: { backspace?: boolean; ctrl?: boolean; delete?: boolean },
 ): boolean =>
   key.backspace === true ||
+  (key.delete === true && value.length === 0) || // some terminals map Backspace as key.delete
   value === "\u007f" || // DEL (common Backspace in many terminals)
   value === "\u0008" || // Ctrl+H
   (key.ctrl === true && value.toLowerCase() === "h");
@@ -790,7 +791,7 @@ const InkChatApp = ({
       setDraftWithCursor(nextDraft, nextDraft.length);
       return;
     }
-    if (key.delete || (key.ctrl && normalizedValue === "d")) {
+    if (key.ctrl && normalizedValue === "d") {
       const next = removeNextChar(draft, cursorIndex);
       if (next.draft !== draft || next.cursorIndex !== cursorIndex) {
         resetHistoryNavigation();

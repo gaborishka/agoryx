@@ -121,8 +121,11 @@ export class WorktreeManager {
             stdio: ["ignore", "pipe", "pipe"],
           },
         );
-      } catch {
-        // Branch may not exist if it was already deleted
+      } catch (error: unknown) {
+        this.logGitFailure(
+          `failed to delete branch '${info.branch}' for agent '${normalizedAgent}'`,
+          error,
+        );
       }
 
       this.agentMap.delete(normalizedAgent);
@@ -151,8 +154,8 @@ export class WorktreeManager {
     let porcelain: Array<{ path: string; branch: string; head: string }>;
     try {
       porcelain = this.parseWorktreeList();
-    } catch {
-      // Not a git repository — nothing to reconcile
+    } catch (error: unknown) {
+      this.logGitFailure("failed to reconcile git worktrees", error);
       return;
     }
     this.agentMap.clear();
@@ -256,7 +259,8 @@ export class WorktreeManager {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "pipe"],
       }).trim();
-    } catch {
+    } catch (error: unknown) {
+      this.logGitFailure(`failed to read HEAD for '${cwd}'`, error);
       return "";
     }
   }
@@ -269,7 +273,8 @@ export class WorktreeManager {
         stdio: ["ignore", "pipe", "pipe"],
       });
       return output.trim().length > 0;
-    } catch {
+    } catch (error: unknown) {
+      this.logGitFailure(`failed to check dirty status for '${cwd}'`, error);
       return true;
     }
   }
@@ -288,7 +293,8 @@ export class WorktreeManager {
       );
       const [behind, ahead] = output.trim().split(/\s+/).map(Number);
       return { ahead: ahead ?? 0, behind: behind ?? 0 };
-    } catch {
+    } catch (error: unknown) {
+      this.logGitFailure(`failed to compute ahead/behind for '${cwd}'`, error);
       return { ahead: 0, behind: 0 };
     }
   }
@@ -305,15 +311,23 @@ export class WorktreeManager {
         },
       ).trim();
       return ref.replace("refs/remotes/origin/", "");
-    } catch {
+    } catch (error: unknown) {
+      this.logGitFailure("failed to detect remote default branch, using 'main'", error);
       return "main";
     }
+  }
+
+  private logGitFailure(context: string, error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    const firstLine = detail.split(/\r?\n/, 1)[0] ?? detail;
+    console.error(`[worktree] ${context}: ${firstLine}`);
   }
 
   private acquireLock(): void {
     if (this.locked) {
       throw new Error("WorktreeManager: concurrent operation in progress");
     }
+    // Defensive re-entrancy guard around multi-step git mutations.
     this.locked = true;
   }
 

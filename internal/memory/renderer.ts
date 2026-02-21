@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { MemoryLogEntry, MemorySnapshot } from "../storage/sqlite.js";
 
@@ -90,7 +90,16 @@ export const writeMemoryFile = (rootDir: string, content: string): string => {
   mkdirSync(targetDir, { recursive: true });
 
   const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmpPath, content, "utf8");
-  renameSync(tmpPath, targetPath);
+  try {
+    writeFileSync(tmpPath, content, "utf8");
+    renameSync(tmpPath, targetPath);
+  } catch (error: unknown) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // best-effort cleanup
+    }
+    throw error;
+  }
   return targetPath;
 };

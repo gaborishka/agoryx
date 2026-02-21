@@ -183,7 +183,7 @@ test("/worktree remove <agent> fails if worktree is dirty", async (t) => {
   );
   assert.equal(first.code, 0);
 
-  const dirtyFile = join(defaultWorktreeDir, agent, "dirty.txt");
+  const dirtyFile = join(defaultWorktreeDir, agent, "README.md");
   writeFileSync(dirtyFile, "dirty\n", "utf8");
 
   const second = await runChat(
@@ -191,7 +191,7 @@ test("/worktree remove <agent> fails if worktree is dirty", async (t) => {
     `/worktree remove ${agent}\n/worktree remove ${agent} --force\n/quit\n`,
   );
   assert.equal(second.code, 0);
-  assert.match(second.stdout, /uncommitted changes/i);
+  assert.match(`${second.stdout}\n${second.stderr}`, /uncommitted changes/i);
   assert.match(second.stdout, new RegExp(`Worktree removed for ${agent}`));
 });
 
@@ -206,7 +206,7 @@ test("/worktree remove <agent> --force removes even if dirty", async (t) => {
   );
   assert.equal(first.code, 0);
 
-  const dirtyFile = join(defaultWorktreeDir, agent, "dirty.txt");
+  const dirtyFile = join(defaultWorktreeDir, agent, "README.md");
   writeFileSync(dirtyFile, "dirty\n", "utf8");
 
   const second = await runChat(

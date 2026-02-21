@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 export interface WorkspaceConfig {
   enabled: boolean;
@@ -61,7 +62,8 @@ export class WorkspaceCollector {
     try {
       // Verify this is a git repo
       gitExec(["rev-parse", "--is-inside-work-tree"], cwd);
-    } catch {
+    } catch (error: unknown) {
+      this.logWorkspaceWarning(`collectAlwaysOn repo check failed for '${cwd}'`, error);
       return {
         branch: "",
         status: "",
@@ -91,7 +93,7 @@ export class WorkspaceCollector {
         gitExec(["ls-files"], cwd),
         this.config.treeLines,
       );
-      const pinnedDocs = this.loadPinnedDocs(pinnedDocPaths ?? []);
+      const pinnedDocs = this.loadPinnedDocs(pinnedDocPaths ?? [], cwd);
 
       return {
         branch,
@@ -123,11 +125,15 @@ export class WorkspaceCollector {
       try {
         const defaultBranch = this.detectDefaultBranch(cwd);
         branchDiffStat = gitExec(["diff", "--stat", `${defaultBranch}...HEAD`], cwd);
-      } catch {
-        // No remote or single-branch repo
+      } catch (error: unknown) {
+        this.logWorkspaceWarning(
+          `collectOnDemand branch diff stat unavailable for '${cwd}'`,
+          error,
+        );
       }
       return { recentLog, branchDiffStat };
-    } catch {
+    } catch (error: unknown) {
+      this.logWorkspaceWarning(`collectOnDemand failed for '${cwd}'`, error);
       return { recentLog: "", branchDiffStat: "" };
     }
   }
@@ -193,7 +199,8 @@ export class WorkspaceCollector {
   private getBranch(cwd: string): string {
     try {
       return gitExec(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
-    } catch {
+    } catch (error: unknown) {
+      this.logWorkspaceWarning(`failed to read branch for '${cwd}'`, error);
       return "";
     }
   }
@@ -202,26 +209,56 @@ export class WorkspaceCollector {
     try {
       const ref = gitExec(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd);
       return ref.replace("refs/remotes/origin/", "");
-    } catch {
+    } catch (error: unknown) {
+      this.logWorkspaceWarning(
+        `failed to detect remote default branch for '${cwd}', using 'main'`,
+        error,
+      );
       return "main";
     }
   }
 
-  private loadPinnedDocs(paths: string[]): PinnedDoc[] {
+  private loadPinnedDocs(paths: string[], rootCwd: string): PinnedDoc[] {
     const docs: PinnedDoc[] = [];
-    for (const path of paths) {
+    for (const configuredPath of paths) {
+      const resolvedPath = resolve(rootCwd, configuredPath);
+      if (!this.isWithinWorkspaceRoot(resolvedPath, rootCwd)) {
+        this.logWorkspaceWarning(
+          `skipping pinned doc outside workspace root: '${configuredPath}'`,
+          `resolved=${resolvedPath}, root=${resolve(rootCwd)}`,
+        );
+        continue;
+      }
       try {
-        const raw = readFileSync(path, "utf-8");
+        const raw = readFileSync(resolvedPath, "utf-8");
         const limit = this.config.pinnedDocCharsPerFile;
         if (raw.length > limit) {
-          docs.push({ path, content: raw.slice(0, limit), truncated: true });
+          docs.push({ path: configuredPath, content: raw.slice(0, limit), truncated: true });
         } else {
-          docs.push({ path, content: raw, truncated: false });
+          docs.push({ path: configuredPath, content: raw, truncated: false });
         }
-      } catch {
-        // File doesn't exist or can't be read — skip
+      } catch (error: unknown) {
+        this.logWorkspaceWarning(
+          `failed to read pinned doc '${configuredPath}'`,
+          error,
+        );
       }
     }
     return docs;
+  }
+
+  private isWithinWorkspaceRoot(candidatePath: string, rootCwd: string): boolean {
+    const normalizedRoot = resolve(rootCwd).replace(/\\/g, "/");
+    const normalizedCandidate = resolve(candidatePath).replace(/\\/g, "/");
+    if (normalizedCandidate === normalizedRoot) {
+      return true;
+    }
+    const rootPrefix = normalizedRoot.endsWith("/") ? normalizedRoot : `${normalizedRoot}/`;
+    return normalizedCandidate.startsWith(rootPrefix);
+  }
+
+  private logWorkspaceWarning(context: string, error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`[workspace] ${context}: ${detail}`);
   }
 }

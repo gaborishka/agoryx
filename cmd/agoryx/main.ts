@@ -20,7 +20,6 @@ import { loadConfig, toRuntimeConfig } from "../../internal/config/index.js";
 import {
   ensureParentDirectory,
   resolveConfigPathForLoad,
-  resolveDefaultDbPath,
   resolveDefaultWorktreeDir,
   resolveWorkspaceStateRoot,
 } from "../../internal/config/paths.js";
@@ -37,6 +36,12 @@ import {
 } from "../../internal/worktree/manager.js";
 import { WorkspaceCollector } from "../../internal/workspace/collector.js";
 import { sanitizeRenderedDelta } from "../../internal/rendering/sanitize.js";
+import {
+  describeSessionBinding,
+  extractPayloadText,
+  formatSessionId,
+  normalizeStatusText,
+} from "./render-helpers.js";
 
 const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team"];
 const ROOT_COMMANDS = ["chat", "sessions", "config", "completion", "man", "help"] as const;
@@ -1486,7 +1491,7 @@ const handleWorktreeCommand = async (
         worktreeManager.remove(parsed.agent, parsed.force);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.log(message);
+        console.error(message);
         return true;
       }
       const adapterConfig = config.adapterConfig[parsed.agent];
@@ -1807,45 +1812,6 @@ const updateAdapterLiveStatus = (
   if (state.spinner?.isSpinning && shouldShowSystemLines()) {
     state.spinner.text = `${formatStatusLabel(adapterName)} ${normalized}`;
   }
-};
-
-const describeSessionBinding = (
-  previousSessionId: string | null,
-  currentSessionId: string,
-): string => {
-  if (!previousSessionId) {
-    return "session ready";
-  }
-  if (previousSessionId === currentSessionId) {
-    return "session resumed";
-  }
-  return "session switched";
-};
-
-const formatSessionId = (sessionId: string): string => {
-  if (sessionId.length <= 16) {
-    return sessionId;
-  }
-  return `${sessionId.slice(0, 8)}...${sessionId.slice(-6)}`;
-};
-
-const extractPayloadText = (payload: unknown): string => {
-  if (!payload || typeof payload !== "object") {
-    return "";
-  }
-  const text = (payload as { text?: string }).text;
-  return typeof text === "string" ? text : "";
-};
-
-const normalizeStatusText = (text: string): string => {
-  const compact = text.replace(/\s+/g, " ").trim();
-  if (!compact) {
-    return "";
-  }
-  if (compact.length <= 110) {
-    return compact;
-  }
-  return `${compact.slice(0, 107)}...`;
 };
 
 const normalizeMode = (value?: string): OrchestrationMode | null => {
@@ -2524,7 +2490,7 @@ main().catch((error) => {
   }
 
   console.error(
-    formatUsageErrorLine(error instanceof Error ? error.message : "Fatal error"),
+    formatUsageErrorLine(error instanceof Error ? error.message : String(error)),
   );
   process.exit(1);
 });

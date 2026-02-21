@@ -130,9 +130,28 @@ export class DispatchEngine implements TeamDispatchApi {
 
     this.memoryService?.recordDispatchStart(state.room.id, dispatch.targetAdapter, dispatch.requestId);
 
-    const adapterConfig = withTeamSystemPrompt(
-      this.resolveAdapterConfig(dispatch.targetAdapter),
-    );
+    let adapterConfig: AdapterConfig;
+    try {
+      adapterConfig = withTeamSystemPrompt(
+        this.resolveAdapterConfig(dispatch.targetAdapter),
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.log("error", "dispatch.invalid_adapter_config", {
+        roomId: state.room.id,
+        adapter: dispatch.targetAdapter,
+        requestId: dispatch.requestId,
+        error: message,
+      });
+      this.memoryService?.recordError(state.room.id, dispatch.targetAdapter, message);
+      return {
+        adapter: dispatch.targetAdapter,
+        requestId: dispatch.requestId,
+        success: false,
+        text: "",
+        error: message,
+      };
+    }
     const persistentLikeMode =
       (adapterConfig.mode === "persistent" || adapterConfig.mode === "agentic") &&
       "sendTurn" in adapter;
@@ -207,7 +226,26 @@ export class DispatchEngine implements TeamDispatchApi {
 
     this.memoryService?.recordDispatchStart(state.room.id, dispatch.targetAdapter, dispatch.requestId);
 
-    const adapterConfig = this.resolveAdapterConfig(dispatch.targetAdapter);
+    let adapterConfig: AdapterConfig;
+    try {
+      adapterConfig = this.resolveAdapterConfig(dispatch.targetAdapter);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.log("error", "dispatch.invalid_adapter_config", {
+        roomId: state.room.id,
+        adapter: dispatch.targetAdapter,
+        requestId: dispatch.requestId,
+        error: message,
+      });
+      this.memoryService?.recordError(state.room.id, dispatch.targetAdapter, message);
+      return {
+        adapter: dispatch.targetAdapter,
+        requestId: dispatch.requestId,
+        success: false,
+        text: "",
+        error: message,
+      };
+    }
     const isPersistent =
       (adapterConfig.mode === "persistent" || adapterConfig.mode === "agentic") &&
       "sendTurn" in adapter;
@@ -489,15 +527,10 @@ export class DispatchEngine implements TeamDispatchApi {
     if (config) {
       return config;
     }
-    this.logger.log("warn", "dispatch.missing_adapter_config", {
+    this.logger.log("error", "dispatch.missing_adapter_config", {
       adapter: adapterName,
-      fallback: "stub",
     });
-    return {
-      mode: "stub",
-      timeoutMs: 120_000,
-      maxTokens: 4_000,
-    };
+    throw new Error(`CONFIG_ERROR: adapter config for '${adapterName}' is missing`);
   }
 }
 

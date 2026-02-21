@@ -267,7 +267,7 @@ test("team run surfaces worktree isolation warnings when creation fails", async 
   }
 });
 
-test("workspaceCwd set to worktree path per-dispatch", async () => {
+test("workspaceCwd set to worktree path per-dispatch and restored after run", async () => {
   const repo = createTempGitRepo();
   const adapter = makeAdapter("codex");
   const store = new SQLiteStore(":memory:");
@@ -341,11 +341,12 @@ test("workspaceCwd set to worktree path per-dispatch", async () => {
       await wait(25);
     }
 
-    // The adapter config should have workspaceCwd set
-    assert.ok(config.adapterConfig.codex.workspaceCwd);
+    const dispatchedWorkspaceCwd = adapter.calls[0]?.config.workspaceCwd;
+    assert.ok(dispatchedWorkspaceCwd);
     assert.ok(
-      config.adapterConfig.codex.workspaceCwd!.includes(".agoryx/worktrees/codex"),
+      dispatchedWorkspaceCwd!.includes(".agoryx/worktrees/codex"),
     );
+    assert.equal(config.adapterConfig.codex.workspaceCwd, undefined);
   } finally {
     await engine.shutdown();
     store.close();

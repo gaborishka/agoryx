@@ -46,6 +46,12 @@ interface ActiveTeamDispatch {
   requestId: string;
 }
 
+interface TeamAdapterConfigSnapshot {
+  mode: AdapterConfig["mode"];
+  workspaceCwd?: string;
+  hadWorkspaceCwd: boolean;
+}
+
 export class TeamOrchestrator {
   private readonly teamPolicy = new TeamPolicy();
   private readonly teamLoopByRoom = new Map<string, Promise<void>>();
@@ -54,7 +60,8 @@ export class TeamOrchestrator {
   private readonly teamActiveDispatchByRun = new Map<string, ActiveTeamDispatch>();
   private readonly runStartWarningsByRun = new Map<string, string[]>();
   private readonly interruptedRequestIds = new Set<string>();
-  private teamAdapterModeSnapshot: Partial<Record<string, AdapterConfig["mode"]>> | null = null;
+  private teamAdapterConfigSnapshot: Partial<Record<string, TeamAdapterConfigSnapshot>> | null =
+    null;
 
   private readonly session: SessionService;
   private readonly adapters: Record<string, Adapter>;
@@ -109,20 +116,26 @@ export class TeamOrchestrator {
     const checksEnabled = options.checksEnabled ?? limits.checksEnabledByDefault;
 
     this.restoreTeamAdapterModes();
-    const modeSnapshot: Partial<Record<string, AdapterConfig["mode"]>> = {};
+    const adapterSnapshot: Partial<Record<string, TeamAdapterConfigSnapshot>> = {};
     for (const agent of state.availableAgents) {
       const adapterConfig = this.config.adapterConfig[agent];
-      if (!adapterConfig || adapterConfig.mode !== "cli") {
+      if (!adapterConfig) {
         continue;
       }
-      modeSnapshot[agent] = adapterConfig.mode;
-      this.config.adapterConfig[agent] = {
-        ...adapterConfig,
-        mode: "agentic",
+      adapterSnapshot[agent] = {
+        mode: adapterConfig.mode,
+        workspaceCwd: adapterConfig.workspaceCwd,
+        hadWorkspaceCwd: Object.prototype.hasOwnProperty.call(adapterConfig, "workspaceCwd"),
       };
+      if (adapterConfig.mode === "cli") {
+        this.config.adapterConfig[agent] = {
+          ...adapterConfig,
+          mode: "agentic",
+        };
+      }
     }
-    if (Object.keys(modeSnapshot).length > 0) {
-      this.teamAdapterModeSnapshot = modeSnapshot;
+    if (Object.keys(adapterSnapshot).length > 0) {
+      this.teamAdapterConfigSnapshot = adapterSnapshot;
     }
 
     const runStartWarnings: string[] = [];
@@ -167,18 +180,24 @@ export class TeamOrchestrator {
       this.setState(state);
     }
 
-    const run = this.session.createTeamRun({
-      roomId: state.room.id,
-      strategy,
-      stage: "debate",
-      goal: trimmedGoal,
-      participants: state.availableAgents,
-      maxSteps: limits.maxSteps,
-      maxNoProgressSteps: limits.maxNoProgressSteps,
-      maxDurationMs: limits.maxDurationMs,
-      checksEnabled,
-      createdBy: options.createdBy ?? "user",
-    });
+    let run: TeamRun;
+    try {
+      run = this.session.createTeamRun({
+        roomId: state.room.id,
+        strategy,
+        stage: "debate",
+        goal: trimmedGoal,
+        participants: state.availableAgents,
+        maxSteps: limits.maxSteps,
+        maxNoProgressSteps: limits.maxNoProgressSteps,
+        maxDurationMs: limits.maxDurationMs,
+        checksEnabled,
+        createdBy: options.createdBy ?? "user",
+      });
+    } catch (error: unknown) {
+      this.restoreTeamAdapterModes();
+      throw error;
+    }
 
     this.logger.log("info", "team.run_started", {
       roomId: run.roomId,
@@ -552,6 +571,7 @@ export class TeamOrchestrator {
     this.session.consumeTeamFeedback(consumedFeedbackIds);
 
     const stepSeq = run.stepCount + 1;
+    const errorClass = normalizeErrorClass(result.error);
     this.session.addTeamStep({
       runId: run.id,
       seq: stepSeq,
@@ -562,7 +582,7 @@ export class TeamOrchestrator {
       inputText: prompt,
       outputText: result.text,
       result: result.success ? "ok" : "error",
-      errorClass: normalizeErrorClass(result.error),
+      errorClass,
     });
 
     this.memoryService?.recordTeamStep(
@@ -599,6 +619,17 @@ export class TeamOrchestrator {
       return;
     }
     if (!result.success) {
+      if (isRecoverableTeamError(errorClass)) {
+        this.logger.log("warn", "team.step_recoverable_error", {
+          roomId: run.roomId,
+          runId: run.id,
+          actor,
+          errorClass: errorClass ?? "UNKNOWN",
+          error: result.error ?? "unknown",
+        });
+        this.teamNextActorByRun.set(updated.id, actor);
+        return;
+      }
       this.session.updateTeamRunStatus(updated.id, "failed", {
         completedAt: new Date().toISOString(),
         finalSummary: result.error ?? "Team debate step failed.",
@@ -645,23 +676,30 @@ export class TeamOrchestrator {
   }
 
   private restoreTeamAdapterModes(): void {
-    if (!this.teamAdapterModeSnapshot) {
+    if (!this.teamAdapterConfigSnapshot) {
       return;
     }
-    for (const [agent, mode] of Object.entries(this.teamAdapterModeSnapshot)) {
-      if (!mode) {
+    for (const [agent, snapshot] of Object.entries(this.teamAdapterConfigSnapshot)) {
+      if (!snapshot) {
         continue;
       }
       const adapterConfig = this.config.adapterConfig[agent];
       if (!adapterConfig) {
         continue;
       }
-      this.config.adapterConfig[agent] = {
+      const restored: AdapterConfig = {
         ...adapterConfig,
-        mode,
+        mode: snapshot.mode,
       };
+      if (snapshot.hadWorkspaceCwd) {
+        restored.workspaceCwd = snapshot.workspaceCwd;
+        this.config.adapterConfig[agent] = restored;
+      } else {
+        const { workspaceCwd: _workspaceCwd, ...withoutWorkspace } = restored;
+        this.config.adapterConfig[agent] = withoutWorkspace;
+      }
     }
-    this.teamAdapterModeSnapshot = null;
+    this.teamAdapterConfigSnapshot = null;
   }
 
   private trackActiveTeamDispatch(
@@ -750,11 +788,15 @@ const TEAM_STOP_WORD_PATTERNS = [
   /^\s*TEAM_STOP\s*$/i,
 ];
 const INLINE_CODE_WRAPPER_PATTERN = /^(`{1,3})([^`]+)\1$/;
-const GOAL_MENTION_PATTERN = /@([a-z0-9._-]+)/g;
-const USER_MENTION_PATTERN = /@([a-z0-9._-]+)/g;
+const MENTION_PATTERN = /@([a-z0-9._-]+)/g;
 
 /** Max number of trailing lines to scan for control directives. */
 const CONTROL_TAIL_LINES = 5;
+const TEAM_RECOVERABLE_ERROR_CLASSES = new Set<NonNullable<TeamStep["errorClass"]>>([
+  "TIMEOUT",
+  "RATE_LIMIT",
+  "SESSION_EXPIRED",
+]);
 
 export const parseTeamDebateControl = (text: string): TeamDebateControl => {
   const trimmed = text.trim();
@@ -801,7 +843,7 @@ const normalizeTeamControlLine = (line: string): string => {
 const extractGoalMentions = (text: string): string[] => {
   const normalized = text.toLowerCase();
   const mentions: string[] = [];
-  for (const match of normalized.matchAll(GOAL_MENTION_PATTERN)) {
+  for (const match of normalized.matchAll(MENTION_PATTERN)) {
     const mention = match[1];
     if (!mention || mentions.includes(mention)) {
       continue;
@@ -817,7 +859,7 @@ const resolveMentionTargets = (
 ): string[] => {
   const normalized = text.toLowerCase();
   const targets: string[] = [];
-  for (const match of normalized.matchAll(USER_MENTION_PATTERN)) {
+  for (const match of normalized.matchAll(MENTION_PATTERN)) {
     const mention = match[1];
     if (!mention) {
       continue;
@@ -835,3 +877,7 @@ const resolveMentionTargets = (
   }
   return targets;
 };
+
+const isRecoverableTeamError = (errorClass: TeamStep["errorClass"]): boolean =>
+  typeof errorClass === "string" &&
+  TEAM_RECOVERABLE_ERROR_CLASSES.has(errorClass as NonNullable<TeamStep["errorClass"]>);

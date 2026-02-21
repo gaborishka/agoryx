@@ -197,3 +197,20 @@ test("pinnedDocs are truncated with marker when exceeding limit", () => {
     cleanup(dir);
   }
 });
+
+test("collectAlwaysOn skips pinned docs outside workspace root", () => {
+  const dir = makeTempGitRepo();
+  const outsideDir = mkdtempSync(join(tmpdir(), "agoryx-ws-outside-"));
+  try {
+    const outsideDocPath = join(outsideDir, "SECRET.md");
+    writeFileSync(outsideDocPath, "outside");
+
+    const collector = new WorkspaceCollector(DEFAULT_WORKSPACE_CONFIG);
+    const ctx = collector.collectAlwaysOn(dir, [outsideDocPath]);
+
+    assert.equal(ctx.pinnedDocs.length, 0);
+  } finally {
+    cleanup(dir);
+    cleanup(outsideDir);
+  }
+});

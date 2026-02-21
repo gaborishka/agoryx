@@ -252,13 +252,17 @@ export class MemoryService {
 
   private reduceEvents(events: MemoryLogEntry[]): UpsertSnapshotInput {
     const decisions: string[] = [];
+    const seenDecisions = new Set<string>();
     let lastLogId = 0;
 
     for (const evt of events) {
       lastLogId = evt.id;
       if (evt.eventType === "decision") {
-        const text = (evt.payload as any).text;
-        if (text && !decisions.includes(text)) decisions.push(text);
+        const text = (evt.payload as { text?: unknown }).text;
+        if (typeof text === "string" && text && !seenDecisions.has(text)) {
+          seenDecisions.add(text);
+          decisions.push(text);
+        }
       }
     }
 
@@ -280,13 +284,17 @@ export class MemoryService {
     events: MemoryLogEntry[],
   ): UpsertSnapshotInput {
     const decisions = [...snapshot.keyDecisions];
+    const seenDecisions = new Set(decisions);
     let lastLogId = snapshot.lastLogId;
 
     for (const evt of events) {
       lastLogId = evt.id;
       if (evt.eventType === "decision") {
-        const text = (evt.payload as any).text;
-        if (text && !decisions.includes(text)) decisions.push(text);
+        const text = (evt.payload as { text?: unknown }).text;
+        if (typeof text === "string" && text && !seenDecisions.has(text)) {
+          seenDecisions.add(text);
+          decisions.push(text);
+        }
       }
     }
 

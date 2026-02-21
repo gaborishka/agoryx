@@ -112,7 +112,7 @@ const createEngine = (
 
   const engine = new ChatEngine(session, { [adapter.name]: adapter }, config);
   engine.init();
-  return { engine, store, session };
+  return { engine, store, session, config };
 };
 
 const waitForRunStatus = async (
@@ -575,6 +575,67 @@ test("team run marks dispatch errors as failed", async () => {
   }
 });
 
+test("team run retries after recoverable dispatch errors", async () => {
+  let callCount = 0;
+  const adapter: PersistentAdapter = {
+    name: "claude",
+    async *send() {
+      throw new Error("send() should not be used in team tests");
+    },
+    async *sendTurn(input: SendTurnInput): AsyncGenerator<AdapterEvent> {
+      callCount += 1;
+      const base = {
+        roomId: input.roomId,
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+        source: "adapter.claude",
+      };
+      const startedPayload = {
+        messageId: createId("msg"),
+        author: "agent.claude",
+        role: "assistant" as const,
+        text: "",
+        format: "markdown" as const,
+        metadata: { provider: "test", model: "test", requestId: input.requestId },
+      };
+
+      yield messageStarted(base, startedPayload);
+      yield sessionBound(base, "native-session");
+      if (callCount === 1) {
+        yield messageError(base, "TIMEOUT", "temporary timeout");
+        return;
+      }
+      yield messageCompleted(base, {
+        ...startedPayload,
+        text: "Recovered and completed\nTEAM_DONE",
+      });
+    },
+    async cancel() {},
+    async health() {
+      return "ready" as const;
+    },
+  };
+
+  const { engine, store } = createEngine(adapter, { maxSteps: 8, adapterMode: "agentic" });
+  try {
+    const run = engine.startTeamRun("Recover after transient timeout");
+    await waitForRunStatus(engine, "waiting_user_input", run.id);
+    const status = engine.teamStatus(run.id);
+    assert.ok(status);
+    assert.equal(status.run.status, "waiting_user_input");
+    assert.equal(callCount >= 2, true);
+
+    const steps = store.listTeamSteps(run.id, 10);
+    assert.equal(steps.length >= 2, true);
+    assert.equal(steps[0]?.result, "error");
+    assert.equal(steps[0]?.errorClass, "TIMEOUT");
+    assert.equal(steps[steps.length - 1]?.result, "ok");
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
 test("strict flag applies strict team limits", async () => {
   const adapter = makeAdapter("claude");
   const { engine, store } = createEngine(adapter, { maxSteps: 24 });
@@ -596,6 +657,57 @@ test("team run promotes cli adapter mode to agentic dispatch", async () => {
     await engine.processUserMessage("Draft architecture summary");
     await waitForRunStatus(engine, "waiting_user_input");
     assert.equal(adapter.calls.length, 1); // debate step only
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("team run restores adapter config when createTeamRun fails", async () => {
+  const adapter = makeAdapter("claude");
+  const { engine, store, session, config } = createEngine(adapter, {
+    maxSteps: 1,
+    adapterMode: "cli",
+  });
+  try {
+    config.adapterConfig.claude.workspaceCwd = "/tmp/agoryx-original-workspace";
+
+    const originalCreateTeamRun = session.createTeamRun.bind(session);
+    try {
+      (session as unknown as { createTeamRun: typeof originalCreateTeamRun }).createTeamRun = (() => {
+        throw new Error("forced createTeamRun failure");
+      }) as typeof originalCreateTeamRun;
+
+      assert.throws(() => {
+        engine.startTeamRun("Trigger failure");
+      }, /forced createTeamRun failure/);
+
+      assert.equal(config.adapterConfig.claude.mode, "cli");
+      assert.equal(
+        config.adapterConfig.claude.workspaceCwd,
+        "/tmp/agoryx-original-workspace",
+      );
+    } finally {
+      (session as unknown as { createTeamRun: typeof originalCreateTeamRun }).createTeamRun =
+        originalCreateTeamRun;
+    }
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("team run fails with explicit config error when adapter config is missing", async () => {
+  const adapter = makeAdapter("claude");
+  const { engine, store, config } = createEngine(adapter, { maxSteps: 8, adapterMode: "agentic" });
+  try {
+    delete (config.adapterConfig as Record<string, unknown>).claude;
+    const run = engine.startTeamRun("Missing config path");
+
+    await waitForRunStatus(engine, "failed", run.id);
+    const status = engine.teamStatus(run.id);
+    assert.ok(status);
+    assert.match(status.run.finalSummary ?? "", /CONFIG_ERROR/i);
   } finally {
     await engine.shutdown();
     store.close();

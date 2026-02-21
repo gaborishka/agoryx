@@ -92,12 +92,15 @@ export class ClaudeAdapter implements PersistentAdapter {
       cwd: buildClaudeSpawnCwd(process.env, input.config.mode, input.config.workspaceCwd),
     });
     let spawnFailureMessage: string | null = null;
+    let resolveSpawnFailure!: (message: string) => void;
+    const onSpawnError = (error: unknown): void => {
+      const message = error instanceof Error ? error.message : String(error);
+      spawnFailureMessage = message;
+      resolveSpawnFailure(message);
+    };
     const spawnFailurePromise = new Promise<string>((resolve) => {
-      child.once("error", (error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        spawnFailureMessage = message;
-        resolve(message);
-      });
+      resolveSpawnFailure = resolve;
+      child.once("error", onSpawnError);
     });
     const exitPromise = new Promise<number | null>((resolve) => {
       child.once("close", resolve);
@@ -191,6 +194,7 @@ export class ClaudeAdapter implements PersistentAdapter {
       );
     } finally {
       idleTimeout.clear();
+      child.off("error", onSpawnError);
       this.running.delete(input.requestId);
       this.markRequestEnd();
     }
@@ -228,12 +232,15 @@ export class ClaudeAdapter implements PersistentAdapter {
       cwd: buildClaudeSpawnCwd(process.env, input.config.mode, input.config.workspaceCwd),
     });
     let spawnFailureMessage: string | null = null;
+    let resolveSpawnFailure!: (message: string) => void;
+    const onSpawnError = (error: unknown): void => {
+      const message = error instanceof Error ? error.message : String(error);
+      spawnFailureMessage = message;
+      resolveSpawnFailure(message);
+    };
     const spawnFailurePromise = new Promise<string>((resolve) => {
-      child.once("error", (error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        spawnFailureMessage = message;
-        resolve(message);
-      });
+      resolveSpawnFailure = resolve;
+      child.once("error", onSpawnError);
     });
     const exitPromise = new Promise<number | null>((resolve) => {
       child.once("close", resolve);
@@ -337,6 +344,7 @@ export class ClaudeAdapter implements PersistentAdapter {
       );
     } finally {
       idleTimeout.clear();
+      child.off("error", onSpawnError);
       this.running.delete(input.requestId);
       this.markRequestEnd();
     }

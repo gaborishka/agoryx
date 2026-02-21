@@ -5,6 +5,12 @@ import type { AdapterEvent } from "../../internal/adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../../internal/config/default.js";
 import type { OrchestrationMode } from "../../internal/events/types.js";
 import { sanitizeRenderedDelta } from "../../internal/rendering/sanitize.js";
+import {
+  describeSessionBinding,
+  extractPayloadText,
+  formatSessionId,
+  normalizeStatusText,
+} from "./render-helpers.js";
 
 export interface SlashCommandHint {
   command: string;
@@ -66,45 +72,6 @@ const ACTIVE_PREVIEW_WRAP_CHARS = 88;
 const FINAL_MESSAGE_WRAP_CHARS = 100;
 const SPINNER_FRAMES = ["-", "\\", "|", "/"] as const;
 const CLAUDE_LIKE_RULE_WIDTH = 96;
-
-const formatSessionId = (sessionId: string): string => {
-  if (sessionId.length <= 16) {
-    return sessionId;
-  }
-  return `${sessionId.slice(0, 8)}...${sessionId.slice(-6)}`;
-};
-
-const extractPayloadText = (payload: unknown): string => {
-  if (!payload || typeof payload !== "object") {
-    return "";
-  }
-  const value = (payload as { text?: string }).text;
-  return typeof value === "string" ? value : "";
-};
-
-const describeSessionBinding = (
-  previousSessionId: string | null,
-  currentSessionId: string,
-): string => {
-  if (!previousSessionId) {
-    return "session ready";
-  }
-  if (previousSessionId === currentSessionId) {
-    return "session resumed";
-  }
-  return "session switched";
-};
-
-const normalizeStatusText = (text: string): string => {
-  const compact = text.replace(/\s+/g, " ").trim();
-  if (!compact) {
-    return "";
-  }
-  if (compact.length <= 110) {
-    return compact;
-  }
-  return `${compact.slice(0, 107)}...`;
-};
 
 const wrapLine = (line: string, width: number): string[] => {
   if (line.length <= width) {

@@ -97,12 +97,15 @@ export class CodexAdapter implements PersistentAdapter {
       cwd: buildCodexSpawnCwd(input.config.workspaceCwd),
     });
     let spawnFailureMessage: string | null = null;
+    let resolveSpawnFailure!: (message: string) => void;
+    const onSpawnError = (error: unknown): void => {
+      const message = error instanceof Error ? error.message : String(error);
+      spawnFailureMessage = message;
+      resolveSpawnFailure(message);
+    };
     const spawnFailurePromise = new Promise<string>((resolve) => {
-      child.once("error", (error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        spawnFailureMessage = message;
-        resolve(message);
-      });
+      resolveSpawnFailure = resolve;
+      child.once("error", onSpawnError);
     });
     const exitPromise = new Promise<number | null>((resolve) => {
       child.once("close", resolve);
@@ -185,6 +188,7 @@ export class CodexAdapter implements PersistentAdapter {
       );
     } finally {
       idleTimeout.clear();
+      child.off("error", onSpawnError);
       this.running.delete(input.requestId);
       this.markRequestEnd();
     }
@@ -226,12 +230,15 @@ export class CodexAdapter implements PersistentAdapter {
       },
     );
     let spawnFailureMessage: string | null = null;
+    let resolveSpawnFailure!: (message: string) => void;
+    const onSpawnError = (error: unknown): void => {
+      const message = error instanceof Error ? error.message : String(error);
+      spawnFailureMessage = message;
+      resolveSpawnFailure(message);
+    };
     const spawnFailurePromise = new Promise<string>((resolve) => {
-      child.once("error", (error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        spawnFailureMessage = message;
-        resolve(message);
-      });
+      resolveSpawnFailure = resolve;
+      child.once("error", onSpawnError);
     });
     const exitPromise = new Promise<number | null>((resolve) => {
       child.once("close", resolve);
@@ -325,6 +332,7 @@ export class CodexAdapter implements PersistentAdapter {
       );
     } finally {
       idleTimeout.clear();
+      child.off("error", onSpawnError);
       this.running.delete(input.requestId);
       this.markRequestEnd();
     }

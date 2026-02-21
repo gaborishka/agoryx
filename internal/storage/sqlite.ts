@@ -567,7 +567,10 @@ export class SQLiteStore {
   }
 
   public updateRoomMode(roomId: string, mode: RoomConfig["mode"]): void {
-    this.db.prepare(`UPDATE rooms SET mode = ? WHERE id = ?`).run(mode, roomId);
+    const result = this.db.prepare(`UPDATE rooms SET mode = ? WHERE id = ?`).run(mode, roomId);
+    if (result.changes === 0) {
+      throw new Error(`Failed to update room mode: room id=${roomId} not found`);
+    }
   }
 
   public saveMessage(message: Message): void {
@@ -948,7 +951,7 @@ export class SQLiteStore {
     if (!nativeId) {
       return;
     }
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE agent_sessions
@@ -958,10 +961,13 @@ export class SQLiteStore {
     `,
       )
       .run(nativeId, Date.now(), id);
+    if (result.changes === 0) {
+      throw new Error(`Failed to update agent session native id: id=${id} not found`);
+    }
   }
 
   public updateAgentSessionCursor(id: string, seq: number): void {
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE agent_sessions
@@ -975,19 +981,25 @@ export class SQLiteStore {
     `,
       )
       .run(seq, seq, seq, Date.now(), id);
+    if (result.changes === 0) {
+      throw new Error(`Failed to update agent session cursor: id=${id} not found`);
+    }
   }
 
   public updateAgentSessionStatus(
     id: string,
     status: AgentSession["status"],
   ): void {
-    this.db
+    const result = this.db
       .prepare(`UPDATE agent_sessions SET status = ? WHERE id = ?`)
       .run(status, id);
+    if (result.changes === 0) {
+      throw new Error(`Failed to update agent session status: id=${id} not found`);
+    }
   }
 
   public incrementAgentSessionFailCount(id: string): number {
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE agent_sessions
@@ -996,6 +1008,9 @@ export class SQLiteStore {
     `,
       )
       .run(id);
+    if (result.changes === 0) {
+      throw new Error(`Failed to increment fail_count: agent session id=${id} not found`);
+    }
     const row = this.db
       .prepare(`SELECT fail_count FROM agent_sessions WHERE id = ?`)
       .get(id) as { fail_count: number } | undefined;
@@ -1082,7 +1097,7 @@ export class SQLiteStore {
     options: { stage?: TeamRunStage; finalSummary?: string | null; completedAt?: string | null } = {},
   ): void {
     const now = nowIso();
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE team_runs
@@ -1106,6 +1121,9 @@ export class SQLiteStore {
         now,
         runId,
       );
+    if (result.changes === 0) {
+      throw new Error(`Failed to update team run status: run id=${runId} not found`);
+    }
   }
 
   public updateTeamRunProgress(
@@ -1118,7 +1136,7 @@ export class SQLiteStore {
     },
   ): void {
     const now = nowIso();
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE team_runs
@@ -1142,6 +1160,9 @@ export class SQLiteStore {
         now,
         runId,
       );
+    if (result.changes === 0) {
+      throw new Error(`Failed to update team run progress: run id=${runId} not found`);
+    }
   }
 
   public addTeamStep(input: CreateTeamStepInput): TeamStep {
@@ -1322,32 +1343,41 @@ export class SQLiteStore {
   }
 
   public upsertMemorySnapshot(roomId: string, input: UpsertSnapshotInput): MemorySnapshot {
-    const existing = this.getMemorySnapshot(roomId);
-    if (existing && input.lastLogId < existing.lastLogId) {
-      throw new Error(`Monotonic violation: new lastLogId ${input.lastLogId} < current ${existing.lastLogId}`);
-    }
-    this.db.prepare(`
-      INSERT INTO memory_snapshot (room_id, current_goal, active_branch, active_worktrees,
-        key_decisions, blockers, next_actions, task_status, last_log_id, reducer_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(room_id) DO UPDATE SET
-        current_goal = excluded.current_goal,
-        active_branch = excluded.active_branch,
-        active_worktrees = excluded.active_worktrees,
-        key_decisions = excluded.key_decisions,
-        blockers = excluded.blockers,
-        next_actions = excluded.next_actions,
-        task_status = excluded.task_status,
-        last_log_id = excluded.last_log_id,
-        reducer_version = excluded.reducer_version,
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    `).run(
-      roomId, input.currentGoal, input.activeBranch,
-      JSON.stringify(input.activeWorktrees), JSON.stringify(input.keyDecisions),
-      JSON.stringify(input.blockers), JSON.stringify(input.nextActions),
-      JSON.stringify(input.taskStatus), input.lastLogId, input.reducerVersion,
-    );
-    return this.getMemorySnapshot(roomId)!;
+    const runUpsert = this.db.transaction((targetRoomId: string, payload: UpsertSnapshotInput) => {
+      const existing = this.getMemorySnapshot(targetRoomId);
+      if (existing && payload.lastLogId < existing.lastLogId) {
+        throw new Error(
+          `Monotonic violation: new lastLogId ${payload.lastLogId} < current ${existing.lastLogId}`,
+        );
+      }
+      this.db.prepare(`
+        INSERT INTO memory_snapshot (room_id, current_goal, active_branch, active_worktrees,
+          key_decisions, blockers, next_actions, task_status, last_log_id, reducer_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(room_id) DO UPDATE SET
+          current_goal = excluded.current_goal,
+          active_branch = excluded.active_branch,
+          active_worktrees = excluded.active_worktrees,
+          key_decisions = excluded.key_decisions,
+          blockers = excluded.blockers,
+          next_actions = excluded.next_actions,
+          task_status = excluded.task_status,
+          last_log_id = excluded.last_log_id,
+          reducer_version = excluded.reducer_version,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      `).run(
+        targetRoomId, payload.currentGoal, payload.activeBranch,
+        JSON.stringify(payload.activeWorktrees), JSON.stringify(payload.keyDecisions),
+        JSON.stringify(payload.blockers), JSON.stringify(payload.nextActions),
+        JSON.stringify(payload.taskStatus), payload.lastLogId, payload.reducerVersion,
+      );
+      const snapshot = this.getMemorySnapshot(targetRoomId);
+      if (!snapshot) {
+        throw new Error(`Failed to upsert memory snapshot: read-back for roomId=${targetRoomId} returned null`);
+      }
+      return snapshot;
+    });
+    return runUpsert(roomId, input);
   }
 
   public deleteMemorySnapshot(roomId: string): void {
@@ -1414,7 +1444,12 @@ export class SQLiteStore {
 const roomRowToDomain = (row: RoomRow): Room => ({
   id: row.id,
   name: row.name,
-  participants: tryParseJson<string[]>(row.participants_json, []),
+  participants: tryParseJson<string[]>(row.participants_json, [], {
+    table: "rooms",
+    column: "participants_json",
+    rowId: row.id,
+    critical: true,
+  }),
   config: {
     mode: row.mode as RoomConfig["mode"],
     checkpointThreshold: row.checkpoint_threshold,
@@ -1424,14 +1459,31 @@ const roomRowToDomain = (row: RoomRow): Room => ({
   createdAt: row.created_at,
 });
 
-const tryParseJson = <T>(value: string, fallback: T): T => {
+interface ParseJsonContext {
+  table?: string;
+  column?: string;
+  rowId?: string | number;
+  critical?: boolean;
+}
+
+const tryParseJson = <T>(value: string, fallback: T, context: ParseJsonContext = {}): T => {
   try {
     return JSON.parse(value) as T;
   } catch (error: unknown) {
+    const location = [
+      context.table ? `table=${context.table}` : "",
+      context.column ? `column=${context.column}` : "",
+      context.rowId !== undefined ? `rowId=${String(context.rowId)}` : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const reason = error instanceof Error ? error.message : String(error);
+    const message = `[storage] Failed to parse JSON${location ? ` (${location})` : ""}: ${reason} — value preview: ${value.slice(0, 100)}`;
+    if (context.critical) {
+      throw new Error(message);
+    }
     console.error(
-      `[storage] Failed to parse JSON column: ${
-        error instanceof Error ? error.message : String(error)
-      } — value preview: ${value.slice(0, 100)}`,
+      message,
     );
     return fallback;
   }
@@ -1515,7 +1567,11 @@ const messageRowToDomain = (row: MessageRow): Message => ({
   role: row.role,
   text: row.text,
   format: row.format,
-  metadata: tryParseJson(row.metadata_json, {}),
+  metadata: tryParseJson(row.metadata_json, {}, {
+    table: "messages",
+    column: "metadata_json",
+    rowId: row.id,
+  }),
   createdAt: row.created_at,
 });
 
@@ -1539,7 +1595,12 @@ const teamRunRowToDomain = (row: TeamRunRow): TeamRun => ({
   status: row.status,
   stage: row.stage,
   goal: row.goal,
-  participants: tryParseJson<string[]>(row.participants_json, []),
+  participants: tryParseJson<string[]>(row.participants_json, [], {
+    table: "team_runs",
+    column: "participants_json",
+    rowId: row.id,
+    critical: true,
+  }),
   stepCount: row.step_count,
   noProgressCount: row.no_progress_count,
   maxSteps: row.max_steps,
@@ -1586,18 +1647,42 @@ const memoryRowToEntry = (row: any): MemoryLogEntry => ({
   timestamp: row.timestamp,
   source: row.source,
   eventType: row.event_type,
-  payload: tryParseJson(row.payload, {}),
+  payload: tryParseJson(row.payload, {}, {
+    table: "memory_log",
+    column: "payload",
+    rowId: row.id,
+  }),
 });
 
 const snapshotRowToDomain = (row: any): MemorySnapshot => ({
   roomId: row.room_id,
   currentGoal: row.current_goal,
   activeBranch: row.active_branch,
-  activeWorktrees: tryParseJson<string[]>(row.active_worktrees, []),
-  keyDecisions: tryParseJson<string[]>(row.key_decisions, []),
-  blockers: tryParseJson<string[]>(row.blockers, []),
-  nextActions: tryParseJson<string[]>(row.next_actions, []),
-  taskStatus: tryParseJson<Record<string, string>>(row.task_status, {}),
+  activeWorktrees: tryParseJson<string[]>(row.active_worktrees, [], {
+    table: "memory_snapshot",
+    column: "active_worktrees",
+    rowId: row.room_id,
+  }),
+  keyDecisions: tryParseJson<string[]>(row.key_decisions, [], {
+    table: "memory_snapshot",
+    column: "key_decisions",
+    rowId: row.room_id,
+  }),
+  blockers: tryParseJson<string[]>(row.blockers, [], {
+    table: "memory_snapshot",
+    column: "blockers",
+    rowId: row.room_id,
+  }),
+  nextActions: tryParseJson<string[]>(row.next_actions, [], {
+    table: "memory_snapshot",
+    column: "next_actions",
+    rowId: row.room_id,
+  }),
+  taskStatus: tryParseJson<Record<string, string>>(row.task_status, {}, {
+    table: "memory_snapshot",
+    column: "task_status",
+    rowId: row.room_id,
+  }),
   lastLogId: row.last_log_id,
   reducerVersion: row.reducer_version,
   updatedAt: row.updated_at,

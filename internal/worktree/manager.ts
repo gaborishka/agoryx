@@ -17,6 +17,11 @@ export interface WorktreeStatus extends WorktreeInfo {
   syncUnavailable: string | null;
 }
 
+export interface MergeResult {
+  success: boolean;
+  conflicts: string[] | null;
+}
+
 export const WORKTREE_AGENT_NAME_PATTERN = /^[a-z0-9._-]+$/;
 
 export const normalizeWorktreeAgentName = (agent: string): string =>
@@ -138,6 +143,60 @@ export class WorktreeManager {
       this.agentMap.delete(normalizedAgent);
     } finally {
       this.releaseLock();
+    }
+  }
+
+  public merge(agent: string): MergeResult {
+    const normalizedAgent = normalizeWorktreeAgentName(agent);
+    const info = this.agentMap.get(normalizedAgent);
+    if (!info) {
+      throw new Error(`No worktree found for agent '${agent}'.`);
+    }
+
+    // Check if agent branch has any commits ahead of current HEAD
+    try {
+      const diffOutput = execFileSync(
+        "git",
+        ["log", "--oneline", `HEAD..${info.branch}`],
+        { cwd: this.repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      ).trim();
+      if (!diffOutput) {
+        return { success: true, conflicts: null };
+      }
+    } catch {
+      // Branch comparison failed — attempt merge anyway
+    }
+
+    try {
+      execFileSync(
+        "git",
+        ["merge", info.branch, "--no-edit", "-m", `Merge ${info.branch} into current branch`],
+        { cwd: this.repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      );
+      return { success: true, conflicts: null };
+    } catch {
+      // Merge failed — likely conflicts
+      try {
+        const statusOutput = execFileSync(
+          "git",
+          ["diff", "--name-only", "--diff-filter=U"],
+          { cwd: this.repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+        ).trim();
+        const conflicts = statusOutput ? statusOutput.split("\n") : [];
+        // Abort the failed merge
+        try {
+          execFileSync("git", ["merge", "--abort"], {
+            cwd: this.repoRoot,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        } catch {
+          // Abort may fail if no merge in progress
+        }
+        return { success: false, conflicts };
+      } catch {
+        return { success: false, conflicts: ["unknown conflict — manual resolution required"] };
+      }
     }
   }
 

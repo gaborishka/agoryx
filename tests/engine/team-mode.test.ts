@@ -137,7 +137,7 @@ test("team mode auto-starts run and reaches proposal gate", async () => {
     const results = await engine.processUserMessage("Build implementation proposal");
     assert.equal(results.length, 0);
 
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
     const status = engine.teamStatus();
     assert.ok(status);
     assert.equal(status.run.strategy, "debate");
@@ -151,10 +151,15 @@ test("team mode auto-starts run and reaches proposal gate", async () => {
 
 test("team approve transitions run from waiting_user_input to done", async () => {
   const adapter = makeAdapter("claude");
-  const { engine, store } = createEngine(adapter, { maxSteps: 1 });
+  const { engine, store, session } = createEngine(adapter, { maxSteps: 1 });
   try {
     await engine.processUserMessage("Prepare rollout plan");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
+
+    // Manually set to waiting_user_input to test the approve path
+    const status = engine.teamStatus();
+    assert.ok(status);
+    session.updateTeamRunStatus(status.run.id, "waiting_user_input", {});
 
     const approved = engine.teamApprove();
     assert.ok(approved);
@@ -186,10 +191,15 @@ test("active run queues feedback messages", async () => {
 
 test("waiting_user_input run does not enqueue team feedback", async () => {
   const adapter = makeAdapter("claude");
-  const { engine, store } = createEngine(adapter, { maxSteps: 1 });
+  const { engine, store, session } = createEngine(adapter, { maxSteps: 1 });
   try {
     await engine.processUserMessage("Prepare rollout plan");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
+
+    // Manually set to waiting_user_input to test the feedback behavior
+    const status = engine.teamStatus();
+    assert.ok(status);
+    session.updateTeamRunStatus(status.run.id, "waiting_user_input", {});
 
     const before = engine.teamStatus();
     assert.ok(before);
@@ -210,10 +220,15 @@ test("waiting_user_input run does not enqueue team feedback", async () => {
 
 test("waiting_user_input run allows direct @mention dispatch", async () => {
   const adapter = makeAdapter("claude");
-  const { engine, store } = createEngine(adapter, { maxSteps: 1 });
+  const { engine, store, session } = createEngine(adapter, { maxSteps: 1 });
   try {
     await engine.processUserMessage("Prepare rollout plan");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
+
+    // Manually set to waiting_user_input to test @mention dispatch behavior
+    const status = engine.teamStatus();
+    assert.ok(status);
+    session.updateTeamRunStatus(status.run.id, "waiting_user_input", {});
 
     const before = engine.teamStatus();
     assert.ok(before);
@@ -385,9 +400,9 @@ test("interruptTeamRun cancels active step and queues feedback", async () => {
     assert.equal(interrupted.feedbackQueued, true);
 
     // In the new plan-execute-merge flow, after interrupt the single-agent
-    // execution completes (with error) and the run transitions to
-    // waiting_user_input. There is no "next step" re-dispatch.
-    await waitForRunStatus(engine, "waiting_user_input");
+    // execution completes (with error) and the run transitions to done
+    // (no worktree manager). There is no "next step" re-dispatch.
+    await waitForRunStatus(engine, "done");
     assert.equal(calls.length, 1);
     assert.equal(cancelledRequests.size > 0, true);
   } finally {
@@ -488,9 +503,9 @@ test("interrupt does not drop feedback that was pending before aborted step", as
     assert.equal(interrupted.interrupted, true);
 
     // In the new flow, after interrupt the single-agent execution completes
-    // (with error) and the run transitions to waiting_user_input.
+    // (with error) and the run transitions to done (no worktree manager).
     // The pending feedback remains tracked — it was not dropped.
-    await waitForRunStatus(engine, "waiting_user_input", run.id);
+    await waitForRunStatus(engine, "done", run.id);
     assert.equal(calls.length, 1);
     assert.equal(cancelledRequests.size > 0, true);
   } finally {
@@ -504,7 +519,7 @@ test("team run completes after one debate step when no TEAM_NEXT is emitted", as
   const { engine, store } = createEngine(adapter, { maxSteps: 8 });
   try {
     await engine.processUserMessage("Quick sync test");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
     const status = engine.teamStatus();
     assert.ok(status);
     assert.equal(status.run.stepCount, 1); // debate only
@@ -524,7 +539,7 @@ test("TEAM_DONE control line completes run immediately", async () => {
   const { engine, store } = createEngine(adapter, { maxSteps: 8 });
   try {
     await engine.processUserMessage("Finish and stop");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
     const status = engine.teamStatus();
     assert.ok(status);
     assert.equal(status.run.stepCount, 1); // debate only
@@ -572,12 +587,12 @@ test("team run records dispatch errors in steps and completes", async () => {
     const run = engine.startTeamRun("Investigate failure path");
     // In the new plan-execute-merge flow, execution errors are recorded as
     // error steps but the run still completes through the merge phase and
-    // transitions to waiting_user_input (not failed).
-    await waitForRunStatus(engine, "waiting_user_input", run.id);
+    // transitions to done (no worktree manager, no file changes).
+    await waitForRunStatus(engine, "done", run.id);
 
     const status = engine.teamStatus(run.id);
     assert.ok(status);
-    assert.equal(status.run.status, "waiting_user_input");
+    assert.equal(status.run.status, "done");
 
     // Verify the error step was recorded
     const steps = store.listTeamSteps(run.id, 10);
@@ -637,10 +652,10 @@ test("team run records timeout error and completes without retry", async () => {
     const run = engine.startTeamRun("Recover after transient timeout");
     // In the new plan-execute-merge flow, there is no automatic retry.
     // The execution calls the adapter once, it errors, and the run completes.
-    await waitForRunStatus(engine, "waiting_user_input", run.id);
+    await waitForRunStatus(engine, "done", run.id);
     const status = engine.teamStatus(run.id);
     assert.ok(status);
-    assert.equal(status.run.status, "waiting_user_input");
+    assert.equal(status.run.status, "done");
     assert.equal(callCount, 1);
 
     const steps = store.listTeamSteps(run.id, 10);
@@ -672,7 +687,7 @@ test("team run promotes cli adapter mode to agentic dispatch", async () => {
   const { engine, store } = createEngine(adapter, { maxSteps: 1, adapterMode: "cli" });
   try {
     await engine.processUserMessage("Draft architecture summary");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
     assert.equal(adapter.calls.length, 1); // debate step only
   } finally {
     await engine.shutdown();
@@ -723,11 +738,11 @@ test("team run records config error when adapter config is missing", async () =>
 
     // In the new plan-execute-merge flow, config errors during execution
     // are recorded as error steps but the run still completes through
-    // the merge phase to waiting_user_input.
-    await waitForRunStatus(engine, "waiting_user_input", run.id);
+    // the merge phase to done (no worktree manager, no file changes).
+    await waitForRunStatus(engine, "done", run.id);
     const status = engine.teamStatus(run.id);
     assert.ok(status);
-    assert.equal(status.run.status, "waiting_user_input");
+    assert.equal(status.run.status, "done");
 
     // Verify the error step was recorded. CONFIG_ERROR is not a standard
     // error class, so normalizeErrorClass maps it to UNKNOWN.
@@ -859,7 +874,7 @@ test("team run restores adapter mode after completion", async () => {
   const { engine, store } = createEngine(adapter, { maxSteps: 1, adapterMode: "cli" });
   try {
     await engine.processUserMessage("Draft architecture summary");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
     assert.equal(sendTurnCalls, 1);
 
     engine.setMode("manual");
@@ -883,7 +898,7 @@ test("team prompt uses newest user context tail", async () => {
 
     engine.setMode("team");
     await engine.processUserMessage("start team runtime");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
 
     const prompt = adapter.calls[0]?.prompt ?? "";
     assert.match(prompt, /seed-message-30/);
@@ -935,7 +950,7 @@ test("team run sanitizes noisy assistant output", async () => {
   const { engine, store } = createEngine(adapter, { maxSteps: 1, adapterMode: "agentic" });
   try {
     await engine.processUserMessage("Write a concise update");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
 
     const log = engine.teamLog(10);
     assert.ok(log);
@@ -1023,7 +1038,7 @@ test("team auto-start with 2 agents runs planning and parallel execution", async
   engine.init();
   try {
     await engine.processUserMessage("@claude review the docs");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
     // Both agents participate: 1 plan call + 1 execute call each
     assert.equal(codex.calls.length, 2, "codex: 1 plan propose + 1 execute");
     assert.equal(claude.calls.length, 2, "claude: 1 plan review + 1 execute");
@@ -1034,8 +1049,16 @@ test("team auto-start with 2 agents runs planning and parallel execution", async
 });
 
 test("@all in team goal forces at least one turn from each agent", async () => {
-  const codex = makeAdapter("codex", 0, () => "Codex summary\nTEAM_DONE");
-  const claude = makeAdapter("claude", 0, () => "Claude summary\nTEAM_DONE");
+  const codex = makeAdapter("codex", 0, (idx) => {
+    if (idx === 1) {
+      return "PLAN:\n- agent: codex\n  task: Describe backend\n  files: notes.md\n- agent: claude\n  task: Describe frontend\n  files: ui-notes.md\nPLAN_END";
+    }
+    return "Codex done\nTEAM_DONE";
+  });
+  const claude = makeAdapter("claude", 0, (idx) => {
+    if (idx === 1) return "PLAN_ACCEPT";
+    return "Claude done\nTEAM_DONE";
+  });
   const store = new SQLiteStore(":memory:");
   store.init();
   const session = new SessionService(store);
@@ -1056,8 +1079,8 @@ test("@all in team goal forces at least one turn from each agent", async () => {
     },
     team: {
       profile: "enthusiast",
-      maxSteps: 1,
-      maxNoProgressSteps: 2,
+      maxSteps: 10,
+      maxNoProgressSteps: 5,
       maxDurationMs: 900_000,
       checksEnabledByDefault: false,
       checkCommands: ["npm run typecheck", "npm test"],
@@ -1081,13 +1104,16 @@ test("@all in team goal forces at least one turn from each agent", async () => {
   engine.init();
   try {
     await engine.processUserMessage("@all describe this repo");
-    await waitForRunStatus(engine, "waiting_user_input");
+    await waitForRunStatus(engine, "done");
 
-    assert.equal(codex.calls.length, 1);
-    assert.equal(claude.calls.length, 1);
+    assert.equal(codex.calls.length, 2, "codex: 1 plan propose + 1 execute");
+    assert.equal(claude.calls.length, 2, "claude: 1 plan review + 1 execute");
     const log = engine.teamLog(10);
     assert.ok(log);
-    assert.equal(log.run.stepCount, 2);
+    const planSteps = log.steps.filter((s) => s.stage === "plan");
+    const implSteps = log.steps.filter((s) => s.stage === "implement");
+    assert.equal(planSteps.length, 2, "2 planning steps");
+    assert.equal(implSteps.length, 2, "2 implementation steps");
   } finally {
     await engine.shutdown();
     store.close();

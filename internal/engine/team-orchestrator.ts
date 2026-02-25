@@ -231,7 +231,8 @@ export class TeamOrchestrator {
     const state = this.getState();
     const run = runId
       ? this.session.getTeamRun(runId)
-      : this.session.getActiveTeamRun(state.room.id);
+      : (this.session.getActiveTeamRun(state.room.id) ??
+         this.session.getLatestTeamRun(state.room.id));
     if (!run) {
       return null;
     }
@@ -245,7 +246,8 @@ export class TeamOrchestrator {
     const state = this.getState();
     const run = runId
       ? this.session.getTeamRun(runId)
-      : this.session.getLatestResumableTeamRun(state.room.id);
+      : (this.session.getLatestResumableTeamRun(state.room.id) ??
+         this.session.getLatestTeamRun(state.room.id));
     if (!run) {
       return null;
     }
@@ -530,7 +532,11 @@ export class TeamOrchestrator {
     const plan = await this.runPlanningPhase(run);
     if (!plan || this.teamStopFlags.has(runId)) {
       if (!this.teamStopFlags.has(runId)) {
-        this.completeRun(run, "Planning phase failed to produce a plan.");
+        const msg = "Planning phase failed to produce a plan.";
+        this.session.updateTeamRunProgress(run.id, { finalSummary: msg });
+        this.session.updateTeamRunStatus(run.id, "failed", { finalSummary: msg });
+        this.restoreTeamAdapterModes();
+        this.teamNextActorByRun.delete(run.id);
       }
       return;
     }
@@ -761,8 +767,15 @@ export class TeamOrchestrator {
 
   private async runMergePhase(run: TeamRun): Promise<void> {
     if (!this.worktreeManager) {
-      // No worktree manager — skip merge, just complete
-      this.completeRun(run, "Run completed (no worktree merge).");
+      // No worktree manager — skip merge, just mark done
+      const msg = "Run completed (no worktree merge).";
+      this.session.updateTeamRunProgress(run.id, { finalSummary: msg });
+      this.session.updateTeamRunStatus(run.id, "done", {
+        completedAt: new Date().toISOString(),
+        finalSummary: msg,
+      });
+      this.restoreTeamAdapterModes();
+      this.teamNextActorByRun.delete(run.id);
       return;
     }
 
@@ -799,7 +812,19 @@ export class TeamOrchestrator {
       this.session.updateTeamRunStatus(run.id, "waiting_user_input", { finalSummary: summary });
       this.restoreTeamAdapterModes();
     } else {
-      this.completeRun(run, "All agents completed (no file changes detected).");
+      // No file changes — nothing to approve, mark as done directly
+      const noChangesMsg = "All agents completed (no file changes detected).";
+      this.session.updateTeamRunProgress(run.id, { finalSummary: noChangesMsg });
+      this.session.updateTeamRunStatus(run.id, "done", {
+        completedAt: new Date().toISOString(),
+        finalSummary: noChangesMsg,
+      });
+      this.restoreTeamAdapterModes();
+      this.teamNextActorByRun.delete(run.id);
+      this.logger.log("info", "team.run_completed_no_changes", {
+        roomId: run.roomId,
+        runId: run.id,
+      });
     }
   }
 
@@ -896,24 +921,6 @@ export class TeamOrchestrator {
     }
   }
 
-  private completeRun(run: TeamRun, reason: string, summaryHint?: string): void {
-    const summary = summaryHint?.trim() || run.finalSummary || reason;
-    this.session.updateTeamRunProgress(run.id, {
-      finalSummary: summary,
-    });
-    this.session.updateTeamRunStatus(run.id, "waiting_user_input", {
-      finalSummary: summary,
-    });
-    this.restoreTeamAdapterModes();
-    this.teamNextActorByRun.delete(run.id);
-
-    this.logger.log("info", "team.run_waiting_approval", {
-      roomId: run.roomId,
-      runId: run.id,
-      reason,
-      summaryLength: summary.length,
-    });
-  }
 
   private restoreTeamAdapterModes(): void {
     if (!this.teamAdapterConfigSnapshot) {

@@ -129,7 +129,7 @@ test("full cycle: plan -> parallel execute -> merge -> complete", async () => {
   const { engine, store, session } = createDualEngine([codex, claude]);
   try {
     engine.startTeamRun("Implement merge sort with tests");
-    await waitForRunStatus(engine, "waiting_user_input", 10_000);
+    await waitForRunStatus(engine, "done", 10_000);
 
     // Both agents called twice: 1 plan + 1 execute
     assert.equal(codex.calls.length, 2, "codex: 1 plan + 1 exec");
@@ -190,7 +190,7 @@ test("full cycle: single agent skips negotiation", async () => {
   try {
     engine.startTeamRun("Do everything");
 
-    await waitForRunStatus(engine, "waiting_user_input", 5_000);
+    await waitForRunStatus(engine, "done", 5_000);
 
     assert.equal(solo.calls.length, 1, "solo: 1 execution call (no negotiation)");
   } finally {

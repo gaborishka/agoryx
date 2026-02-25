@@ -468,6 +468,10 @@ export class SessionService {
     return this.store.getActiveTeamRun(roomId);
   }
 
+  public getLatestTeamRun(roomId: string): TeamRun | null {
+    return this.store.getLatestTeamRun(roomId);
+  }
+
   public getLatestResumableTeamRun(roomId: string): TeamRun | null {
     return this.store.getLatestResumableTeamRun(roomId);
   }

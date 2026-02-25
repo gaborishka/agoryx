@@ -1100,6 +1100,20 @@ export class SQLiteStore {
     return row ? teamRunRowToDomain(row) : null;
   }
 
+  public getLatestTeamRun(roomId: string): TeamRun | null {
+    const row = this.db
+      .prepare(
+        `
+      SELECT * FROM team_runs
+      WHERE room_id = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+      )
+      .get(roomId) as TeamRunRow | undefined;
+    return row ? teamRunRowToDomain(row) : null;
+  }
+
   public getLatestResumableTeamRun(roomId: string): TeamRun | null {
     const row = this.db
       .prepare(

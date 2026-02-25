@@ -557,11 +557,12 @@ const processChatInputLine = async (
   }
 
   const mode = engine.getState().room.config.mode;
-  const teamStatusBefore = mode === "team" ? engine.teamStatus() : null;
+  const isTeamTrigger = /^@team\s/i.test(line);
+  const teamStatusBefore = (mode === "team" || isTeamTrigger) ? engine.teamStatus() : null;
 
   const results = await engine.processUserMessage(line);
   if (results.length === 0) {
-    if (mode === "team") {
+    if (mode === "team" || isTeamTrigger) {
       const status = engine.teamStatus();
       if (status && !teamStatusBefore) {
         console.log(formatSuccessLine(`Team run started: ${status.run.id}`));
@@ -2110,6 +2111,7 @@ In-chat commands:
   /mode <manual|round-robin|auto|team>
   /status
   /adapter <codex|claude> <stub|cli|persistent|agentic>
+  @team <goal>                      start a team run (from any mode)
   /team start <goal> [--strict] [--no-checks]
   /team status
   /team log [limit]

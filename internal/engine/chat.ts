@@ -243,6 +243,20 @@ export class ChatEngine {
 
   public async processUserMessage(text: string): Promise<DispatchResult[]> {
     const state = this.getState();
+
+    // @team <goal> triggers a team run from any mode (if no run is active)
+    const teamMention = text.match(/^@team\s+(.+)/is);
+    if (teamMention) {
+      const goal = teamMention[1]!.trim();
+      const activeRun = this.session.getActiveTeamRun(state.room.id);
+      if (goal && !activeRun) {
+        this.session.saveUserMessage(state.room.id, text);
+        this.startTeamRun(goal);
+        return [];
+      }
+      // If there's an active run, fall through to team message handling
+    }
+
     if (state.room.config.mode === "team") {
       return this.team.processTeamUserMessage(text);
     }

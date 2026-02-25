@@ -1119,3 +1119,63 @@ test("@all in team goal forces at least one turn from each agent", async () => {
     store.close();
   }
 });
+
+test("@team trigger starts a team run from non-team mode", async () => {
+  const adapter = makeAdapter("claude");
+  const { engine, store } = createEngine(adapter, { maxSteps: 1 });
+  try {
+    engine.setMode("manual");
+    const results = await engine.processUserMessage("@team Build a new auth module");
+    assert.equal(results.length, 0);
+
+    await waitForRunStatus(engine, "done");
+    const status = engine.teamStatus();
+    assert.ok(status);
+    assert.equal(status.run.goal, "Build a new auth module");
+    assert.equal(adapter.calls.length, 1);
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("@team trigger is case-insensitive", async () => {
+  const adapter = makeAdapter("claude");
+  const { engine, store } = createEngine(adapter, { maxSteps: 1 });
+  try {
+    engine.setMode("manual");
+    const results = await engine.processUserMessage("@Team Review the codebase");
+    assert.equal(results.length, 0);
+
+    await waitForRunStatus(engine, "done");
+    const status = engine.teamStatus();
+    assert.ok(status);
+    assert.equal(status.run.goal, "Review the codebase");
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("@team does not start a new run if one is already active", async () => {
+  const adapter = makeAdapter("claude", 200, () => "still working\nTEAM_NEXT:claude");
+  const { engine, store } = createEngine(adapter, { maxSteps: 8 });
+  try {
+    await engine.processUserMessage("First task");
+    await waitForRunStatus(engine, "active");
+    const firstRun = engine.teamStatus();
+    assert.ok(firstRun);
+
+    // @team while active should fall through to feedback queueing
+    const results = await engine.processUserMessage("@team Second task");
+    assert.equal(results.length, 0);
+
+    // Should still be the same run, not a new one
+    const afterStatus = engine.teamStatus();
+    assert.ok(afterStatus);
+    assert.equal(afterStatus.run.id, firstRun.run.id);
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});

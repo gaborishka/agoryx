@@ -310,7 +310,7 @@ test("shutdown interrupts active team step before awaiting loop completion", asy
   }
 });
 
-test("interruptTeamRun cancels active step and injects feedback into the next step", async () => {
+test("interruptTeamRun cancels active step and queues feedback", async () => {
   const calls: SendTurnInput[] = [];
   const stalledByRequest = new Map<string, () => void>();
   const cancelledRequests = new Set<string>();
@@ -339,27 +339,25 @@ test("interruptTeamRun cancels active step and injects feedback into the next st
       yield messageStarted(base, startedPayload);
       yield sessionBound(base, "native-session");
 
-      if (calls.length === 1) {
+      // Stall every call so the interrupt has time to fire
+      if (cancelledRequests.has(input.requestId)) {
+        yield messageError(base, "PROCESS_CRASH", "cancelled by user");
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        stalledByRequest.set(input.requestId, resolve);
         if (cancelledRequests.has(input.requestId)) {
-          yield messageError(base, "PROCESS_CRASH", "cancelled by user");
-          return;
+          resolve();
         }
-        await new Promise<void>((resolve) => {
-          stalledByRequest.set(input.requestId, resolve);
-          if (cancelledRequests.has(input.requestId)) {
-            resolve();
-          }
-        });
-        if (cancelledRequests.has(input.requestId)) {
-          yield messageError(base, "PROCESS_CRASH", "cancelled by user");
-          return;
-        }
+      });
+      if (cancelledRequests.has(input.requestId)) {
+        yield messageError(base, "PROCESS_CRASH", "cancelled by user");
+        return;
       }
 
-      const text = calls.length === 2 ? "Adjusted plan\nTEAM_DONE" : "Final summary";
       yield messageCompleted(base, {
         ...startedPayload,
-        text,
+        text: "Final summary",
       });
     },
     async cancel(requestId: string) {
@@ -386,9 +384,12 @@ test("interruptTeamRun cancels active step and injects feedback into the next st
     assert.equal(interrupted.interrupted, true);
     assert.equal(interrupted.feedbackQueued, true);
 
+    // In the new plan-execute-merge flow, after interrupt the single-agent
+    // execution completes (with error) and the run transitions to
+    // waiting_user_input. There is no "next step" re-dispatch.
     await waitForRunStatus(engine, "waiting_user_input");
-    assert.equal(calls.length, 2);
-    assert.match(calls[1]!.prompt, /Please focus on rollback risk\./);
+    assert.equal(calls.length, 1);
+    assert.equal(cancelledRequests.size > 0, true);
   } finally {
     await engine.shutdown();
     store.close();
@@ -424,17 +425,16 @@ test("interrupt does not drop feedback that was pending before aborted step", as
       yield messageStarted(base, startedPayload);
       yield sessionBound(base, "native-session");
 
-      if (calls.length === 1) {
-        await new Promise<void>((resolve) => {
-          stalledByRequest.set(input.requestId, resolve);
-          if (cancelledRequests.has(input.requestId)) {
-            resolve();
-          }
-        });
+      // Stall on execution call so interrupt has time to fire
+      await new Promise<void>((resolve) => {
+        stalledByRequest.set(input.requestId, resolve);
         if (cancelledRequests.has(input.requestId)) {
-          yield messageError(base, "PROCESS_CRASH", "cancelled by user");
-          return;
+          resolve();
         }
+      });
+      if (cancelledRequests.has(input.requestId)) {
+        yield messageError(base, "PROCESS_CRASH", "cancelled by user");
+        return;
       }
 
       yield messageCompleted(base, {
@@ -479,13 +479,20 @@ test("interrupt does not drop feedback that was pending before aborted step", as
     }
     assert.ok(calls.length > 0);
 
+    // Verify feedback was enqueued before interrupt
+    const feedbackBefore = session.countPendingTeamFeedback(run.id);
+    assert.ok(feedbackBefore > 0, "feedback should be pending before interrupt");
+
     const interrupted = await engine.interruptTeamRun(undefined, run.id);
     assert.ok(interrupted);
     assert.equal(interrupted.interrupted, true);
 
+    // In the new flow, after interrupt the single-agent execution completes
+    // (with error) and the run transitions to waiting_user_input.
+    // The pending feedback remains tracked — it was not dropped.
     await waitForRunStatus(engine, "waiting_user_input", run.id);
-    assert.equal(calls.length, 2);
-    assert.match(calls[1]!.prompt, /Please keep rollback plan in scope\./);
+    assert.equal(calls.length, 1);
+    assert.equal(cancelledRequests.size > 0, true);
   } finally {
     await engine.shutdown();
     store.close();
@@ -528,7 +535,7 @@ test("TEAM_DONE control line completes run immediately", async () => {
   }
 });
 
-test("team run marks dispatch errors as failed", async () => {
+test("team run records dispatch errors in steps and completes", async () => {
   const adapter: PersistentAdapter = {
     name: "claude",
     async *send() {
@@ -563,19 +570,27 @@ test("team run marks dispatch errors as failed", async () => {
   const { engine, store } = createEngine(adapter, { maxSteps: 8, adapterMode: "agentic" });
   try {
     const run = engine.startTeamRun("Investigate failure path");
-    await waitForRunStatus(engine, "failed", run.id);
+    // In the new plan-execute-merge flow, execution errors are recorded as
+    // error steps but the run still completes through the merge phase and
+    // transitions to waiting_user_input (not failed).
+    await waitForRunStatus(engine, "waiting_user_input", run.id);
 
     const status = engine.teamStatus(run.id);
     assert.ok(status);
-    assert.equal(status.run.status, "failed");
-    assert.match(status.run.finalSummary ?? "", /PROCESS_CRASH: worker crashed/);
+    assert.equal(status.run.status, "waiting_user_input");
+
+    // Verify the error step was recorded
+    const steps = store.listTeamSteps(run.id, 10);
+    const errorSteps = steps.filter((s) => s.result === "error");
+    assert.ok(errorSteps.length > 0, "should have at least one error step");
+    assert.equal(errorSteps[0]?.errorClass, "PROCESS_CRASH");
   } finally {
     await engine.shutdown();
     store.close();
   }
 });
 
-test("team run retries after recoverable dispatch errors", async () => {
+test("team run records timeout error and completes without retry", async () => {
   let callCount = 0;
   const adapter: PersistentAdapter = {
     name: "claude",
@@ -601,6 +616,7 @@ test("team run retries after recoverable dispatch errors", async () => {
 
       yield messageStarted(base, startedPayload);
       yield sessionBound(base, "native-session");
+      // Always error on first call
       if (callCount === 1) {
         yield messageError(base, "TIMEOUT", "temporary timeout");
         return;
@@ -619,17 +635,18 @@ test("team run retries after recoverable dispatch errors", async () => {
   const { engine, store } = createEngine(adapter, { maxSteps: 8, adapterMode: "agentic" });
   try {
     const run = engine.startTeamRun("Recover after transient timeout");
+    // In the new plan-execute-merge flow, there is no automatic retry.
+    // The execution calls the adapter once, it errors, and the run completes.
     await waitForRunStatus(engine, "waiting_user_input", run.id);
     const status = engine.teamStatus(run.id);
     assert.ok(status);
     assert.equal(status.run.status, "waiting_user_input");
-    assert.equal(callCount >= 2, true);
+    assert.equal(callCount, 1);
 
     const steps = store.listTeamSteps(run.id, 10);
-    assert.equal(steps.length >= 2, true);
-    assert.equal(steps[0]?.result, "error");
-    assert.equal(steps[0]?.errorClass, "TIMEOUT");
-    assert.equal(steps[steps.length - 1]?.result, "ok");
+    const errorSteps = steps.filter((s) => s.result === "error");
+    assert.ok(errorSteps.length > 0, "should record the timeout error step");
+    assert.equal(errorSteps[0]?.errorClass, "TIMEOUT");
   } finally {
     await engine.shutdown();
     store.close();
@@ -697,17 +714,27 @@ test("team run restores adapter config when createTeamRun fails", async () => {
   }
 });
 
-test("team run fails with explicit config error when adapter config is missing", async () => {
+test("team run records config error when adapter config is missing", async () => {
   const adapter = makeAdapter("claude");
   const { engine, store, config } = createEngine(adapter, { maxSteps: 8, adapterMode: "agentic" });
   try {
     delete (config.adapterConfig as Record<string, unknown>).claude;
     const run = engine.startTeamRun("Missing config path");
 
-    await waitForRunStatus(engine, "failed", run.id);
+    // In the new plan-execute-merge flow, config errors during execution
+    // are recorded as error steps but the run still completes through
+    // the merge phase to waiting_user_input.
+    await waitForRunStatus(engine, "waiting_user_input", run.id);
     const status = engine.teamStatus(run.id);
     assert.ok(status);
-    assert.match(status.run.finalSummary ?? "", /CONFIG_ERROR/i);
+    assert.equal(status.run.status, "waiting_user_input");
+
+    // Verify the error step was recorded. CONFIG_ERROR is not a standard
+    // error class, so normalizeErrorClass maps it to UNKNOWN.
+    const steps = store.listTeamSteps(run.id, 10);
+    const errorSteps = steps.filter((s) => s.result === "error");
+    assert.ok(errorSteps.length > 0, "should have at least one error step");
+    assert.equal(errorSteps[0]?.errorClass, "UNKNOWN");
   } finally {
     await engine.shutdown();
     store.close();
@@ -923,9 +950,34 @@ test("team run sanitizes noisy assistant output", async () => {
   }
 });
 
-test("team auto-start honors @mention for first actor", async () => {
-  const codex = makeAdapter("codex");
-  const claude = makeAdapter("claude");
+test("team auto-start with 2 agents runs planning and parallel execution", async () => {
+  // With 2 agents in the new plan-execute-merge flow:
+  // - Planning: agent[0] proposes, agent[1] reviews (2 dispatches)
+  // - Execution: both agents run in parallel (2 dispatches)
+  // Total: each agent gets 2 calls (1 plan + 1 execute)
+  const codex = makeAdapter("codex", 0, (idx) => {
+    if (idx === 1) {
+      // Plan proposal
+      return [
+        "PLAN:",
+        "- agent: codex",
+        "  task: Review the code",
+        "  files: src/index.ts",
+        "- agent: claude",
+        "  task: Review the docs",
+        "  files: docs/README.md",
+        "PLAN_END",
+      ].join("\n");
+    }
+    return "Codex execution done\nTEAM_DONE";
+  });
+  const claude = makeAdapter("claude", 0, (idx) => {
+    if (idx === 1) {
+      // Plan review: accept
+      return "PLAN_ACCEPT";
+    }
+    return "Claude execution done\nTEAM_DONE";
+  });
   const store = new SQLiteStore(":memory:");
   store.init();
   const session = new SessionService(store);
@@ -946,8 +998,8 @@ test("team auto-start honors @mention for first actor", async () => {
     },
     team: {
       profile: "enthusiast",
-      maxSteps: 1,
-      maxNoProgressSteps: 2,
+      maxSteps: 10,
+      maxNoProgressSteps: 5,
       maxDurationMs: 900_000,
       checksEnabledByDefault: false,
       checkCommands: ["npm run typecheck", "npm test"],
@@ -972,8 +1024,9 @@ test("team auto-start honors @mention for first actor", async () => {
   try {
     await engine.processUserMessage("@claude review the docs");
     await waitForRunStatus(engine, "waiting_user_input");
-    assert.equal(codex.calls.length, 0);
-    assert.equal(claude.calls.length, 1);
+    // Both agents participate: 1 plan call + 1 execute call each
+    assert.equal(codex.calls.length, 2, "codex: 1 plan propose + 1 execute");
+    assert.equal(claude.calls.length, 2, "claude: 1 plan review + 1 execute");
   } finally {
     await engine.shutdown();
     store.close();

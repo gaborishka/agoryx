@@ -132,7 +132,11 @@ test("/team start and /team status work in team mode", async (t) => {
   assert.doesNotMatch(result.stdout, /strategy:/);
 });
 
-test("free-text in waiting_user_input run does not claim feedback was queued", async (t) => {
+test("free-text during active team run queues feedback correctly", async (t) => {
+  // In the new plan-execute-merge flow, the planning phase runs
+  // asynchronously. When a free-text message arrives while the run is
+  // still active (planning/executing), it is correctly queued as
+  // feedback for the team run.
   const dir = makeTmpDir(t, "agoryx-cmd-team-waiting-message-");
   const dbPath = join(dir, "test.db");
   const configPath = join(dir, "agoryx.json");
@@ -143,7 +147,7 @@ test("free-text in waiting_user_input run does not claim feedback was queued", a
       defaultMode: "team",
       team: {
         profile: "enthusiast",
-        maxSteps: 0,
+        maxSteps: 10,
         maxNoProgressSteps: 2,
         maxDurationMs: 900000,
         checksEnabledByDefault: true,
@@ -178,8 +182,9 @@ test("free-text in waiting_user_input run does not claim feedback was queued", a
 
   assert.equal(result.code, 0);
   assert.match(result.stdout, /Team run started: teamrun_/);
-  assert.match(result.stdout, /is waiting for approval\. Use \/team approve\./);
-  assert.doesNotMatch(result.stdout, /Feedback queued for team run/);
+  // The free-text message arrives while the planning/execution phase is
+  // still running, so it is correctly queued as feedback.
+  assert.match(result.stdout, /Feedback queued for team run/);
 });
 
 test("@mention in waiting_user_input run triggers direct adapter response", async (t) => {

@@ -775,147 +775,6 @@ export class TeamOrchestrator {
     }
   }
 
-  private shouldFinalizeRun(run: TeamRun): boolean {
-    const elapsedMs = Date.now() - Date.parse(run.startedAt);
-    return (
-      run.stepCount >= run.maxSteps ||
-      run.noProgressCount >= run.maxNoProgressSteps ||
-      elapsedMs >= run.maxDurationMs
-    );
-  }
-
-  private async executeDebateStep(run: TeamRun): Promise<void> {
-    const state = this.getState();
-    const hintedActor = this.teamNextActorByRun.get(run.id);
-    const actor = hintedActor && state.availableAgents.includes(hintedActor)
-      ? hintedActor
-      : this.teamPolicy.selectActor(run, "debate", state.availableAgents);
-    if (!actor) {
-      this.session.updateTeamRunStatus(run.id, "failed", {
-        completedAt: new Date().toISOString(),
-        finalSummary: "No available actor for debate step.",
-      });
-      return;
-    }
-
-    const prompt = this.session.buildTeamPrompt(
-      state.room,
-      run,
-      "debate",
-      actor,
-      {
-        instructions:
-          "Advance the goal with one concrete step in this turn. Prefer doing work over check-ins. " +
-          "At the end of your response add exactly one control line: TEAM_NEXT:<agent> to continue, or TEAM_DONE to finish. " +
-          "If the goal is complete or blocked pending user input, use TEAM_DONE. " +
-          "Do not output internal tool/runtime logs or meta progress chatter.",
-      },
-    );
-    const consumedFeedbackIds = this.session.listPendingTeamFeedback(run.id, 20).map((item) => item.id);
-
-    const dispatch = this.dispatchApi.createInternalDispatch(actor, `team:debate:${run.stepCount + 1}`);
-    this.trackActiveTeamDispatch(run.id, actor, dispatch.requestId);
-    let result: DispatchResult;
-    try {
-      result = await this.dispatchApi.runPromptDispatch(dispatch, prompt, false, {
-        outputTransform: sanitizeTeamOutput,
-      });
-    } finally {
-      this.clearActiveTeamDispatch(run.id, dispatch.requestId);
-    }
-
-    if (this.consumeInterruptedRequest(dispatch.requestId)) {
-      this.teamNextActorByRun.set(run.id, actor);
-      return;
-    }
-    this.session.consumeTeamFeedback(consumedFeedbackIds);
-
-    const stepSeq = run.stepCount + 1;
-    const errorClass = normalizeErrorClass(result.error);
-    this.session.addTeamStep({
-      runId: run.id,
-      seq: stepSeq,
-      stage: "debate",
-      actor,
-      dispatchId: dispatch.dispatchId,
-      requestId: dispatch.requestId,
-      inputText: prompt,
-      outputText: result.text,
-      result: result.success ? "ok" : "error",
-      errorClass,
-    });
-
-    this.memoryService?.recordTeamStep(
-      run.roomId,
-      run.id,
-      actor,
-      result.text.slice(0, 200),
-    );
-
-    const control = parseTeamDebateControl(result.text);
-    const nextActor =
-      control.nextActor && state.availableAgents.includes(control.nextActor)
-        ? control.nextActor
-        : null;
-    if (nextActor) {
-      this.teamNextActorByRun.set(run.id, nextActor);
-    } else {
-      this.teamNextActorByRun.delete(run.id);
-    }
-
-    const MIN_PROGRESS_LENGTH = 80;
-    const noProgressCount =
-      result.success && result.text.trim().length >= MIN_PROGRESS_LENGTH
-        ? 0
-        : run.noProgressCount + 1;
-    this.session.updateTeamRunProgress(run.id, {
-      stage: "debate",
-      stepCount: stepSeq,
-      noProgressCount,
-    });
-
-    const updated = this.session.getTeamRun(run.id);
-    if (!updated || updated.status !== "active") {
-      return;
-    }
-    if (!result.success) {
-      if (isRecoverableTeamError(errorClass)) {
-        this.logger.log("warn", "team.step_recoverable_error", {
-          roomId: run.roomId,
-          runId: run.id,
-          actor,
-          errorClass: errorClass ?? "UNKNOWN",
-          error: result.error ?? "unknown",
-        });
-        this.teamNextActorByRun.set(updated.id, actor);
-        return;
-      }
-      this.session.updateTeamRunStatus(updated.id, "failed", {
-        completedAt: new Date().toISOString(),
-        finalSummary: result.error ?? "Team debate step failed.",
-      });
-      this.restoreTeamAdapterModes();
-      this.teamNextActorByRun.delete(updated.id);
-      return;
-    }
-    const forcedMentionActor = this.getNextMentionCoverageActor(updated);
-    if (forcedMentionActor) {
-      this.teamNextActorByRun.set(updated.id, forcedMentionActor);
-      return;
-    }
-    if (control.done) {
-      this.completeRun(updated, "TEAM_DONE control event.", result.text);
-      return;
-    }
-    if (!nextActor) {
-      this.completeRun(updated, "No TEAM_NEXT control event.", result.text);
-      return;
-    }
-    if (this.shouldFinalizeRun(updated)) {
-      this.completeRun(updated, "Debate limits reached.", result.text);
-    }
-  }
-
   private completeRun(run: TeamRun, reason: string, summaryHint?: string): void {
     const summary = summaryHint?.trim() || run.finalSummary || reason;
     this.session.updateTeamRunProgress(run.id, {
@@ -989,51 +848,6 @@ export class TeamOrchestrator {
     return true;
   }
 
-  private getNextMentionCoverageActor(run: TeamRun): string | null {
-    const requiredActors = this.getRequiredMentionActors(run);
-    if (requiredActors.length <= 1) {
-      return null;
-    }
-
-    const steps = this.session.listTeamSteps(run.id, Math.max(1, run.stepCount + 1));
-    const spokenActors = new Set<string>();
-    for (const step of steps) {
-      if (step.result === "ok") {
-        spokenActors.add(step.actor);
-      }
-    }
-
-    for (const actor of requiredActors) {
-      if (!spokenActors.has(actor)) {
-        return actor;
-      }
-    }
-
-    return null;
-  }
-
-  private getRequiredMentionActors(run: TeamRun): string[] {
-    const mentions = extractGoalMentions(run.goal);
-    if (mentions.length === 0) {
-      return [];
-    }
-
-    if (mentions.includes("all")) {
-      return [...run.participants];
-    }
-
-    const requiredActors: string[] = [];
-    for (const mention of mentions) {
-      if (!run.participants.includes(mention)) {
-        continue;
-      }
-      if (requiredActors.includes(mention)) {
-        continue;
-      }
-      requiredActors.push(mention);
-    }
-    return requiredActors;
-  }
 }
 
 interface TeamDebateControl {
@@ -1052,12 +866,6 @@ const MENTION_PATTERN = /@([a-z0-9._-]+)/g;
 
 /** Max number of trailing lines to scan for control directives. */
 const CONTROL_TAIL_LINES = 5;
-const TEAM_RECOVERABLE_ERROR_CLASSES = new Set<NonNullable<TeamStep["errorClass"]>>([
-  "TIMEOUT",
-  "RATE_LIMIT",
-  "SESSION_EXPIRED",
-]);
-
 export const parseTeamDebateControl = (text: string): TeamDebateControl => {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -1100,19 +908,6 @@ const normalizeTeamControlLine = (line: string): string => {
   return inlineCodeMatch[2]?.trim() ?? trimmed;
 };
 
-const extractGoalMentions = (text: string): string[] => {
-  const normalized = text.toLowerCase();
-  const mentions: string[] = [];
-  for (const match of normalized.matchAll(MENTION_PATTERN)) {
-    const mention = match[1];
-    if (!mention || mentions.includes(mention)) {
-      continue;
-    }
-    mentions.push(mention);
-  }
-  return mentions;
-};
-
 const resolveMentionTargets = (
   text: string,
   availableAgents: string[],
@@ -1138,6 +933,3 @@ const resolveMentionTargets = (
   return targets;
 };
 
-const isRecoverableTeamError = (errorClass: TeamStep["errorClass"]): boolean =>
-  typeof errorClass === "string" &&
-  TEAM_RECOVERABLE_ERROR_CLASSES.has(errorClass as NonNullable<TeamStep["errorClass"]>);

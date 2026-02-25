@@ -197,3 +197,15 @@ export interface TeamCheck {
   durationMs: number;
   createdAt: string;
 }
+
+export interface TeamPlanAssignment {
+  agent: string;
+  task: string;
+  files: string[];
+}
+
+export interface TeamPlan {
+  assignments: TeamPlanAssignment[];
+  accepted: boolean;
+  raw: string;
+}

@@ -648,8 +648,90 @@ export class TeamOrchestrator {
     return latestPlan;
   }
 
-  private async runParallelExecution(_run: TeamRun, _plan: TeamPlan): Promise<void> {
-    // Stub — will be implemented in Task 4
+  private async runParallelExecution(run: TeamRun, plan: TeamPlan): Promise<void> {
+    const state = this.getState();
+    this.session.updateTeamRunProgress(run.id, { stage: "implement" });
+
+    const dispatchPromises: Promise<void>[] = [];
+
+    for (const assignment of plan.assignments) {
+      if (!state.availableAgents.includes(assignment.agent)) continue;
+      if (this.teamStopFlags.has(run.id)) break;
+
+      const agent = assignment.agent;
+      const prompt = this.session.buildTeamPrompt(
+        state.room,
+        run,
+        "implement",
+        agent,
+        {
+          instructions:
+            `You are executing your part of the agreed plan.\n` +
+            `YOUR TASK: ${assignment.task}\n` +
+            `FILES YOU OWN: ${assignment.files.length > 0 ? assignment.files.join(", ") : "as needed"}\n\n` +
+            `Create or modify the files listed above to complete your task. ` +
+            `You have full filesystem access in your workspace. ` +
+            `When done, output TEAM_DONE.`,
+        },
+      );
+
+      const dispatch = this.dispatchApi.createInternalDispatch(
+        agent,
+        `team:implement:${assignment.agent}`,
+      );
+      this.trackActiveTeamDispatch(run.id, agent, dispatch.requestId);
+
+      const stepSeq = run.stepCount + plan.assignments.indexOf(assignment) + 1;
+      const promise = this.dispatchApi
+        .runPromptDispatch(dispatch, prompt, false, {
+          outputTransform: sanitizeTeamOutput,
+        })
+        .then((result) => {
+          this.clearActiveTeamDispatch(run.id, dispatch.requestId);
+
+          const errorClass = normalizeErrorClass(result.error);
+          this.session.addTeamStep({
+            runId: run.id,
+            seq: stepSeq,
+            stage: "implement",
+            actor: agent,
+            dispatchId: dispatch.dispatchId,
+            requestId: dispatch.requestId,
+            inputText: prompt,
+            outputText: result.text,
+            result: result.success ? "ok" : "error",
+            errorClass,
+          });
+
+          this.memoryService?.recordTeamStep(
+            run.roomId,
+            run.id,
+            agent,
+            result.text.slice(0, 200),
+          );
+        })
+        .catch((error) => {
+          this.clearActiveTeamDispatch(run.id, dispatch.requestId);
+          this.logger.log("error", "team.parallel_dispatch_failed", {
+            runId: run.id,
+            agent,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+
+      dispatchPromises.push(promise);
+    }
+
+    // Wait for all agents to complete
+    await Promise.all(dispatchPromises);
+
+    const updatedRun = this.session.getTeamRun(run.id);
+    if (updatedRun) {
+      this.session.updateTeamRunProgress(updatedRun.id, {
+        stage: "implement",
+        stepCount: run.stepCount + plan.assignments.length,
+      });
+    }
   }
 
   private async runMergePhase(run: TeamRun): Promise<void> {

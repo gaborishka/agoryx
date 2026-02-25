@@ -2,6 +2,7 @@ import type { Adapter, AdapterConfig } from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
 import type {
   TeamCheck,
+  TeamPlan,
   TeamRun,
   TeamStep,
   Message,
@@ -16,6 +17,7 @@ import { createId } from "../session/ids.js";
 import { SessionService } from "../session/service.js";
 import type { EngineLogger } from "./logger.js";
 import { normalizeErrorClass } from "./dispatch-engine.js";
+import { parseTeamPlan } from "./plan-parser.js";
 import type {
   ChatEngineHooks,
   DispatchResult,
@@ -490,29 +492,169 @@ export class TeamOrchestrator {
   }
 
   private async runLoop(runId: string): Promise<void> {
-    while (true) {
-      const run = this.session.getTeamRun(runId);
-      if (!run || run.status !== "active") {
-        return;
-      }
+    const run = this.session.getTeamRun(runId);
+    if (!run || run.status !== "active") return;
 
-      if (this.teamStopFlags.has(run.id)) {
-        this.session.updateTeamRunStatus(run.id, "stopped", {
-          completedAt: new Date().toISOString(),
-        });
-        this.restoreTeamAdapterModes();
-        return;
-      }
-
-      const hasPendingFeedback = this.session.countPendingTeamFeedback(run.id) > 0;
-      const pendingMentionActor = this.getNextMentionCoverageActor(run);
-      if (this.shouldFinalizeRun(run) && !hasPendingFeedback && !pendingMentionActor) {
-        this.completeRun(run, "Debate limits reached.");
-        return;
-      }
-
-      await this.executeDebateStep(run);
+    if (this.teamStopFlags.has(runId)) {
+      this.session.updateTeamRunStatus(run.id, "stopped", {
+        completedAt: new Date().toISOString(),
+      });
+      this.restoreTeamAdapterModes();
+      return;
     }
+
+    // Phase 1: Planning
+    const plan = await this.runPlanningPhase(run);
+    if (!plan || this.teamStopFlags.has(runId)) {
+      if (!this.teamStopFlags.has(runId)) {
+        this.completeRun(run, "Planning phase failed to produce a plan.");
+      }
+      return;
+    }
+
+    // Phase 2: Parallel execution
+    await this.runParallelExecution(run, plan);
+    if (this.teamStopFlags.has(runId)) return;
+
+    // Phase 3: Merge
+    await this.runMergePhase(run);
+  }
+
+  private async runPlanningPhase(run: TeamRun): Promise<TeamPlan | null> {
+    const state = this.getState();
+    const agents = state.availableAgents;
+    if (agents.length < 2) {
+      // Single agent — no negotiation needed, auto-generate plan
+      return {
+        assignments: [{ agent: agents[0]!, task: run.goal, files: [] }],
+        accepted: true,
+        raw: "",
+      };
+    }
+
+    let latestPlan: TeamPlan | null = null;
+
+    // Round 1: First agent proposes
+    const proposer = agents[0]!;
+    const proposePrompt = this.session.buildTeamPrompt(
+      state.room,
+      run,
+      "plan",
+      proposer,
+      {
+        instructions:
+          `You are the PLAN PROPOSER. The team has ${agents.length} agents: ${agents.join(", ")}.\n` +
+          `Analyze the goal and create a work plan. Divide the work so each agent handles distinct files.\n` +
+          `Output your plan in this exact format:\n\n` +
+          `PLAN:\n` +
+          `- agent: <name>\n` +
+          `  task: <description>\n` +
+          `  files: <comma-separated file paths>\n` +
+          `- agent: <name>\n` +
+          `  task: <description>\n` +
+          `  files: <comma-separated file paths>\n` +
+          `PLAN_END\n\n` +
+          `Every agent must appear in the plan. Assign non-overlapping files.`,
+      },
+    );
+
+    const proposeDispatch = this.dispatchApi.createInternalDispatch(proposer, `team:plan:propose`);
+    this.trackActiveTeamDispatch(run.id, proposer, proposeDispatch.requestId);
+    let proposeResult: DispatchResult;
+    try {
+      proposeResult = await this.dispatchApi.runPromptDispatch(proposeDispatch, proposePrompt, false, {
+        outputTransform: sanitizeTeamOutput,
+      });
+    } finally {
+      this.clearActiveTeamDispatch(run.id, proposeDispatch.requestId);
+    }
+
+    if (this.consumeInterruptedRequest(proposeDispatch.requestId)) return null;
+    if (!proposeResult.success) return null;
+
+    this.session.addTeamStep({
+      runId: run.id,
+      seq: 1,
+      stage: "plan",
+      actor: proposer,
+      dispatchId: proposeDispatch.dispatchId,
+      requestId: proposeDispatch.requestId,
+      inputText: proposePrompt,
+      outputText: proposeResult.text,
+      result: "ok",
+      errorClass: null,
+    });
+    this.session.updateTeamRunProgress(run.id, { stage: "plan", stepCount: 1, noProgressCount: 0 });
+
+    latestPlan = parseTeamPlan(proposeResult.text, agents);
+
+    // Round 2: Second agent reviews and accepts/amends
+    const reviewer = agents[1]!;
+    const reviewPrompt = this.session.buildTeamPrompt(
+      state.room,
+      run,
+      "plan",
+      reviewer,
+      {
+        instructions:
+          `You are the PLAN REVIEWER. Review the proposed plan below.\n` +
+          `If you agree, respond with: PLAN_ACCEPT\n` +
+          `If you want changes, output a revised plan in the same format:\n\n` +
+          `PLAN:\n- agent: ...\n  task: ...\n  files: ...\nPLAN_END\n\n` +
+          `Proposed plan from ${proposer}:\n${proposeResult.text}`,
+      },
+    );
+
+    const reviewDispatch = this.dispatchApi.createInternalDispatch(reviewer, `team:plan:review`);
+    this.trackActiveTeamDispatch(run.id, reviewer, reviewDispatch.requestId);
+    let reviewResult: DispatchResult;
+    try {
+      reviewResult = await this.dispatchApi.runPromptDispatch(reviewDispatch, reviewPrompt, false, {
+        outputTransform: sanitizeTeamOutput,
+      });
+    } finally {
+      this.clearActiveTeamDispatch(run.id, reviewDispatch.requestId);
+    }
+
+    if (this.consumeInterruptedRequest(reviewDispatch.requestId)) return null;
+
+    this.session.addTeamStep({
+      runId: run.id,
+      seq: 2,
+      stage: "plan",
+      actor: reviewer,
+      dispatchId: reviewDispatch.dispatchId,
+      requestId: reviewDispatch.requestId,
+      inputText: reviewPrompt,
+      outputText: reviewResult.text,
+      result: reviewResult.success ? "ok" : "error",
+      errorClass: normalizeErrorClass(reviewResult.error),
+    });
+    this.session.updateTeamRunProgress(run.id, { stage: "plan", stepCount: 2, noProgressCount: 0 });
+
+    if (!reviewResult.success) return latestPlan;
+
+    const reviewPlan = parseTeamPlan(reviewResult.text, agents);
+    if (reviewPlan?.accepted) {
+      // Reviewer accepted — use the proposer's plan
+      return latestPlan;
+    }
+    if (reviewPlan && reviewPlan.assignments.length > 0) {
+      // Reviewer provided an amended plan
+      return reviewPlan;
+    }
+
+    // Fallback — use proposer's plan even if reviewer didn't give a clean response
+    return latestPlan;
+  }
+
+  private async runParallelExecution(_run: TeamRun, _plan: TeamPlan): Promise<void> {
+    // Stub — will be implemented in Task 4
+  }
+
+  private async runMergePhase(run: TeamRun): Promise<void> {
+    // Stub — will be implemented in Task 5
+    this.completeRun(run, "Run completed.");
   }
 
   private shouldFinalizeRun(run: TeamRun): boolean {

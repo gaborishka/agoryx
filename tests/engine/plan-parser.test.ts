@@ -48,7 +48,8 @@ test("parseTeamPlan: ignores unknown agents", () => {
   files: file.ts
 PLAN_END`;
   const plan = parseTeamPlan(text, ["codex", "claude"]);
-  assert.equal(plan, null);
+  assert.ok(plan);
+  assert.equal(plan.assignments.length, 0);
 });
 
 test("parseTeamPlan: handles files as comma-separated list", () => {
@@ -71,6 +72,17 @@ PLAN_END`;
   const plan = parseTeamPlan(text, ["codex", "claude"]);
   assert.ok(plan);
   assert.deepEqual(plan.assignments[0].files, ["a.ts", "b.ts"]);
+});
+
+test("parseTeamPlan: PLAN block without PLAN_END still parses", () => {
+  const text = `PLAN:
+- agent: codex
+  task: Build it
+  files: a.ts`;
+  const plan = parseTeamPlan(text, ["codex"]);
+  assert.ok(plan);
+  assert.equal(plan.assignments.length, 1);
+  assert.equal(plan.assignments[0].agent, "codex");
 });
 
 test("parseTeamPlan: case insensitive agent matching", () => {

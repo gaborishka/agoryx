@@ -35,10 +35,6 @@ export const parseTeamPlan = (
     assignments.push({ agent, task, files });
   }
 
-  if (assignments.length === 0) {
-    return null;
-  }
-
   return { assignments, accepted: false, raw: trimmed };
 };
 

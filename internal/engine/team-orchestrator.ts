@@ -735,8 +735,44 @@ export class TeamOrchestrator {
   }
 
   private async runMergePhase(run: TeamRun): Promise<void> {
-    // Stub — will be implemented in Task 5
-    this.completeRun(run, "Run completed.");
+    if (!this.worktreeManager) {
+      // No worktree manager — skip merge, just complete
+      this.completeRun(run, "Run completed (no worktree merge).");
+      return;
+    }
+
+    this.session.updateTeamRunProgress(run.id, { stage: "finalize" });
+    const state = this.getState();
+    const mergeErrors: string[] = [];
+
+    for (const agent of state.availableAgents) {
+      const wt = this.worktreeManager.getForAgent(agent);
+      if (!wt) continue;
+
+      try {
+        const result = this.worktreeManager.merge(agent);
+        if (!result.success && result.conflicts) {
+          mergeErrors.push(
+            `Merge conflicts from ${agent} (branch ${wt.branch}): ${result.conflicts.join(", ")}`,
+          );
+        }
+      } catch (error: unknown) {
+        const reason = error instanceof Error ? error.message : String(error);
+        mergeErrors.push(`Failed to merge ${agent}: ${reason}`);
+        this.logger.log("error", "team.merge_failed", { runId: run.id, agent, error: reason });
+      }
+    }
+
+    if (mergeErrors.length > 0) {
+      const summary =
+        "Merge phase completed with conflicts:\n" + mergeErrors.join("\n") +
+        "\n\nPlease resolve conflicts manually and approve the run.";
+      this.session.updateTeamRunProgress(run.id, { finalSummary: summary });
+      this.session.updateTeamRunStatus(run.id, "waiting_user_input", { finalSummary: summary });
+      this.restoreTeamAdapterModes();
+    } else {
+      this.completeRun(run, "All agents completed and branches merged successfully.");
+    }
   }
 
   private shouldFinalizeRun(run: TeamRun): boolean {

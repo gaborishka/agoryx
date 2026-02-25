@@ -348,7 +348,9 @@ const InkChatApp = ({
   const [currentMode, setCurrentMode] = useState<OrchestrationMode>(mode);
   const [lines, setLines] = useState<InkLine[]>([]);
   const [draft, setDraft] = useState("");
+  const draftRef = useRef("");
   const [cursorIndex, setCursorIndex] = useState(0);
+  const cursorRef = useRef(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isInterrupting, setIsInterrupting] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -551,8 +553,11 @@ const InkChatApp = ({
   }, []);
 
   const setDraftWithCursor = useCallback((nextDraft: string, nextCursor: number): void => {
+    const clamped = Math.max(0, Math.min(nextCursor, nextDraft.length));
+    draftRef.current = nextDraft;
+    cursorRef.current = clamped;
     setDraft(nextDraft);
-    setCursorIndex(Math.max(0, Math.min(nextCursor, nextDraft.length)));
+    setCursorIndex(clamped);
   }, []);
 
   const openSlashPicker = useCallback((): void => {
@@ -659,6 +664,12 @@ const InkChatApp = ({
   }, [currentMode, interruptActiveRun, isInterrupting, pushLine]);
 
   useInput((value, key) => {
+    // Read refs for the latest synchronous draft/cursor values.
+    // React state (`draft`, `cursorIndex`) may be stale during rapid
+    // input (e.g. paste) because state updates are batched.
+    const currentDraft = draftRef.current;
+    const currentCursor = cursorRef.current;
+
     const normalizedValue = value.toLowerCase();
     if (key.ctrl && normalizedValue === "c") {
       exit();
@@ -729,7 +740,7 @@ const InkChatApp = ({
 
       if (key.upArrow) {
         if (historyIndex === -1) {
-          historyDraftSnapshot.current = draft;
+          historyDraftSnapshot.current = currentDraft;
           const nextIndex = promptHistory.length - 1;
           const nextDraft = promptHistory[nextIndex] ?? "";
           setHistoryIndex(nextIndex);
@@ -767,7 +778,7 @@ const InkChatApp = ({
       return;
     }
     if (key.rightArrow) {
-      setCursorIndex((previous) => Math.min(draft.length, previous + 1));
+      setCursorIndex((previous) => Math.min(currentDraft.length, previous + 1));
       return;
     }
 
@@ -776,24 +787,24 @@ const InkChatApp = ({
       return;
     }
     if (key.ctrl && normalizedValue === "e") {
-      setCursorIndex(draft.length);
+      setCursorIndex(currentDraft.length);
       return;
     }
     if (key.ctrl && normalizedValue === "u") {
-      const nextDraft = draft.slice(cursorIndex);
+      const nextDraft = currentDraft.slice(currentCursor);
       resetHistoryNavigation();
       setDraftWithCursor(nextDraft, 0);
       return;
     }
     if (key.ctrl && normalizedValue === "k") {
-      const nextDraft = draft.slice(0, cursorIndex);
+      const nextDraft = currentDraft.slice(0, currentCursor);
       resetHistoryNavigation();
       setDraftWithCursor(nextDraft, nextDraft.length);
       return;
     }
     if (key.ctrl && normalizedValue === "d") {
-      const next = removeNextChar(draft, cursorIndex);
-      if (next.draft !== draft || next.cursorIndex !== cursorIndex) {
+      const next = removeNextChar(currentDraft, currentCursor);
+      if (next.draft !== currentDraft || next.cursorIndex !== currentCursor) {
         resetHistoryNavigation();
         setDraftWithCursor(next.draft, next.cursorIndex);
       }
@@ -801,8 +812,8 @@ const InkChatApp = ({
     }
 
     if (isBackspaceKey(value, key)) {
-      const next = removePreviousChar(draft, cursorIndex);
-      if (next.draft !== draft || next.cursorIndex !== cursorIndex) {
+      const next = removePreviousChar(currentDraft, currentCursor);
+      if (next.draft !== currentDraft || next.cursorIndex !== currentCursor) {
         resetHistoryNavigation();
         setDraftWithCursor(next.draft, next.cursorIndex);
       }
@@ -810,7 +821,7 @@ const InkChatApp = ({
     }
 
     if (key.tab) {
-      const lookup = draft.trim().length > 0 ? draft : "/";
+      const lookup = currentDraft.trim().length > 0 ? currentDraft : "/";
       const next = getSlashSuggestions(slashCommands, lookup, 1)[0];
       if (next) {
         resetHistoryNavigation();
@@ -819,13 +830,13 @@ const InkChatApp = ({
       return;
     }
 
-    if (value === "/" && draft.trim() === "" && cursorIndex === 0) {
+    if (value === "/" && currentDraft.trim() === "" && currentCursor === 0) {
       openSlashPicker();
       return;
     }
 
     if (isPrintableChar(value)) {
-      const next = insertIntoDraft(draft, cursorIndex, value);
+      const next = insertIntoDraft(currentDraft, currentCursor, value);
       resetHistoryNavigation();
       setDraftWithCursor(next.draft, next.cursorIndex);
     }

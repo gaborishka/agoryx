@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { Adapter, AdapterConfig } from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
 import type {
@@ -274,6 +275,28 @@ export class TeamOrchestrator {
       : this.session.getActiveTeamRun(state.room.id);
     if (!run || run.status !== "waiting_user_input") {
       return null;
+    }
+
+    // Commit and merge agent worktrees into the main branch
+    const mergeErrors: string[] = [];
+    if (this.worktreeManager) {
+      for (const agent of state.availableAgents) {
+        const result = this.commitAndMergeWorktree(agent, run.goal);
+        if (!result.merged && result.error) {
+          mergeErrors.push(`${agent}: ${result.error}`);
+        }
+      }
+    }
+
+    if (mergeErrors.length > 0) {
+      const errorSummary = "Merge failed:\n" + mergeErrors.join("\n");
+      this.session.updateTeamRunProgress(run.id, { finalSummary: errorSummary });
+      this.logger.log("error", "team.approve_merge_failed", {
+        runId: run.id,
+        errors: mergeErrors,
+      });
+      // Stay in waiting_user_input so user can resolve
+      return this.session.getTeamRun(run.id);
     }
 
     this.session.updateTeamRunStatus(run.id, "done", {
@@ -670,7 +693,9 @@ export class TeamOrchestrator {
             `YOUR TASK: ${assignment.task}\n` +
             `FILES YOU OWN: ${assignment.files.length > 0 ? assignment.files.join(", ") : "as needed"}\n\n` +
             `Create or modify the files listed above to complete your task. ` +
-            `You have full filesystem access in your workspace. ` +
+            `You have full filesystem access in your workspace.\n` +
+            `IMPORTANT: After creating/modifying files, commit your changes with git:\n` +
+            `  git add -A && git commit -m "feat: <short description>"\n` +
             `When done, output TEAM_DONE.`,
         },
       );
@@ -745,33 +770,129 @@ export class TeamOrchestrator {
     const state = this.getState();
     const mergeErrors: string[] = [];
 
+    // Collect file changes per agent for user review (do NOT commit yet)
+    const changeReport: string[] = [];
     for (const agent of state.availableAgents) {
       const wt = this.worktreeManager.getForAgent(agent);
       if (!wt) continue;
 
       try {
-        const result = this.worktreeManager.merge(agent);
-        if (!result.success && result.conflicts) {
-          mergeErrors.push(
-            `Merge conflicts from ${agent} (branch ${wt.branch}): ${result.conflicts.join(", ")}`,
-          );
+        const changes = this.getWorktreeReport(wt.path, wt.branch);
+        if (changes.length > 0) {
+          changeReport.push(`${agent} (${wt.branch}):\n  ${changes.join("\n  ")}`);
         }
       } catch (error: unknown) {
-        const reason = error instanceof Error ? error.message : String(error);
-        mergeErrors.push(`Failed to merge ${agent}: ${reason}`);
-        this.logger.log("error", "team.merge_failed", { runId: run.id, agent, error: reason });
+        this.logger.log("warn", "team.worktree_status_failed", {
+          runId: run.id,
+          agent,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
-    if (mergeErrors.length > 0) {
+    if (changeReport.length > 0) {
       const summary =
-        "Merge phase completed with conflicts:\n" + mergeErrors.join("\n") +
-        "\n\nPlease resolve conflicts manually and approve the run.";
+        "Agents completed. Files created/modified:\n\n" +
+        changeReport.join("\n\n") +
+        "\n\nUse /team approve to commit and merge, or /team stop to discard.";
       this.session.updateTeamRunProgress(run.id, { finalSummary: summary });
       this.session.updateTeamRunStatus(run.id, "waiting_user_input", { finalSummary: summary });
       this.restoreTeamAdapterModes();
     } else {
-      this.completeRun(run, "All agents completed and branches merged successfully.");
+      this.completeRun(run, "All agents completed (no file changes detected).");
+    }
+  }
+
+  private getWorktreeReport(wtPath: string, branch: string): string[] {
+    const lines: string[] = [];
+
+    // Uncommitted changes
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      cwd: wtPath,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (status) {
+      for (const line of status.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed) lines.push(`[uncommitted] ${trimmed}`);
+      }
+    }
+
+    // Committed changes on this branch (files changed vs merge-base)
+    try {
+      const mergeBase = execFileSync(
+        "git",
+        ["merge-base", "HEAD", branch],
+        { cwd: wtPath, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      ).trim();
+      const committed = execFileSync(
+        "git",
+        ["diff", "--name-status", mergeBase, branch],
+        { cwd: wtPath, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      ).trim();
+      if (committed) {
+        for (const line of committed.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed) lines.push(`[committed] ${trimmed}`);
+        }
+      }
+    } catch {
+      // Branch comparison may fail; ignore
+    }
+
+    return lines;
+  }
+
+  private commitAndMergeWorktree(
+    agent: string,
+    goal: string,
+  ): { merged: boolean; error?: string } {
+    if (!this.worktreeManager) return { merged: false, error: "no worktree manager" };
+    const wt = this.worktreeManager.getForAgent(agent);
+    if (!wt) return { merged: false, error: "no worktree for agent" };
+
+    // Commit any uncommitted changes in the agent's worktree branch
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      cwd: wt.path,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+
+    if (status) {
+      try {
+        execFileSync("git", ["add", "-A"], {
+          cwd: wt.path,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        const shortGoal = goal.length > 60 ? goal.slice(0, 57) + "..." : goal;
+        execFileSync(
+          "git",
+          ["commit", "-m", `feat(${agent}): ${shortGoal}`],
+          {
+            cwd: wt.path,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+      } catch (error: unknown) {
+        return { merged: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
+    // Always attempt merge (agent may have committed its own changes)
+    try {
+      const result = this.worktreeManager.merge(agent);
+      if (!result.success && result.conflicts) {
+        return {
+          merged: false,
+          error: `Merge conflicts: ${result.conflicts.join(", ")}`,
+        };
+      }
+      return { merged: true };
+    } catch (error: unknown) {
+      return { merged: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 

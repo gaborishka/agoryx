@@ -10,6 +10,7 @@ import type {
   SessionBoundPayload,
   TeamStep,
 } from "../events/types.js";
+import type { MemoryService } from "../memory/service.js";
 import type { Dispatch } from "../orchestrator/policy.js";
 import { createId } from "../session/ids.js";
 import { SessionService } from "../session/service.js";
@@ -28,6 +29,7 @@ interface DispatchEngineOptions {
   getState: () => EngineState;
   onAdapterEvent?: (adapterName: string, event: AdapterEvent) => void;
   logger: EngineLogger;
+  memoryService?: MemoryService;
 }
 
 export class DispatchEngine implements TeamDispatchApi {
@@ -40,6 +42,7 @@ export class DispatchEngine implements TeamDispatchApi {
     event: AdapterEvent,
   ) => void;
   private readonly logger: EngineLogger;
+  private readonly memoryService?: MemoryService;
 
   public constructor(options: DispatchEngineOptions) {
     this.session = options.session;
@@ -48,6 +51,7 @@ export class DispatchEngine implements TeamDispatchApi {
     this.getState = options.getState;
     this.onAdapterEvent = options.onAdapterEvent;
     this.logger = options.logger;
+    this.memoryService = options.memoryService;
   }
 
   public getLastFailedRequest(adapter: string): string | null {
@@ -124,14 +128,37 @@ export class DispatchEngine implements TeamDispatchApi {
       };
     }
 
-    const adapterConfig = withTeamSystemPrompt(
-      this.resolveAdapterConfig(dispatch.targetAdapter),
-    );
+    this.memoryService?.recordDispatchStart(state.room.id, dispatch.targetAdapter, dispatch.requestId);
+
+    let adapterConfig: AdapterConfig;
+    try {
+      adapterConfig = withTeamSystemPrompt(
+        this.resolveAdapterConfig(dispatch.targetAdapter),
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.log("error", "dispatch.invalid_adapter_config", {
+        roomId: state.room.id,
+        adapter: dispatch.targetAdapter,
+        requestId: dispatch.requestId,
+        error: message,
+      });
+      this.memoryService?.recordError(state.room.id, dispatch.targetAdapter, message);
+      return {
+        adapter: dispatch.targetAdapter,
+        requestId: dispatch.requestId,
+        success: false,
+        text: "",
+        error: message,
+      };
+    }
     const persistentLikeMode =
       (adapterConfig.mode === "persistent" || adapterConfig.mode === "agentic") &&
       "sendTurn" in adapter;
+
+    let result: DispatchResult;
     if (persistentLikeMode) {
-      return this.session.acquireTurnLock(
+      result = await this.session.acquireTurnLock(
         state.room.id,
         dispatch.targetAdapter,
         () =>
@@ -147,22 +174,30 @@ export class DispatchEngine implements TeamDispatchApi {
             },
           ),
       );
+    } else {
+      const syntheticMessage: Message = {
+        id: createId("msg"),
+        roomId: state.room.id,
+        author: "team.system",
+        role: "user",
+        text: prompt,
+        format: "plain",
+        metadata: {},
+        createdAt: new Date().toISOString(),
+      };
+
+      result = await this.runLegacyDispatch(dispatch, adapter, adapterConfig, [syntheticMessage], {
+        outputTransform: options?.outputTransform,
+      });
     }
 
-    const syntheticMessage: Message = {
-      id: createId("msg"),
-      roomId: state.room.id,
-      author: "team.system",
-      role: "user",
-      text: prompt,
-      format: "plain",
-      metadata: {},
-      createdAt: new Date().toISOString(),
-    };
+    if (result.success) {
+      this.memoryService?.recordDispatchEnd(state.room.id, dispatch.targetAdapter, "done", []);
+    } else {
+      this.memoryService?.recordError(state.room.id, dispatch.targetAdapter, result.error ?? "unknown error");
+    }
 
-    return this.runLegacyDispatch(dispatch, adapter, adapterConfig, [syntheticMessage], {
-      outputTransform: options?.outputTransform,
-    });
+    return result;
   }
 
   public async runDispatch(
@@ -189,12 +224,35 @@ export class DispatchEngine implements TeamDispatchApi {
       reason: dispatch.reason,
     });
 
-    const adapterConfig = this.resolveAdapterConfig(dispatch.targetAdapter);
+    this.memoryService?.recordDispatchStart(state.room.id, dispatch.targetAdapter, dispatch.requestId);
+
+    let adapterConfig: AdapterConfig;
+    try {
+      adapterConfig = this.resolveAdapterConfig(dispatch.targetAdapter);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.log("error", "dispatch.invalid_adapter_config", {
+        roomId: state.room.id,
+        adapter: dispatch.targetAdapter,
+        requestId: dispatch.requestId,
+        error: message,
+      });
+      this.memoryService?.recordError(state.room.id, dispatch.targetAdapter, message);
+      return {
+        adapter: dispatch.targetAdapter,
+        requestId: dispatch.requestId,
+        success: false,
+        text: "",
+        error: message,
+      };
+    }
     const isPersistent =
       (adapterConfig.mode === "persistent" || adapterConfig.mode === "agentic") &&
       "sendTurn" in adapter;
+
+    let result: DispatchResult;
     if (isPersistent) {
-      return this.session.acquireTurnLock(
+      result = await this.session.acquireTurnLock(
         state.room.id,
         dispatch.targetAdapter,
         () =>
@@ -205,9 +263,17 @@ export class DispatchEngine implements TeamDispatchApi {
             isSessionRetry,
           ),
       );
+    } else {
+      result = await this.runLegacyDispatch(dispatch, adapter, adapterConfig);
     }
 
-    return this.runLegacyDispatch(dispatch, adapter, adapterConfig);
+    if (result.success) {
+      this.memoryService?.recordDispatchEnd(state.room.id, dispatch.targetAdapter, "done", []);
+    } else {
+      this.memoryService?.recordError(state.room.id, dispatch.targetAdapter, result.error ?? "unknown error");
+    }
+
+    return result;
   }
 
   private async runLegacyDispatch(
@@ -222,7 +288,11 @@ export class DispatchEngine implements TeamDispatchApi {
     const state = this.getState();
     const messages =
       messagesOverride ??
-      this.session.buildContextMessages(state.room, adapterConfig.systemPrompt);
+      this.session.buildContextMessages(
+        state.room,
+        adapterConfig.systemPrompt,
+        dispatch.targetAdapter,
+      );
     let finalText = "";
     let failed: { errorClass: string; message: string } | undefined;
 
@@ -275,8 +345,7 @@ export class DispatchEngine implements TeamDispatchApi {
       options?.outputTransform,
     );
 
-    const provider = dispatch.targetAdapter === "codex" ? "openai" : "anthropic";
-    const model = dispatch.targetAdapter === "codex" ? "codex" : "claude-code";
+    const { provider, model } = resolveAdapterProviderInfo(dispatch.targetAdapter);
     this.session.saveAssistantMessage(
       state.room.id,
       `agent.${dispatch.targetAdapter}`,
@@ -426,8 +495,7 @@ export class DispatchEngine implements TeamDispatchApi {
       options?.outputTransform,
     );
 
-    const provider = dispatch.targetAdapter === "codex" ? "openai" : "anthropic";
-    const model = dispatch.targetAdapter === "codex" ? "codex" : "claude-code";
+    const { provider, model } = resolveAdapterProviderInfo(dispatch.targetAdapter);
     this.session.saveAssistantMessage(
       state.room.id,
       `agent.${dispatch.targetAdapter}`,
@@ -459,20 +527,15 @@ export class DispatchEngine implements TeamDispatchApi {
     if (config) {
       return config;
     }
-    this.logger.log("warn", "dispatch.missing_adapter_config", {
+    this.logger.log("error", "dispatch.missing_adapter_config", {
       adapter: adapterName,
-      fallback: "stub",
     });
-    return {
-      mode: "stub",
-      timeoutMs: 120_000,
-      maxTokens: 4_000,
-    };
+    throw new Error(`CONFIG_ERROR: adapter config for '${adapterName}' is missing`);
   }
 }
 
 const extractPayloadText = (payload: unknown): string => {
-  if (!payload || typeof payload !== "object") {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return "";
   }
   const text = (payload as { text?: string }).text;
@@ -515,6 +578,16 @@ const extractErrorInfo = (payload: unknown): { errorClass: string; message: stri
 
 const normalizeAdapterName = (value: string): string =>
   value.trim().toLowerCase();
+
+const ADAPTER_PROVIDER_MAP: Record<string, { provider: string; model: string }> = {
+  codex: { provider: "openai", model: "codex" },
+  claude: { provider: "anthropic", model: "claude-code" },
+};
+
+const resolveAdapterProviderInfo = (
+  adapterName: string,
+): { provider: string; model: string } =>
+  ADAPTER_PROVIDER_MAP[adapterName] ?? { provider: adapterName, model: adapterName };
 
 export const normalizeErrorClass = (error?: string): TeamStep["errorClass"] => {
   if (!error) {

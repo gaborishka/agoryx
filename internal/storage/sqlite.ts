@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { fileURLToPath } from "node:url";
 import type {
   Checkpoint,
   EventEnvelope,
@@ -190,11 +191,89 @@ interface TeamCheckRow {
   created_at: string;
 }
 
+interface MemoryLogRow {
+  id: number;
+  event_id: string;
+  room_id: string;
+  timestamp: string;
+  source: string;
+  event_type: string;
+  payload: string;
+}
+
+interface MemorySnapshotRow {
+  room_id: string;
+  current_goal: string;
+  active_branch: string;
+  active_worktrees: string;
+  key_decisions: string;
+  blockers: string;
+  next_actions: string;
+  task_status: string;
+  last_log_id: number;
+  reducer_version: number;
+  updated_at: string;
+}
+
+export interface MemorySnapshot {
+  roomId: string;
+  currentGoal: string;
+  activeBranch: string;
+  activeWorktrees: unknown[];
+  keyDecisions: string[];
+  blockers: string[];
+  nextActions: string[];
+  taskStatus: Record<string, string>;
+  lastLogId: number;
+  reducerVersion: number;
+  updatedAt: string;
+}
+
+export interface UpsertSnapshotInput {
+  currentGoal: string;
+  activeBranch: string;
+  activeWorktrees: unknown[];
+  keyDecisions: string[];
+  blockers: string[];
+  nextActions: string[];
+  taskStatus: Record<string, string>;
+  lastLogId: number;
+  reducerVersion: number;
+}
+
+export interface MemoryLogEntry {
+  id: number;
+  eventId: string;
+  roomId: string;
+  timestamp: string;
+  source: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+}
+
+export interface AppendMemoryEventInput {
+  eventId: string;
+  roomId: string;
+  source: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+}
+
+export interface MemoryLogFilter {
+  eventType?: string;
+  source?: string;
+  since?: string;
+  limit?: number;
+}
+
 export class SQLiteStore {
   private readonly db: Database.Database;
 
   public constructor(dbPath: string) {
-    this.db = new Database(dbPath);
+    const openTarget = resolveDbOpenTarget(dbPath);
+    this.db = openTarget.options
+      ? new Database(openTarget.filename, openTarget.options)
+      : new Database(openTarget.filename);
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("journal_mode = WAL");
   }
@@ -369,6 +448,36 @@ export class SQLiteStore {
       ON team_feedback_queue(run_id, status, created_at ASC);
 
       DROP INDEX IF EXISTS idx_team_runs_single_active;
+
+      CREATE TABLE IF NOT EXISTS memory_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT UNIQUE NOT NULL,
+        room_id TEXT NOT NULL REFERENCES rooms(id),
+        timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        source TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK(event_type IN (
+          'dispatch_start', 'dispatch_end', 'team_step', 'error',
+          'decision', 'note', 'cancel', 'retry', 'merge_attempt',
+          'worktree_create', 'worktree_remove'
+        )),
+        payload TEXT NOT NULL CHECK(json_valid(payload))
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_log_room
+      ON memory_log(room_id, id);
+
+      CREATE TABLE IF NOT EXISTS memory_snapshot (
+        room_id TEXT PRIMARY KEY REFERENCES rooms(id),
+        current_goal TEXT NOT NULL DEFAULT '',
+        active_branch TEXT NOT NULL DEFAULT '',
+        active_worktrees TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(active_worktrees)),
+        key_decisions TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(key_decisions)),
+        blockers TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(blockers)),
+        next_actions TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(next_actions)),
+        task_status TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(task_status)),
+        last_log_id INTEGER NOT NULL DEFAULT 0,
+        reducer_version INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
     `);
   }
 
@@ -482,7 +591,10 @@ export class SQLiteStore {
   }
 
   public updateRoomMode(roomId: string, mode: RoomConfig["mode"]): void {
-    this.db.prepare(`UPDATE rooms SET mode = ? WHERE id = ?`).run(mode, roomId);
+    const result = this.db.prepare(`UPDATE rooms SET mode = ? WHERE id = ?`).run(mode, roomId);
+    if (result.changes === 0) {
+      throw new Error(`Failed to update room mode: room id=${roomId} not found`);
+    }
   }
 
   public saveMessage(message: Message): void {
@@ -863,7 +975,7 @@ export class SQLiteStore {
     if (!nativeId) {
       return;
     }
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE agent_sessions
@@ -873,10 +985,13 @@ export class SQLiteStore {
     `,
       )
       .run(nativeId, Date.now(), id);
+    if (result.changes === 0) {
+      throw new Error(`Failed to update agent session native id: id=${id} not found`);
+    }
   }
 
   public updateAgentSessionCursor(id: string, seq: number): void {
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE agent_sessions
@@ -890,19 +1005,25 @@ export class SQLiteStore {
     `,
       )
       .run(seq, seq, seq, Date.now(), id);
+    if (result.changes === 0) {
+      throw new Error(`Failed to update agent session cursor: id=${id} not found`);
+    }
   }
 
   public updateAgentSessionStatus(
     id: string,
     status: AgentSession["status"],
   ): void {
-    this.db
+    const result = this.db
       .prepare(`UPDATE agent_sessions SET status = ? WHERE id = ?`)
       .run(status, id);
+    if (result.changes === 0) {
+      throw new Error(`Failed to update agent session status: id=${id} not found`);
+    }
   }
 
   public incrementAgentSessionFailCount(id: string): number {
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE agent_sessions
@@ -911,6 +1032,9 @@ export class SQLiteStore {
     `,
       )
       .run(id);
+    if (result.changes === 0) {
+      throw new Error(`Failed to increment fail_count: agent session id=${id} not found`);
+    }
     const row = this.db
       .prepare(`SELECT fail_count FROM agent_sessions WHERE id = ?`)
       .get(id) as { fail_count: number } | undefined;
@@ -976,6 +1100,20 @@ export class SQLiteStore {
     return row ? teamRunRowToDomain(row) : null;
   }
 
+  public getLatestTeamRun(roomId: string): TeamRun | null {
+    const row = this.db
+      .prepare(
+        `
+      SELECT * FROM team_runs
+      WHERE room_id = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+      )
+      .get(roomId) as TeamRunRow | undefined;
+    return row ? teamRunRowToDomain(row) : null;
+  }
+
   public getLatestResumableTeamRun(roomId: string): TeamRun | null {
     const row = this.db
       .prepare(
@@ -997,7 +1135,7 @@ export class SQLiteStore {
     options: { stage?: TeamRunStage; finalSummary?: string | null; completedAt?: string | null } = {},
   ): void {
     const now = nowIso();
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE team_runs
@@ -1021,6 +1159,9 @@ export class SQLiteStore {
         now,
         runId,
       );
+    if (result.changes === 0) {
+      throw new Error(`Failed to update team run status: run id=${runId} not found`);
+    }
   }
 
   public updateTeamRunProgress(
@@ -1033,7 +1174,7 @@ export class SQLiteStore {
     },
   ): void {
     const now = nowIso();
-    this.db
+    const result = this.db
       .prepare(
         `
       UPDATE team_runs
@@ -1057,6 +1198,9 @@ export class SQLiteStore {
         now,
         runId,
       );
+    if (result.changes === 0) {
+      throw new Error(`Failed to update team run progress: run id=${runId} not found`);
+    }
   }
 
   public addTeamStep(input: CreateTeamStepInput): TeamStep {
@@ -1228,6 +1372,101 @@ export class SQLiteStore {
     return rows.reverse().map(teamCheckRowToDomain);
   }
 
+  public getMemorySnapshot(roomId: string): MemorySnapshot | null {
+    const row = this.db.prepare(
+      "SELECT * FROM memory_snapshot WHERE room_id = ?"
+    ).get(roomId) as unknown;
+    if (!row) return null;
+    return snapshotRowToDomain(row);
+  }
+
+  public upsertMemorySnapshot(roomId: string, input: UpsertSnapshotInput): MemorySnapshot {
+    const runUpsert = this.db.transaction((targetRoomId: string, payload: UpsertSnapshotInput) => {
+      const existing = this.getMemorySnapshot(targetRoomId);
+      if (existing && payload.lastLogId < existing.lastLogId) {
+        throw new Error(
+          `Monotonic violation: new lastLogId ${payload.lastLogId} < current ${existing.lastLogId}`,
+        );
+      }
+      this.db.prepare(`
+        INSERT INTO memory_snapshot (room_id, current_goal, active_branch, active_worktrees,
+          key_decisions, blockers, next_actions, task_status, last_log_id, reducer_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(room_id) DO UPDATE SET
+          current_goal = excluded.current_goal,
+          active_branch = excluded.active_branch,
+          active_worktrees = excluded.active_worktrees,
+          key_decisions = excluded.key_decisions,
+          blockers = excluded.blockers,
+          next_actions = excluded.next_actions,
+          task_status = excluded.task_status,
+          last_log_id = excluded.last_log_id,
+          reducer_version = excluded.reducer_version,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      `).run(
+        targetRoomId, payload.currentGoal, payload.activeBranch,
+        JSON.stringify(payload.activeWorktrees), JSON.stringify(payload.keyDecisions),
+        JSON.stringify(payload.blockers), JSON.stringify(payload.nextActions),
+        JSON.stringify(payload.taskStatus), payload.lastLogId, payload.reducerVersion,
+      );
+      const snapshot = this.getMemorySnapshot(targetRoomId);
+      if (!snapshot) {
+        throw new Error(`Failed to upsert memory snapshot: read-back for roomId=${targetRoomId} returned null`);
+      }
+      return snapshot;
+    });
+    return runUpsert(roomId, input);
+  }
+
+  public deleteMemorySnapshot(roomId: string): void {
+    this.db.prepare("DELETE FROM memory_snapshot WHERE room_id = ?").run(roomId);
+  }
+
+  public appendMemoryEvent(input: AppendMemoryEventInput): MemoryLogEntry | null {
+    const stmt = this.db.prepare(`
+      INSERT INTO memory_log (event_id, room_id, source, event_type, payload)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(event_id) DO NOTHING
+    `);
+    const result = stmt.run(
+      input.eventId, input.roomId, input.source,
+      input.eventType, JSON.stringify(input.payload),
+    );
+    if (result.changes === 0) return null;
+    return this.getMemoryLogEntry(result.lastInsertRowid as number);
+  }
+
+  private getMemoryLogEntry(id: number): MemoryLogEntry {
+    const row = this.db.prepare("SELECT * FROM memory_log WHERE id = ?").get(id) as unknown;
+    return memoryRowToEntry(row);
+  }
+
+  public listMemoryEvents(roomId: string, filter?: MemoryLogFilter): MemoryLogEntry[] {
+    let sql = "SELECT * FROM memory_log WHERE room_id = ?";
+    const params: unknown[] = [roomId];
+    if (filter?.eventType) { sql += " AND event_type = ?"; params.push(filter.eventType); }
+    if (filter?.source) { sql += " AND source = ?"; params.push(filter.source); }
+    if (filter?.since) { sql += " AND timestamp >= ?"; params.push(filter.since); }
+    sql += " ORDER BY id ASC";
+    if (filter?.limit != null) { sql += " LIMIT ?"; params.push(filter.limit); }
+    const rows = this.db.prepare(sql).all(...params) as unknown[];
+    return rows.map(memoryRowToEntry);
+  }
+
+  public listMemoryEventsAfter(roomId: string, afterId: number): MemoryLogEntry[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM memory_log WHERE room_id = ? AND id > ? ORDER BY id ASC"
+    ).all(roomId, afterId) as unknown[];
+    return rows.map(memoryRowToEntry);
+  }
+
+  public getMaxMemoryLogId(roomId: string): number | null {
+    const row = this.db.prepare(
+      "SELECT MAX(id) as max_id FROM memory_log WHERE room_id = ?"
+    ).get(roomId) as { max_id?: number | null } | undefined;
+    return row?.max_id ?? null;
+  }
+
   private getAgentSessionById(id: string): AgentSession | null {
     const row = this.db
       .prepare(`SELECT * FROM agent_sessions WHERE id = ?`)
@@ -1243,7 +1482,12 @@ export class SQLiteStore {
 const roomRowToDomain = (row: RoomRow): Room => ({
   id: row.id,
   name: row.name,
-  participants: tryParseJson<string[]>(row.participants_json, []),
+  participants: tryParseJson<string[]>(row.participants_json, [], {
+    table: "rooms",
+    column: "participants_json",
+    rowId: row.id,
+    critical: true,
+  }),
   config: {
     mode: row.mode as RoomConfig["mode"],
     checkpointThreshold: row.checkpoint_threshold,
@@ -1253,16 +1497,111 @@ const roomRowToDomain = (row: RoomRow): Room => ({
   createdAt: row.created_at,
 });
 
-const tryParseJson = <T>(value: string, fallback: T): T => {
+interface ParseJsonContext {
+  table?: string;
+  column?: string;
+  rowId?: string | number;
+  critical?: boolean;
+}
+
+const tryParseJson = <T>(value: unknown, fallback: T, context: ParseJsonContext = {}): T => {
   try {
+    if (typeof value !== "string") {
+      throw new Error(`expected JSON string, received ${typeof value}`);
+    }
     return JSON.parse(value) as T;
   } catch (error: unknown) {
+    const location = [
+      context.table ? `table=${context.table}` : "",
+      context.column ? `column=${context.column}` : "",
+      context.rowId !== undefined ? `rowId=${String(context.rowId)}` : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const reason = error instanceof Error ? error.message : String(error);
+    const preview = typeof value === "string" ? value.slice(0, 100) : String(value).slice(0, 100);
+    const message = `[storage] Failed to parse JSON${location ? ` (${location})` : ""}: ${reason} — value preview: ${preview}`;
+    if (context.critical) {
+      throw new Error(message);
+    }
     console.error(
-      `[storage] Failed to parse JSON column: ${
-        error instanceof Error ? error.message : String(error)
-      } — value preview: ${value.slice(0, 100)}`,
+      message,
     );
     return fallback;
+  }
+};
+
+interface DbOpenTarget {
+  filename: string;
+  options?: Database.Options;
+}
+
+const resolveDbOpenTarget = (dbPath: string): DbOpenTarget => {
+  const trimmed = dbPath.trim();
+  const lowered = trimmed.toLowerCase();
+
+  if (lowered === ":memory:" || lowered.startsWith("file::memory:")) {
+    return { filename: ":memory:" };
+  }
+  if (!lowered.startsWith("file:")) {
+    return { filename: trimmed };
+  }
+
+  const parsed = tryParseFileUri(trimmed);
+  const mode = parsed?.searchParams.get("mode")?.toLowerCase();
+  if (mode === "memory") {
+    return { filename: ":memory:" };
+  }
+
+  const options: Database.Options = {};
+  if (mode === "ro") {
+    options.readonly = true;
+  } else if (mode === "rw") {
+    options.fileMustExist = true;
+  }
+
+  const filename = resolveFileUriFilename(trimmed, parsed);
+  if (Object.keys(options).length === 0) {
+    return { filename };
+  }
+  return { filename, options };
+};
+
+const tryParseFileUri = (value: string): URL | null => {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "file:" ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const resolveFileUriFilename = (rawUri: string, parsed: URL | null): string => {
+  const withoutPrefix = rawUri.slice("file:".length);
+  const cutIndex = withoutPrefix.search(/[?#]/);
+  const pathPart = cutIndex >= 0 ? withoutPrefix.slice(0, cutIndex) : withoutPrefix;
+
+  if (!pathPart) {
+    return ":memory:";
+  }
+
+  if (pathPart.startsWith("/") || pathPart.startsWith("//")) {
+    if (parsed) {
+      const withoutQuery = new URL(parsed.toString());
+      withoutQuery.search = "";
+      withoutQuery.hash = "";
+      return fileURLToPath(withoutQuery);
+    }
+    return pathPart;
+  }
+
+  try {
+    return decodeURIComponent(pathPart);
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[storage] Invalid percent-encoded SQLite URI path '${rawUri}': ${reason}`,
+    );
   }
 };
 
@@ -1273,7 +1612,11 @@ const messageRowToDomain = (row: MessageRow): Message => ({
   role: row.role,
   text: row.text,
   format: row.format,
-  metadata: tryParseJson(row.metadata_json, {}),
+  metadata: tryParseJson(row.metadata_json, {}, {
+    table: "messages",
+    column: "metadata_json",
+    rowId: row.id,
+  }),
   createdAt: row.created_at,
 });
 
@@ -1297,7 +1640,12 @@ const teamRunRowToDomain = (row: TeamRunRow): TeamRun => ({
   status: row.status,
   stage: row.stage,
   goal: row.goal,
-  participants: tryParseJson<string[]>(row.participants_json, []),
+  participants: tryParseJson<string[]>(row.participants_json, [], {
+    table: "team_runs",
+    column: "participants_json",
+    rowId: row.id,
+    critical: true,
+  }),
   stepCount: row.step_count,
   noProgressCount: row.no_progress_count,
   maxSteps: row.max_steps,
@@ -1336,6 +1684,127 @@ const teamFeedbackRowToDomain = (row: TeamFeedbackRow): TeamFeedback => ({
   createdAt: row.created_at,
   consumedAt: row.consumed_at,
 });
+
+const memoryRowToEntry = (row: unknown): MemoryLogEntry => {
+  const typedRow = toMemoryLogRow(row);
+  return {
+    id: typedRow.id,
+    eventId: typedRow.event_id,
+    roomId: typedRow.room_id,
+    timestamp: typedRow.timestamp,
+    source: typedRow.source,
+    eventType: typedRow.event_type,
+    payload: tryParseJson(typedRow.payload, {}, {
+      table: "memory_log",
+      column: "payload",
+      rowId: typedRow.id,
+      critical: true,
+    }),
+  };
+};
+
+const snapshotRowToDomain = (row: unknown): MemorySnapshot => {
+  const typedRow = toMemorySnapshotRow(row);
+  return {
+    roomId: typedRow.room_id,
+    currentGoal: typedRow.current_goal,
+    activeBranch: typedRow.active_branch,
+    activeWorktrees: tryParseJson<string[]>(typedRow.active_worktrees, [], {
+      table: "memory_snapshot",
+      column: "active_worktrees",
+      rowId: typedRow.room_id,
+      critical: true,
+    }),
+    keyDecisions: tryParseJson<string[]>(typedRow.key_decisions, [], {
+      table: "memory_snapshot",
+      column: "key_decisions",
+      rowId: typedRow.room_id,
+      critical: true,
+    }),
+    blockers: tryParseJson<string[]>(typedRow.blockers, [], {
+      table: "memory_snapshot",
+      column: "blockers",
+      rowId: typedRow.room_id,
+      critical: true,
+    }),
+    nextActions: tryParseJson<string[]>(typedRow.next_actions, [], {
+      table: "memory_snapshot",
+      column: "next_actions",
+      rowId: typedRow.room_id,
+      critical: true,
+    }),
+    taskStatus: tryParseJson<Record<string, string>>(typedRow.task_status, {}, {
+      table: "memory_snapshot",
+      column: "task_status",
+      rowId: typedRow.room_id,
+      critical: true,
+    }),
+    lastLogId: typedRow.last_log_id,
+    reducerVersion: typedRow.reducer_version,
+    updatedAt: typedRow.updated_at,
+  };
+};
+
+const toMemoryLogRow = (row: unknown): MemoryLogRow => {
+  const obj = requireRowObject(row, "memory_log");
+  return {
+    id: readRequiredNumber(obj, "id", "memory_log"),
+    event_id: readRequiredString(obj, "event_id", "memory_log"),
+    room_id: readRequiredString(obj, "room_id", "memory_log"),
+    timestamp: readRequiredString(obj, "timestamp", "memory_log"),
+    source: readRequiredString(obj, "source", "memory_log"),
+    event_type: readRequiredString(obj, "event_type", "memory_log"),
+    payload: readRequiredString(obj, "payload", "memory_log"),
+  };
+};
+
+const toMemorySnapshotRow = (row: unknown): MemorySnapshotRow => {
+  const obj = requireRowObject(row, "memory_snapshot");
+  return {
+    room_id: readRequiredString(obj, "room_id", "memory_snapshot"),
+    current_goal: readRequiredString(obj, "current_goal", "memory_snapshot"),
+    active_branch: readRequiredString(obj, "active_branch", "memory_snapshot"),
+    active_worktrees: readRequiredString(obj, "active_worktrees", "memory_snapshot"),
+    key_decisions: readRequiredString(obj, "key_decisions", "memory_snapshot"),
+    blockers: readRequiredString(obj, "blockers", "memory_snapshot"),
+    next_actions: readRequiredString(obj, "next_actions", "memory_snapshot"),
+    task_status: readRequiredString(obj, "task_status", "memory_snapshot"),
+    last_log_id: readRequiredNumber(obj, "last_log_id", "memory_snapshot"),
+    reducer_version: readRequiredNumber(obj, "reducer_version", "memory_snapshot"),
+    updated_at: readRequiredString(obj, "updated_at", "memory_snapshot"),
+  };
+};
+
+const requireRowObject = (row: unknown, table: string): Record<string, unknown> => {
+  if (!row || typeof row !== "object" || Array.isArray(row)) {
+    throw new Error(`[storage] Invalid ${table} row: expected object`);
+  }
+  return row as Record<string, unknown>;
+};
+
+const readRequiredString = (
+  row: Record<string, unknown>,
+  field: string,
+  table: string,
+): string => {
+  const value = row[field];
+  if (typeof value !== "string") {
+    throw new Error(`[storage] Invalid ${table}.${field}: expected string`);
+  }
+  return value;
+};
+
+const readRequiredNumber = (
+  row: Record<string, unknown>,
+  field: string,
+  table: string,
+): number => {
+  const value = row[field];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`[storage] Invalid ${table}.${field}: expected finite number`);
+  }
+  return value;
+};
 
 const teamCheckRowToDomain = (row: TeamCheckRow): TeamCheck => ({
   id: row.id,

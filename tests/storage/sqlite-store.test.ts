@@ -45,6 +45,36 @@ test("listMessagesAfter returns only messages after anchor in insertion order", 
   }
 });
 
+test("updateRoomMode throws for missing room", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    assert.throws(() => {
+      store.updateRoomMode("missing_room", "team");
+    }, /not found/i);
+  } finally {
+    store.close();
+  }
+});
+
+test("getRoom throws when participants_json is corrupt", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    const room = store.createRoom("storage-test", ["user"], ROOM_CONFIG);
+    const db = (store as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).db;
+    db.prepare("UPDATE rooms SET participants_json = ? WHERE id = ?").run("{", room.id);
+
+    assert.throws(() => {
+      store.getRoom(room.id);
+    }, /Failed to parse JSON/);
+  } finally {
+    store.close();
+  }
+});
+
 test("listMessagesAfter returns empty array when anchor message does not exist", () => {
   const store = new SQLiteStore(":memory:");
   store.init();

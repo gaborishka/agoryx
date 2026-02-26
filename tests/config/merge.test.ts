@@ -7,7 +7,7 @@ import {
   resolveAgentSkills,
   toRuntimeConfig,
 } from "../../internal/config/index.js";
-import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -178,6 +178,51 @@ test("skills merge: mixed-case and whitespace skills are normalized", () => {
   rmSync(dir, { recursive: true });
 });
 
+test("workspace config merges partial overrides with defaults", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      workspace: {
+        enabled: false,
+        diffLines: 10,
+      },
+    }),
+  );
+
+  const config = loadConfig(configPath);
+  assert.equal(config.workspace.enabled, false);
+  assert.equal(config.workspace.diffLines, 10);
+  // Defaults preserved for unset fields
+  assert.equal(config.workspace.statusLines, DEFAULT_CONFIG.workspace.statusLines);
+  assert.equal(config.workspace.treeLines, DEFAULT_CONFIG.workspace.treeLines);
+  assert.equal(config.workspace.pinnedDocCharsPerFile, DEFAULT_CONFIG.workspace.pinnedDocCharsPerFile);
+
+  rmSync(dir, { recursive: true });
+});
+
+test("workspace config propagates to ChatRuntimeConfig", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      workspace: {
+        treeLines: 50,
+      },
+    }),
+  );
+
+  const config = loadConfig(configPath);
+  const runtime = toRuntimeConfig(config);
+  assert.ok(runtime.workspace, "runtime config should have workspace section");
+  assert.equal(runtime.workspace.treeLines, 50);
+  assert.equal(runtime.workspace.enabled, true); // default
+
+  rmSync(dir, { recursive: true });
+});
+
 test("team config merge applies overrides and keeps trigger defaults", () => {
   const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
   const configPath = join(dir, "agoryx.json");
@@ -211,4 +256,82 @@ test("team config merge applies overrides and keeps trigger defaults", () => {
   assert.equal(runtime.team.trigger.commandStart, true);
 
   rmSync(dir, { recursive: true });
+});
+
+test("team checkCommands rejects unsafe commands", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      team: {
+        checkCommands: [
+          "npm run typecheck",
+          "npm test && rm -rf /",
+        ],
+      },
+    }),
+  );
+
+  assert.throws(() => {
+    loadConfig(configPath);
+  }, /Invalid team\.checkCommands entry/i);
+
+  rmSync(dir, { recursive: true });
+});
+
+test("loadConfig auto-detects legacy ./agoryx.json in cwd", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-legacy-cwd-"));
+  const previousCwd = process.cwd();
+  try {
+    const legacyPath = join(dir, "agoryx.json");
+    writeFileSync(
+      legacyPath,
+      JSON.stringify({
+        defaultMode: "auto",
+      }),
+    );
+    process.chdir(dir);
+
+    const config = loadConfig();
+    assert.equal(config.defaultMode, "auto");
+  } finally {
+    process.chdir(previousCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig falls back to XDG config path when legacy file is absent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-xdg-config-"));
+  const xdgConfigHome = join(dir, "xdg-config");
+  const xdgConfigDir = join(xdgConfigHome, "agoryx");
+  const xdgConfigPath = join(xdgConfigDir, "config.json");
+  const cwd = join(dir, "workspace");
+  const previousCwd = process.cwd();
+  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME;
+
+  try {
+    mkdirSync(xdgConfigDir, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(
+      xdgConfigPath,
+      JSON.stringify({
+        defaultMode: "round-robin",
+      }),
+    );
+
+    process.env.XDG_CONFIG_HOME = xdgConfigHome;
+    process.chdir(cwd);
+
+    const config = loadConfig();
+    assert.equal(config.defaultMode, "round-robin");
+  } finally {
+    if (previousXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME;
+    } else {
+      process.env.XDG_CONFIG_HOME = previousXdgConfigHome;
+    }
+    process.chdir(previousCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

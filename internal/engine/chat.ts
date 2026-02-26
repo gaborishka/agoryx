@@ -1,11 +1,15 @@
 import type { Adapter } from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
 import type { Message, OrchestrationMode, PinnedContext, Room } from "../events/types.js";
+import type { MemoryService } from "../memory/service.js";
+import type { WorktreeManager } from "../worktree/manager.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import { SessionService } from "../session/service.js";
 import { DispatchEngine } from "./dispatch-engine.js";
 import { EngineLifecycle } from "./lifecycle.js";
+import type { EngineShutdownReport } from "./lifecycle.js";
 import { createDefaultEngineLogger } from "./logger.js";
+import type { EngineLogger } from "./logger.js";
 import { TeamOrchestrator } from "./team-orchestrator.js";
 import type {
   ChatEngineHooks,
@@ -31,14 +35,18 @@ export class ChatEngine {
   private readonly dispatchEngine: DispatchEngine;
   private readonly team: TeamOrchestrator;
   private readonly lifecycle: EngineLifecycle;
+  private readonly logger: EngineLogger;
 
   public constructor(
     private readonly session: SessionService,
     private readonly adapters: Record<string, Adapter>,
     private readonly config: ChatRuntimeConfig,
     private readonly hooks: ChatEngineHooks = {},
+    private readonly memoryService?: MemoryService,
+    private readonly worktreeManager?: WorktreeManager,
   ) {
     const logger = hooks.logger ?? createDefaultEngineLogger();
+    this.logger = logger;
 
     this.dispatchEngine = new DispatchEngine({
       session: this.session,
@@ -47,6 +55,7 @@ export class ChatEngine {
       getState: () => this.getState(),
       onAdapterEvent: this.hooks.onAdapterEvent,
       logger,
+      memoryService: this.memoryService,
     });
 
     this.team = new TeamOrchestrator({
@@ -60,6 +69,8 @@ export class ChatEngine {
       dispatchApi: this.dispatchEngine,
       hooks: this.hooks,
       logger,
+      memoryService: this.memoryService,
+      worktreeManager: this.worktreeManager,
     });
 
     this.lifecycle = new EngineLifecycle({
@@ -97,6 +108,28 @@ export class ChatEngine {
       }),
       availableAgents: enabledAgents,
     };
+
+    if (this.memoryService) {
+      try {
+        this.memoryService.checkAndRecover(this.state.room.id);
+      } catch (error: unknown) {
+        this.logger.log("warn", "engine.init_memory_recovery_failed", {
+          roomId: this.state.room.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (this.worktreeManager) {
+      try {
+        this.worktreeManager.reconcile();
+      } catch (error: unknown) {
+        this.logger.log("warn", "engine.init_worktree_reconcile_failed", {
+          roomId: this.state.room.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     return {
       room: this.state.room,
@@ -173,6 +206,10 @@ export class ChatEngine {
     return this.team.status(runId);
   }
 
+  public consumeTeamRunStartWarnings(runId: string): string[] {
+    return this.team.consumeRunStartWarnings(runId);
+  }
+
   public teamLog(limit = 20, runId?: string): TeamLogResult | null {
     return this.team.log(limit, runId);
   }
@@ -200,12 +237,26 @@ export class ChatEngine {
     return this.team.queueFeedback(text);
   }
 
-  public async shutdown(): Promise<void> {
-    await this.lifecycle.shutdown();
+  public async shutdown(): Promise<EngineShutdownReport> {
+    return this.lifecycle.shutdown();
   }
 
   public async processUserMessage(text: string): Promise<DispatchResult[]> {
     const state = this.getState();
+
+    // @team <goal> triggers a team run from any mode (if no run is active)
+    const teamMention = text.match(/^@team\s+(.+)/is);
+    if (teamMention) {
+      const goal = teamMention[1]!.trim();
+      const activeRun = this.session.getActiveTeamRun(state.room.id);
+      if (goal && !activeRun) {
+        this.session.saveUserMessage(state.room.id, text);
+        this.startTeamRun(goal);
+        return [];
+      }
+      // If there's an active run, fall through to team message handling
+    }
+
     if (state.room.config.mode === "team") {
       return this.team.processTeamUserMessage(text);
     }

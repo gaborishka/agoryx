@@ -19,6 +19,7 @@ import type { SQLiteStore } from "../storage/sqlite.js";
 export interface ContextBuildOptions {
   roomId: string;
   systemPrompt?: string;
+  workspaceBlock?: string;
   maxHistoryMessages: number;
   checkpointThreshold: number;
   maxContextTokens: number;
@@ -46,6 +47,7 @@ export function buildContext(
   const {
     roomId,
     systemPrompt,
+    workspaceBlock,
     maxHistoryMessages,
     checkpointThreshold,
     maxContextTokens,
@@ -90,6 +92,10 @@ export function buildContext(
   if (systemPrompt) {
     const promptTokens = estimateTokens(systemPrompt);
     tokenBudget -= promptTokens;
+    if (tokenBudget < 0) {
+      tokenBudget = 0;
+      truncated = true;
+    }
     result.push({
       id: "system-prompt",
       roomId,
@@ -100,6 +106,25 @@ export function buildContext(
       metadata: {},
       createdAt: new Date().toISOString(),
     });
+  }
+
+  if (workspaceBlock) {
+    const workspaceTokens = estimateTokens(workspaceBlock);
+    if (workspaceTokens <= tokenBudget) {
+      tokenBudget -= workspaceTokens;
+      result.push({
+        id: "workspace-context",
+        roomId,
+        author: "system",
+        role: "system",
+        text: workspaceBlock,
+        format: "plain",
+        metadata: {},
+        createdAt: new Date().toISOString(),
+      });
+    } else {
+      truncated = true;
+    }
   }
 
   // Add pinned context as synthetic system messages

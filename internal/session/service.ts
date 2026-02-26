@@ -10,6 +10,8 @@ import type {
 } from "../events/types.js";
 import { createId, nowIso } from "./ids.js";
 import { SQLiteStore } from "../storage/sqlite.js";
+
+const DELTA_PROMPT_MAX_CHARS = 20_000;
 import type {
   AgentSession,
   CreateTeamCheckInput,
@@ -17,6 +19,11 @@ import type {
   CreateTeamStepInput,
 } from "../storage/sqlite.js";
 import { buildContext, type BuiltContext } from "./context.js";
+import {
+  WorkspaceCollector,
+  DEFAULT_WORKSPACE_CONFIG,
+  type WorkspaceConfig,
+} from "../workspace/collector.js";
 
 // --- Stop words for topic extraction ---
 const STOP_WORDS = new Set([
@@ -187,10 +194,42 @@ export interface SessionOptions {
   roomConfig: RoomConfig;
 }
 
+export interface SessionServiceOptions {
+  workspace?: {
+    config?: Partial<WorkspaceConfig>;
+    collector?: WorkspaceCollector;
+    rootCwd?: string;
+    resolveAgentCwd?: (agentName: string) => string | undefined;
+    pinnedDocPaths?: string[];
+  };
+}
+
 export class SessionService {
   private readonly turnLocks = new Map<string, Promise<void>>();
+  private readonly workspaceConfig: WorkspaceConfig;
+  private readonly workspaceCollector: WorkspaceCollector;
+  private readonly workspaceRootCwd: string;
+  private readonly resolveAgentWorkspaceCwd?: (agentName: string) => string | undefined;
+  private readonly workspacePinnedDocPaths: string[];
 
-  public constructor(private readonly store: SQLiteStore) {}
+  public constructor(
+    private readonly store: SQLiteStore,
+    options: SessionServiceOptions = {},
+  ) {
+    const workspaceEnabled = options.workspace?.config
+      ? options.workspace.config.enabled ?? DEFAULT_WORKSPACE_CONFIG.enabled
+      : false;
+    this.workspaceConfig = {
+      ...DEFAULT_WORKSPACE_CONFIG,
+      ...options.workspace?.config,
+      enabled: workspaceEnabled,
+    };
+    this.workspaceCollector =
+      options.workspace?.collector ?? new WorkspaceCollector(this.workspaceConfig);
+    this.workspaceRootCwd = options.workspace?.rootCwd ?? process.cwd();
+    this.resolveAgentWorkspaceCwd = options.workspace?.resolveAgentCwd;
+    this.workspacePinnedDocPaths = options.workspace?.pinnedDocPaths ?? [];
+  }
 
   public createSession(options: SessionOptions): { room: Room; sessionId: string } {
     const room = this.store.createRoom(
@@ -302,8 +341,8 @@ export class SessionService {
    * @param room - The room to build context for
    * @param systemPrompt - Optional system prompt (from adapter config) to account for in token budget
    */
-  public buildContextMessages(room: Room, systemPrompt?: string): Message[] {
-    const ctx = this.buildFullContext(room, systemPrompt);
+  public buildContextMessages(room: Room, systemPrompt?: string, agentName?: string): Message[] {
+    const ctx = this.buildFullContext(room, systemPrompt, agentName);
     return ctx.messages;
   }
 
@@ -311,10 +350,11 @@ export class SessionService {
    * Rich context build — returns full BuiltContext including token stats and truncation info.
    * Useful for diagnostics and adapters that want to inspect context metadata.
    */
-  public buildFullContext(room: Room, systemPrompt?: string): BuiltContext {
+  public buildFullContext(room: Room, systemPrompt?: string, agentName?: string): BuiltContext {
     return buildContext(this.store, {
       roomId: room.id,
       systemPrompt,
+      workspaceBlock: this.buildWorkspaceBlock(agentName),
       maxHistoryMessages: room.config.maxHistoryMessages,
       checkpointThreshold: room.config.checkpointThreshold,
       maxContextTokens: room.config.maxContextTokens,
@@ -330,11 +370,11 @@ export class SessionService {
     const cutoffSeq = this.store.getMaxMessageSeq(room.id);
 
     if (lastSeenSeq === null) {
-      const messages = this.buildContextMessages(room, systemPrompt);
+      const messages = this.buildContextMessages(room, systemPrompt, agentName);
       const prompt = messages
         .map((message) => `[${message.author}] ${message.text}`)
         .join("\n\n")
-        .slice(-20000);
+        .slice(-DELTA_PROMPT_MAX_CHARS);
       return { prompt, cutoffSeq };
     }
 
@@ -352,10 +392,13 @@ export class SessionService {
       return { prompt: "", cutoffSeq };
     }
 
-    const prompt = [
+    const workspaceBlock = this.buildWorkspaceBlock(agentName);
+    const promptParts = [
+      ...(workspaceBlock ? [workspaceBlock, ""] : []),
       "[Team context since your last response]",
       ...delta.map((message) => `- [${message.author}][${message.id}] ${message.text}`),
-    ].join("\n");
+    ];
+    const prompt = promptParts.join("\n");
 
     return { prompt, cutoffSeq };
   }
@@ -423,6 +466,10 @@ export class SessionService {
 
   public getActiveTeamRun(roomId: string): TeamRun | null {
     return this.store.getActiveTeamRun(roomId);
+  }
+
+  public getLatestTeamRun(roomId: string): TeamRun | null {
+    return this.store.getLatestTeamRun(roomId);
   }
 
   public getLatestResumableTeamRun(roomId: string): TeamRun | null {
@@ -498,8 +545,10 @@ export class SessionService {
     const tailMessages = this.listRecentMessages(room.id, opts.tailMessagesLimit ?? 20)
       .filter((message) => message.author === "user")
       .slice(-6);
+    const workspaceBlock = this.buildWorkspaceBlock(actor);
 
     const parts: string[] = [
+      ...(workspaceBlock ? [workspaceBlock, ""] : []),
       `[Team run ${run.id}]`,
       `Stage: ${stage}`,
       `Actor: ${actor}`,
@@ -538,6 +587,26 @@ export class SessionService {
     }
 
     return parts.join("\n");
+  }
+
+  private buildWorkspaceBlock(agentName?: string): string | undefined {
+    if (!this.workspaceConfig.enabled) {
+      return undefined;
+    }
+
+    const agentCwd = agentName ? this.resolveAgentWorkspaceCwd?.(agentName) : undefined;
+    const cwd = agentCwd ?? this.workspaceRootCwd;
+    if (!cwd) {
+      return undefined;
+    }
+
+    try {
+      const context = this.workspaceCollector.collectAlwaysOn(cwd, this.workspacePinnedDocPaths);
+      return this.workspaceCollector.format(context);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return `[Workspace unavailable: ${message}]`;
+    }
   }
 
   public consumeTeamFeedbackForRun(runId: string, limit = 20): string[] {

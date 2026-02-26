@@ -18,6 +18,7 @@ import { extractTextFromJsonLine } from "../parse-output.js";
 import { createId } from "../../session/ids.js";
 import { AsyncQueue } from "../async-queue.js";
 import type { ErrorClass } from "../../events/types.js";
+import { createIdleTimeoutController } from "../idle-timeout.js";
 
 const SOURCE = "adapter.codex";
 const STDERR_BUFFER_MAX = 16_000;
@@ -49,7 +50,7 @@ interface CodexAppServerTurn {
   onDelta: (text: string) => void;
   resolve: (result: CodexInteractiveTurnResult) => void;
   reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
+  idleTimeout: ReturnType<typeof createIdleTimeoutController>;
 }
 
 type CodexDeltaSource = "envelope" | "legacy";
@@ -95,6 +96,17 @@ export class CodexAdapter implements PersistentAdapter {
       env: buildCodexSpawnEnv(process.env),
       cwd: buildCodexSpawnCwd(input.config.workspaceCwd),
     });
+    let spawnFailureMessage: string | null = null;
+    let resolveSpawnFailure!: (message: string) => void;
+    const onSpawnError = (error: unknown): void => {
+      const message = error instanceof Error ? error.message : String(error);
+      spawnFailureMessage = message;
+      resolveSpawnFailure(message);
+    };
+    const spawnFailurePromise = new Promise<string>((resolve) => {
+      resolveSpawnFailure = resolve;
+      child.once("error", onSpawnError);
+    });
     const exitPromise = new Promise<number | null>((resolve) => {
       child.once("close", resolve);
     });
@@ -104,20 +116,22 @@ export class CodexAdapter implements PersistentAdapter {
     let stderr = "";
     let output = "";
     let timedOut = false;
-    const timer = setTimeout(() => {
+    const idleTimeout = createIdleTimeoutController(input.config.timeoutMs, () => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, input.config.timeoutMs);
+    });
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
       if (stderr.length > STDERR_BUFFER_MAX) {
         stderr = stderr.slice(-STDERR_SNAPSHOT_SIZE);
       }
+      idleTimeout.touch();
     });
 
     try {
       for await (const chunk of child.stdout) {
+        idleTimeout.touch();
         const text = parseChunkToText(chunk.toString("utf8"));
         if (!text) {
           continue;
@@ -129,7 +143,10 @@ export class CodexAdapter implements PersistentAdapter {
         });
       }
 
-      const exitCode = await exitPromise;
+      const processResult = await Promise.race([
+        exitPromise.then((exitCode) => ({ type: "close" as const, exitCode })),
+        spawnFailurePromise.then((message) => ({ type: "error" as const, message })),
+      ]);
 
       if (timedOut) {
         yield messageError(
@@ -138,11 +155,18 @@ export class CodexAdapter implements PersistentAdapter {
           "codex request timed out",
           stderr,
         );
-      } else if (exitCode !== 0) {
+      } else if (processResult.type === "error") {
+        yield messageError(
+          baseArgs(input),
+          "PROCESS_CRASH",
+          `codex process failed to start: ${processResult.message}`,
+          stderr,
+        );
+      } else if (processResult.exitCode !== 0) {
         yield messageError(
           baseArgs(input),
           classifyCodexProcessError(stderr),
-          `codex process exited with code ${String(exitCode)}`,
+          `codex process exited with code ${String(processResult.exitCode)}`,
           stderr,
         );
       } else {
@@ -154,12 +178,17 @@ export class CodexAdapter implements PersistentAdapter {
     } catch (error) {
       yield messageError(
         baseArgs(input),
-        "UNKNOWN",
-        error instanceof Error ? error.message : "unknown codex adapter failure",
+        spawnFailureMessage ? "PROCESS_CRASH" : "UNKNOWN",
+        spawnFailureMessage
+          ? `codex process failed to start: ${spawnFailureMessage}`
+          : error instanceof Error
+          ? error.message
+          : "unknown codex adapter failure",
         stderr,
       );
     } finally {
-      clearTimeout(timer);
+      idleTimeout.clear();
+      child.off("error", onSpawnError);
       this.running.delete(input.requestId);
       this.markRequestEnd();
     }
@@ -200,6 +229,17 @@ export class CodexAdapter implements PersistentAdapter {
         cwd: buildCodexSpawnCwd(input.config.workspaceCwd),
       },
     );
+    let spawnFailureMessage: string | null = null;
+    let resolveSpawnFailure!: (message: string) => void;
+    const onSpawnError = (error: unknown): void => {
+      const message = error instanceof Error ? error.message : String(error);
+      spawnFailureMessage = message;
+      resolveSpawnFailure(message);
+    };
+    const spawnFailurePromise = new Promise<string>((resolve) => {
+      resolveSpawnFailure = resolve;
+      child.once("error", onSpawnError);
+    });
     const exitPromise = new Promise<number | null>((resolve) => {
       child.once("close", resolve);
     });
@@ -210,20 +250,22 @@ export class CodexAdapter implements PersistentAdapter {
     let output = "";
     let timedOut = false;
     let emittedThreadId: string | null = null;
-    const timer = setTimeout(() => {
+    const idleTimeout = createIdleTimeoutController(input.config.timeoutMs, () => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, input.config.timeoutMs);
+    });
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
       if (stderr.length > STDERR_BUFFER_MAX) {
         stderr = stderr.slice(-STDERR_SNAPSHOT_SIZE);
       }
+      idleTimeout.touch();
     });
 
     try {
       for await (const chunk of child.stdout) {
+        idleTimeout.touch();
         const lines = chunk.toString("utf8").split(/\r?\n/);
         for (const line of lines) {
           const threadId = extractCodexThreadId(line);
@@ -245,7 +287,10 @@ export class CodexAdapter implements PersistentAdapter {
         }
       }
 
-      const exitCode = await exitPromise;
+      const processResult = await Promise.race([
+        exitPromise.then((exitCode) => ({ type: "close" as const, exitCode })),
+        spawnFailurePromise.then((message) => ({ type: "error" as const, message })),
+      ]);
 
       if (timedOut) {
         yield messageError(
@@ -254,11 +299,18 @@ export class CodexAdapter implements PersistentAdapter {
           "codex request timed out",
           stderr,
         );
-      } else if (exitCode !== 0) {
+      } else if (processResult.type === "error") {
+        yield messageError(
+          baseArgs(input),
+          "PROCESS_CRASH",
+          `codex process failed to start: ${processResult.message}`,
+          stderr,
+        );
+      } else if (processResult.exitCode !== 0) {
         yield messageError(
           baseArgs(input),
           classifyCodexProcessError(stderr),
-          `codex process exited with code ${String(exitCode)}`,
+          `codex process exited with code ${String(processResult.exitCode)}`,
           stderr,
         );
       } else {
@@ -270,12 +322,17 @@ export class CodexAdapter implements PersistentAdapter {
     } catch (error) {
       yield messageError(
         baseArgs(input),
-        "UNKNOWN",
-        error instanceof Error ? error.message : "unknown codex adapter failure",
+        spawnFailureMessage ? "PROCESS_CRASH" : "UNKNOWN",
+        spawnFailureMessage
+          ? `codex process failed to start: ${spawnFailureMessage}`
+          : error instanceof Error
+          ? error.message
+          : "unknown codex adapter failure",
         stderr,
       );
     } finally {
-      clearTimeout(timer);
+      idleTimeout.clear();
+      child.off("error", onSpawnError);
       this.running.delete(input.requestId);
       this.markRequestEnd();
     }
@@ -547,6 +604,10 @@ class CodexAppServerRunner {
       if (this.stderrBuffer.length > STDERR_BUFFER_MAX) {
         this.stderrBuffer = this.stderrBuffer.slice(-STDERR_SNAPSHOT_SIZE);
       }
+      const activeTurn = this.activeTurn;
+      if (activeTurn) {
+        activeTurn.idleTimeout.touch();
+      }
     });
     this.child.once("close", (code) => {
       this.handleClose(code);
@@ -624,21 +685,21 @@ class CodexAppServerRunner {
     }
 
     const timeoutMs = Math.max(1_000, input.timeoutMs);
+    const turnIdleTimeout = createIdleTimeoutController(timeoutMs, () => {
+      void this.cancelActiveTurn("TIMEOUT: codex interactive request timed out");
+    });
 
     const resultPromise = new Promise<CodexInteractiveTurnResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        void this.cancelActiveTurn("TIMEOUT: codex interactive request timed out");
-      }, timeoutMs);
-
-      this.activeTurn = {
+      const activeTurn: CodexAppServerTurn = {
         requestId: input.requestId,
         output: "",
         deltaSource: null,
         onDelta: input.onDelta,
         resolve,
         reject,
-        timer,
+        idleTimeout: turnIdleTimeout,
       };
+      this.activeTurn = activeTurn;
     });
 
     try {
@@ -658,6 +719,7 @@ class CodexAppServerRunner {
         },
         10_000,
       );
+      turnIdleTimeout.touch();
     } catch (error) {
       this.rejectActiveTurn(
         error instanceof Error
@@ -677,7 +739,7 @@ class CodexAppServerRunner {
     }
 
     this.activeTurn = null;
-    clearTimeout(activeTurn.timer);
+    activeTurn.idleTimeout.clear();
 
     try {
       if (this.sessionIdValue) {
@@ -725,7 +787,7 @@ class CodexAppServerRunner {
     }
 
     if (this.activeTurn) {
-      clearTimeout(this.activeTurn.timer);
+      this.activeTurn.idleTimeout.clear();
       this.activeTurn.reject(
         new Error("PROCESS_CRASH: codex app-server was shut down"),
       );
@@ -759,6 +821,8 @@ class CodexAppServerRunner {
   }
 
   private consumeLine(line: string): void {
+    this.activeTurn?.idleTimeout.touch();
+
     let parsed: Record<string, unknown>;
     try {
       const value = JSON.parse(line);
@@ -766,7 +830,10 @@ class CodexAppServerRunner {
         return;
       }
       parsed = value as Record<string, unknown>;
-    } catch {
+    } catch (error: unknown) {
+      if (looksLikeJsonPayload(line)) {
+        logCodexJsonParseWarning("app-server line", line, error);
+      }
       return;
     }
 
@@ -852,7 +919,7 @@ class CodexAppServerRunner {
         const finalText = lastMessage ?? this.activeTurn.output;
         const activeTurn = this.activeTurn;
         this.activeTurn = null;
-        clearTimeout(activeTurn.timer);
+        activeTurn.idleTimeout.clear();
         activeTurn.resolve({
           text: finalText,
           sessionId: this.sessionIdValue,
@@ -916,7 +983,7 @@ class CodexAppServerRunner {
       const text = this.activeTurn.output;
       const activeTurn = this.activeTurn;
       this.activeTurn = null;
-      clearTimeout(activeTurn.timer);
+      activeTurn.idleTimeout.clear();
       activeTurn.resolve({
         text,
         sessionId: this.sessionIdValue,
@@ -1013,7 +1080,7 @@ class CodexAppServerRunner {
     }
     const activeTurn = this.activeTurn;
     this.activeTurn = null;
-    clearTimeout(activeTurn.timer);
+    activeTurn.idleTimeout.clear();
     activeTurn.reject(error);
   }
 
@@ -1132,6 +1199,26 @@ const buildCodexNewConversationParams = (cwd: string): Record<string, unknown> =
 const buildCodexSpawnCwd = (workspaceCwd?: string): string =>
   workspaceCwd?.trim() || process.cwd();
 
+const looksLikeJsonPayload = (line: string): boolean => {
+  const trimmed = line.trim();
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
+};
+
+const logCodexJsonParseWarning = (
+  context: string,
+  line: string,
+  error: unknown,
+): void => {
+  const detail = error instanceof Error ? error.message : String(error);
+  const preview = line.length > 180 ? `${line.slice(0, 180)}...` : line;
+  console.error(
+    `[adapter.codex] Failed to parse JSON (${context}): ${detail}; line='${preview}'`,
+  );
+};
+
 export const extractCodexThreadId = (line: string): string | null => {
   const trimmed = line.trim();
   if (!trimmed) {
@@ -1147,7 +1234,10 @@ export const extractCodexThreadId = (line: string): string | null => {
     ) {
       return parsed.thread_id;
     }
-  } catch {
+  } catch (error: unknown) {
+    if (looksLikeJsonPayload(trimmed)) {
+      logCodexJsonParseWarning("thread id extraction", trimmed, error);
+    }
     return null;
   }
 

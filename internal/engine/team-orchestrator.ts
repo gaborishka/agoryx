@@ -1,18 +1,24 @@
+import { execFileSync } from "node:child_process";
 import type { Adapter, AdapterConfig } from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
 import type {
   TeamCheck,
+  TeamPlan,
   TeamRun,
   TeamStep,
   Message,
   SessionBoundPayload,
 } from "../events/types.js";
+import type { MemoryService } from "../memory/service.js";
+import type { WorktreeManager } from "../worktree/manager.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import { TeamPolicy } from "../orchestrator/team.js";
+import { sanitizeTeamOutput } from "../rendering/sanitize.js";
 import { createId } from "../session/ids.js";
 import { SessionService } from "../session/service.js";
 import type { EngineLogger } from "./logger.js";
 import { normalizeErrorClass } from "./dispatch-engine.js";
+import { parseTeamPlan } from "./plan-parser.js";
 import type {
   ChatEngineHooks,
   DispatchResult,
@@ -23,6 +29,8 @@ import type {
   TeamStatusResult,
 } from "./types.js";
 
+export { sanitizeTeamOutput } from "../rendering/sanitize.js";
+
 interface TeamOrchestratorOptions {
   session: SessionService;
   adapters: Record<string, Adapter>;
@@ -32,11 +40,19 @@ interface TeamOrchestratorOptions {
   dispatchApi: TeamDispatchApi;
   hooks: ChatEngineHooks;
   logger: EngineLogger;
+  memoryService?: MemoryService;
+  worktreeManager?: WorktreeManager;
 }
 
 interface ActiveTeamDispatch {
   adapterName: string;
   requestId: string;
+}
+
+interface TeamAdapterConfigSnapshot {
+  mode: AdapterConfig["mode"];
+  workspaceCwd?: string;
+  hadWorkspaceCwd: boolean;
 }
 
 export class TeamOrchestrator {
@@ -45,8 +61,10 @@ export class TeamOrchestrator {
   private readonly teamStopFlags = new Set<string>();
   private readonly teamNextActorByRun = new Map<string, string>();
   private readonly teamActiveDispatchByRun = new Map<string, ActiveTeamDispatch>();
+  private readonly runStartWarningsByRun = new Map<string, string[]>();
   private readonly interruptedRequestIds = new Set<string>();
-  private teamAdapterModeSnapshot: Partial<Record<string, AdapterConfig["mode"]>> | null = null;
+  private teamAdapterConfigSnapshot: Partial<Record<string, TeamAdapterConfigSnapshot>> | null =
+    null;
 
   private readonly session: SessionService;
   private readonly adapters: Record<string, Adapter>;
@@ -56,6 +74,8 @@ export class TeamOrchestrator {
   private readonly dispatchApi: TeamDispatchApi;
   private readonly hooks: ChatEngineHooks;
   private readonly logger: EngineLogger;
+  private readonly memoryService?: MemoryService;
+  private readonly worktreeManager?: WorktreeManager;
 
   public constructor(options: TeamOrchestratorOptions) {
     this.session = options.session;
@@ -66,6 +86,8 @@ export class TeamOrchestrator {
     this.dispatchApi = options.dispatchApi;
     this.hooks = options.hooks;
     this.logger = options.logger;
+    this.memoryService = options.memoryService;
+    this.worktreeManager = options.worktreeManager;
   }
 
   public startRun(
@@ -97,20 +119,60 @@ export class TeamOrchestrator {
     const checksEnabled = options.checksEnabled ?? limits.checksEnabledByDefault;
 
     this.restoreTeamAdapterModes();
-    const modeSnapshot: Partial<Record<string, AdapterConfig["mode"]>> = {};
+    const adapterSnapshot: Partial<Record<string, TeamAdapterConfigSnapshot>> = {};
     for (const agent of state.availableAgents) {
       const adapterConfig = this.config.adapterConfig[agent];
-      if (!adapterConfig || adapterConfig.mode !== "cli") {
+      if (!adapterConfig) {
         continue;
       }
-      modeSnapshot[agent] = adapterConfig.mode;
-      this.config.adapterConfig[agent] = {
-        ...adapterConfig,
-        mode: "agentic",
+      adapterSnapshot[agent] = {
+        mode: adapterConfig.mode,
+        workspaceCwd: adapterConfig.workspaceCwd,
+        hadWorkspaceCwd: Object.prototype.hasOwnProperty.call(adapterConfig, "workspaceCwd"),
       };
+      if (adapterConfig.mode === "cli") {
+        this.config.adapterConfig[agent] = {
+          ...adapterConfig,
+          mode: "agentic",
+        };
+      }
     }
-    if (Object.keys(modeSnapshot).length > 0) {
-      this.teamAdapterModeSnapshot = modeSnapshot;
+    if (Object.keys(adapterSnapshot).length > 0) {
+      this.teamAdapterConfigSnapshot = adapterSnapshot;
+    }
+
+    const runStartWarnings: string[] = [];
+
+    // Auto-create worktrees for each agent
+    if (this.worktreeManager) {
+      for (const agent of state.availableAgents) {
+        try {
+          const wt = this.worktreeManager.create(agent);
+          // Set workspaceCwd for the agent's adapter config
+          const agentConfig = this.config.adapterConfig[agent];
+          if (agentConfig) {
+            this.config.adapterConfig[agent] = {
+              ...agentConfig,
+              workspaceCwd: wt.path,
+            };
+          }
+          this.memoryService?.recordWorktreeCreate(
+            state.room.id,
+            agent,
+            wt.path,
+            wt.branch,
+          );
+        } catch (error: unknown) {
+          const reason = error instanceof Error ? error.message : String(error);
+          runStartWarnings.push(
+            `Worktree isolation disabled for ${agent}: ${reason}. Using main repository workspace.`,
+          );
+          this.logger.log("warn", "team.worktree_create_failed", {
+            agent,
+            error: reason,
+          });
+        }
+      }
     }
 
     if (state.room.config.mode !== "team") {
@@ -121,18 +183,24 @@ export class TeamOrchestrator {
       this.setState(state);
     }
 
-    const run = this.session.createTeamRun({
-      roomId: state.room.id,
-      strategy,
-      stage: "debate",
-      goal: trimmedGoal,
-      participants: state.availableAgents,
-      maxSteps: limits.maxSteps,
-      maxNoProgressSteps: limits.maxNoProgressSteps,
-      maxDurationMs: limits.maxDurationMs,
-      checksEnabled,
-      createdBy: options.createdBy ?? "user",
-    });
+    let run: TeamRun;
+    try {
+      run = this.session.createTeamRun({
+        roomId: state.room.id,
+        strategy,
+        stage: "debate",
+        goal: trimmedGoal,
+        participants: state.availableAgents,
+        maxSteps: limits.maxSteps,
+        maxNoProgressSteps: limits.maxNoProgressSteps,
+        maxDurationMs: limits.maxDurationMs,
+        checksEnabled,
+        createdBy: options.createdBy ?? "user",
+      });
+    } catch (error: unknown) {
+      this.restoreTeamAdapterModes();
+      throw error;
+    }
 
     this.logger.log("info", "team.run_started", {
       roomId: run.roomId,
@@ -142,15 +210,29 @@ export class TeamOrchestrator {
       strictProfile,
     });
 
+    if (runStartWarnings.length > 0) {
+      this.runStartWarningsByRun.set(run.id, runStartWarnings);
+    }
+
     this.launchLoop(run.id, run.roomId);
     return run;
+  }
+
+  public consumeRunStartWarnings(runId: string): string[] {
+    const warnings = this.runStartWarningsByRun.get(runId);
+    if (!warnings || warnings.length === 0) {
+      return [];
+    }
+    this.runStartWarningsByRun.delete(runId);
+    return [...warnings];
   }
 
   public status(runId?: string): TeamStatusResult | null {
     const state = this.getState();
     const run = runId
       ? this.session.getTeamRun(runId)
-      : this.session.getActiveTeamRun(state.room.id);
+      : (this.session.getActiveTeamRun(state.room.id) ??
+         this.session.getLatestTeamRun(state.room.id));
     if (!run) {
       return null;
     }
@@ -164,7 +246,8 @@ export class TeamOrchestrator {
     const state = this.getState();
     const run = runId
       ? this.session.getTeamRun(runId)
-      : this.session.getLatestResumableTeamRun(state.room.id);
+      : (this.session.getLatestResumableTeamRun(state.room.id) ??
+         this.session.getLatestTeamRun(state.room.id));
     if (!run) {
       return null;
     }
@@ -194,6 +277,28 @@ export class TeamOrchestrator {
       : this.session.getActiveTeamRun(state.room.id);
     if (!run || run.status !== "waiting_user_input") {
       return null;
+    }
+
+    // Commit and merge agent worktrees into the main branch
+    const mergeErrors: string[] = [];
+    if (this.worktreeManager) {
+      for (const agent of state.availableAgents) {
+        const result = this.commitAndMergeWorktree(agent, run.goal);
+        if (!result.merged && result.error) {
+          mergeErrors.push(`${agent}: ${result.error}`);
+        }
+      }
+    }
+
+    if (mergeErrors.length > 0) {
+      const errorSummary = "Merge failed:\n" + mergeErrors.join("\n");
+      this.session.updateTeamRunProgress(run.id, { finalSummary: errorSummary });
+      this.logger.log("error", "team.approve_merge_failed", {
+        runId: run.id,
+        errors: mergeErrors,
+      });
+      // Stay in waiting_user_input so user can resolve
+      return this.session.getTeamRun(run.id);
     }
 
     this.session.updateTeamRunStatus(run.id, "done", {
@@ -317,7 +422,20 @@ export class TeamOrchestrator {
     }
     if (activeRun?.status === "waiting_user_input") {
       this.session.saveUserMessage(state.room.id, text);
-      return [];
+      const mentionTargets = resolveMentionTargets(text, state.availableAgents);
+      if (mentionTargets.length === 0) {
+        return [];
+      }
+
+      const results: DispatchResult[] = [];
+      for (const target of mentionTargets) {
+        const dispatch = this.dispatchApi.createInternalDispatch(
+          target,
+          `team:waiting_mention:${target}`,
+        );
+        results.push(await this.dispatchApi.runDispatch(dispatch));
+      }
+      return results;
     }
 
     if (this.config.team.trigger.autoOnMessage) {
@@ -399,184 +517,436 @@ export class TeamOrchestrator {
   }
 
   private async runLoop(runId: string): Promise<void> {
-    while (true) {
-      const run = this.session.getTeamRun(runId);
-      if (!run || run.status !== "active") {
-        return;
-      }
+    const run = this.session.getTeamRun(runId);
+    if (!run || run.status !== "active") return;
 
-      if (this.teamStopFlags.has(run.id)) {
-        this.session.updateTeamRunStatus(run.id, "stopped", {
-          completedAt: new Date().toISOString(),
-        });
-        this.restoreTeamAdapterModes();
-        return;
-      }
-
-      const hasPendingFeedback = this.session.countPendingTeamFeedback(run.id) > 0;
-      if (this.shouldFinalizeRun(run) && !hasPendingFeedback) {
-        this.completeRun(run, "Debate limits reached.");
-        return;
-      }
-
-      await this.executeDebateStep(run);
-    }
-  }
-
-  private shouldFinalizeRun(run: TeamRun): boolean {
-    const elapsedMs = Date.now() - Date.parse(run.startedAt);
-    return (
-      run.stepCount >= run.maxSteps ||
-      run.noProgressCount >= run.maxNoProgressSteps ||
-      elapsedMs >= run.maxDurationMs
-    );
-  }
-
-  private async executeDebateStep(run: TeamRun): Promise<void> {
-    const state = this.getState();
-    const hintedActor = this.teamNextActorByRun.get(run.id);
-    const actor = hintedActor && state.availableAgents.includes(hintedActor)
-      ? hintedActor
-      : this.teamPolicy.selectActor(run, "debate", state.availableAgents);
-    if (!actor) {
-      this.session.updateTeamRunStatus(run.id, "failed", {
+    if (this.teamStopFlags.has(runId)) {
+      this.session.updateTeamRunStatus(run.id, "stopped", {
         completedAt: new Date().toISOString(),
-        finalSummary: "No available actor for debate step.",
       });
+      this.restoreTeamAdapterModes();
       return;
     }
 
-    const prompt = this.session.buildTeamPrompt(
+    // Phase 1: Planning
+    const plan = await this.runPlanningPhase(run);
+    if (!plan || this.teamStopFlags.has(runId)) {
+      if (!this.teamStopFlags.has(runId)) {
+        const msg = "Planning phase failed to produce a plan.";
+        this.session.updateTeamRunProgress(run.id, { finalSummary: msg });
+        this.session.updateTeamRunStatus(run.id, "failed", { finalSummary: msg });
+        this.restoreTeamAdapterModes();
+        this.teamNextActorByRun.delete(run.id);
+      }
+      return;
+    }
+
+    // Phase 2: Parallel execution
+    await this.runParallelExecution(run, plan);
+    if (this.teamStopFlags.has(runId)) return;
+
+    // Phase 3: Merge
+    await this.runMergePhase(run);
+  }
+
+  private async runPlanningPhase(run: TeamRun): Promise<TeamPlan | null> {
+    const state = this.getState();
+    const agents = state.availableAgents;
+    if (agents.length < 2) {
+      // Single agent — no negotiation needed, auto-generate plan
+      return {
+        assignments: [{ agent: agents[0]!, task: run.goal, files: [] }],
+        accepted: true,
+        raw: "",
+      };
+    }
+
+    let latestPlan: TeamPlan | null = null;
+
+    // Round 1: First agent proposes
+    const proposer = agents[0]!;
+    const proposePrompt = this.session.buildTeamPrompt(
       state.room,
       run,
-      "debate",
-      actor,
+      "plan",
+      proposer,
       {
         instructions:
-          "Advance the goal with one concrete step in this turn. Prefer doing work over check-ins. " +
-          "At the end of your response add exactly one control line: TEAM_NEXT:<agent> to continue, or TEAM_DONE to finish. " +
-          "If the goal is complete or blocked pending user input, use TEAM_DONE. " +
-          "Do not output internal tool/runtime logs or meta progress chatter.",
+          `You are the PLAN PROPOSER. The team has ${agents.length} agents: ${agents.join(", ")}.\n` +
+          `Analyze the goal and create a work plan. Divide the work so each agent handles distinct files.\n` +
+          `Output your plan in this exact format:\n\n` +
+          `PLAN:\n` +
+          `- agent: <name>\n` +
+          `  task: <description>\n` +
+          `  files: <comma-separated file paths>\n` +
+          `- agent: <name>\n` +
+          `  task: <description>\n` +
+          `  files: <comma-separated file paths>\n` +
+          `PLAN_END\n\n` +
+          `Every agent must appear in the plan. Assign non-overlapping files.`,
       },
     );
-    const consumedFeedbackIds = this.session.listPendingTeamFeedback(run.id, 20).map((item) => item.id);
 
-    const dispatch = this.dispatchApi.createInternalDispatch(actor, `team:debate:${run.stepCount + 1}`);
-    this.trackActiveTeamDispatch(run.id, actor, dispatch.requestId);
-    let result: DispatchResult;
+    const proposeDispatch = this.dispatchApi.createInternalDispatch(proposer, `team:plan:propose`);
+    this.trackActiveTeamDispatch(run.id, proposer, proposeDispatch.requestId);
+    let proposeResult: DispatchResult;
     try {
-      result = await this.dispatchApi.runPromptDispatch(dispatch, prompt, false, {
+      proposeResult = await this.dispatchApi.runPromptDispatch(proposeDispatch, proposePrompt, false, {
         outputTransform: sanitizeTeamOutput,
       });
     } finally {
-      this.clearActiveTeamDispatch(run.id, dispatch.requestId);
+      this.clearActiveTeamDispatch(run.id, proposeDispatch.requestId);
     }
 
-    if (this.consumeInterruptedRequest(dispatch.requestId)) {
-      this.teamNextActorByRun.set(run.id, actor);
-      return;
-    }
-    this.session.consumeTeamFeedback(consumedFeedbackIds);
+    if (this.consumeInterruptedRequest(proposeDispatch.requestId)) return null;
+    if (!proposeResult.success) return null;
 
-    const stepSeq = run.stepCount + 1;
     this.session.addTeamStep({
       runId: run.id,
-      seq: stepSeq,
-      stage: "debate",
-      actor,
-      dispatchId: dispatch.dispatchId,
-      requestId: dispatch.requestId,
-      inputText: prompt,
-      outputText: result.text,
-      result: result.success ? "ok" : "error",
-      errorClass: normalizeErrorClass(result.error),
+      seq: 1,
+      stage: "plan",
+      actor: proposer,
+      dispatchId: proposeDispatch.dispatchId,
+      requestId: proposeDispatch.requestId,
+      inputText: proposePrompt,
+      outputText: proposeResult.text,
+      result: "ok",
+      errorClass: null,
     });
+    this.session.updateTeamRunProgress(run.id, { stage: "plan", stepCount: 1, noProgressCount: 0 });
 
-    const control = parseTeamDebateControl(result.text);
-    const nextActor =
-      control.nextActor && state.availableAgents.includes(control.nextActor)
-        ? control.nextActor
-        : null;
-    if (nextActor) {
-      this.teamNextActorByRun.set(run.id, nextActor);
-    } else {
-      this.teamNextActorByRun.delete(run.id);
+    latestPlan = parseTeamPlan(proposeResult.text, agents);
+
+    // Round 2: Second agent reviews and accepts/amends
+    const reviewer = agents[1]!;
+    const reviewPrompt = this.session.buildTeamPrompt(
+      state.room,
+      run,
+      "plan",
+      reviewer,
+      {
+        instructions:
+          `You are the PLAN REVIEWER. Review the proposed plan below.\n` +
+          `If you agree, respond with: PLAN_ACCEPT\n` +
+          `If you want changes, output a revised plan in the same format:\n\n` +
+          `PLAN:\n- agent: ...\n  task: ...\n  files: ...\nPLAN_END\n\n` +
+          `Proposed plan from ${proposer}:\n${proposeResult.text}`,
+      },
+    );
+
+    const reviewDispatch = this.dispatchApi.createInternalDispatch(reviewer, `team:plan:review`);
+    this.trackActiveTeamDispatch(run.id, reviewer, reviewDispatch.requestId);
+    let reviewResult: DispatchResult;
+    try {
+      reviewResult = await this.dispatchApi.runPromptDispatch(reviewDispatch, reviewPrompt, false, {
+        outputTransform: sanitizeTeamOutput,
+      });
+    } finally {
+      this.clearActiveTeamDispatch(run.id, reviewDispatch.requestId);
     }
 
-    const MIN_PROGRESS_LENGTH = 80;
-    const noProgressCount =
-      result.success && result.text.trim().length >= MIN_PROGRESS_LENGTH
-        ? 0
-        : run.noProgressCount + 1;
-    this.session.updateTeamRunProgress(run.id, {
-      stage: "debate",
-      stepCount: stepSeq,
-      noProgressCount,
-    });
+    if (this.consumeInterruptedRequest(reviewDispatch.requestId)) return null;
 
-    const updated = this.session.getTeamRun(run.id);
-    if (!updated || updated.status !== "active") {
-      return;
+    this.session.addTeamStep({
+      runId: run.id,
+      seq: 2,
+      stage: "plan",
+      actor: reviewer,
+      dispatchId: reviewDispatch.dispatchId,
+      requestId: reviewDispatch.requestId,
+      inputText: reviewPrompt,
+      outputText: reviewResult.text,
+      result: reviewResult.success ? "ok" : "error",
+      errorClass: normalizeErrorClass(reviewResult.error),
+    });
+    this.session.updateTeamRunProgress(run.id, { stage: "plan", stepCount: 2, noProgressCount: 0 });
+
+    if (!reviewResult.success) return latestPlan;
+
+    const reviewPlan = parseTeamPlan(reviewResult.text, agents);
+    if (reviewPlan?.accepted) {
+      // Reviewer accepted — use the proposer's plan
+      return latestPlan;
     }
-    if (!result.success) {
-      this.session.updateTeamRunStatus(updated.id, "failed", {
+    if (reviewPlan && reviewPlan.assignments.length > 0) {
+      // Reviewer provided an amended plan
+      return reviewPlan;
+    }
+
+    // Fallback — use proposer's plan even if reviewer didn't give a clean response
+    return latestPlan;
+  }
+
+  private async runParallelExecution(run: TeamRun, plan: TeamPlan): Promise<void> {
+    const state = this.getState();
+    this.session.updateTeamRunProgress(run.id, { stage: "implement" });
+
+    const dispatchPromises: Promise<void>[] = [];
+
+    for (const assignment of plan.assignments) {
+      if (!state.availableAgents.includes(assignment.agent)) continue;
+      if (this.teamStopFlags.has(run.id)) break;
+
+      const agent = assignment.agent;
+      const prompt = this.session.buildTeamPrompt(
+        state.room,
+        run,
+        "implement",
+        agent,
+        {
+          instructions:
+            `You are executing your part of the agreed plan.\n` +
+            `YOUR TASK: ${assignment.task}\n` +
+            `FILES YOU OWN: ${assignment.files.length > 0 ? assignment.files.join(", ") : "as needed"}\n\n` +
+            `Create or modify the files listed above to complete your task. ` +
+            `You have full filesystem access in your workspace.\n` +
+            `IMPORTANT: After creating/modifying files, commit your changes with git:\n` +
+            `  git add -A && git commit -m "feat: <short description>"\n` +
+            `When done, output TEAM_DONE.`,
+        },
+      );
+
+      const dispatch = this.dispatchApi.createInternalDispatch(
+        agent,
+        `team:implement:${assignment.agent}`,
+      );
+      this.trackActiveTeamDispatch(run.id, agent, dispatch.requestId);
+
+      const stepSeq = run.stepCount + plan.assignments.indexOf(assignment) + 1;
+      const promise = this.dispatchApi
+        .runPromptDispatch(dispatch, prompt, false, {
+          outputTransform: sanitizeTeamOutput,
+        })
+        .then((result) => {
+          this.clearActiveTeamDispatch(run.id, dispatch.requestId);
+
+          const errorClass = normalizeErrorClass(result.error);
+          this.session.addTeamStep({
+            runId: run.id,
+            seq: stepSeq,
+            stage: "implement",
+            actor: agent,
+            dispatchId: dispatch.dispatchId,
+            requestId: dispatch.requestId,
+            inputText: prompt,
+            outputText: result.text,
+            result: result.success ? "ok" : "error",
+            errorClass,
+          });
+
+          this.memoryService?.recordTeamStep(
+            run.roomId,
+            run.id,
+            agent,
+            result.text.slice(0, 200),
+          );
+        })
+        .catch((error) => {
+          this.clearActiveTeamDispatch(run.id, dispatch.requestId);
+          this.logger.log("error", "team.parallel_dispatch_failed", {
+            runId: run.id,
+            agent,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+
+      dispatchPromises.push(promise);
+    }
+
+    // Wait for all agents to complete
+    await Promise.all(dispatchPromises);
+
+    const updatedRun = this.session.getTeamRun(run.id);
+    if (updatedRun) {
+      this.session.updateTeamRunProgress(updatedRun.id, {
+        stage: "implement",
+        stepCount: run.stepCount + plan.assignments.length,
+      });
+    }
+  }
+
+  private async runMergePhase(run: TeamRun): Promise<void> {
+    if (!this.worktreeManager) {
+      // No worktree manager — skip merge, just mark done
+      const msg = "Run completed (no worktree merge).";
+      this.session.updateTeamRunProgress(run.id, { finalSummary: msg });
+      this.session.updateTeamRunStatus(run.id, "done", {
         completedAt: new Date().toISOString(),
-        finalSummary: result.error ?? "Team debate step failed.",
+        finalSummary: msg,
       });
       this.restoreTeamAdapterModes();
-      this.teamNextActorByRun.delete(updated.id);
+      this.teamNextActorByRun.delete(run.id);
       return;
     }
-    if (control.done) {
-      this.completeRun(updated, "TEAM_DONE control event.", result.text);
-      return;
+
+    this.session.updateTeamRunProgress(run.id, { stage: "finalize" });
+    const state = this.getState();
+    const mergeErrors: string[] = [];
+
+    // Collect file changes per agent for user review (do NOT commit yet)
+    const changeReport: string[] = [];
+    for (const agent of state.availableAgents) {
+      const wt = this.worktreeManager.getForAgent(agent);
+      if (!wt) continue;
+
+      try {
+        const changes = this.getWorktreeReport(wt.path, wt.branch);
+        if (changes.length > 0) {
+          changeReport.push(`${agent} (${wt.branch}):\n  ${changes.join("\n  ")}`);
+        }
+      } catch (error: unknown) {
+        this.logger.log("warn", "team.worktree_status_failed", {
+          runId: run.id,
+          agent,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    if (!nextActor) {
-      this.completeRun(updated, "No TEAM_NEXT control event.", result.text);
-      return;
-    }
-    if (this.shouldFinalizeRun(updated)) {
-      this.completeRun(updated, "Debate limits reached.", result.text);
+
+    if (changeReport.length > 0) {
+      const summary =
+        "Agents completed. Files created/modified:\n\n" +
+        changeReport.join("\n\n") +
+        "\n\nUse /team approve to commit and merge, or /team stop to discard.";
+      this.session.updateTeamRunProgress(run.id, { finalSummary: summary });
+      this.session.updateTeamRunStatus(run.id, "waiting_user_input", { finalSummary: summary });
+      this.restoreTeamAdapterModes();
+    } else {
+      // No file changes — nothing to approve, mark as done directly
+      const noChangesMsg = "All agents completed (no file changes detected).";
+      this.session.updateTeamRunProgress(run.id, { finalSummary: noChangesMsg });
+      this.session.updateTeamRunStatus(run.id, "done", {
+        completedAt: new Date().toISOString(),
+        finalSummary: noChangesMsg,
+      });
+      this.restoreTeamAdapterModes();
+      this.teamNextActorByRun.delete(run.id);
+      this.logger.log("info", "team.run_completed_no_changes", {
+        roomId: run.roomId,
+        runId: run.id,
+      });
     }
   }
 
-  private completeRun(run: TeamRun, reason: string, summaryHint?: string): void {
-    const summary = summaryHint?.trim() || run.finalSummary || reason;
-    this.session.updateTeamRunProgress(run.id, {
-      finalSummary: summary,
-    });
-    this.session.updateTeamRunStatus(run.id, "waiting_user_input", {
-      finalSummary: summary,
-    });
-    this.restoreTeamAdapterModes();
-    this.teamNextActorByRun.delete(run.id);
+  private getWorktreeReport(wtPath: string, branch: string): string[] {
+    const lines: string[] = [];
 
-    this.logger.log("info", "team.run_waiting_approval", {
-      roomId: run.roomId,
-      runId: run.id,
-      reason,
-      summaryLength: summary.length,
-    });
+    // Uncommitted changes
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      cwd: wtPath,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (status) {
+      for (const line of status.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed) lines.push(`[uncommitted] ${trimmed}`);
+      }
+    }
+
+    // Committed changes on this branch (files changed vs merge-base)
+    try {
+      const mergeBase = execFileSync(
+        "git",
+        ["merge-base", "HEAD", branch],
+        { cwd: wtPath, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      ).trim();
+      const committed = execFileSync(
+        "git",
+        ["diff", "--name-status", mergeBase, branch],
+        { cwd: wtPath, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+      ).trim();
+      if (committed) {
+        for (const line of committed.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed) lines.push(`[committed] ${trimmed}`);
+        }
+      }
+    } catch {
+      // Branch comparison may fail; ignore
+    }
+
+    return lines;
   }
+
+  private commitAndMergeWorktree(
+    agent: string,
+    goal: string,
+  ): { merged: boolean; error?: string } {
+    if (!this.worktreeManager) return { merged: false, error: "no worktree manager" };
+    const wt = this.worktreeManager.getForAgent(agent);
+    if (!wt) return { merged: false, error: "no worktree for agent" };
+
+    // Commit any uncommitted changes in the agent's worktree branch
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      cwd: wt.path,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+
+    if (status) {
+      try {
+        execFileSync("git", ["add", "-A"], {
+          cwd: wt.path,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        const shortGoal = goal.length > 60 ? goal.slice(0, 57) + "..." : goal;
+        execFileSync(
+          "git",
+          ["commit", "-m", `feat(${agent}): ${shortGoal}`],
+          {
+            cwd: wt.path,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+      } catch (error: unknown) {
+        return { merged: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
+    // Always attempt merge (agent may have committed its own changes)
+    try {
+      const result = this.worktreeManager.merge(agent);
+      if (!result.success && result.conflicts) {
+        return {
+          merged: false,
+          error: `Merge conflicts: ${result.conflicts.join(", ")}`,
+        };
+      }
+      return { merged: true };
+    } catch (error: unknown) {
+      return { merged: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
 
   private restoreTeamAdapterModes(): void {
-    if (!this.teamAdapterModeSnapshot) {
+    if (!this.teamAdapterConfigSnapshot) {
       return;
     }
-    for (const [agent, mode] of Object.entries(this.teamAdapterModeSnapshot)) {
-      if (!mode) {
+    for (const [agent, snapshot] of Object.entries(this.teamAdapterConfigSnapshot)) {
+      if (!snapshot) {
         continue;
       }
       const adapterConfig = this.config.adapterConfig[agent];
       if (!adapterConfig) {
         continue;
       }
-      this.config.adapterConfig[agent] = {
+      const restored: AdapterConfig = {
         ...adapterConfig,
-        mode,
+        mode: snapshot.mode,
       };
+      if (snapshot.hadWorkspaceCwd) {
+        restored.workspaceCwd = snapshot.workspaceCwd;
+        this.config.adapterConfig[agent] = restored;
+      } else {
+        const { workspaceCwd: _workspaceCwd, ...withoutWorkspace } = restored;
+        this.config.adapterConfig[agent] = withoutWorkspace;
+      }
     }
-    this.teamAdapterModeSnapshot = null;
+    this.teamAdapterConfigSnapshot = null;
   }
 
   private trackActiveTeamDispatch(
@@ -605,51 +975,8 @@ export class TeamOrchestrator {
     this.interruptedRequestIds.delete(requestId);
     return true;
   }
+
 }
-
-export const sanitizeTeamOutput = (text: string): string => {
-  if (!text) {
-    return text;
-  }
-
-  const withoutReminders = text.replace(
-    /<system-reminder>[\s\S]*?<\/system-reminder>/gi,
-    "",
-  );
-  const filteredLines = withoutReminders
-    .split(/\r?\n/)
-    .filter((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return true;
-      }
-
-      if (/^\d+→/.test(trimmed)) {
-        return false;
-      }
-      if (/^now appending to the bridge log:?$/i.test(trimmed)) {
-        return false;
-      }
-      if (isTeamProcessChatterLine(trimmed)) {
-        return false;
-      }
-
-      return true;
-    });
-
-  const cleaned = filteredLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  return cleaned;
-};
-
-const TEAM_PROCESS_CHATTER_PATTERNS = [
-  /\b(i(?:'|’)m|i am|i(?:'|’)ll|i will)\b.*\b(read|scan|check|review|verify|grep|bootstrap|cross-check|inspect|prepare|gather|collect|re-?run|search)\b/i,
-  /\b(i hit|quick bootstrap|first pass|next i(?:'|’)m|now i(?:'|’)m)\b/i,
-  /\b(зараз|спершу|далі|потім|наступним кроком)\b.*\b(перевір|звір|прочита|скан|подив|підгот|запущ|зроблю)\b/i,
-  /\bя\b.*\b(перевірю|прочитаю|запущу|зроблю швидкий)\b/i,
-];
-
-const isTeamProcessChatterLine = (line: string): boolean =>
-  TEAM_PROCESS_CHATTER_PATTERNS.some((pattern) => pattern.test(line));
 
 interface TeamDebateControl {
   done: boolean;
@@ -663,10 +990,10 @@ const TEAM_STOP_WORD_PATTERNS = [
   /^\s*TEAM_STOP\s*$/i,
 ];
 const INLINE_CODE_WRAPPER_PATTERN = /^(`{1,3})([^`]+)\1$/;
+const MENTION_PATTERN = /@([a-z0-9._-]+)/g;
 
 /** Max number of trailing lines to scan for control directives. */
 const CONTROL_TAIL_LINES = 5;
-
 export const parseTeamDebateControl = (text: string): TeamDebateControl => {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -708,3 +1035,29 @@ const normalizeTeamControlLine = (line: string): string => {
   }
   return inlineCodeMatch[2]?.trim() ?? trimmed;
 };
+
+const resolveMentionTargets = (
+  text: string,
+  availableAgents: string[],
+): string[] => {
+  const normalized = text.toLowerCase();
+  const targets: string[] = [];
+  for (const match of normalized.matchAll(MENTION_PATTERN)) {
+    const mention = match[1];
+    if (!mention) {
+      continue;
+    }
+    if (mention === "all") {
+      return [...availableAgents];
+    }
+    if (!availableAgents.includes(mention)) {
+      continue;
+    }
+    if (targets.includes(mention)) {
+      continue;
+    }
+    targets.push(mention);
+  }
+  return targets;
+};
+

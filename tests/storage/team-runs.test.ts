@@ -121,3 +121,15 @@ test("latest resumable run returns waiting_user_input run", () => {
     store.close();
   }
 });
+
+test("updateTeamRunStatus throws for missing run", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+  try {
+    assert.throws(() => {
+      store.updateTeamRunStatus("missing_run", "failed");
+    }, /not found/i);
+  } finally {
+    store.close();
+  }
+});

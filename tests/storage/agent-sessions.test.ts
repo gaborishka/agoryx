@@ -181,6 +181,32 @@ test("incrementAgentSessionFailCount increments and returns new count", () => {
   }
 });
 
+test("incrementAgentSessionFailCount throws for missing session", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    assert.throws(() => {
+      store.incrementAgentSessionFailCount("missing_session");
+    }, /not found/i);
+  } finally {
+    store.close();
+  }
+});
+
+test("updateAgentSessionNativeId throws for missing session", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    assert.throws(() => {
+      store.updateAgentSessionNativeId("missing_session", "thread_abc");
+    }, /not found/i);
+  } finally {
+    store.close();
+  }
+});
+
 test("listActiveAgentSessions returns only active sessions", () => {
   const store = new SQLiteStore(":memory:");
   store.init();

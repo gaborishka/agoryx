@@ -16,6 +16,9 @@ node_modules/
 dist/
 coverage/
 
+# Agoryx runtime artifacts
+.agoryx/
+
 # OS
 .DS_Store
 .idea/

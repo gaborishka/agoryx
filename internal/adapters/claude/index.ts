@@ -20,6 +20,7 @@ import { extractTextFromJsonLine } from "../parse-output.js";
 import { createId } from "../../session/ids.js";
 import { AsyncQueue } from "../async-queue.js";
 import type { ErrorClass } from "../../events/types.js";
+import { createIdleTimeoutController } from "../idle-timeout.js";
 
 const SOURCE = "adapter.claude";
 const STDERR_BUFFER_MAX = 16_000;
@@ -42,7 +43,7 @@ interface ClaudeInteractiveTurn {
   requestId: string;
   output: string;
   resultText: string | null;
-  timer: NodeJS.Timeout;
+  idleTimeout: ReturnType<typeof createIdleTimeoutController>;
   onDelta: (text: string) => void;
   onSessionId: (sessionId: string) => void;
   resolve: (result: ClaudeInteractiveTurnResult) => void;
@@ -90,6 +91,17 @@ export class ClaudeAdapter implements PersistentAdapter {
       env: buildClaudeSpawnEnv(process.env),
       cwd: buildClaudeSpawnCwd(process.env, input.config.mode, input.config.workspaceCwd),
     });
+    let spawnFailureMessage: string | null = null;
+    let resolveSpawnFailure!: (message: string) => void;
+    const onSpawnError = (error: unknown): void => {
+      const message = error instanceof Error ? error.message : String(error);
+      spawnFailureMessage = message;
+      resolveSpawnFailure(message);
+    };
+    const spawnFailurePromise = new Promise<string>((resolve) => {
+      resolveSpawnFailure = resolve;
+      child.once("error", onSpawnError);
+    });
     const exitPromise = new Promise<number | null>((resolve) => {
       child.once("close", resolve);
     });
@@ -99,21 +111,23 @@ export class ClaudeAdapter implements PersistentAdapter {
     let stderr = "";
     let output = "";
     let timedOut = false;
-    const timer = setTimeout(() => {
+    const idleTimeout = createIdleTimeoutController(input.config.timeoutMs, () => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, input.config.timeoutMs);
+    });
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
       if (stderr.length > STDERR_BUFFER_MAX) {
         stderr = stderr.slice(-STDERR_SNAPSHOT_SIZE);
       }
+      idleTimeout.touch();
     });
 
     try {
       let resultText: string | null = null;
       for await (const chunk of child.stdout) {
+        idleTimeout.touch();
         const parsedChunk = parseClaudeChunk(chunk.toString("utf8"));
         if (parsedChunk.resultText) {
           resultText = parsedChunk.resultText;
@@ -135,7 +149,10 @@ export class ClaudeAdapter implements PersistentAdapter {
         }
       }
 
-      const exitCode = await exitPromise;
+      const processResult = await Promise.race([
+        exitPromise.then((exitCode) => ({ type: "close" as const, exitCode })),
+        spawnFailurePromise.then((message) => ({ type: "error" as const, message })),
+      ]);
 
       if (timedOut) {
         yield messageError(
@@ -144,11 +161,18 @@ export class ClaudeAdapter implements PersistentAdapter {
           "claude request timed out",
           stderr,
         );
-      } else if (exitCode !== 0) {
+      } else if (processResult.type === "error") {
+        yield messageError(
+          baseArgs(input),
+          "PROCESS_CRASH",
+          `claude process failed to start: ${processResult.message}`,
+          stderr,
+        );
+      } else if (processResult.exitCode !== 0) {
         yield messageError(
           baseArgs(input),
           classifyClaudeProcessError(stderr),
-          `claude process exited with code ${String(exitCode)}`,
+          `claude process exited with code ${String(processResult.exitCode)}`,
           stderr,
         );
       } else {
@@ -160,12 +184,17 @@ export class ClaudeAdapter implements PersistentAdapter {
     } catch (error) {
       yield messageError(
         baseArgs(input),
-        "UNKNOWN",
-        error instanceof Error ? error.message : "unknown claude adapter failure",
+        spawnFailureMessage ? "PROCESS_CRASH" : "UNKNOWN",
+        spawnFailureMessage
+          ? `claude process failed to start: ${spawnFailureMessage}`
+          : error instanceof Error
+          ? error.message
+          : "unknown claude adapter failure",
         stderr,
       );
     } finally {
-      clearTimeout(timer);
+      idleTimeout.clear();
+      child.off("error", onSpawnError);
       this.running.delete(input.requestId);
       this.markRequestEnd();
     }
@@ -202,6 +231,17 @@ export class ClaudeAdapter implements PersistentAdapter {
       env: buildClaudeSpawnEnv(process.env),
       cwd: buildClaudeSpawnCwd(process.env, input.config.mode, input.config.workspaceCwd),
     });
+    let spawnFailureMessage: string | null = null;
+    let resolveSpawnFailure!: (message: string) => void;
+    const onSpawnError = (error: unknown): void => {
+      const message = error instanceof Error ? error.message : String(error);
+      spawnFailureMessage = message;
+      resolveSpawnFailure(message);
+    };
+    const spawnFailurePromise = new Promise<string>((resolve) => {
+      resolveSpawnFailure = resolve;
+      child.once("error", onSpawnError);
+    });
     const exitPromise = new Promise<number | null>((resolve) => {
       child.once("close", resolve);
     });
@@ -213,20 +253,22 @@ export class ClaudeAdapter implements PersistentAdapter {
     let timedOut = false;
     let resultText: string | null = null;
     let emittedSessionId: string | null = null;
-    const timer = setTimeout(() => {
+    const idleTimeout = createIdleTimeoutController(input.config.timeoutMs, () => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, input.config.timeoutMs);
+    });
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
       if (stderr.length > STDERR_BUFFER_MAX) {
         stderr = stderr.slice(-STDERR_SNAPSHOT_SIZE);
       }
+      idleTimeout.touch();
     });
 
     try {
       for await (const chunk of child.stdout) {
+        idleTimeout.touch();
         const raw = chunk.toString("utf8");
         const lines = raw.split(/\r?\n/);
         for (const line of lines) {
@@ -257,7 +299,10 @@ export class ClaudeAdapter implements PersistentAdapter {
         }
       }
 
-      const exitCode = await exitPromise;
+      const processResult = await Promise.race([
+        exitPromise.then((exitCode) => ({ type: "close" as const, exitCode })),
+        spawnFailurePromise.then((message) => ({ type: "error" as const, message })),
+      ]);
 
       if (timedOut) {
         yield messageError(
@@ -266,11 +311,18 @@ export class ClaudeAdapter implements PersistentAdapter {
           "claude request timed out",
           stderr,
         );
-      } else if (exitCode !== 0) {
+      } else if (processResult.type === "error") {
+        yield messageError(
+          baseArgs(input),
+          "PROCESS_CRASH",
+          `claude process failed to start: ${processResult.message}`,
+          stderr,
+        );
+      } else if (processResult.exitCode !== 0) {
         yield messageError(
           baseArgs(input),
           classifyClaudeProcessError(stderr),
-          `claude process exited with code ${String(exitCode)}`,
+          `claude process exited with code ${String(processResult.exitCode)}`,
           stderr,
         );
       } else {
@@ -282,12 +334,17 @@ export class ClaudeAdapter implements PersistentAdapter {
     } catch (error) {
       yield messageError(
         baseArgs(input),
-        "UNKNOWN",
-        error instanceof Error ? error.message : "unknown claude adapter failure",
+        spawnFailureMessage ? "PROCESS_CRASH" : "UNKNOWN",
+        spawnFailureMessage
+          ? `claude process failed to start: ${spawnFailureMessage}`
+          : error instanceof Error
+          ? error.message
+          : "unknown claude adapter failure",
         stderr,
       );
     } finally {
-      clearTimeout(timer);
+      idleTimeout.clear();
+      child.off("error", onSpawnError);
       this.running.delete(input.requestId);
       this.markRequestEnd();
     }
@@ -566,6 +623,7 @@ class ClaudeInteractiveRunner {
       if (this.stderrBuffer.length > STDERR_BUFFER_MAX) {
         this.stderrBuffer = this.stderrBuffer.slice(-STDERR_SNAPSHOT_SIZE);
       }
+      this.activeTurn?.idleTimeout.touch();
     });
     this.child.once("close", (code) => {
       this.handleClose(code);
@@ -593,16 +651,15 @@ class ClaudeInteractiveRunner {
       throw new Error("PROTOCOL_ERROR: claude interactive turn overlap is not supported");
     }
 
+    const timeoutMs = normalizeInteractiveTimeoutMs(input.timeoutMs);
     const turnPromise = new Promise<ClaudeInteractiveTurnResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        void this.cancelActiveTurn("TIMEOUT: claude interactive request timed out");
-      }, Math.max(1_000, input.timeoutMs));
-
       this.activeTurn = {
         requestId: input.requestId,
         output: "",
         resultText: null,
-        timer,
+        idleTimeout: createIdleTimeoutController(timeoutMs, () => {
+          void this.cancelActiveTurn("TIMEOUT: claude interactive request timed out");
+        }),
         onDelta: input.onDelta,
         onSessionId: input.onSessionId,
         resolve,
@@ -642,7 +699,7 @@ class ClaudeInteractiveRunner {
     }
 
     this.activeTurn = null;
-    clearTimeout(activeTurn.timer);
+    activeTurn.idleTimeout.clear();
 
     await new Promise<void>((resolve) => {
       const control = JSON.stringify({ type: "control", signal: "interrupt" });
@@ -676,7 +733,7 @@ class ClaudeInteractiveRunner {
     this.closed = true;
 
     if (this.activeTurn) {
-      clearTimeout(this.activeTurn.timer);
+      this.activeTurn.idleTimeout.clear();
       this.activeTurn.reject(
         new Error("PROCESS_CRASH: claude interactive process was shut down"),
       );
@@ -710,13 +767,15 @@ class ClaudeInteractiveRunner {
   }
 
   private consumeLine(line: string): void {
+    this.activeTurn?.idleTimeout.touch();
+
     const sessionId = extractClaudeSessionId(line);
     if (sessionId) {
       this.sessionIdValue = sessionId;
       this.activeTurn?.onSessionId(sessionId);
     }
 
-    const parsed = tryParseJsonObject(line);
+    const parsed = tryParseJsonObject(line, "interactive line");
     if (!parsed || !this.activeTurn) {
       return;
     }
@@ -742,7 +801,7 @@ class ClaudeInteractiveRunner {
     if (isClaudeResultEvent(parsed)) {
       const activeTurn = this.activeTurn;
       this.activeTurn = null;
-      clearTimeout(activeTurn.timer);
+      activeTurn.idleTimeout.clear();
       activeTurn.resolve({
         text: activeTurn.resultText?.trim() || activeTurn.output.trim() || "(no content)",
         sessionId: this.sessionIdValue,
@@ -756,7 +815,7 @@ class ClaudeInteractiveRunner {
     }
     const activeTurn = this.activeTurn;
     this.activeTurn = null;
-    clearTimeout(activeTurn.timer);
+    activeTurn.idleTimeout.clear();
     activeTurn.reject(error);
   }
 
@@ -783,6 +842,15 @@ const buildPrompt = (input: AgentInput): string =>
     .map((message) => `[${message.author}] ${message.text}`)
     .join("\n\n")
     .slice(-20000);
+
+const MIN_INTERACTIVE_TIMEOUT_MS = 1_000;
+
+export const normalizeInteractiveTimeoutMs = (timeoutMs: number): number => {
+  if (!Number.isFinite(timeoutMs)) {
+    return MIN_INTERACTIVE_TIMEOUT_MS;
+  }
+  return Math.max(MIN_INTERACTIVE_TIMEOUT_MS, Math.trunc(timeoutMs));
+};
 
 export const buildClaudeSpawnArgs = (
   prompt: string,
@@ -950,16 +1018,42 @@ export const shouldRestartClaudeInteractiveRunner = (
   return currentSessionId !== requestedSessionId;
 };
 
-const tryParseJsonObject = (line: string): Record<string, unknown> | null => {
+const tryParseJsonObject = (
+  line: string,
+  context?: string,
+): Record<string, unknown> | null => {
   try {
     const parsed = JSON.parse(line);
     if (!parsed || typeof parsed !== "object") {
       return null;
     }
     return parsed as Record<string, unknown>;
-  } catch {
+  } catch (error: unknown) {
+    if (context && looksLikeJsonPayload(line)) {
+      logClaudeJsonParseWarning(context, line, error);
+    }
     return null;
   }
+};
+
+const looksLikeJsonPayload = (line: string): boolean => {
+  const trimmed = line.trim();
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
+};
+
+const logClaudeJsonParseWarning = (
+  context: string,
+  line: string,
+  error: unknown,
+): void => {
+  const detail = error instanceof Error ? error.message : String(error);
+  const preview = line.length > 180 ? `${line.slice(0, 180)}...` : line;
+  console.error(
+    `[adapter.claude] Failed to parse JSON (${context}): ${detail}; line='${preview}'`,
+  );
 };
 
 const isClaudeResultEvent = (value: unknown): boolean => {

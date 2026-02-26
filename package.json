@@ -1,15 +1,19 @@
 {
   "name": "agoryx",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local-first multi-agent chat orchestrator for Codex and Claude.",
   "license": "MIT",
   "private": true,
   "type": "module",
+  "bin": {
+    "agoryx": "bin/agoryx.js"
+  },
   "scripts": {
     "cli": "tsx cmd/agoryx/main.ts",
     "chat": "tsx cmd/agoryx/main.ts chat",
     "sessions": "tsx cmd/agoryx/main.ts sessions",
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test tests/**/*.test.ts",
     "verify": "npm run typecheck && npm run build && npm test"
@@ -20,12 +24,15 @@
   "dependencies": {
     "better-sqlite3": "^11.8.1",
     "cli-cursor": "^5.0.0",
+    "ink": "^6.8.0",
     "ora": "^9.3.0",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "react": "^19.2.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.13.10",
+    "@types/react": "^19.2.2",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"
   }

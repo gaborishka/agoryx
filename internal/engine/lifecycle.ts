@@ -12,6 +12,10 @@ interface EngineLifecycleOptions {
   logger: EngineLogger;
 }
 
+export interface EngineShutdownReport {
+  destroyFailures: string[];
+}
+
 export class EngineLifecycle {
   private readonly session: SessionService;
   private readonly adapters: Record<string, Adapter>;
@@ -34,10 +38,10 @@ export class EngineLifecycle {
     }
   }
 
-  public async shutdown(): Promise<void> {
+  public async shutdown(): Promise<EngineShutdownReport> {
     const state = this.getState();
     if (!state) {
-      return;
+      return { destroyFailures: [] };
     }
 
     await this.team.stopActiveRunForRoom(state.room.id);
@@ -58,19 +62,23 @@ export class EngineLifecycle {
         await destroy.call(adapter, session.nativeSessionId);
       });
 
+    const destroyFailures: string[] = [];
     if (destroyOps.length > 0) {
       const results = await Promise.allSettled(destroyOps);
       const rejected = results.filter(
         (result): result is PromiseRejectedResult => result.status === "rejected",
       );
+      for (const result of rejected) {
+        destroyFailures.push(
+          result.reason instanceof Error ? result.reason.message : String(result.reason),
+        );
+      }
       if (rejected.length > 0) {
         this.logger.log("warn", "engine.shutdown_destroy_failures", {
           roomId: state.room.id,
           failed: rejected.length,
           total: destroyOps.length,
-          reasons: rejected.map((r) =>
-            r.reason instanceof Error ? r.reason.message : String(r.reason),
-          ),
+          reasons: destroyFailures,
         });
       }
     }
@@ -78,5 +86,8 @@ export class EngineLifecycle {
     this.logger.log("info", "engine.shutdown_complete", {
       roomId: state.room.id,
     });
+    return {
+      destroyFailures,
+    };
   }
 }

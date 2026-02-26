@@ -181,6 +181,14 @@ test("sanitizeTeamOutput: strips bridge log preamble", () => {
   assert.ok(result.includes("TEAM_NEXT:claude"));
 });
 
+test("sanitizeTeamOutput: strips Ukrainian process-chatter lines", () => {
+  const input = "Зараз швидко перегляну README і далі перевіряю маршрути\nTEAM_DONE";
+  const result = sanitizeTeamOutput(input);
+  assert.ok(!result.toLowerCase().includes("перегляну"));
+  assert.ok(!result.toLowerCase().includes("перевіряю"));
+  assert.ok(result.includes("TEAM_DONE"));
+});
+
 test("sanitizeTeamOutput: returns empty string for empty input", () => {
   assert.equal(sanitizeTeamOutput(""), "");
 });

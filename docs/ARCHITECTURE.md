@@ -324,7 +324,7 @@ Mark only the affected dispatch as failed. Emit `message.error` with typed class
 
 ## Configuration
 
-### Config File (agoryx.json)
+### Config File
 
 ```json
 {
@@ -347,7 +347,7 @@ Mark only the affected dispatch as failed. Emit `message.error` with typed class
     "maxContextTokens": 30000
   },
   "session": {
-    "dbPath": "./agoryx.db"
+    "dbPath": "/absolute/path/to/agoryx.db"
   },
   "team": {
     "maxSteps": 24,
@@ -370,30 +370,55 @@ Mark only the affected dispatch as failed. Emit `message.error` with typed class
 }
 ```
 
+Resolution order:
+1. CLI flags
+2. Environment variables
+3. Config file
+4. Built-in defaults
+
+Default config path: `$XDG_CONFIG_HOME/agoryx/config.json`
+Legacy auto-detected path: `./agoryx.json`
+Default DB path: `$XDG_STATE_HOME/agoryx/agoryx.db`
+
 ### CLI Commands
 
 ```bash
+# Root metadata
+agoryx --help
+agoryx --version
+
 # Start a chat session
-npm run chat -- --mode manual          # you pick who responds with @agent
-npm run chat -- --mode round-robin     # agents alternate
-npm run chat -- --mode auto            # smart routing (default)
-npm run chat -- --mode team            # autonomous team runtime
+agoryx --mode manual          # you pick who responds with @agent
+agoryx --mode round-robin     # agents alternate
+agoryx --mode auto            # smart routing (default)
+agoryx --mode team            # autonomous team runtime
 
 # Adapter transport
-npm run chat -- --adapter-mode cli       # default
-npm run chat -- --adapter-mode agentic   # persistent + workspace-aware cwd
+agoryx --adapter-mode cli       # default
+agoryx --adapter-mode agentic   # persistent + workspace-aware cwd
 
 # Resume a previous session
-npm run chat -- --resume <session_id>
+agoryx --resume <session_id>
 
 # Custom config file
-npm run chat -- --config ./my-config.json
+agoryx --config ./my-config.json
 
 # List past sessions
-npm run sessions -- list
+agoryx sessions list
 
 # Export a session
-npm run sessions -- export <room_or_session_id> --format markdown --out ./export.md
+agoryx sessions export <room_or_session_id> --format markdown --out ./export.md
+
+# Config resolution diagnostics
+agoryx config explain
+
+# Shell completion script output
+agoryx completion bash
+agoryx completion zsh
+agoryx completion fish
+
+# Manual page output
+agoryx man
 ```
 
 ### In-Chat Commands

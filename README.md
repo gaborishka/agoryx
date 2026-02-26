@@ -8,18 +8,20 @@ Named after Greek **agorá** — the public square where citizens gathered to di
 
 Working with multiple LLMs today means copying text between apps and re-explaining context. Agoryx replaces that with one shared room where agents participate together — no API keys required, uses your existing CLI subscriptions.
 
-## Features (v0.2)
+## Features (v0.3)
 
 - **Two agents:** Codex and Claude, running via their local CLIs
-- **Three modes:** `manual` (you choose who responds), `round-robin` (agents alternate), `auto` (smart routing by intent/keywords)
+- **Four modes:** `manual`, `round-robin`, `auto`, `team` — switch at runtime with `/mode`
 - **Persistent sessions:** SQLite-backed history with checkpoints and structured summaries
-- **Context management:** `/pin` and `/unpin` for persistent context, automatic checkpoint summaries
+- **Context management:** `/pin`, `/unpin`, automatic checkpoint summaries, workspace context injection
+- **Project memory:** automatic event capture (dispatches, decisions, errors) with crash recovery and `/memory` commands
+- **Workspace awareness:** git branch, status, diffs, and file tree injected into every agent prompt
+- **Git worktrees:** isolated per-agent worktrees for safe parallel edits (`/worktree` commands)
+- **Team runtime:** autonomous `team` mode with proposal gate, feedback queue, and resumable runs
+- **Startup recovery:** automatic room detection, event recovery, worktree reconciliation on restart
 - **Session export:** markdown and JSON formats, in-chat and CLI
-- **Retry flow:** `/retry` with automatic cancel of failed requests
-- **No API keys:** wraps `codex exec` and `claude -p` using existing authenticated CLIs
-- **Team runtime (v0.2):** autonomous `team` mode with proposal gate and resumable team runs
-- **Enthusiast defaults:** relaxed team limits by default; strict profile is opt-in (`/team start --strict` or config)
-- **Agentic adapter mode:** `agentic` transport mode for persistent turn-based execution with workspace-aware cwd
+- **No API keys:** wraps `codex exec` and `claude -p` — uses your existing CLI subscriptions
+- **Agentic adapter mode:** persistent turn-based execution with workspace-aware cwd
 
 ## Prerequisites
 
@@ -84,6 +86,17 @@ agoryx --config ./my-config.json
 | `/history` | Show conversation history |
 | `/export [markdown\|json] [--out file]` | Export current session |
 | `/retry` | Retry last failed agent request |
+| `/memory show` | Display current project memory snapshot |
+| `/memory decision <text>` | Record an architectural decision |
+| `/memory note <text>` | Record a freeform note |
+| `/memory log [--limit N]` | View memory event log |
+| `/memory rebuild` | Full replay from event log |
+| `/workspace show` | Display workspace context (branch, status, diffs) |
+| `/workspace full` | Display full workspace context including on-demand data |
+| `/worktree create <agent>` | Create isolated git worktree for agent |
+| `/worktree list` | List all managed worktrees |
+| `/worktree remove <agent>` | Remove agent worktree |
+| `/worktree status` | Show detailed worktree status |
 | `/help` | Show available commands |
 | `/quit` or `/exit` | End session |
 
@@ -137,16 +150,19 @@ agoryx completion fish
 ## Project Structure
 
 ```
-cmd/agoryx/          CLI entry point
+cmd/agoryx/          CLI entry point + Ink UI
 internal/
   adapters/          Codex and Claude CLI adapters, output parser, event factory
-  config/            Config loader, defaults, runtime config builder
-  engine/            Chat facade + dispatch, team orchestration, lifecycle modules
+  config/            Config loader, defaults, path resolution
+  engine/            Chat facade, dispatch engine, team orchestrator, lifecycle
   events/            Canonical event types
+  memory/            Memory service, event capture, markdown renderer
   orchestrator/      Policies (manual, round-robin, auto, team), factory
   session/           Context builder, session service, checkpoint summaries
-  storage/           SQLite persistence
-tests/               Comprehensive suite (365 tests)
+  storage/           SQLite persistence (13 tables)
+  workspace/         Workspace context collector (git status, diffs, tree)
+  worktree/          Git worktree manager (per-agent isolation)
+tests/               Comprehensive suite (398 tests)
 docs/                Architecture, vision, consensus, design plans
 ```
 

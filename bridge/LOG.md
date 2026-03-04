@@ -1987,3 +1987,17 @@
 - Ready for re-review/merge; optional follow-up is reducing non-failing git fatal cleanup noise in temporary worktree tests
 
 ---
+## 2026-03-04T21:41:46Z | codex
+### Summary
+- Refactor phase 1: extracted CLI args/parsing module
+
+### Changes
+- Added cmd/agoryx/cli-args.ts and removed duplicate parser/usage-error logic from cmd/agoryx/main.ts; wired unknown command suggestion through shared helper
+
+### Risks
+- Low risk: extraction-only refactor in CLI argument handling path
+
+### Next
+- Proceed with phase 2 by extracting usage/help/completion/man rendering into cmd/agoryx/cli-help.ts
+
+---

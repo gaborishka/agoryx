@@ -1799,5 +1799,17 @@ internal/
   - `npm run typecheck` PASS
   - `npm test` PASS (**398/398**)
 
+### What Changed This Session (Codex — main.ts decomposition phase 1)
+- Extracted CLI argument/error utilities from `cmd/agoryx/main.ts` into:
+  - `cmd/agoryx/cli-args.ts`
+- Moved without behavior change:
+  - `OptionSpec`, `OutputWriter`, `CliUsageError`,
+  - unknown option/command suggestion logic (Levenshtein),
+  - `parseCliArgsOrThrow` pipeline and related parsing internals.
+- `cmd/agoryx/main.ts` now imports these utilities from `./cli-args.js` and no longer keeps duplicate inline implementations.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**417/417**)
+
 ## Last Updated
-2026-02-21T13:13:48Z by codex
+2026-03-04T21:41:34Z by codex

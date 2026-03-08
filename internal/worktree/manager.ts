@@ -30,6 +30,9 @@ export const normalizeWorktreeAgentName = (agent: string): string =>
 export const isValidWorktreeAgentName = (agent: string): boolean =>
   WORKTREE_AGENT_NAME_PATTERN.test(agent);
 
+const isNotGitRepositoryError = (detail: string): boolean =>
+  /not a git repository/i.test(detail);
+
 export class WorktreeManager {
   private readonly worktreeDir: string;
   private readonly includeLegacyDefaultWorktreePaths: boolean;
@@ -451,6 +454,9 @@ export class WorktreeManager {
 
   private logGitFailure(context: string, error: unknown): void {
     const detail = error instanceof Error ? error.message : String(error);
+    if (isNotGitRepositoryError(detail)) {
+      return;
+    }
     const firstLine = detail.split(/\r?\n/, 1)[0] ?? detail;
     console.error(`[worktree] ${context}: ${firstLine}`);
   }

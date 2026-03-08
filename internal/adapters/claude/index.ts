@@ -43,11 +43,22 @@ interface ClaudeInteractiveTurn {
   requestId: string;
   output: string;
   resultText: string | null;
+  deltaState: ClaudeDeltaState;
   idleTimeout: ReturnType<typeof createIdleTimeoutController>;
   onDelta: (text: string) => void;
   onSessionId: (sessionId: string) => void;
   resolve: (result: ClaudeInteractiveTurnResult) => void;
   reject: (error: Error) => void;
+}
+
+interface ClaudeDeltaState {
+  sawStreamEventDelta: boolean;
+  previousAssistantChunk: string | null;
+}
+
+interface ClaudeDeltaPart {
+  text: string;
+  source: "stream_event" | "assistant" | "generic";
 }
 
 export class ClaudeAdapter implements PersistentAdapter {
@@ -126,6 +137,7 @@ export class ClaudeAdapter implements PersistentAdapter {
 
     try {
       let resultText: string | null = null;
+      const deltaState = createClaudeDeltaState();
       for await (const chunk of child.stdout) {
         idleTimeout.touch();
         const parsedChunk = parseClaudeChunk(chunk.toString("utf8"));
@@ -137,10 +149,11 @@ export class ClaudeAdapter implements PersistentAdapter {
           continue;
         }
 
-        const chunkParts = parsedChunk.deltaParts.map((part, index) =>
-          index === 0 ? part : `\n${part}`,
-        );
-        for (const text of chunkParts) {
+        for (const part of parsedChunk.deltaParts) {
+          const text = normalizeClaudeDeltaPart(part, deltaState);
+          if (!text) {
+            continue;
+          }
           output += text;
           yield messageDelta(baseArgs(input), {
             ...startedPayload,
@@ -178,7 +191,7 @@ export class ClaudeAdapter implements PersistentAdapter {
       } else {
         yield messageCompleted(baseArgs(input), {
           ...startedPayload,
-          text: output.trim() || resultText?.trim() || "(no content)",
+          text: resolveClaudeFinalText(output, resultText),
         });
       }
     } catch (error) {
@@ -267,6 +280,7 @@ export class ClaudeAdapter implements PersistentAdapter {
     });
 
     try {
+      const deltaState = createClaudeDeltaState();
       for await (const chunk of child.stdout) {
         idleTimeout.touch();
         const raw = chunk.toString("utf8");
@@ -287,10 +301,11 @@ export class ClaudeAdapter implements PersistentAdapter {
           continue;
         }
 
-        const chunkParts = parsedChunk.deltaParts.map((part, index) =>
-          index === 0 ? part : `\n${part}`,
-        );
-        for (const text of chunkParts) {
+        for (const part of parsedChunk.deltaParts) {
+          const text = normalizeClaudeDeltaPart(part, deltaState);
+          if (!text) {
+            continue;
+          }
           output += text;
           yield messageDelta(baseArgs(input), {
             ...startedPayload,
@@ -328,7 +343,7 @@ export class ClaudeAdapter implements PersistentAdapter {
       } else {
         yield messageCompleted(baseArgs(input), {
           ...startedPayload,
-          text: output.trim() || resultText?.trim() || "(no content)",
+          text: resolveClaudeFinalText(output, resultText),
         });
       }
     } catch (error) {
@@ -657,6 +672,7 @@ class ClaudeInteractiveRunner {
         requestId: input.requestId,
         output: "",
         resultText: null,
+        deltaState: createClaudeDeltaState(),
         idleTimeout: createIdleTimeoutController(timeoutMs, () => {
           void this.cancelActiveTurn("TIMEOUT: claude interactive request timed out");
         }),
@@ -791,8 +807,12 @@ class ClaudeInteractiveRunner {
 
     const chunk = parseClaudeChunk(line);
     for (const part of chunk.deltaParts) {
-      this.activeTurn.output += part;
-      this.activeTurn.onDelta(part);
+      const text = normalizeClaudeDeltaPart(part, this.activeTurn.deltaState);
+      if (!text) {
+        continue;
+      }
+      this.activeTurn.output += text;
+      this.activeTurn.onDelta(text);
     }
     if (chunk.resultText) {
       this.activeTurn.resultText = chunk.resultText;
@@ -916,9 +936,9 @@ export const buildClaudeSpawnCwd = (
 
 export const parseClaudeChunk = (
   raw: string,
-): { deltaParts: string[]; resultText: string | null } => {
+): { deltaParts: ClaudeDeltaPart[]; resultText: string | null } => {
   const lines = raw.split(/\r?\n/);
-  const parts: string[] = [];
+  const parts: ClaudeDeltaPart[] = [];
   let resultText: string | null = null;
 
   for (const line of lines) {
@@ -942,19 +962,30 @@ export const parseClaudeChunk = (
       continue;
     }
 
-    if ((maybeObject as Record<string, unknown>).type === "stream_event") {
+    const type = (maybeObject as Record<string, unknown>).type;
+    if (type === "stream_event") {
       const extracted = extractTextFromUnknown(
         (maybeObject as Record<string, unknown>).event,
       );
       if (extracted) {
-        parts.push(extracted);
+        parts.push({ text: extracted, source: "stream_event" });
+      }
+      continue;
+    }
+
+    if (type === "assistant") {
+      const extracted = extractTextFromUnknown(
+        (maybeObject as Record<string, unknown>).message,
+      );
+      if (extracted) {
+        parts.push({ text: extracted, source: "assistant" });
       }
       continue;
     }
 
     const text = extractTextFromJsonLine(trimmed);
     if (text) {
-      parts.push(text);
+      parts.push({ text, source: "generic" });
     }
   }
 
@@ -963,6 +994,62 @@ export const parseClaudeChunk = (
     resultText,
   };
 };
+
+const createClaudeDeltaState = (): ClaudeDeltaState => ({
+  sawStreamEventDelta: false,
+  previousAssistantChunk: null,
+});
+
+export const normalizeClaudeDeltaPart = (
+  part: ClaudeDeltaPart,
+  state: ClaudeDeltaState,
+): string => {
+  if (part.source === "stream_event") {
+    state.sawStreamEventDelta = true;
+    state.previousAssistantChunk = null;
+    return part.text;
+  }
+
+  if (part.source !== "assistant") {
+    state.previousAssistantChunk = null;
+    return part.text;
+  }
+
+  if (state.sawStreamEventDelta) {
+    state.previousAssistantChunk = part.text;
+    return "";
+  }
+
+  const previous = state.previousAssistantChunk;
+  if (previous === null) {
+    state.previousAssistantChunk = part.text;
+    return part.text;
+  }
+
+  if (part.text === previous) {
+    return "";
+  }
+
+  if (part.text.startsWith(previous)) {
+    const suffix = part.text.slice(previous.length);
+    state.previousAssistantChunk = part.text;
+    return suffix;
+  }
+
+  if (previous.startsWith(part.text)) {
+    state.previousAssistantChunk = part.text;
+    return "";
+  }
+
+  state.previousAssistantChunk = part.text;
+  return part.text;
+};
+
+export const resolveClaudeFinalText = (
+  streamedOutput: string,
+  resultText: string | null,
+): string =>
+  resultText?.trim() || streamedOutput.trim() || "(no content)";
 
 export const extractClaudeSessionId = (line: string): string | null => {
   const trimmed = line.trim();

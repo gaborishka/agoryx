@@ -1169,8 +1169,8 @@ export const buildCodexSpawnArgs = (
   nativeSessionId: string | null,
 ): string[] =>
   nativeSessionId
-    ? ["exec", "resume", nativeSessionId, "--json", prompt]
-    : ["exec", "--json", prompt];
+    ? ["exec", "resume", nativeSessionId, "--json", "--skip-git-repo-check", prompt]
+    : ["exec", "--json", "--skip-git-repo-check", prompt];
 
 export const buildCodexAppServerArgs = (): string[] => ["app-server"];
 

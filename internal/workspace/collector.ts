@@ -56,6 +56,10 @@ function gitExec(args: string[], cwd: string): string {
   }).trim();
 }
 
+function isNotGitRepositoryError(detail: string): boolean {
+  return /not a git repository/i.test(detail);
+}
+
 export class WorkspaceCollector {
   constructor(private readonly config: WorkspaceConfig) {}
 
@@ -305,6 +309,9 @@ export class WorkspaceCollector {
 
   private logWorkspaceWarning(context: string, error: unknown): void {
     const detail = error instanceof Error ? error.message : String(error);
+    if (isNotGitRepositoryError(detail)) {
+      return;
+    }
     console.error(`[workspace] ${context}: ${detail}`);
   }
 }

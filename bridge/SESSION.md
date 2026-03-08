@@ -1811,5 +1811,287 @@ internal/
   - `npm run typecheck` PASS
   - `npm test` PASS (**417/417**)
 
+### What Changed This Session (Codex — free mode + pass protocol)
+- Added new orchestration mode `free`:
+  - `internal/events/types.ts` now includes `"free"` in `OrchestrationMode`.
+  - Added `internal/orchestrator/free.ts` (`FreePolicy`) with:
+    - user turn fanout to all available agents,
+    - mention-priority ordering (`@agent`, `@all`) with randomized fallback order,
+    - agent-to-agent chaining with self-exclusion (`agent.<name>` normalization),
+    - autonomy guard cap (`maxAgentTurns = 6`) to prevent infinite loops.
+  - Integrated into orchestrator wiring:
+    - `internal/orchestrator/factory.ts`,
+    - `internal/orchestrator/index.ts`.
+- Updated chat runtime for free-mode chaining:
+  - `internal/engine/chat.ts` now has a free-mode dispatch queue:
+    - runs initial user dispatches,
+    - then feeds successful assistant messages into `policy.onAgentMessage(...)`,
+    - skips chaining on `::pass::` responses.
+  - Reused existing dispatch engine without modifying save semantics.
+- Added pass-protocol helper and filtering:
+  - New `internal/events/pass-token.ts` with `PASS_RESPONSE_TOKEN` and `isPassResponse(...)`.
+  - `internal/session/context.ts` excludes `::pass::` from context messages.
+  - `internal/session/service.ts`:
+    - excludes `::pass::` from warm delta prompts,
+    - appends free-mode behavior instructions to system prompt/context.
+  - UI filtering:
+    - `cmd/agoryx/main.ts` suppresses `::pass::` in streamed/free render and `/history`,
+    - `cmd/agoryx/ink-chat.tsx` suppresses final `::pass::` messages,
+    - `internal/rendering/sanitize.ts` drops `::pass::` lines.
+- CLI surface updates:
+  - Added `free` to accepted modes and help/usage text in `cmd/agoryx/main.ts`:
+    - mode parsing (`MODES`),
+    - `/mode` usage hints,
+    - `chat --help`, `/help`, root usage examples.
+- Added regression coverage:
+  - `tests/orchestrator/free.test.ts` (free policy behavior + autonomy cap),
+  - `tests/engine/free-mode.test.ts` (runtime chaining + `::pass::` stop),
+  - `tests/session/context.test.ts` (`::pass::` excluded from context),
+  - `tests/session/delta.test.ts` (`::pass::` excluded from warm delta),
+  - `tests/cmd/command-handler.test.ts` (`/mode free`).
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/orchestrator/free.test.ts tests/engine/free-mode.test.ts tests/session/context.test.ts tests/session/delta.test.ts tests/cmd/command-handler.test.ts` PASS (**44/44**)
+  - `npm test` PASS (**427/427**)
+
+### What Changed This Session (Codex — free mode follow-up refinements)
+- Refined free chaining semantics in `internal/orchestrator/free.ts`:
+  - **No mention on agent message => end chain** (`onAgentMessage` now returns no dispatches without tags),
+  - autonomy guard now applies per emitted follow-up dispatch (not just per `onAgentMessage` invocation),
+  - existing self-exclusion and mention ordering are preserved.
+- Removed hardcoded free-mode mention hints from prompt text:
+  - `internal/session/service.ts` now generates free-mode mention instructions dynamically from room participants (e.g. `@codex`, `@claude`, future agents),
+  - used in both full-context system prompt augmentation and warm delta prompt protocol block.
+- Tests updated:
+  - `tests/orchestrator/free.test.ts`:
+    - added explicit test for no-mention chain stop,
+    - updated guard-cap test to use explicit mentions.
+- Validation:
+  - `npx tsx --test tests/orchestrator/free.test.ts tests/engine/free-mode.test.ts tests/session/context.test.ts tests/session/delta.test.ts` PASS (**23/23**)
+  - `npm run typecheck` PASS
+  - `npm test` PASS (**428/428**)
+
+### What Changed This Session (Codex — free mode as default + all-agents default selection)
+- Changed global default orchestration mode from `manual` to `free`:
+  - `internal/config/index.ts` now sets `DEFAULT_CONFIG.defaultMode = "free"`.
+- Updated CLI default agent selection behavior in `cmd/agoryx/main.ts`:
+  - when `--agents` is omitted, chat now selects **all agents from adapter registry** by default,
+  - missing agent entries in loaded config are auto-filled with sensible adapter defaults (`mode/timeout/maxTokens/systemPrompt`),
+  - explicit `--agents` still overrides default selection.
+- Updated CLI help/usage text to match runtime behavior:
+  - default mode text now says `free`,
+  - default agents text now says `all available agents`,
+  - quick-start/examples updated to free-first wording.
+- Synced architecture docs:
+  - `docs/ARCHITECTURE.md` config snippet now shows `"defaultMode": "free"`,
+  - command examples include `free` as default launch path,
+  - in-chat `/mode` list includes `free`.
+- Added regression coverage:
+  - `tests/cmd/chat-cli.test.ts` now verifies default launch uses `Mode: free` and includes both default adapters (`codex`, `claude`) without passing `--agents`.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/chat-cli.test.ts tests/cmd/root-cli.test.ts tests/cmd/command-handler.test.ts tests/config/merge.test.ts` PASS (**61/61**)
+  - `npm test` PASS (**429/429**)
+
+### What Changed This Session (Codex — run-from-anywhere hardening + Claude dedupe)
+- Fixed `codex` non-git startup crash in CLI mode:
+  - `internal/adapters/codex/index.ts` now includes `--skip-git-repo-check` in `buildCodexSpawnArgs(...)` for both cold and resume one-shot calls.
+- Reduced noisy expected warnings when chat starts outside a git repo:
+  - `internal/worktree/manager.ts` suppresses non-actionable `not a git repository` reconcile warnings,
+  - `internal/workspace/collector.ts` suppresses non-actionable `not a git repository` warning logs while keeping degraded behavior.
+- Fixed duplicated Claude output in free mode:
+  - `internal/adapters/claude/index.ts` now uses source-aware delta normalization:
+    - stream deltas are preferred,
+    - assistant snapshots are treated as incremental fallback only,
+    - assistant snapshots are ignored when stream deltas were already seen,
+    - newline-join duplication in delta emission removed.
+- Updated regression coverage:
+  - `tests/adapters/codex-resume.test.ts` updated for `--skip-git-repo-check`,
+  - `tests/adapters/claude-stream-parser.test.ts` extended for snapshot normalization + stream/snapshot dedupe,
+  - `tests/worktree/manager.test.ts` strengthened to assert no `[worktree]` warning noise in non-git reconcile.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/adapters/claude-stream-parser.test.ts tests/adapters/codex-resume.test.ts tests/worktree/manager.test.ts tests/workspace/collector.test.ts` PASS
+  - `npm test` PASS (**432/432**)
+  - Manual smoke (`chat` from non-git cwd using source runner) confirmed:
+    - no `[worktree]`/`[workspace]` startup noise,
+    - no duplicated Claude final output,
+    - codex responds from non-git cwd when authenticated.
+
+### What Changed This Session (Codex — Claude final text canonicalization)
+- Final Claude message completion now prefers canonical `result` text over accumulated stream text:
+  - `internal/adapters/claude/index.ts`: one-shot + resume completion paths now use `resolveClaudeFinalText(...)`.
+- Rationale:
+  - stream output is still used for live UX,
+  - final persisted/printed completion text uses the authoritative final payload when available,
+  - this avoids residual duplication/drift when providers emit both streaming deltas and full assistant snapshots.
+- Tests:
+  - `tests/adapters/claude-stream-parser.test.ts` extended with final-text precedence coverage.
+- Validation:
+  - `npx tsx --test tests/adapters/claude-stream-parser.test.ts` PASS
+  - `npm run typecheck` PASS
+
+### What Changed This Session (Codex — free mode live streaming in CLI renderer)
+- Restored live token streaming output in free mode for terminal renderer:
+  - `cmd/agoryx/main.ts` now prints `message.delta` chunks immediately in free mode (with one-time agent prefix),
+  - completion path avoids duplicate final line when stream already rendered,
+  - still prints final fallback when no delta text was emitted.
+- Rationale:
+  - keep free-mode conversation readable in real time,
+  - preserve previous pass-token filtering and duplicate suppression.
+- Validation:
+  - `npx tsx --test tests/cmd/chat-cli.test.ts tests/cmd/command-handler.test.ts` PASS
+  - `npm run typecheck` PASS
+
+### What Changed This Session (Codex — free mode pending-queue dedupe)
+- Fixed repeated same-agent turns caused by mention follow-ups while that target was already pending in queue:
+  - `internal/engine/chat.ts` free loop now enqueues follow-up dispatches with target-level dedupe against pending queue.
+- Practical effect:
+  - avoids `codex -> codex` (or `claude -> claude`) back-to-back duplicates triggered by polite mid-message mentions.
+  - still allows legitimate follow-up turns once target is no longer pending.
+- Tests:
+  - added regression case in `tests/engine/free-mode.test.ts` for duplicate-pending suppression,
+  - adjusted chaining test scenario to validate chain behavior when target is not already pending.
+- Validation:
+  - `npx tsx --test tests/engine/free-mode.test.ts` PASS
+  - `npm run typecheck` PASS
+
+### What Changed This Session (Codex — free mode round-stop on unchanged stance)
+- Implemented round-level guard in free-mode engine loop:
+  - each agent gets one substantive turn by default per user round,
+  - repeat turn for the same agent is allowed only when the latest trigger message both:
+    - explicitly mentions that agent, and
+    - contains a disagreement/counterpoint signal.
+- This prevents polite mention loops (`@agent please add`) from endlessly re-triggering already-heard opinions.
+- Files:
+  - `internal/engine/chat.ts`:
+    - queue items now carry trigger message metadata,
+    - added repeat-turn gating logic (`shouldRunFreeDispatch`),
+    - preserved pending-target dedupe when enqueuing follow-ups.
+- Tests:
+  - `tests/engine/free-mode.test.ts`:
+    - neutral mention follow-up does not repeat same agent turn,
+    - disagreement follow-up does allow one more turn,
+    - existing dedupe regression retained.
+- Validation:
+  - `npx tsx --test tests/engine/free-mode.test.ts` PASS
+  - `npx tsx --test tests/orchestrator/free.test.ts` PASS
+  - `npm run typecheck` PASS
+  - `npm run build` PASS
+
+### What Changed This Session (Codex — Free Mode v2 baton semantics)
+- Replaced implicit agent-chain triggers with explicit baton syntax in free mode:
+  - `@agent!` => one handoff turn,
+  - `@agent!!` => rebuttal handoff (allows repeat turn for agent that already spoke),
+  - plain `@agent` in agent message is now mention-only (no handoff).
+- Updated free policy and helper parsing:
+  - `internal/orchestrator/helpers.ts`:
+    - `parseMentions` now supports dot in agent names,
+    - added `parseAgentHandoffs(...)` for `!` / `!!` baton extraction.
+  - `internal/orchestrator/free.ts`:
+    - user messages keep mention-priority + full fanout behavior,
+    - agent messages only dispatch explicit baton targets,
+    - dispatch reasons now encode handoff type:
+      - `free:agent:handoff:<agent>`
+      - `free:agent:rebuttal:<agent>`.
+- Upgraded free runtime loop to enforce deterministic round stop:
+  - `internal/engine/chat.ts`:
+    - queue items carry `allowRepeat`,
+    - repeat turns require rebuttal dispatch reason (`@agent!!` path),
+    - repeated rebuttals with unchanged trigger fingerprint are skipped as "nothing changed",
+    - pending-target dedupe retained, with rebuttal escalation support when needed.
+- Prompt contract updated for agent behavior clarity:
+  - `internal/session/service.ts` free-mode instructions now describe `@agent!` / `@agent!!` and one-turn-per-round default.
+- Tests updated:
+  - `tests/orchestrator/free.test.ts`:
+    - `@all!` coverage,
+    - plain mention no-handoff coverage,
+    - rebuttal reason coverage for `@agent!!`.
+  - `tests/engine/free-mode.test.ts`:
+    - neutral `@agent!` does not repeat already-spoken agent,
+    - `@agent!!` allows one rebuttal repeat,
+    - pending queue dedupe scenario retained with baton syntax.
+- Validation:
+  - `npx tsx --test tests/orchestrator/free.test.ts tests/engine/free-mode.test.ts` PASS
+  - `npx tsx --test tests/cmd/chat-cli.test.ts` PASS
+  - `npm run typecheck` PASS
+  - `npm run build` PASS
+  - `npm link` completed
+  - global check: `which agoryx` => `/opt/homebrew/bin/agoryx`, `agoryx --version` => `0.3.0`.
+
+### What Changed This Session (Codex — Ink live streaming visibility)
+- Addressed “streaming not visible” in rich Ink UI:
+  - `cmd/agoryx/ink-chat.tsx` now renders per-agent live preview blocks while a response is in progress (`<agent> (live):` + rolling text lines from pending delta buffer).
+- Notes:
+  - plain UI already streamed directly in transcript;
+  - this change makes streaming visible in default rich UI too (instead of only final message after completion).
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/chat-cli.test.ts` PASS
+  - `npm run build` PASS
+  - `npm link` completed.
+
+### What Changed This Session (Codex — Ink live stream contrast tweak)
+- Improved visibility of rich-UI live streaming text:
+  - `cmd/agoryx/ink-chat.tsx` live preview lines now render in green (instead of dim gray), matching assistant transcript readability.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npm run build` PASS
+  - `npm link` completed.
+
+### What Changed This Session (Codex — Ink stream stability and visibility polish)
+- Fixed two Ink streaming UX issues reported in free mode:
+  - early stream text for long Claude responses could appear "lost" in the viewport,
+  - fast Codex turns could appear to skip live preview entirely.
+- `cmd/agoryx/ink-chat.tsx` updates:
+  - `formatActivePreviewLines(...)` now uses a head+tail strategy:
+    - keeps first lines and latest lines visible,
+    - inserts an explicit hidden-lines marker for long streams.
+  - added short completion linger (`ACTIVE_PREVIEW_COMPLETION_LINGER_MS`) so just-finished live previews remain visible briefly before cleanup.
+  - live cleanup timers are tracked and safely cleared on:
+    - new message start for same adapter,
+    - message error,
+    - component unmount.
+  - non-content `::pass::` completions do not linger.
+- Validation:
+  - `npm run typecheck` PASS
+  - `npx tsx --test tests/cmd/chat-cli.test.ts` PASS (**11/11**)
+  - `npm run build` PASS
+  - global binary link already verified (`agoryx@0.3.0` from linked workspace).
+
+### What Changed This Session (Codex — Free mode handoff repeat relaxation)
+- Relaxed free-mode repeat gating to match explicit cross-agent handoff intent:
+  - `@agent!` now permits one additional turn for an agent that already spoke in the same user round.
+  - `@agent!!` remains a stronger rebuttal path and can still repeat beyond the single extra handoff turn (bounded by autonomy budget and duplicate-trigger guard).
+- Engine logic updates in `internal/engine/chat.ts`:
+  - replaced boolean repeat flag with repeat modes: `none | handoff | rebuttal`,
+  - added reason-prefix parser for follow-up dispatches,
+  - added precedence upgrade logic when queued target receives a stronger repeat reason,
+  - kept unchanged-trigger fingerprint dedupe and self-trigger guard.
+- Test updates in `tests/engine/free-mode.test.ts`:
+  - plain `@mention` follow-up still does not repeat,
+  - explicit `@agent!` follow-up now triggers one extra turn as expected.
+- Validation:
+  - `npx tsx --test tests/engine/free-mode.test.ts tests/orchestrator/free.test.ts` PASS (**13/13**)
+  - `npm run typecheck` PASS
+  - `npm run build` PASS
+
+### What Changed This Session (Codex — review fixes for uncommitted free-mode branch)
+- Ran code review on the current uncommitted branch state and fixed two verified regressions before commit:
+  1. `internal/rendering/markdown.ts` returned effectively raw markdown in non-TTY environments because `marked-terminal` default chalk styles disabled ANSI output during tests.
+  2. `npm run typecheck` failed because `marked-terminal` ships without TypeScript declarations.
+- Fixes delivered:
+  - `internal/rendering/markdown.ts`
+    - added forced ANSI style overrides via `picocolors.createColors(true)` so headings/bold/code render consistently even when stdout is not a TTY.
+  - `internal/rendering/marked-terminal.d.ts`
+    - added local module declaration for `marked-terminal` with `MarkedExtension` return typing, removing the `TS7016` / extension typing failure.
+- Validation:
+  - `npx tsx --test tests/rendering/markdown.test.ts` PASS (**7/7**)
+  - `npm run typecheck` PASS
+  - `npm test -- --runInBand` PASS (**446/446**)
+  - `git diff --check` PASS
+- Review cycle repeated after fixes:
+  - no additional findings remained in the working tree after rerunning validation.
+
 ## Last Updated
-2026-03-04T21:41:34Z by codex
+2026-03-08T06:58:37Z by codex

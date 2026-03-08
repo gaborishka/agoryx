@@ -1,4 +1,5 @@
 import type { OrchestrationMode } from "../events/types.js";
+import { isPassResponse } from "../events/pass-token.js";
 
 export interface SystemReminderState {
   insideSystemReminder: boolean;
@@ -82,6 +83,10 @@ export const sanitizeRenderedDelta = <T extends SystemReminderState>(
 
     if (mode === "team" && trimmed && isTeamProcessChatterLine(trimmed)) {
       statusText = trimmed;
+      continue;
+    }
+
+    if (isPassResponse(trimmed)) {
       continue;
     }
 

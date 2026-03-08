@@ -15,8 +15,8 @@ import {
   renderSessionExport,
 } from "./session-export.js";
 import { runInkChat } from "./ink-chat.js";
-import type { ChatRuntimeConfig } from "../../internal/config/default.js";
-import { loadConfig, toRuntimeConfig } from "../../internal/config/index.js";
+import { createDefaultAdapterConfig, type ChatRuntimeConfig } from "../../internal/config/default.js";
+import { loadConfig, toRuntimeConfig, type AgoryxConfig } from "../../internal/config/index.js";
 import {
   ensureParentDirectory,
   resolveConfigPathForLoad,
@@ -36,6 +36,7 @@ import {
 } from "../../internal/worktree/manager.js";
 import { WorkspaceCollector } from "../../internal/workspace/collector.js";
 import { sanitizeRenderedDelta } from "../../internal/rendering/sanitize.js";
+import { isPassResponse } from "../../internal/events/pass-token.js";
 import {
   describeSessionBinding,
   extractPayloadText,
@@ -50,7 +51,7 @@ import {
   type OutputWriter,
 } from "./cli-args.js";
 
-const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team"];
+const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team", "free"];
 const ROOT_COMMANDS = ["chat", "sessions", "config", "completion", "man", "help"] as const;
 const APP_VERSION = resolveAppVersion();
 
@@ -174,6 +175,29 @@ const parseAgentList = (raw: string): string[] =>
     .split(",")
     .map((value) => normalizeWorktreeAgentName(value))
     .filter(Boolean);
+
+const uniqueAgents = (agents: string[]): string[] =>
+  [...new Set(agents)];
+
+const ensureConfigHasAgentEntries = (
+  config: AgoryxConfig,
+  agentNames: string[],
+): void => {
+  const defaults = createDefaultAdapterConfig();
+  for (const agentName of agentNames) {
+    if (config.agents[agentName]) {
+      continue;
+    }
+    const fallback = defaults[agentName];
+    config.agents[agentName] = {
+      adapter: agentName,
+      mode: fallback?.mode ?? "cli",
+      timeoutMs: fallback?.timeoutMs ?? 120_000,
+      maxTokens: fallback?.maxTokens ?? 4_096,
+      systemPrompt: fallback?.systemPrompt,
+    };
+  }
+};
 
 const ensureValidAgentNames = (agents: string[], source: string): void => {
   const invalid = agents.filter((agent) => !isValidWorktreeAgentName(agent));
@@ -357,11 +381,20 @@ const runChat = async (argv: string[]): Promise<void> => {
     ensureValidAgentNames(cliAgents, "--agents");
   }
 
+  const adapters = createAdapterRegistry();
+  const defaultAgents = uniqueAgents(
+    (cliAgents ?? Object.keys(adapters))
+      .map((agent) => normalizeWorktreeAgentName(agent))
+      .filter(Boolean),
+  );
+  ensureValidAgentNames(defaultAgents, cliAgents ? "--agents" : "adapter registry");
+
   const loadedConfig = loadConfig(args.config);
+  ensureConfigHasAgentEntries(loadedConfig, defaultAgents);
   const runtimeConfig = toRuntimeConfig(loadedConfig, {
     roomName: args["room-name"] ?? "Agoryx Room",
     resumeRoomId: args.resume,
-    agents: cliAgents,
+    agents: defaultAgents,
   });
 
   const mode = normalizeMode(args.mode ?? runtimeConfig.mode);
@@ -369,7 +402,7 @@ const runChat = async (argv: string[]): Promise<void> => {
     throw new CliUsageError(
       `Invalid mode '${args.mode ?? runtimeConfig.mode}'. Valid modes: ${MODES.join(", ")}`,
       printChatUsage,
-      "Use one of: manual, round-robin, auto, team.",
+      "Use one of: manual, round-robin, auto, team, free.",
     );
   }
 
@@ -417,7 +450,6 @@ const runChat = async (argv: string[]): Promise<void> => {
       resolveAgentCwd: (agentName) => config.adapterConfig[agentName]?.workspaceCwd,
     },
   });
-  const adapters = createAdapterRegistry();
   const configuredMemoryRoot = process.env.AGORYX_MEMORY_ROOT?.trim();
   const defaultWorkspaceStateRoot = resolveWorkspaceStateRoot(process.cwd());
   const configuredDebounce = Number(process.env.AGORYX_MEMORY_DEBOUNCE_MS ?? "");
@@ -566,7 +598,9 @@ const processChatInputLine = async (
     }
 
     console.log(formatWarnLine("No dispatch generated."));
-    console.log(formatHintLine("In manual mode, mention an agent (e.g. @codex)."));
+    if (mode === "manual") {
+      console.log(formatHintLine("In manual mode, mention an agent (e.g. @codex)."));
+    }
     return true;
   }
 
@@ -813,13 +847,13 @@ const handleCommand = async (
     case "/mode": {
       if (!rest[0]) {
         console.log(formatInfoLine(`Current mode: ${engine.getState().room.config.mode}`));
-        console.log(formatHintLine("Usage: /mode <manual|round-robin|auto|team>"));
+        console.log(formatHintLine("Usage: /mode <manual|round-robin|auto|team|free>"));
         return true;
       }
       const target = normalizeMode(rest[0]);
       if (!target) {
         console.log(formatWarnLine(`Unknown mode: ${rest[0]}`));
-        console.log(formatHintLine("Usage: /mode <manual|round-robin|auto|team>"));
+        console.log(formatHintLine("Usage: /mode <manual|round-robin|auto|team|free>"));
         return true;
       }
       const promoted = target === "team" ? promoteCliAdaptersToAgentic(config) : [];
@@ -936,6 +970,9 @@ const handleCommand = async (
       const limit = Number.isFinite(requested) && requested > 0 ? requested : 10;
       const messages = engine.listMessages(limit);
       for (const message of messages.slice(-limit)) {
+        if (isPassResponse(message.text)) {
+          continue;
+        }
         console.log(`[${message.author}] ${message.text}`);
       }
       return true;
@@ -1591,6 +1628,7 @@ interface AdapterRenderState {
   lastSessionId: string | null;
   insideSystemReminder: boolean;
   prefixPrinted: boolean;
+  bufferedText: string;
   currentStatusText: string;
   spinner: Ora | null;
 }
@@ -1609,6 +1647,7 @@ const getAdapterRenderState = (adapterName: string): AdapterRenderState => {
     lastSessionId: null,
     insideSystemReminder: false,
     prefixPrinted: false,
+    bufferedText: "",
     currentStatusText: "generating...",
     spinner: null,
   };
@@ -1619,9 +1658,10 @@ const getAdapterRenderState = (adapterName: string): AdapterRenderState => {
 const renderAdapterEvent = (
   adapterName: string,
   event: AdapterEvent,
-  resolveMode: () => OrchestrationMode = () => "manual",
+  resolveMode: () => OrchestrationMode = () => "free",
 ): void => {
   const state = getAdapterRenderState(adapterName);
+  const mode = resolveMode();
   switch (event.type) {
     case "message.started": {
       stopAdapterSpinner(state);
@@ -1630,6 +1670,7 @@ const renderAdapterEvent = (
       state.pendingSessionId = null;
       state.insideSystemReminder = false;
       state.prefixPrinted = false;
+      state.bufferedText = "";
       state.currentStatusText = "generating...";
       if (renderOptions.richUi) {
         if (shouldShowSystemLines()) {
@@ -1647,20 +1688,33 @@ const renderAdapterEvent = (
       } else {
         output.write("\n");
       }
-      output.write(`${adapterName}: `);
-      state.prefixPrinted = true;
+      if (mode !== "free") {
+        output.write(`${adapterName}: `);
+        state.prefixPrinted = true;
+      }
       return;
     }
     case "message.delta": {
       const { text, statusText } = sanitizeRenderedDelta(
         extractPayloadText(event.payload),
         state,
-        resolveMode(),
+        mode,
       );
       if (statusText) {
         updateAdapterLiveStatus(adapterName, state, statusText);
       }
       if (text) {
+        if (mode === "free") {
+          state.bufferedText += text;
+          state.sawContent = true;
+          if (!state.prefixPrinted) {
+            persistAdapterGeneratingStatus(adapterName, state);
+            output.write(`\n${formatAdapterName(adapterName)}: `);
+            state.prefixPrinted = true;
+          }
+          output.write(text);
+          return;
+        }
         if (!state.prefixPrinted) {
           persistAdapterGeneratingStatus(adapterName, state);
           output.write(`\n${formatAdapterName(adapterName)}: `);
@@ -1712,7 +1766,24 @@ const renderAdapterEvent = (
     }
     case "message.completed": {
       stopAdapterSpinner(state);
-      if (state.lineOpen && state.prefixPrinted) {
+      const completedText = sanitizeRenderedDelta(
+        extractPayloadText(event.payload),
+        state,
+        mode,
+      ).text;
+      let freeModeClosedLine = false;
+      if (mode === "free") {
+        const finalText = completedText.trim().length > 0 ? completedText : state.bufferedText;
+        const normalizedFinal = finalText.trim();
+        if (state.prefixPrinted && state.sawContent) {
+          output.write("\n");
+          freeModeClosedLine = true;
+        } else if (normalizedFinal && !isPassResponse(normalizedFinal)) {
+          output.write(`\n${formatAdapterName(adapterName)}: ${normalizedFinal}\n`);
+          freeModeClosedLine = true;
+        }
+      }
+      if (state.lineOpen && state.prefixPrinted && !freeModeClosedLine) {
         output.write("\n");
       }
       if (state.pendingSessionId) {
@@ -1725,6 +1796,7 @@ const renderAdapterEvent = (
       state.sawContent = false;
       state.insideSystemReminder = false;
       state.prefixPrinted = false;
+      state.bufferedText = "";
       state.currentStatusText = "generating...";
       if (shouldShowSystemLines()) {
         output.write(`${formatStatusLabel(adapterName)} done\n`);
@@ -1750,6 +1822,7 @@ const renderAdapterEvent = (
       state.sawContent = false;
       state.insideSystemReminder = false;
       state.prefixPrinted = false;
+      state.bufferedText = "";
       state.currentStatusText = "generating...";
       output.write(
         `\n${formatErrorText(`${adapterName} error (${payload.class ?? "UNKNOWN"}): ${
@@ -1930,8 +2003,9 @@ const printUsage = (write: OutputWriter = console.log): void => {
     "  -V, --version   Print version and exit",
     "",
     "Quick start:",
-    "  agoryx                        Start chat in manual mode (default)",
+    "  agoryx                        Start chat in free mode (default)",
     "  agoryx -m auto                Start chat with smart routing",
+    "  agoryx -m free                Start open-ended free collaboration mode",
     "  agoryx --mode team            Start autonomous team runtime",
     "",
     "Examples:",
@@ -1957,9 +2031,9 @@ const printChatUsage = (write: OutputWriter = console.log): void => {
     "",
     "Options:",
     "  -h, --help                    Show this help message and exit",
-    "  --agents <name,...>           Comma-separated agent list (default: codex,claude)",
-    "  -m, --mode <mode>            Orchestration mode: manual, round-robin, auto, team",
-    "                                (default: manual)",
+    "  --agents <name,...>           Comma-separated agent list (default: all available agents)",
+    "  -m, --mode <mode>            Orchestration mode: manual, round-robin, auto, team, free",
+    "                                (default: free)",
     "  -c, --config <path>          Path to config file",
     "                                (default: $XDG_CONFIG_HOME/agoryx/config.json)",
     "  --db <path>                   Path to SQLite database",
@@ -1971,8 +2045,9 @@ const printChatUsage = (write: OutputWriter = console.log): void => {
     "  --room-name <name>            Set room display name (default: Agoryx Room)",
     "",
     "Examples:",
-    "  agoryx                        Start chat in manual mode",
+    "  agoryx                        Start chat in free mode",
     "  agoryx -m auto                Smart routing — auto-selects best agent",
+    "  agoryx -m free                Open-ended multi-agent discussion mode",
     "  agoryx --mode team            Autonomous team runtime with proposal gate",
     "  agoryx --resume abc123        Resume session abc123",
     "  agoryx --agents codex         Chat with Codex only",
@@ -2093,7 +2168,7 @@ const printChatHelp = (): void => {
 In-chat commands:
   /               list slash commands
   /help
-  /mode <manual|round-robin|auto|team>
+  /mode <manual|round-robin|auto|team|free>
   /status
   /adapter <codex|claude> <stub|cli|persistent|agentic>
   @team <goal>                      start a team run (from any mode)

@@ -1,7 +1,9 @@
 import type { Adapter } from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
 import type { Message, OrchestrationMode, PinnedContext, Room } from "../events/types.js";
+import { isPassResponse } from "../events/pass-token.js";
 import type { MemoryService } from "../memory/service.js";
+import type { Dispatch } from "../orchestrator/policy.js";
 import type { WorktreeManager } from "../worktree/manager.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import { SessionService } from "../session/service.js";
@@ -20,6 +22,49 @@ import type {
   TeamLogResult,
   TeamStatusResult,
 } from "./types.js";
+
+interface FreeDispatchQueueItem {
+  dispatch: Dispatch;
+  triggerMessage: Message | null;
+  repeatMode: FreeRepeatMode;
+}
+
+type FreeRepeatMode = "none" | "handoff" | "rebuttal";
+
+const FREE_HANDOFF_REASON_PREFIX = "free:agent:handoff:";
+const FREE_REBUTTAL_REASON_PREFIX = "free:agent:rebuttal:";
+const FREE_HANDOFF_REPEAT_LIMIT = 2;
+
+const normalizeAgentAuthor = (author: string): string =>
+  author.toLowerCase().replace(/^agent\./, "");
+
+const getFreeRepeatMode = (dispatch: Dispatch): FreeRepeatMode => {
+  if (dispatch.reason.startsWith(FREE_REBUTTAL_REASON_PREFIX)) {
+    return "rebuttal";
+  }
+  if (dispatch.reason.startsWith(FREE_HANDOFF_REASON_PREFIX)) {
+    return "handoff";
+  }
+  return "none";
+};
+
+const shouldUpgradeRepeatMode = (
+  current: FreeRepeatMode,
+  incoming: FreeRepeatMode,
+): boolean => {
+  const rank: Record<FreeRepeatMode, number> = {
+    none: 0,
+    handoff: 1,
+    rebuttal: 2,
+  };
+  return rank[incoming] > rank[current];
+};
+
+const buildFreeTriggerFingerprint = (text: string): string =>
+  text
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
 
 export type {
   ChatEngineHooks,
@@ -268,10 +313,9 @@ export class ChatEngine {
       })
       .sort((left, right) => left.priority - right.priority);
 
-    const results: DispatchResult[] = [];
-    for (const dispatch of dispatches) {
-      results.push(await this.dispatchEngine.runDispatch(dispatch));
-    }
+    const results = state.room.config.mode === "free"
+      ? await this.processFreeDispatches(dispatches)
+      : await this.processDispatches(dispatches);
 
     this.session.maybeCreateCheckpoint(state.room);
     return results;
@@ -279,5 +323,132 @@ export class ChatEngine {
 
   public async retryFailed(adapterName: string): Promise<RetryResult | null> {
     return this.dispatchEngine.retryFailed(adapterName);
+  }
+
+  private async processDispatches(dispatches: Dispatch[]): Promise<DispatchResult[]> {
+    const results: DispatchResult[] = [];
+    for (const dispatch of dispatches) {
+      results.push(await this.dispatchEngine.runDispatch(dispatch));
+    }
+    return results;
+  }
+
+  private async processFreeDispatches(initialDispatches: Dispatch[]): Promise<DispatchResult[]> {
+    const state = this.getState();
+    const queue: FreeDispatchQueueItem[] = initialDispatches.map((dispatch) => ({
+      dispatch,
+      triggerMessage: null,
+      repeatMode: "none",
+    }));
+    const results: DispatchResult[] = [];
+    const completedTurnsByAgent = new Map<string, number>();
+    const lastRepeatTriggerByAgent = new Map<string, string>();
+
+    while (queue.length > 0) {
+      const queued = queue.shift();
+      if (!queued) {
+        continue;
+      }
+      const { dispatch, triggerMessage, repeatMode } = queued;
+
+      if (!this.shouldRunFreeDispatch(
+        dispatch.targetAdapter,
+        triggerMessage,
+        repeatMode,
+        completedTurnsByAgent,
+        lastRepeatTriggerByAgent,
+      )) {
+        continue;
+      }
+
+      const result = await this.dispatchEngine.runDispatch(dispatch);
+      results.push(result);
+      if (!result.success) {
+        continue;
+      }
+
+      const recent = this.session.listRecentMessages(state.room.id, 1)[0];
+      if (!recent || recent.role !== "assistant") {
+        continue;
+      }
+      if (recent.metadata.requestId && recent.metadata.requestId !== result.requestId) {
+        continue;
+      }
+      if (isPassResponse(recent.text)) {
+        continue;
+      }
+      completedTurnsByAgent.set(
+        dispatch.targetAdapter,
+        (completedTurnsByAgent.get(dispatch.targetAdapter) ?? 0) + 1,
+      );
+      if (repeatMode !== "none" && triggerMessage) {
+        lastRepeatTriggerByAgent.set(
+          dispatch.targetAdapter,
+          buildFreeTriggerFingerprint(triggerMessage.text),
+        );
+      }
+
+      const followUps = state.policy
+        .onAgentMessage(state.room, recent, {
+          availableAgents: state.availableAgents,
+        })
+        .sort((left, right) => left.priority - right.priority);
+      this.enqueueUniqueTargets(queue, followUps, recent);
+    }
+
+    return results;
+  }
+
+  private shouldRunFreeDispatch(
+    targetAdapter: string,
+    triggerMessage: Message | null,
+    repeatMode: FreeRepeatMode,
+    completedTurnsByAgent: Map<string, number>,
+    lastRepeatTriggerByAgent: Map<string, string>,
+  ): boolean {
+    const completedTurns = completedTurnsByAgent.get(targetAdapter) ?? 0;
+    if (completedTurns === 0) {
+      return true;
+    }
+    if (!triggerMessage || repeatMode === "none") {
+      return false;
+    }
+    if (normalizeAgentAuthor(triggerMessage.author) === targetAdapter.toLowerCase()) {
+      return false;
+    }
+    if (repeatMode === "handoff" && completedTurns >= FREE_HANDOFF_REPEAT_LIMIT) {
+      return false;
+    }
+    const fingerprint = buildFreeTriggerFingerprint(triggerMessage.text);
+    if (!fingerprint) {
+      return false;
+    }
+    return lastRepeatTriggerByAgent.get(targetAdapter) !== fingerprint;
+  }
+
+  private enqueueUniqueTargets(
+    queue: FreeDispatchQueueItem[],
+    followUps: Dispatch[],
+    triggerMessage: Message,
+  ): void {
+    for (const followUp of followUps) {
+      const repeatMode = getFreeRepeatMode(followUp);
+      const existing = queue.find(
+        (pending) => pending.dispatch.targetAdapter === followUp.targetAdapter,
+      );
+      if (existing) {
+        if (shouldUpgradeRepeatMode(existing.repeatMode, repeatMode)) {
+          existing.repeatMode = repeatMode;
+          existing.dispatch = followUp;
+          existing.triggerMessage = triggerMessage;
+        }
+        continue;
+      }
+      queue.push({
+        dispatch: followUp,
+        triggerMessage,
+        repeatMode,
+      });
+    }
   }
 }

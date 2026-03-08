@@ -328,7 +328,7 @@ Mark only the affected dispatch as failed. Emit `message.error` with typed class
 
 ```json
 {
-  "defaultMode": "manual",
+  "defaultMode": "free",
   "agents": {
     "codex": {
       "mode": "cli",
@@ -388,9 +388,11 @@ agoryx --help
 agoryx --version
 
 # Start a chat session
+agoryx                      # free mode (default)
 agoryx --mode manual          # you pick who responds with @agent
+agoryx --mode free            # open-ended multi-agent collaboration
 agoryx --mode round-robin     # agents alternate
-agoryx --mode auto            # smart routing (default)
+agoryx --mode auto            # smart routing
 agoryx --mode team            # autonomous team runtime
 
 # Adapter transport
@@ -427,7 +429,7 @@ agoryx man
 @codex <message>                               # direct message to codex
 @claude <message>                              # direct message to claude
 @all <message>                                 # broadcast to all agents
-/mode <manual|round-robin|auto|team>           # switch orchestration mode
+/mode <manual|round-robin|auto|team|free>      # switch orchestration mode
 /adapter <agent> <stub|cli|persistent|agentic> # switch adapter mode per agent
 /team start <goal> [--strict] [--no-checks]   # start autonomous team run
 /team status                                   # show active run status

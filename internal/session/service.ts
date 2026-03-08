@@ -8,10 +8,17 @@ import type {
   TeamRunStage,
   TeamStep,
 } from "../events/types.js";
+import { PASS_RESPONSE_TOKEN, isPassResponse } from "../events/pass-token.js";
 import { createId, nowIso } from "./ids.js";
 import { SQLiteStore } from "../storage/sqlite.js";
 
 const DELTA_PROMPT_MAX_CHARS = 20_000;
+const FREE_MODE_PROMPT_BASE_LINES = [
+  "You are in free mode in a multi-agent room.",
+  "Each agent should contribute once per user round, then stop unless explicitly asked to rebut.",
+  "Use @agent! to hand off a single next turn. Use @agent!! only for an explicit rebuttal/counterpoint.",
+  `If you have nothing useful to add, reply with exactly ${PASS_RESPONSE_TOKEN}.`,
+];
 import type {
   AgentSession,
   CreateTeamCheckInput,
@@ -351,14 +358,38 @@ export class SessionService {
    * Useful for diagnostics and adapters that want to inspect context metadata.
    */
   public buildFullContext(room: Room, systemPrompt?: string, agentName?: string): BuiltContext {
+    const resolvedSystemPrompt = this.resolveSystemPrompt(room, systemPrompt);
     return buildContext(this.store, {
       roomId: room.id,
-      systemPrompt,
+      systemPrompt: resolvedSystemPrompt,
       workspaceBlock: this.buildWorkspaceBlock(agentName),
       maxHistoryMessages: room.config.maxHistoryMessages,
       checkpointThreshold: room.config.checkpointThreshold,
       maxContextTokens: room.config.maxContextTokens,
     });
+  }
+
+  private resolveSystemPrompt(room: Room, systemPrompt?: string): string | undefined {
+    if (room.config.mode !== "free") {
+      return systemPrompt;
+    }
+    const freeModePrompt = this.buildFreeModePromptSuffix(room);
+    if (!systemPrompt) {
+      return freeModePrompt;
+    }
+    return `${systemPrompt}\n\n${freeModePrompt}`;
+  }
+
+  private buildFreeModePromptSuffix(room: Room): string {
+    const mentions = room.participants
+      .filter((participant) => participant.startsWith("agent."))
+      .map((participant) => participant.slice("agent.".length).trim())
+      .filter((name) => name.length > 0)
+      .map((name) => `@${name}`);
+    const mentionHint = mentions.length > 0
+      ? `Supported handoff targets: ${mentions.join(", ")}.`
+      : "When you want a specific agent to answer next, use @agent_name! (or @agent_name!! for rebuttal).";
+    return [...FREE_MODE_PROMPT_BASE_LINES, mentionHint].join("\n");
   }
 
   public buildDeltaPrompt(
@@ -388,15 +419,18 @@ export class SessionService {
       cutoffSeq,
       `agent.${agentName}`,
     );
-    if (delta.length === 0) {
+    const filteredDelta = delta.filter((message) => !isPassResponse(message.text));
+    if (filteredDelta.length === 0) {
       return { prompt: "", cutoffSeq };
     }
 
+    const freeModePrompt = this.buildFreeModePromptSuffix(room);
     const workspaceBlock = this.buildWorkspaceBlock(agentName);
     const promptParts = [
+      ...(room.config.mode === "free" ? [`[Free mode protocol]\n${freeModePrompt}`, ""] : []),
       ...(workspaceBlock ? [workspaceBlock, ""] : []),
       "[Team context since your last response]",
-      ...delta.map((message) => `- [${message.author}][${message.id}] ${message.text}`),
+      ...filteredDelta.map((message) => `- [${message.author}][${message.id}] ${message.text}`),
     ];
     const prompt = promptParts.join("\n");
 

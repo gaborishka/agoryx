@@ -307,6 +307,10 @@ test("reconcile() in non-git directory does not print git fatal noise", () => {
     mgr.reconcile();
     assert.equal(mgr.list().length, 0);
     assert.ok(
+      !/\[worktree\]/i.test(stderrOutput),
+      `unexpected worktree warning noise: ${stderrOutput}`,
+    );
+    assert.ok(
       !/fatal:\s+not a git repository/i.test(stderrOutput),
       `unexpected git fatal noise: ${stderrOutput}`,
     );

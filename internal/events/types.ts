@@ -1,4 +1,4 @@
-export type OrchestrationMode = "manual" | "round-robin" | "auto" | "team";
+export type OrchestrationMode = "manual" | "round-robin" | "auto" | "team" | "free";
 export type MessageRole = "user" | "assistant" | "system";
 export type MessageFormat = "markdown" | "plain";
 export type TeamStrategy = "debate" | "pipeline";

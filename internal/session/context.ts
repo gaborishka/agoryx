@@ -14,6 +14,7 @@
  */
 
 import type { Message, Checkpoint, PinnedContext } from "../events/types.js";
+import { isPassResponse } from "../events/pass-token.js";
 import type { SQLiteStore } from "../storage/sqlite.js";
 
 export interface ContextBuildOptions {
@@ -82,6 +83,10 @@ export function buildContext(
   } else {
     messages = allMessages;
   }
+
+  // `::pass::` is a protocol signal in free mode and should not enter
+  // downstream agent prompts as conversational content.
+  messages = messages.filter((message) => !isPassResponse(message.text));
 
   // Build output, tracking token budget
   const result: Message[] = [];

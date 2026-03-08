@@ -74,7 +74,7 @@ const DEFAULT_SYSTEM_PROMPT =
 
 export const DEFAULT_CONFIG: AgoryxConfig = {
   version: "0.1",
-  defaultMode: "manual",
+  defaultMode: "free",
   agents: {
     codex: {
       adapter: "codex",

@@ -4,6 +4,8 @@ import {
   renderMemoryMarkdown as defaultRenderMemoryMarkdown,
   writeMemoryFile as defaultWriteMemoryFile,
 } from "./renderer.js";
+import { consolidate, type ConsolidationOptions, type ConsolidationResult } from "./consolidation.js";
+import { isFeatureEnabled } from "../config/features.js";
 
 export const REDUCER_VERSION = 1;
 
@@ -23,6 +25,10 @@ export interface MemoryServiceOptions {
   writer?: typeof defaultWriteMemoryFile;
   onRendered?: (roomId: string, content: string, path: string) => void;
   onRenderError?: (roomId: string, error: unknown) => void;
+  consolidation?: ConsolidationOptions & {
+    /** Auto-consolidation interval in ms. Default: 300_000 (5 min). 0 to disable. */
+    intervalMs?: number;
+  };
 }
 
 export class MemoryService {
@@ -37,6 +43,9 @@ export class MemoryService {
   private readonly onRendered?: MemoryServiceOptions["onRendered"];
   private readonly onRenderError?: MemoryServiceOptions["onRenderError"];
   private disposed = false;
+  private consolidationTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly consolidationOptions: ConsolidationOptions;
+  private readonly knownRooms = new Set<string>();
 
   constructor(
     private readonly store: SQLiteStore,
@@ -49,9 +58,21 @@ export class MemoryService {
     this.writer = options.writer ?? defaultWriteMemoryFile;
     this.onRendered = options.onRendered;
     this.onRenderError = options.onRenderError;
+    this.consolidationOptions = options.consolidation ?? {};
+    const intervalMs = options.consolidation?.intervalMs ?? 300_000;
+    if (intervalMs > 0 && isFeatureEnabled("DREAM_CONSOLIDATION")) {
+      this.consolidationTimer = setInterval(() => {
+        this.autoConsolidate();
+      }, intervalMs);
+      // Don't block process exit
+      if (this.consolidationTimer.unref) {
+        this.consolidationTimer.unref();
+      }
+    }
   }
 
   public recordDispatchStart(roomId: string, agent: string, requestId: string): void {
+    this.knownRooms.add(roomId);
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -62,6 +83,7 @@ export class MemoryService {
   }
 
   public recordDispatchEnd(roomId: string, agent: string, result: string, files: string[]): void {
+    this.knownRooms.add(roomId);
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -72,6 +94,7 @@ export class MemoryService {
   }
 
   public recordDecision(roomId: string, text: string): void {
+    this.knownRooms.add(roomId);
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -85,6 +108,7 @@ export class MemoryService {
   }
 
   public recordNote(roomId: string, text: string, source: string = "user"): void {
+    this.knownRooms.add(roomId);
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -98,6 +122,7 @@ export class MemoryService {
   }
 
   public recordError(roomId: string, agent: string, error: string): void {
+    this.knownRooms.add(roomId);
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -108,6 +133,7 @@ export class MemoryService {
   }
 
   public recordTeamStep(roomId: string, runId: string, actor: string, summary: string): void {
+    this.knownRooms.add(roomId);
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -118,6 +144,7 @@ export class MemoryService {
   }
 
   public recordWorktreeCreate(roomId: string, agent: string, path: string, branch: string): void {
+    this.knownRooms.add(roomId);
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -131,6 +158,7 @@ export class MemoryService {
   }
 
   public recordWorktreeRemove(roomId: string, agent: string, path: string): void {
+    this.knownRooms.add(roomId);
     this.store.appendMemoryEvent({
       eventId: createId("mev"),
       roomId,
@@ -141,6 +169,58 @@ export class MemoryService {
     if (!this.disposed) {
       this.scheduleRender(roomId);
     }
+  }
+
+  /**
+   * Run a consolidation pass for a room.
+   * Prunes stale events and deduplicates decisions.
+   */
+  public runConsolidation(roomId: string): ConsolidationResult | null {
+    if (!isFeatureEnabled("DREAM_CONSOLIDATION")) {
+      return null;
+    }
+
+    const events = this.store.listMemoryEvents(roomId);
+    if (events.length === 0) return null;
+
+    const snapshot = this.store.getMemorySnapshot(roomId);
+    const existingDecisions = snapshot?.keyDecisions ?? [];
+
+    const result = consolidate(
+      events.map(e => ({
+        id: e.id,
+        eventType: e.eventType,
+        payload: typeof e.payload === "object" && e.payload !== null
+          ? e.payload as Record<string, unknown>
+          : {},
+        createdAt: e.timestamp,
+      })),
+      existingDecisions,
+      this.consolidationOptions,
+    );
+
+    // Apply prune
+    if (result.pruneIds.length > 0) {
+      this.store.deleteMemoryEvents(roomId, result.pruneIds);
+    }
+
+    // Update snapshot with deduplicated decisions
+    if (result.decisionsDeduped > 0 && snapshot) {
+      this.store.upsertMemorySnapshot(roomId, {
+        ...snapshot,
+        keyDecisions: result.decisions,
+        lastLogId: snapshot.lastLogId,
+        reducerVersion: snapshot.reducerVersion,
+      });
+    }
+
+    return {
+      transientPruned: result.transientPruned,
+      decisionsDeduped: result.decisionsDeduped,
+      errorsConsolidated: result.errorsConsolidated,
+      totalProcessed: result.totalProcessed,
+      durationMs: result.durationMs,
+    };
   }
 
   public rebuildSnapshot(roomId: string): MemorySnapshot | null {
@@ -220,6 +300,10 @@ export class MemoryService {
 
   public async dispose(): Promise<void> {
     this.disposed = true;
+    if (this.consolidationTimer) {
+      clearInterval(this.consolidationTimer);
+      this.consolidationTimer = null;
+    }
     for (const timer of this.renderTimers.values()) {
       clearTimeout(timer);
     }
@@ -309,6 +393,19 @@ export class MemoryService {
       lastLogId,
       reducerVersion: REDUCER_VERSION,
     };
+  }
+
+  private autoConsolidate(): void {
+    if (this.disposed || !isFeatureEnabled("DREAM_CONSOLIDATION")) return;
+
+    for (const roomId of this.knownRooms) {
+      try {
+        this.runConsolidation(roomId);
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error(`[memory:consolidation] Failed for room ${roomId}: ${msg}`);
+      }
+    }
   }
 
   private scheduleRender(roomId: string): void {

@@ -1460,6 +1460,14 @@ export class SQLiteStore {
     return rows.map(memoryRowToEntry);
   }
 
+  public deleteMemoryEvents(roomId: string, eventIds: number[]): void {
+    if (eventIds.length === 0) return;
+    const placeholders = eventIds.map(() => "?").join(",");
+    this.db.prepare(
+      `DELETE FROM memory_log WHERE room_id = ? AND id IN (${placeholders})`
+    ).run(roomId, ...eventIds);
+  }
+
   public getMaxMemoryLogId(roomId: string): number | null {
     const row = this.db.prepare(
       "SELECT MAX(id) as max_id FROM memory_log WHERE room_id = ?"

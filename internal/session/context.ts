@@ -23,6 +23,12 @@ export interface ContextBuildOptions {
   maxHistoryMessages: number;
   checkpointThreshold: number;
   maxContextTokens: number;
+  /**
+   * When true, skip injecting pinned context messages into the result.
+   * Used by the context cache to avoid duplicating static sections that
+   * are already cached and will be prepended by the caller.
+   */
+  skipPins?: boolean;
 }
 
 export interface BuiltContext {
@@ -127,25 +133,27 @@ export function buildContext(
     }
   }
 
-  // Add pinned context as synthetic system messages
-  for (const pin of pinnedContexts) {
-    const pinText = `[Pinned: ${pin.label}] ${pin.content}`;
-    const tokens = estimateTokens(pinText);
-    if (tokens > tokenBudget) {
-      truncated = true;
-      break;
+  // Add pinned context as synthetic system messages (skipped when caller has cached them)
+  if (!opts.skipPins) {
+    for (const pin of pinnedContexts) {
+      const pinText = `[Pinned: ${pin.label}] ${pin.content}`;
+      const tokens = estimateTokens(pinText);
+      if (tokens > tokenBudget) {
+        truncated = true;
+        break;
+      }
+      tokenBudget -= tokens;
+      result.push({
+        id: pin.id,
+        roomId,
+        author: "system",
+        role: "system",
+        text: pinText,
+        format: "plain",
+        metadata: {},
+        createdAt: pin.createdAt,
+      });
     }
-    tokenBudget -= tokens;
-    result.push({
-      id: pin.id,
-      roomId,
-      author: "system",
-      role: "system",
-      text: pinText,
-      format: "plain",
-      metadata: {},
-      createdAt: pin.createdAt,
-    });
   }
 
   // Add checkpoint summary

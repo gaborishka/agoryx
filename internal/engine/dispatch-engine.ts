@@ -5,6 +5,7 @@ import type {
   PersistentAdapter,
 } from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
+import { isFeatureEnabled } from "../config/features.js";
 import type {
   Message,
   SessionBoundPayload,
@@ -14,6 +15,7 @@ import type { MemoryService } from "../memory/service.js";
 import type { Dispatch } from "../orchestrator/policy.js";
 import { createId } from "../session/ids.js";
 import { SessionService } from "../session/service.js";
+import type { HookRegistry } from "./hooks.js";
 import type { EngineLogger } from "./logger.js";
 import type {
   DispatchResult,
@@ -30,6 +32,7 @@ interface DispatchEngineOptions {
   onAdapterEvent?: (adapterName: string, event: AdapterEvent) => void;
   logger: EngineLogger;
   memoryService?: MemoryService;
+  hookRegistry?: HookRegistry;
 }
 
 export class DispatchEngine implements TeamDispatchApi {
@@ -43,6 +46,7 @@ export class DispatchEngine implements TeamDispatchApi {
   ) => void;
   private readonly logger: EngineLogger;
   private readonly memoryService?: MemoryService;
+  private readonly hookRegistry?: HookRegistry;
 
   public constructor(options: DispatchEngineOptions) {
     this.session = options.session;
@@ -52,6 +56,7 @@ export class DispatchEngine implements TeamDispatchApi {
     this.onAdapterEvent = options.onAdapterEvent;
     this.logger = options.logger;
     this.memoryService = options.memoryService;
+    this.hookRegistry = options.hookRegistry;
   }
 
   public getLastFailedRequest(adapter: string): string | null {
@@ -204,6 +209,7 @@ export class DispatchEngine implements TeamDispatchApi {
     dispatch: Dispatch,
     isSessionRetry = false,
   ): Promise<DispatchResult> {
+    const startTime = Date.now();
     const state = this.getState();
     const adapter = this.adapters[dispatch.targetAdapter];
     if (!adapter) {
@@ -223,6 +229,18 @@ export class DispatchEngine implements TeamDispatchApi {
       dispatchId: dispatch.dispatchId,
       reason: dispatch.reason,
     });
+
+    // Pre-dispatch hooks
+    if (this.hookRegistry && isFeatureEnabled("HOOK_SYSTEM")) {
+      await this.hookRegistry.runPreHooks({
+        dispatchId: dispatch.dispatchId,
+        requestId: dispatch.requestId,
+        targetAdapter: dispatch.targetAdapter,
+        roomId: state.room.id,
+        reason: dispatch.reason,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     this.memoryService?.recordDispatchStart(state.room.id, dispatch.targetAdapter, dispatch.requestId);
 
@@ -271,6 +289,21 @@ export class DispatchEngine implements TeamDispatchApi {
       this.memoryService?.recordDispatchEnd(state.room.id, dispatch.targetAdapter, "done", []);
     } else {
       this.memoryService?.recordError(state.room.id, dispatch.targetAdapter, result.error ?? "unknown error");
+    }
+
+    // Post-dispatch hooks
+    if (this.hookRegistry && isFeatureEnabled("HOOK_SYSTEM")) {
+      await this.hookRegistry.runPostHooks({
+        dispatchId: dispatch.dispatchId,
+        requestId: dispatch.requestId,
+        targetAdapter: dispatch.targetAdapter,
+        roomId: state.room.id,
+        success: result.success,
+        text: result.text,
+        error: result.error,
+        durationMs: Date.now() - startTime,
+        timestamp: new Date().toISOString(),
+      });
     }
 
     return result;

@@ -5,6 +5,8 @@ import type {
   MessageEventPayload,
   MessageErrorPayload,
   SessionBoundPayload,
+  ToolApprovalRequestedPayload,
+  ToolApprovalRespondedPayload,
 } from "../events/types.js";
 
 export type AdapterStatus = "ready" | "busy" | "error" | "not_authenticated";
@@ -42,15 +44,36 @@ export interface Adapter {
   health(): Promise<AdapterStatus>;
 }
 
+export interface ApprovalRequest {
+  approvalId: string;
+  agent: string;
+  kind: "command" | "file" | "permissions";
+  toolName: string;
+  description: string;
+  command?: string;
+  filePath?: string;
+  availableDecisions: string[];
+  raw: unknown;
+}
+
+export type ApprovalCallback = (request: ApprovalRequest) => void;
+export type ApprovalResponseFn = (approvalId: string, decision: string) => void;
+
 export interface PersistentAdapter extends Adapter {
   sendTurn(input: SendTurnInput): AsyncGenerator<AdapterEvent>;
   destroy?(nativeSessionId: string): Promise<void>;
+  onApprovalRequest?: ApprovalCallback;
+  respondToApproval?: ApprovalResponseFn;
+  getAllowedToolsOverride?(): string[];
+  clearAllowedToolsOverride?(): void;
 }
 
 export type AdapterEvent =
   | EventEnvelope<MessageEventPayload>
   | EventEnvelope<MessageErrorPayload>
-  | EventEnvelope<SessionBoundPayload>;
+  | EventEnvelope<SessionBoundPayload>
+  | EventEnvelope<ToolApprovalRequestedPayload>
+  | EventEnvelope<ToolApprovalRespondedPayload>;
 
 export interface AdapterError {
   class: ErrorClass;

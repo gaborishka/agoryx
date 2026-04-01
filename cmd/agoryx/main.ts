@@ -511,6 +511,7 @@ const runChat = async (argv: string[]): Promise<void> => {
         attachAdapterEventSink: (sink) => {
           inkAdapterEventSink = sink;
         },
+        approvalQueue: engine.getApprovalQueue(),
       });
       return;
     }

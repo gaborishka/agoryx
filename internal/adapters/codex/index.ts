@@ -4,6 +4,9 @@ import { setTimeout as wait } from "node:timers/promises";
 import type {
   AdapterStatus,
   AgentInput,
+  ApprovalCallback,
+  ApprovalRequest,
+  ApprovalResponseFn,
   PersistentAdapter,
   SendTurnInput,
 } from "../adapter.js";
@@ -57,6 +60,10 @@ type CodexDeltaSource = "envelope" | "legacy";
 
 export class CodexAdapter implements PersistentAdapter {
   public readonly name = "codex";
+  public onApprovalRequest: ApprovalCallback | undefined;
+  public respondToApproval: ApprovalResponseFn = (approvalId, decision) => {
+    this.interactiveRunner?.resolveApproval(approvalId, decision);
+  };
   private readonly running = new Map<string, OneShotProcess>();
   private readonly interactiveRequestIds = new Set<string>();
   private status: AdapterStatus = "ready";
@@ -464,6 +471,7 @@ export class CodexAdapter implements PersistentAdapter {
     if (needsRestart) {
       await this.disposeInteractiveRunner();
       const runner = new CodexAppServerRunner(cwd, buildCodexSpawnEnv(process.env));
+      runner.onApprovalRequest = this.onApprovalRequest ?? null;
       const sessionId = await runner.initialize(nativeSessionId);
       this.interactiveRunner = runner;
       this.interactiveSessionId = sessionId;
@@ -576,8 +584,10 @@ export class CodexAdapter implements PersistentAdapter {
 class CodexAppServerRunner {
   private readonly child: InteractiveProcess;
   private readonly pending = new Map<number, CodexAppServerPending>();
+  private readonly pendingApprovals = new Map<string, { rpcId: number; method: string }>();
   private readonly cwd: string;
   private readonly env: NodeJS.ProcessEnv;
+  public onApprovalRequest: ApprovalCallback | null = null;
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private nextId = 1;
@@ -837,11 +847,19 @@ class CodexAppServerRunner {
       return;
     }
 
+    // Server-to-client requests have both id AND method (JSON-RPC 2.0)
+    if (typeof parsed.id === "number" && typeof parsed.method === "string") {
+      this.handleServerRequest(parsed.id, parsed.method, parsed.params);
+      return;
+    }
+
+    // Responses to our requests have id but no method
     if (typeof parsed.id === "number") {
       this.resolvePending(parsed.id, parsed);
       return;
     }
 
+    // Notifications have method but no id
     if (typeof parsed.method !== "string") {
       return;
     }
@@ -1097,7 +1115,69 @@ class CodexAppServerRunner {
       clearTimeout(item.timer);
       item.reject(error);
     }
+    // Cancel all pending approvals on crash
+    this.pendingApprovals.clear();
     this.rejectActiveTurn(error);
+  }
+
+  private handleServerRequest(id: number, method: string, params: unknown): void {
+    const parsed = parseCodexServerRequest(method, params);
+    if (!parsed) {
+      this.respondToServerRequest(id, {
+        error: { code: -32601, message: `Method not found: ${method}` },
+      });
+      return;
+    }
+
+    const approvalId = `apr_codex_${id}`;
+    this.pendingApprovals.set(approvalId, { rpcId: id, method });
+
+    // Pause idle timeout while user decides
+    this.activeTurn?.idleTimeout.touch();
+
+    const request: ApprovalRequest = {
+      ...parsed,
+      approvalId,
+      agent: "codex",
+    };
+
+    if (this.onApprovalRequest) {
+      this.onApprovalRequest(request);
+    } else {
+      // No handler — auto-decline
+      this.resolveApproval(approvalId, "decline");
+    }
+  }
+
+  public resolveApproval(approvalId: string, decision: string): void {
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending) {
+      return;
+    }
+    this.pendingApprovals.delete(approvalId);
+
+    const result = buildCodexApprovalResponse(pending.method, decision);
+    this.respondToServerRequest(pending.rpcId, { result });
+
+    // Resume idle timeout after approval response
+    this.activeTurn?.idleTimeout.touch();
+  }
+
+  private respondToServerRequest(id: number, body: Record<string, unknown>): void {
+    const response = JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      ...(body.error ? { error: body.error } : { result: body.result }),
+    });
+    this.child.stdin.write(`${response}\n`, (error) => {
+      if (error) {
+        console.error(
+          `[adapter.codex] failed to send server request response: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    });
   }
 
   private async attachConversationListener(conversationId: string): Promise<void> {
@@ -1328,3 +1408,59 @@ const readStringField = (
   }
   return null;
 };
+
+export const parseCodexServerRequest = (
+  method: string,
+  params: unknown,
+): Omit<ApprovalRequest, "approvalId" | "agent"> | null => {
+  const obj =
+    params && typeof params === "object"
+      ? (params as Record<string, unknown>)
+      : {};
+
+  if (method === "item/commandExecution/requestApproval") {
+    const command = readStringField(obj, "command") ?? "";
+    const decisions = Array.isArray(obj.availableDecisions)
+      ? (obj.availableDecisions as string[])
+      : ["accept", "acceptForSession", "decline"];
+    return {
+      kind: "command",
+      toolName: "Bash",
+      description: `Run: ${command || "(unknown command)"}`,
+      command,
+      availableDecisions: decisions,
+      raw: params,
+    };
+  }
+
+  if (method === "item/fileChange/requestApproval") {
+    const reason = readStringField(obj, "reason") ?? "file change";
+    const grantRoot = readStringField(obj, "grantRoot");
+    return {
+      kind: "file",
+      toolName: "FileChange",
+      description: reason,
+      filePath: grantRoot ?? undefined,
+      availableDecisions: ["accept", "acceptForSession", "decline"],
+      raw: params,
+    };
+  }
+
+  if (method === "item/permissions/requestApproval") {
+    const reason = readStringField(obj, "reason") ?? "permission escalation";
+    return {
+      kind: "permissions",
+      toolName: "Permissions",
+      description: reason,
+      availableDecisions: ["accept", "decline"],
+      raw: params,
+    };
+  }
+
+  return null;
+};
+
+export const buildCodexApprovalResponse = (
+  _method: string,
+  decision: string,
+): Record<string, unknown> => ({ decision });

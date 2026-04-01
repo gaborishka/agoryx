@@ -4,6 +4,8 @@ import type {
   MessageEventPayload,
   MessageErrorPayload,
   SessionBoundPayload,
+  ToolApprovalRequestedPayload,
+  ToolApprovalRespondedPayload,
 } from "../events/types.js";
 import { createId, nowIso } from "../session/ids.js";
 
@@ -88,4 +90,32 @@ export const sessionBound = (
   type: "session.bound",
   requestId: args.requestId,
   payload: { nativeSessionId } satisfies SessionBoundPayload,
+});
+
+export const toolApprovalRequested = (
+  args: BaseArgs,
+  payload: ToolApprovalRequestedPayload,
+): AdapterEvent => ({
+  eventId: createId("evt"),
+  roomId: args.roomId,
+  sessionId: args.sessionId,
+  timestamp: nowIso(),
+  source: args.source,
+  type: "tool.approval.requested",
+  requestId: args.requestId,
+  payload,
+});
+
+export const toolApprovalResponded = (
+  args: BaseArgs,
+  payload: ToolApprovalRespondedPayload,
+): AdapterEvent => ({
+  eventId: createId("evt"),
+  roomId: args.roomId,
+  sessionId: args.sessionId,
+  timestamp: nowIso(),
+  source: args.source,
+  type: "tool.approval.responded",
+  requestId: args.requestId,
+  payload,
 });

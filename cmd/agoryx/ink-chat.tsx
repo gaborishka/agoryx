@@ -1,7 +1,8 @@
 import util from "node:util";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput } from "ink";
-import type { AdapterEvent } from "../../internal/adapters/adapter.js";
+import type { AdapterEvent, ApprovalRequest } from "../../internal/adapters/adapter.js";
+import type { ApprovalQueue } from "../../internal/engine/approval-queue.js";
 import type { ChatRuntimeConfig } from "../../internal/config/default.js";
 import type { MessageEventPayload, OrchestrationMode } from "../../internal/events/types.js";
 import { isPassResponse } from "../../internal/events/pass-token.js";
@@ -46,6 +47,7 @@ interface InkChatOptions {
   attachAdapterEventSink: (
     sink: ((adapterName: string, event: AdapterEvent) => void) | null,
   ) => void;
+  approvalQueue?: ApprovalQueue;
 }
 
 interface InkChatAppProps extends InkChatOptions {
@@ -330,6 +332,47 @@ const lineColor = (kind: LineKind): "red" | "cyan" | "green" | "white" => {
   }
 };
 
+interface ApprovalPromptProps {
+  request: ApprovalRequest;
+  queueSize: number;
+  onRespond: (decision: string) => void;
+}
+
+const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({ request, queueSize, onRespond }) => {
+  useInput((_input, key) => {
+    if (key.return) {
+      onRespond("accept");
+    } else if (_input === "s" && request.availableDecisions.includes("acceptForSession")) {
+      onRespond("acceptForSession");
+    } else if (key.escape) {
+      onRespond("decline");
+    }
+  });
+
+  const borderColor = request.agent === "claude" ? "magenta" : "cyan";
+  const header = request.agent === "claude"
+    ? `${request.agent} was denied permission`
+    : `${request.agent} wants to ${request.kind === "command" ? "run a command" : request.kind === "file" ? "modify a file" : "escalate permissions"}`;
+
+  const detail = request.command || request.filePath || request.description;
+  const hasSessionOption = request.availableDecisions.includes("acceptForSession");
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1}>
+      <Text bold>{header}</Text>
+      <Text> </Text>
+      <Text>{detail}</Text>
+      <Text> </Text>
+      <Text dimColor>
+        {"[Enter] Accept"}
+        {hasSessionOption ? "  [s] Accept for session" : ""}
+        {"  [Esc] Deny"}
+        {queueSize > 0 ? `  (${queueSize} more queued)` : ""}
+      </Text>
+    </Box>
+  );
+};
+
 const InkChatApp = ({
   version,
   roomId,
@@ -345,6 +388,7 @@ const InkChatApp = ({
   interruptActiveRun,
   attachAdapterEventSink,
   bindConsoleSink,
+  approvalQueue,
 }: InkChatAppProps): React.JSX.Element => {
   const { exit } = useApp();
   const [currentMode, setCurrentMode] = useState<OrchestrationMode>(mode);
@@ -364,6 +408,8 @@ const InkChatApp = ({
   const [lastSubmittedLine, setLastSubmittedLine] = useState<string>("");
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [activeApproval, setActiveApproval] = useState<ApprovalRequest | null>(null);
+  const [approvalQueueSize, setApprovalQueueSize] = useState(0);
 
   const nextLineId = useRef(1);
   const pendingTextByAdapter = useRef(new Map<string, string>());
@@ -621,6 +667,23 @@ const InkChatApp = ({
     pushLine,
     richUi,
   ]);
+
+  // Wire approval queue callbacks
+  useEffect(() => {
+    if (!approvalQueue) {
+      return;
+    }
+    approvalQueue.setCallbacks(
+      (item) => {
+        setActiveApproval(item.request);
+        setApprovalQueueSize(approvalQueue.pending - 1);
+      },
+      () => {
+        setActiveApproval(null);
+        setApprovalQueueSize(0);
+      },
+    );
+  }, [approvalQueue]);
 
   const resetHistoryNavigation = useCallback((): void => {
     setHistoryIndex(-1);
@@ -1038,13 +1101,21 @@ const InkChatApp = ({
       ) : null}
 
       <Text dimColor>{headerRule}</Text>
-      <Box>
-        <Text color="white">› </Text>
-        <Text>{draft.slice(0, cursorIndex)}</Text>
-        <Text inverse>{draft[cursorIndex] ?? " "}</Text>
-        <Text>{draft.slice(cursorIndex + 1)}</Text>
-        {isSubmitting ? <Text dimColor> (running)</Text> : null}
-      </Box>
+      {activeApproval ? (
+        <ApprovalPrompt
+          request={activeApproval}
+          queueSize={approvalQueueSize}
+          onRespond={(decision) => approvalQueue?.respondToActive(decision)}
+        />
+      ) : (
+        <Box>
+          <Text color="white">› </Text>
+          <Text>{draft.slice(0, cursorIndex)}</Text>
+          <Text inverse>{draft[cursorIndex] ?? " "}</Text>
+          <Text>{draft.slice(cursorIndex + 1)}</Text>
+          {isSubmitting ? <Text dimColor> (running)</Text> : null}
+        </Box>
+      )}
 
       {shouldShowRunningLine ? (
         <Text color="cyan">

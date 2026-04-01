@@ -1,17 +1,7 @@
-/**
- * ApprovalQueue — holds pending approval requests for human review.
- *
- * When RISK_LEVELS is enabled, incoming requests are classified and
- * optionally auto-approved based on the configured policy.
- */
-
-import { classifyApprovalRequest } from "./risk-classifier.js";
-import type { ApprovalRequest } from "./risk-classifier.js";
-import type { RiskLevel } from "./risk-classifier.js";
+import type { ApprovalRequest } from "../adapters/adapter.js";
+import { classifyApprovalRequest, type RiskLevel } from "./risk-classifier.js";
 import { shouldAutoApprove, type AutoApprovePolicy } from "./auto-approve.js";
 import { isFeatureEnabled } from "../config/features.js";
-
-export type { ApprovalRequest } from "./risk-classifier.js";
 
 export interface ApprovalQueueItem {
   request: ApprovalRequest;
@@ -20,9 +10,20 @@ export interface ApprovalQueueItem {
   riskReason?: string;
 }
 
+type PresentCallback = (item: ApprovalQueueItem) => void;
+type ClearCallback = () => void;
+
 export class ApprovalQueue {
-  private readonly queue: ApprovalQueueItem[] = [];
+  private queue: ApprovalQueueItem[] = [];
+  private activeItem: ApprovalQueueItem | null = null;
+  private onPresent: PresentCallback = () => {};
+  private onClear: ClearCallback = () => {};
   private autoApprovePolicy: AutoApprovePolicy = "none";
+
+  public setCallbacks(onPresent: PresentCallback, onClear: ClearCallback): void {
+    this.onPresent = onPresent;
+    this.onClear = onClear;
+  }
 
   public setAutoApprovePolicy(policy: AutoApprovePolicy): void {
     this.autoApprovePolicy = policy;
@@ -42,30 +43,60 @@ export class ApprovalQueue {
       }
     }
 
-    // Classify and attach risk info when feature enabled
     const item: ApprovalQueueItem = { request, respond };
+
+    // Classify and attach risk info when feature enabled
     if (isFeatureEnabled("RISK_LEVELS")) {
       const assessment = classifyApprovalRequest(request);
       item.riskLevel = assessment.level;
       item.riskReason = assessment.reason;
     }
 
-    this.queue.push(item);
+    if (!this.activeItem) {
+      this.activeItem = item;
+      this.onPresent(item);
+    } else {
+      this.queue.push(item);
+    }
   }
 
-  public pending(): readonly ApprovalQueueItem[] {
-    return this.queue;
+  public respondToActive(decision: string): void {
+    if (!this.activeItem) {
+      return;
+    }
+    const item = this.activeItem;
+    this.activeItem = null;
+    item.respond(decision);
+    this.advance();
   }
 
-  public size(): number {
-    return this.queue.length;
+  public rejectAll(): void {
+    if (this.activeItem) {
+      this.activeItem.respond("cancel");
+      this.activeItem = null;
+    }
+    for (const item of this.queue) {
+      item.respond("cancel");
+    }
+    this.queue = [];
+    this.onClear();
   }
 
-  public dequeue(): ApprovalQueueItem | undefined {
-    return this.queue.shift();
+  public get pending(): number {
+    return this.queue.length + (this.activeItem ? 1 : 0);
   }
 
-  public clear(): void {
-    this.queue.length = 0;
+  public get active(): ApprovalQueueItem | null {
+    return this.activeItem;
+  }
+
+  private advance(): void {
+    const next = this.queue.shift();
+    if (next) {
+      this.activeItem = next;
+      this.onPresent(next);
+    } else {
+      this.onClear();
+    }
   }
 }

@@ -2,8 +2,10 @@ import type {
   Adapter,
   AdapterEvent,
   AdapterConfig,
+  ApprovalRequest,
   PersistentAdapter,
 } from "../adapters/adapter.js";
+import type { ApprovalQueue } from "./approval-queue.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
 import { isFeatureEnabled } from "../config/features.js";
 import type {
@@ -32,6 +34,7 @@ interface DispatchEngineOptions {
   onAdapterEvent?: (adapterName: string, event: AdapterEvent) => void;
   logger: EngineLogger;
   memoryService?: MemoryService;
+  approvalQueue?: ApprovalQueue;
   hookRegistry?: HookRegistry;
 }
 
@@ -46,6 +49,7 @@ export class DispatchEngine implements TeamDispatchApi {
   ) => void;
   private readonly logger: EngineLogger;
   private readonly memoryService?: MemoryService;
+  private readonly approvalQueue?: ApprovalQueue;
   private readonly hookRegistry?: HookRegistry;
 
   public constructor(options: DispatchEngineOptions) {
@@ -56,6 +60,7 @@ export class DispatchEngine implements TeamDispatchApi {
     this.onAdapterEvent = options.onAdapterEvent;
     this.logger = options.logger;
     this.memoryService = options.memoryService;
+    this.approvalQueue = options.approvalQueue;
     this.hookRegistry = options.hookRegistry;
   }
 
@@ -431,6 +436,15 @@ export class DispatchEngine implements TeamDispatchApi {
     const { prompt, cutoffSeq } = promptResult;
     const turnPrompt = withPersistentSystemPrompt(prompt, adapterConfig.systemPrompt);
 
+    // Wire approval callback for adapters that support it
+    if (this.approvalQueue && "respondToApproval" in adapter) {
+      adapter.onApprovalRequest = (request: ApprovalRequest) => {
+        this.approvalQueue!.enqueue(request, (decision: string) => {
+          adapter.respondToApproval?.(request.approvalId, decision);
+        });
+      };
+    }
+
     let finalText = "";
     let failed: { errorClass: string; message: string } | undefined;
     let boundNativeId: string | null = null;
@@ -521,6 +535,32 @@ export class DispatchEngine implements TeamDispatchApi {
     }
     if ((options?.trackCursor ?? true) && cutoffSeq !== null) {
       this.session.updateAgentSessionCursor(agentSession.id, cutoffSeq);
+    }
+
+    // Claude retry flow: if adapter collected allowed tools from user approvals,
+    // destroy current runner and retry with --allowedTools
+    if (
+      adapter.getAllowedToolsOverride &&
+      adapter.clearAllowedToolsOverride
+    ) {
+      const allowedTools = adapter.getAllowedToolsOverride();
+      if (allowedTools.length > 0) {
+        this.logger.log("info", "dispatch.retry_with_allowed_tools", {
+          adapter: dispatch.targetAdapter,
+          tools: allowedTools,
+        });
+        // Destroy current runner so next dispatch creates one with allowedTools
+        if (adapter.destroy) {
+          await adapter.destroy(agentSession.nativeSessionId ?? "");
+        }
+        // Retry dispatch (allowedToolsOverride stays populated; new runner uses them)
+        const retryDispatch: Dispatch = {
+          ...dispatch,
+          dispatchId: createId("dsp"),
+          requestId: createId("req"),
+        };
+        return this.runPersistentDispatch(retryDispatch, adapter, adapterConfig, true, options);
+      }
     }
 
     const resolvedText = applyOutputTransform(

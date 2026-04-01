@@ -6,6 +6,9 @@ import type {
   AdapterMode,
   AdapterStatus,
   AgentInput,
+  ApprovalCallback,
+  ApprovalRequest,
+  ApprovalResponseFn,
   PersistentAdapter,
   SendTurnInput,
 } from "../adapter.js";
@@ -63,6 +66,27 @@ interface ClaudeDeltaPart {
 
 export class ClaudeAdapter implements PersistentAdapter {
   public readonly name = "claude";
+  public onApprovalRequest: ApprovalCallback | undefined;
+  private allowedToolsOverride: string[] = [];
+  private pendingDenials = new Map<string, string>();
+
+  public respondToApproval: ApprovalResponseFn = (approvalId, decision) => {
+    const toolName = this.pendingDenials.get(approvalId);
+    if (toolName && (decision === "accept" || decision === "acceptForSession")) {
+      this.allowedToolsOverride.push(toolName);
+    }
+    this.pendingDenials.delete(approvalId);
+  };
+
+  public getAllowedToolsOverride(): string[] {
+    return [...this.allowedToolsOverride];
+  }
+
+  public clearAllowedToolsOverride(): void {
+    this.allowedToolsOverride = [];
+    this.pendingDenials.clear();
+  }
+
   private readonly running = new Map<string, OneShotProcess>();
   private readonly interactiveRequestIds = new Set<string>();
   private status: AdapterStatus = "ready";
@@ -501,7 +525,12 @@ export class ClaudeAdapter implements PersistentAdapter {
         cwd,
         buildClaudeSpawnEnv(process.env),
         nativeSessionId,
+        this.allowedToolsOverride,
       );
+      runner.onApprovalRequest = this.onApprovalRequest ?? null;
+      runner.onDenial = (approvalId: string, toolName: string) => {
+        this.pendingDenials.set(approvalId, toolName);
+      };
       this.interactiveRunner = runner;
       this.interactiveSessionId = runner.sessionId();
       this.interactiveCwd = cwd;
@@ -612,6 +641,8 @@ export class ClaudeAdapter implements PersistentAdapter {
 
 class ClaudeInteractiveRunner {
   private readonly child: InteractiveProcess;
+  public onApprovalRequest: ApprovalCallback | null = null;
+  public onDenial: ((approvalId: string, toolName: string) => void) | null = null;
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private closed = false;
@@ -622,9 +653,10 @@ class ClaudeInteractiveRunner {
     cwd: string,
     env: NodeJS.ProcessEnv,
     nativeSessionId: string | null,
+    allowedTools: string[] = [],
   ) {
     this.sessionIdValue = nativeSessionId;
-    this.child = spawn("claude", buildClaudeInteractiveSpawnArgs(nativeSessionId), {
+    this.child = spawn("claude", buildClaudeInteractiveSpawnArgs(nativeSessionId, allowedTools), {
       stdio: ["pipe", "pipe", "pipe"],
       env,
       cwd,
@@ -819,6 +851,22 @@ class ClaudeInteractiveRunner {
     }
 
     if (isClaudeResultEvent(parsed)) {
+      // Detect permission denials before resolving the turn
+      const denials = extractClaudePermissionDenials(
+        parsed as Record<string, unknown>,
+      );
+      if (denials.length > 0 && this.onApprovalRequest) {
+        for (const denial of denials) {
+          const approvalId = `apr_claude_${createId("apr")}`;
+          this.onDenial?.(approvalId, denial.toolName);
+          this.onApprovalRequest({
+            ...denial,
+            approvalId,
+            agent: "claude",
+          });
+        }
+      }
+
       const activeTurn = this.activeTurn;
       this.activeTurn = null;
       activeTurn.idleTimeout.clear();
@@ -887,6 +935,7 @@ export const buildClaudeSpawnArgs = (
 
 export const buildClaudeInteractiveSpawnArgs = (
   nativeSessionId: string | null = null,
+  allowedTools: string[] = [],
 ): string[] => [
   ...(nativeSessionId ? ["--resume", nativeSessionId] : []),
   "--print",
@@ -896,6 +945,7 @@ export const buildClaudeInteractiveSpawnArgs = (
   "stream-json",
   "--verbose",
   "--include-partial-messages",
+  ...(allowedTools.length > 0 ? ["--allowedTools", ...allowedTools] : []),
 ];
 
 export const buildClaudeInteractiveInput = (prompt: string): Record<string, unknown> => ({
@@ -1235,4 +1285,52 @@ const classifyClaudeInteractiveError = (message: string): ErrorClass => {
     return "PROTOCOL_ERROR";
   }
   return "PROCESS_CRASH";
+};
+
+const readStringField = (
+  obj: Record<string, unknown>,
+  key: string,
+): string | null => {
+  const value = obj[key];
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  return null;
+};
+
+export const extractClaudePermissionDenials = (
+  resultEvent: Record<string, unknown>,
+): Array<Omit<ApprovalRequest, "approvalId" | "agent">> => {
+  const denials = resultEvent.permission_denials;
+  if (!Array.isArray(denials) || denials.length === 0) {
+    return [];
+  }
+
+  return denials.map((denial: Record<string, unknown>) => {
+    const toolName = readStringField(denial, "tool_name") ?? "Unknown";
+    const toolInput =
+      denial.tool_input && typeof denial.tool_input === "object"
+        ? (denial.tool_input as Record<string, unknown>)
+        : {};
+
+    const isFileOp = /write|edit|create/i.test(toolName);
+    const kind: "command" | "file" = isFileOp ? "file" : "command";
+    const command = readStringField(toolInput, "command") ?? undefined;
+    const filePath = readStringField(toolInput, "file_path") ?? undefined;
+    const description = command
+      ? `Run: ${command}`
+      : filePath
+        ? `${toolName}: ${filePath}`
+        : `Use tool: ${toolName}`;
+
+    return {
+      kind,
+      toolName,
+      description,
+      command,
+      filePath,
+      availableDecisions: ["accept", "decline"],
+      raw: denial,
+    };
+  });
 };

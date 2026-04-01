@@ -1,4 +1,5 @@
 import type { Adapter } from "../adapters/adapter.js";
+import { ApprovalQueue } from "./approval-queue.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
 import type { Message, OrchestrationMode, PinnedContext, Room } from "../events/types.js";
 import { isPassResponse } from "../events/pass-token.js";
@@ -83,6 +84,7 @@ export class ChatEngine {
   private readonly team: TeamOrchestrator;
   private readonly lifecycle: EngineLifecycle;
   private readonly logger: EngineLogger;
+  private readonly approvalQueue: ApprovalQueue;
 
   public constructor(
     private readonly session: SessionService,
@@ -94,6 +96,7 @@ export class ChatEngine {
   ) {
     const logger = hooks.logger ?? createDefaultEngineLogger();
     this.logger = logger;
+    this.approvalQueue = new ApprovalQueue();
 
     this.hookRegistry = new HookRegistry();
 
@@ -105,6 +108,7 @@ export class ChatEngine {
       onAdapterEvent: this.hooks.onAdapterEvent,
       logger,
       memoryService: this.memoryService,
+      approvalQueue: this.approvalQueue,
       hookRegistry: this.hookRegistry,
     });
 
@@ -130,6 +134,10 @@ export class ChatEngine {
       team: this.team,
       logger,
     });
+  }
+
+  public getApprovalQueue(): ApprovalQueue {
+    return this.approvalQueue;
   }
 
   public init(): { room: Room; sessionId: string; mode: OrchestrationMode } {

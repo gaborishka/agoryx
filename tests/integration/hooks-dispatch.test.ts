@@ -13,8 +13,8 @@ import {
 } from "../../internal/adapters/event-factory.js";
 import type { ChatRuntimeConfig } from "../../internal/config/default.js";
 import {
-  setFeatureEnabled,
-  resetFeatureFlags,
+  setFeatureOverride,
+  clearAllFeatureOverrides,
 } from "../../internal/config/features.js";
 import type { MessageEventPayload } from "../../internal/events/types.js";
 import { ChatEngine } from "../../internal/engine/chat.js";
@@ -95,25 +95,25 @@ const createEngine = (): { engine: ChatEngine; close: () => void } => {
 
 describe("HookRegistry integration with DispatchEngine", () => {
   beforeEach(() => {
-    resetFeatureFlags();
+    clearAllFeatureOverrides();
   });
 
   afterEach(() => {
-    resetFeatureFlags();
+    clearAllFeatureOverrides();
   });
 
   it("fires pre and post hooks during a dispatch when feature is enabled", async () => {
-    setFeatureEnabled("HOOK_SYSTEM", true);
+    setFeatureOverride("HOOK_SYSTEM", true);
     const { engine, close } = createEngine();
 
     const preCalls: PreDispatchPayload[] = [];
     const postCalls: PostDispatchPayload[] = [];
 
     const registry = engine.getHookRegistry();
-    registry.onPreDispatch((payload) => {
+    registry.onPreDispatch("test-pre", (payload) => {
       preCalls.push(payload);
     });
-    registry.onPostDispatch((payload) => {
+    registry.onPostDispatch("test-post", (payload) => {
       postCalls.push(payload);
     });
 
@@ -144,17 +144,17 @@ describe("HookRegistry integration with DispatchEngine", () => {
   });
 
   it("does not fire hooks when HOOK_SYSTEM feature flag is disabled", async () => {
-    setFeatureEnabled("HOOK_SYSTEM", false);
+    setFeatureOverride("HOOK_SYSTEM", false);
     const { engine, close } = createEngine();
 
     const preCalls: PreDispatchPayload[] = [];
     const postCalls: PostDispatchPayload[] = [];
 
     const registry = engine.getHookRegistry();
-    registry.onPreDispatch((payload) => {
+    registry.onPreDispatch("test-pre", (payload) => {
       preCalls.push(payload);
     });
-    registry.onPostDispatch((payload) => {
+    registry.onPostDispatch("test-post", (payload) => {
       postCalls.push(payload);
     });
 
@@ -172,14 +172,14 @@ describe("HookRegistry integration with DispatchEngine", () => {
   });
 
   it("hook errors do not crash the dispatch", async () => {
-    setFeatureEnabled("HOOK_SYSTEM", true);
+    setFeatureOverride("HOOK_SYSTEM", true);
     const { engine, close } = createEngine();
 
     const registry = engine.getHookRegistry();
-    registry.onPreDispatch(() => {
+    registry.onPreDispatch("crash-pre", () => {
       throw new Error("pre-hook explosion");
     });
-    registry.onPostDispatch(() => {
+    registry.onPostDispatch("crash-post", () => {
       throw new Error("post-hook explosion");
     });
 

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { FileCache } from "../utils/file-cache.js";
 
 export interface WorkspaceConfig {
   enabled: boolean;
@@ -57,7 +58,22 @@ function gitExec(args: string[], cwd: string): string {
 }
 
 export class WorkspaceCollector {
-  constructor(private readonly config: WorkspaceConfig) {}
+  private readonly fileCache: FileCache;
+
+  constructor(
+    private readonly config: WorkspaceConfig,
+    options?: { fileCache?: FileCache },
+  ) {
+    this.fileCache = options?.fileCache ?? new FileCache({
+      maxEntries: 20,
+      maxTotalBytes: 512 * 1024, // 512KB for pinned docs
+      ttlMs: 30_000,
+    });
+  }
+
+  public getFileCache(): FileCache {
+    return this.fileCache;
+  }
 
   public collectAlwaysOn(cwd: string, pinnedDocPaths?: string[]): AlwaysOnContext {
     try {
@@ -267,7 +283,14 @@ export class WorkspaceCollector {
         continue;
       }
       try {
-        const raw = readFileSync(resolvedPath, "utf-8");
+        const raw = this.fileCache.get(resolvedPath);
+        if (raw === null) {
+          this.logWorkspaceWarning(
+            `failed to read pinned doc '${configuredPath}'`,
+            "file not found or unreadable",
+          );
+          continue;
+        }
         const limit = this.config.pinnedDocCharsPerFile;
         if (raw.length > limit) {
           docs.push({ path: configuredPath, content: raw.slice(0, limit), truncated: true });

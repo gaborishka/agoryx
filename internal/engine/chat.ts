@@ -6,6 +6,7 @@ import type { WorktreeManager } from "../worktree/manager.js";
 import { createPolicy } from "../orchestrator/factory.js";
 import { SessionService } from "../session/service.js";
 import { DispatchEngine } from "./dispatch-engine.js";
+import { HookRegistry } from "./hooks.js";
 import { EngineLifecycle } from "./lifecycle.js";
 import type { EngineShutdownReport } from "./lifecycle.js";
 import { createDefaultEngineLogger } from "./logger.js";
@@ -33,6 +34,7 @@ export type {
 export class ChatEngine {
   private state: EngineState | null = null;
   private readonly dispatchEngine: DispatchEngine;
+  private readonly hookRegistry: HookRegistry;
   private readonly team: TeamOrchestrator;
   private readonly lifecycle: EngineLifecycle;
   private readonly logger: EngineLogger;
@@ -48,6 +50,8 @@ export class ChatEngine {
     const logger = hooks.logger ?? createDefaultEngineLogger();
     this.logger = logger;
 
+    this.hookRegistry = new HookRegistry();
+
     this.dispatchEngine = new DispatchEngine({
       session: this.session,
       adapters: this.adapters,
@@ -56,6 +60,7 @@ export class ChatEngine {
       onAdapterEvent: this.hooks.onAdapterEvent,
       logger,
       memoryService: this.memoryService,
+      hookRegistry: this.hookRegistry,
     });
 
     this.team = new TeamOrchestrator({
@@ -143,6 +148,10 @@ export class ChatEngine {
       throw new Error("Engine is not initialized.");
     }
     return this.state;
+  }
+
+  public getHookRegistry(): HookRegistry {
+    return this.hookRegistry;
   }
 
   public setMode(mode: OrchestrationMode): OrchestrationMode {

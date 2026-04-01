@@ -26,6 +26,8 @@ import type {
   CreateTeamStepInput,
 } from "../storage/sqlite.js";
 import { buildContext, type BuiltContext } from "./context.js";
+import { ContextCache } from "./context-cache.js";
+import { isFeatureEnabled } from "../config/features.js";
 import {
   WorkspaceCollector,
   DEFAULT_WORKSPACE_CONFIG,
@@ -213,6 +215,7 @@ export interface SessionServiceOptions {
 
 export class SessionService {
   private readonly turnLocks = new Map<string, Promise<void>>();
+  private readonly contextCache = new ContextCache();
   private readonly workspaceConfig: WorkspaceConfig;
   private readonly workspaceCollector: WorkspaceCollector;
   private readonly workspaceRootCwd: string;
@@ -315,6 +318,7 @@ export class SessionService {
     pinnedBy = "user",
   ): string {
     const pin = this.store.addPinnedContext(roomId, label, content, pinnedBy);
+    this.contextCache.invalidateRoom(roomId);
     return pin.id;
   }
 
@@ -330,7 +334,9 @@ export class SessionService {
   }
 
   public removePinnedContext(roomId: string, pinId: string): boolean {
-    return this.store.removePinnedContext(roomId, pinId);
+    const result = this.store.removePinnedContext(roomId, pinId);
+    if (result) this.contextCache.invalidateRoom(roomId);
+    return result;
   }
 
   public listPinnedContext(roomId: string): PinnedContext[] {
@@ -356,17 +362,78 @@ export class SessionService {
   /**
    * Rich context build — returns full BuiltContext including token stats and truncation info.
    * Useful for diagnostics and adapters that want to inspect context metadata.
+   *
+   * When the CONTEXT_CACHE feature flag is enabled, the static portions of
+   * context (system prompt, workspace block, pinned messages) are cached so
+   * that only the dynamic conversation history needs to be rebuilt on
+   * subsequent calls with the same static inputs.
    */
   public buildFullContext(room: Room, systemPrompt?: string, agentName?: string): BuiltContext {
     const resolvedSystemPrompt = this.resolveSystemPrompt(room, systemPrompt);
-    return buildContext(this.store, {
+    const workspaceBlock = this.buildWorkspaceBlock(agentName);
+
+    // Try cache for static context (system prompt + pins + workspace)
+    if (isFeatureEnabled("CONTEXT_CACHE")) {
+      const pinIds = this.store.listPinnedContext(room.id).map(p => p.id);
+      const cacheKey = ContextCache.buildKey(room.id, resolvedSystemPrompt, pinIds, workspaceBlock);
+      const cached = this.contextCache.get(cacheKey);
+
+      if (cached) {
+        // We have cached static messages — only rebuild dynamic messages
+        const dynamicResult = buildContext(this.store, {
+          roomId: room.id,
+          systemPrompt: undefined,
+          workspaceBlock: undefined,
+          skipPins: true,
+          maxHistoryMessages: room.config.maxHistoryMessages,
+          checkpointThreshold: room.config.checkpointThreshold,
+          maxContextTokens: room.config.maxContextTokens - cached.tokenCount,
+        });
+
+        return {
+          messages: [...cached.messages, ...dynamicResult.messages],
+          systemPrompt: resolvedSystemPrompt ?? null,
+          truncated: dynamicResult.truncated,
+          totalEstimatedTokens: cached.tokenCount + dynamicResult.totalEstimatedTokens,
+        };
+      }
+    }
+
+    // Full context build (no cache or cache miss)
+    const result = buildContext(this.store, {
       roomId: room.id,
       systemPrompt: resolvedSystemPrompt,
-      workspaceBlock: this.buildWorkspaceBlock(agentName),
+      workspaceBlock,
       maxHistoryMessages: room.config.maxHistoryMessages,
       checkpointThreshold: room.config.checkpointThreshold,
       maxContextTokens: room.config.maxContextTokens,
     });
+
+    // Populate cache for next time
+    if (isFeatureEnabled("CONTEXT_CACHE")) {
+      const pinIds = this.store.listPinnedContext(room.id).map(p => p.id);
+      const cacheKey = ContextCache.buildKey(room.id, resolvedSystemPrompt, pinIds, workspaceBlock);
+      // Extract static messages: system prompt, workspace context, and pinned context blocks
+      const trueStaticMessages = result.messages.filter(m =>
+        m.id === "system-prompt" ||
+        m.id === "workspace-context" ||
+        (m.role === "system" && m.text.startsWith("[Pinned:"))
+      );
+      if (trueStaticMessages.length > 0) {
+        let tokenCount = 0;
+        for (const m of trueStaticMessages) {
+          tokenCount += Math.ceil(m.text.length / 4);
+        }
+        this.contextCache.set(cacheKey, {
+          messages: trueStaticMessages,
+          tokenCount,
+          hash: cacheKey,
+          cachedAt: Date.now(),
+        });
+      }
+    }
+
+    return result;
   }
 
   private resolveSystemPrompt(room: Room, systemPrompt?: string): string | undefined {

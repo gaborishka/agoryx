@@ -16,6 +16,8 @@
 import type { Message, Checkpoint, PinnedContext } from "../events/types.js";
 import { isPassResponse } from "../events/pass-token.js";
 import type { SQLiteStore } from "../storage/sqlite.js";
+import { snipMessages } from "./snipping.js";
+import { isFeatureEnabled } from "../config/features.js";
 
 export interface ContextBuildOptions {
   roomId: string;
@@ -37,6 +39,7 @@ export interface BuiltContext {
   systemPrompt: string | null;
   truncated: boolean;
   totalEstimatedTokens: number;
+  snippedCount?: number;
 }
 
 /**
@@ -93,6 +96,14 @@ export function buildContext(
   // `::pass::` is a protocol signal in free mode and should not enter
   // downstream agent prompts as conversational content.
   messages = messages.filter((message) => !isPassResponse(message.text));
+
+  // Snip old messages when feature enabled (reduces token usage before budget trim)
+  let snipResult: { snippedCount: number } | undefined;
+  if (isFeatureEnabled("MESSAGE_SNIPPING") && messages.length > 0) {
+    const result = snipMessages(messages);
+    messages = result.messages;
+    snipResult = { snippedCount: result.snippedCount };
+  }
 
   // Build output, tracking token budget
   const result: Message[] = [];
@@ -216,5 +227,6 @@ export function buildContext(
     systemPrompt: systemPrompt ?? null,
     truncated,
     totalEstimatedTokens,
+    snippedCount: snipResult?.snippedCount,
   };
 }

@@ -15,8 +15,8 @@ import {
   renderSessionExport,
 } from "./session-export.js";
 import { runInkChat } from "./ink-chat.js";
-import type { ChatRuntimeConfig } from "../../internal/config/default.js";
-import { loadConfig, toRuntimeConfig } from "../../internal/config/index.js";
+import { createDefaultAdapterConfig, type ChatRuntimeConfig } from "../../internal/config/default.js";
+import { loadConfig, toRuntimeConfig, type AgoryxConfig } from "../../internal/config/index.js";
 import {
   ensureParentDirectory,
   resolveConfigPathForLoad,
@@ -36,25 +36,24 @@ import {
 } from "../../internal/worktree/manager.js";
 import { WorkspaceCollector } from "../../internal/workspace/collector.js";
 import { sanitizeRenderedDelta } from "../../internal/rendering/sanitize.js";
+import { isPassResponse } from "../../internal/events/pass-token.js";
 import {
   describeSessionBinding,
   extractPayloadText,
   formatSessionId,
   normalizeStatusText,
 } from "./render-helpers.js";
+import {
+  CliUsageError,
+  parseCliArgsOrThrow,
+  renderUnknownCommandMessage,
+  type OptionSpec,
+  type OutputWriter,
+} from "./cli-args.js";
 
-const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team"];
+const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team", "free"];
 const ROOT_COMMANDS = ["chat", "sessions", "config", "completion", "man", "help"] as const;
 const APP_VERSION = resolveAppVersion();
-const EXIT_USAGE_ERROR = 2;
-
-type OutputWriter = (line?: string) => void;
-
-interface OptionSpec {
-  long: string;
-  short?: string;
-  takesValue: boolean;
-}
 
 const CHAT_OPTION_SPECS: OptionSpec[] = [
   { long: "help", short: "h", takesValue: false },
@@ -88,19 +87,6 @@ const SESSIONS_EXPORT_OPTION_SPECS: OptionSpec[] = [
 const COMPLETION_OPTION_SPECS: OptionSpec[] = [
   { long: "help", short: "h", takesValue: false },
 ];
-
-class CliUsageError extends Error {
-  public readonly exitCode = EXIT_USAGE_ERROR;
-
-  public constructor(
-    message: string,
-    public readonly usage?: (write?: OutputWriter) => void,
-    public readonly hint?: string,
-  ) {
-    super(message);
-    this.name = "CliUsageError";
-  }
-}
 
 interface SlashCommandHint {
   command: string;
@@ -189,6 +175,29 @@ const parseAgentList = (raw: string): string[] =>
     .split(",")
     .map((value) => normalizeWorktreeAgentName(value))
     .filter(Boolean);
+
+const uniqueAgents = (agents: string[]): string[] =>
+  [...new Set(agents)];
+
+const ensureConfigHasAgentEntries = (
+  config: AgoryxConfig,
+  agentNames: string[],
+): void => {
+  const defaults = createDefaultAdapterConfig();
+  for (const agentName of agentNames) {
+    if (config.agents[agentName]) {
+      continue;
+    }
+    const fallback = defaults[agentName];
+    config.agents[agentName] = {
+      adapter: agentName,
+      mode: fallback?.mode ?? "cli",
+      timeoutMs: fallback?.timeoutMs ?? 120_000,
+      maxTokens: fallback?.maxTokens ?? 4_096,
+      systemPrompt: fallback?.systemPrompt,
+    };
+  }
+};
 
 const ensureValidAgentNames = (agents: string[], source: string): void => {
   const invalid = agents.filter((agent) => !isValidWorktreeAgentName(agent));
@@ -339,7 +348,7 @@ async function main(): Promise<void> {
       return;
     default:
       throw new CliUsageError(
-        renderUnknownCommandMessage(command),
+        renderUnknownCommandMessage(command, ROOT_COMMANDS),
         printUsage,
         "Run `agoryx help` or `agoryx --help` to see available commands.",
       );
@@ -372,11 +381,20 @@ const runChat = async (argv: string[]): Promise<void> => {
     ensureValidAgentNames(cliAgents, "--agents");
   }
 
+  const adapters = createAdapterRegistry();
+  const defaultAgents = uniqueAgents(
+    (cliAgents ?? Object.keys(adapters))
+      .map((agent) => normalizeWorktreeAgentName(agent))
+      .filter(Boolean),
+  );
+  ensureValidAgentNames(defaultAgents, cliAgents ? "--agents" : "adapter registry");
+
   const loadedConfig = loadConfig(args.config);
+  ensureConfigHasAgentEntries(loadedConfig, defaultAgents);
   const runtimeConfig = toRuntimeConfig(loadedConfig, {
     roomName: args["room-name"] ?? "Agoryx Room",
     resumeRoomId: args.resume,
-    agents: cliAgents,
+    agents: defaultAgents,
   });
 
   const mode = normalizeMode(args.mode ?? runtimeConfig.mode);
@@ -384,7 +402,7 @@ const runChat = async (argv: string[]): Promise<void> => {
     throw new CliUsageError(
       `Invalid mode '${args.mode ?? runtimeConfig.mode}'. Valid modes: ${MODES.join(", ")}`,
       printChatUsage,
-      "Use one of: manual, round-robin, auto, team.",
+      "Use one of: manual, round-robin, auto, team, free.",
     );
   }
 
@@ -432,7 +450,6 @@ const runChat = async (argv: string[]): Promise<void> => {
       resolveAgentCwd: (agentName) => config.adapterConfig[agentName]?.workspaceCwd,
     },
   });
-  const adapters = createAdapterRegistry();
   const configuredMemoryRoot = process.env.AGORYX_MEMORY_ROOT?.trim();
   const defaultWorkspaceStateRoot = resolveWorkspaceStateRoot(process.cwd());
   const configuredDebounce = Number(process.env.AGORYX_MEMORY_DEBOUNCE_MS ?? "");
@@ -494,6 +511,7 @@ const runChat = async (argv: string[]): Promise<void> => {
         attachAdapterEventSink: (sink) => {
           inkAdapterEventSink = sink;
         },
+        approvalQueue: engine.getApprovalQueue(),
       });
       return;
     }
@@ -581,7 +599,9 @@ const processChatInputLine = async (
     }
 
     console.log(formatWarnLine("No dispatch generated."));
-    console.log(formatHintLine("In manual mode, mention an agent (e.g. @codex)."));
+    if (mode === "manual") {
+      console.log(formatHintLine("In manual mode, mention an agent (e.g. @codex)."));
+    }
     return true;
   }
 
@@ -828,13 +848,13 @@ const handleCommand = async (
     case "/mode": {
       if (!rest[0]) {
         console.log(formatInfoLine(`Current mode: ${engine.getState().room.config.mode}`));
-        console.log(formatHintLine("Usage: /mode <manual|round-robin|auto|team>"));
+        console.log(formatHintLine("Usage: /mode <manual|round-robin|auto|team|free>"));
         return true;
       }
       const target = normalizeMode(rest[0]);
       if (!target) {
         console.log(formatWarnLine(`Unknown mode: ${rest[0]}`));
-        console.log(formatHintLine("Usage: /mode <manual|round-robin|auto|team>"));
+        console.log(formatHintLine("Usage: /mode <manual|round-robin|auto|team|free>"));
         return true;
       }
       const promoted = target === "team" ? promoteCliAdaptersToAgentic(config) : [];
@@ -951,6 +971,9 @@ const handleCommand = async (
       const limit = Number.isFinite(requested) && requested > 0 ? requested : 10;
       const messages = engine.listMessages(limit);
       for (const message of messages.slice(-limit)) {
+        if (isPassResponse(message.text)) {
+          continue;
+        }
         console.log(`[${message.author}] ${message.text}`);
       }
       return true;
@@ -1606,6 +1629,7 @@ interface AdapterRenderState {
   lastSessionId: string | null;
   insideSystemReminder: boolean;
   prefixPrinted: boolean;
+  bufferedText: string;
   currentStatusText: string;
   spinner: Ora | null;
 }
@@ -1624,6 +1648,7 @@ const getAdapterRenderState = (adapterName: string): AdapterRenderState => {
     lastSessionId: null,
     insideSystemReminder: false,
     prefixPrinted: false,
+    bufferedText: "",
     currentStatusText: "generating...",
     spinner: null,
   };
@@ -1634,9 +1659,10 @@ const getAdapterRenderState = (adapterName: string): AdapterRenderState => {
 const renderAdapterEvent = (
   adapterName: string,
   event: AdapterEvent,
-  resolveMode: () => OrchestrationMode = () => "manual",
+  resolveMode: () => OrchestrationMode = () => "free",
 ): void => {
   const state = getAdapterRenderState(adapterName);
+  const mode = resolveMode();
   switch (event.type) {
     case "message.started": {
       stopAdapterSpinner(state);
@@ -1645,6 +1671,7 @@ const renderAdapterEvent = (
       state.pendingSessionId = null;
       state.insideSystemReminder = false;
       state.prefixPrinted = false;
+      state.bufferedText = "";
       state.currentStatusText = "generating...";
       if (renderOptions.richUi) {
         if (shouldShowSystemLines()) {
@@ -1662,20 +1689,33 @@ const renderAdapterEvent = (
       } else {
         output.write("\n");
       }
-      output.write(`${adapterName}: `);
-      state.prefixPrinted = true;
+      if (mode !== "free") {
+        output.write(`${adapterName}: `);
+        state.prefixPrinted = true;
+      }
       return;
     }
     case "message.delta": {
       const { text, statusText } = sanitizeRenderedDelta(
         extractPayloadText(event.payload),
         state,
-        resolveMode(),
+        mode,
       );
       if (statusText) {
         updateAdapterLiveStatus(adapterName, state, statusText);
       }
       if (text) {
+        if (mode === "free") {
+          state.bufferedText += text;
+          state.sawContent = true;
+          if (!state.prefixPrinted) {
+            persistAdapterGeneratingStatus(adapterName, state);
+            output.write(`\n${formatAdapterName(adapterName)}: `);
+            state.prefixPrinted = true;
+          }
+          output.write(text);
+          return;
+        }
         if (!state.prefixPrinted) {
           persistAdapterGeneratingStatus(adapterName, state);
           output.write(`\n${formatAdapterName(adapterName)}: `);
@@ -1727,7 +1767,24 @@ const renderAdapterEvent = (
     }
     case "message.completed": {
       stopAdapterSpinner(state);
-      if (state.lineOpen && state.prefixPrinted) {
+      const completedText = sanitizeRenderedDelta(
+        extractPayloadText(event.payload),
+        state,
+        mode,
+      ).text;
+      let freeModeClosedLine = false;
+      if (mode === "free") {
+        const finalText = completedText.trim().length > 0 ? completedText : state.bufferedText;
+        const normalizedFinal = finalText.trim();
+        if (state.prefixPrinted && state.sawContent) {
+          output.write("\n");
+          freeModeClosedLine = true;
+        } else if (normalizedFinal && !isPassResponse(normalizedFinal)) {
+          output.write(`\n${formatAdapterName(adapterName)}: ${normalizedFinal}\n`);
+          freeModeClosedLine = true;
+        }
+      }
+      if (state.lineOpen && state.prefixPrinted && !freeModeClosedLine) {
         output.write("\n");
       }
       if (state.pendingSessionId) {
@@ -1740,6 +1797,7 @@ const renderAdapterEvent = (
       state.sawContent = false;
       state.insideSystemReminder = false;
       state.prefixPrinted = false;
+      state.bufferedText = "";
       state.currentStatusText = "generating...";
       if (shouldShowSystemLines()) {
         output.write(`${formatStatusLabel(adapterName)} done\n`);
@@ -1765,6 +1823,7 @@ const renderAdapterEvent = (
       state.sawContent = false;
       state.insideSystemReminder = false;
       state.prefixPrinted = false;
+      state.bufferedText = "";
       state.currentStatusText = "generating...";
       output.write(
         `\n${formatErrorText(`${adapterName} error (${payload.class ?? "UNKNOWN"}): ${
@@ -1945,8 +2004,9 @@ const printUsage = (write: OutputWriter = console.log): void => {
     "  -V, --version   Print version and exit",
     "",
     "Quick start:",
-    "  agoryx                        Start chat in manual mode (default)",
+    "  agoryx                        Start chat in free mode (default)",
     "  agoryx -m auto                Start chat with smart routing",
+    "  agoryx -m free                Start open-ended free collaboration mode",
     "  agoryx --mode team            Start autonomous team runtime",
     "",
     "Examples:",
@@ -1972,9 +2032,9 @@ const printChatUsage = (write: OutputWriter = console.log): void => {
     "",
     "Options:",
     "  -h, --help                    Show this help message and exit",
-    "  --agents <name,...>           Comma-separated agent list (default: codex,claude)",
-    "  -m, --mode <mode>            Orchestration mode: manual, round-robin, auto, team",
-    "                                (default: manual)",
+    "  --agents <name,...>           Comma-separated agent list (default: all available agents)",
+    "  -m, --mode <mode>            Orchestration mode: manual, round-robin, auto, team, free",
+    "                                (default: free)",
     "  -c, --config <path>          Path to config file",
     "                                (default: $XDG_CONFIG_HOME/agoryx/config.json)",
     "  --db <path>                   Path to SQLite database",
@@ -1986,8 +2046,9 @@ const printChatUsage = (write: OutputWriter = console.log): void => {
     "  --room-name <name>            Set room display name (default: Agoryx Room)",
     "",
     "Examples:",
-    "  agoryx                        Start chat in manual mode",
+    "  agoryx                        Start chat in free mode",
     "  agoryx -m auto                Smart routing — auto-selects best agent",
+    "  agoryx -m free                Open-ended multi-agent discussion mode",
     "  agoryx --mode team            Autonomous team runtime with proposal gate",
     "  agoryx --resume abc123        Resume session abc123",
     "  agoryx --agents codex         Chat with Codex only",
@@ -2108,7 +2169,7 @@ const printChatHelp = (): void => {
 In-chat commands:
   /               list slash commands
   /help
-  /mode <manual|round-robin|auto|team>
+  /mode <manual|round-robin|auto|team|free>
   /status
   /adapter <codex|claude> <stub|cli|persistent|agentic>
   @team <goal>                      start a team run (from any mode)
@@ -2249,198 +2310,12 @@ const resolveDbPathForPreparation = (dbPath: string): string | null => {
   }
 };
 
-interface ParsedArgs {
-  options: Record<string, string>;
-  positionals: string[];
-}
-
 const ensureDbPathReady = (dbPath: string): void => {
   const fsPath = resolveDbPathForPreparation(dbPath);
   if (!fsPath) {
     return;
   }
   ensureParentDirectory(fsPath);
-};
-
-const parseCliArgs = (args: string[], specs: OptionSpec[]): ParsedArgs => {
-  const options: Record<string, string> = {};
-  const positionals: string[] = [];
-  const byLong = new Map(specs.map((spec) => [spec.long, spec] as const));
-  const byShort = new Map(
-    specs
-      .filter((spec): spec is OptionSpec & { short: string } => Boolean(spec.short))
-      .map((spec) => [spec.short, spec] as const),
-  );
-
-  for (let i = 0; i < args.length; i += 1) {
-    const token = args[i];
-    if (!token) {
-      continue;
-    }
-
-    if (token === "--") {
-      positionals.push(...args.slice(i + 1));
-      break;
-    }
-
-    if (token.startsWith("--")) {
-      const withoutPrefix = token.slice(2);
-      const equalIndex = withoutPrefix.indexOf("=");
-      const key = equalIndex >= 0 ? withoutPrefix.slice(0, equalIndex) : withoutPrefix;
-      const inlineValue = equalIndex >= 0 ? withoutPrefix.slice(equalIndex + 1) : undefined;
-      const spec = byLong.get(key);
-      if (!spec) {
-        throw new CliUsageError(
-          renderUnknownOptionMessage(`--${key}`, specs),
-          undefined,
-          "Run with --help to see available options.",
-        );
-      }
-
-      if (spec.takesValue) {
-        if (inlineValue != null) {
-          options[spec.long] = inlineValue;
-          continue;
-        }
-
-        const next = args[i + 1];
-        if (next == null || (next !== "-" && next.startsWith("-"))) {
-          throw new CliUsageError(
-            `Option --${spec.long} requires a value.`,
-            undefined,
-            `Provide a value, for example: --${spec.long} <value>.`,
-          );
-        }
-        options[spec.long] = next;
-        i += 1;
-        continue;
-      }
-
-      if (inlineValue != null) {
-        throw new CliUsageError(
-          `Option --${spec.long} does not take a value.`,
-          undefined,
-          `Remove the value and pass only --${spec.long}.`,
-        );
-      }
-      options[spec.long] = "true";
-      continue;
-    }
-
-    if (token.startsWith("-") && token !== "-") {
-      const short = token.slice(1);
-      if (short.length !== 1) {
-        throw new CliUsageError(
-          renderUnknownOptionMessage(token, specs),
-          undefined,
-          "Run with --help to see available options.",
-        );
-      }
-      const spec = byShort.get(short);
-      if (!spec) {
-        throw new CliUsageError(
-          renderUnknownOptionMessage(token, specs),
-          undefined,
-          "Run with --help to see available options.",
-        );
-      }
-      if (spec.takesValue) {
-        const next = args[i + 1];
-        if (next == null || (next !== "-" && next.startsWith("-"))) {
-          throw new CliUsageError(
-            `Option -${short} requires a value.`,
-            undefined,
-            `Provide a value, for example: -${short} <value>.`,
-          );
-        }
-        options[spec.long] = next;
-        i += 1;
-      } else {
-        options[spec.long] = "true";
-      }
-      continue;
-    }
-
-    if (!token.startsWith("-")) {
-      positionals.push(token);
-      continue;
-    }
-  }
-  return { options, positionals };
-};
-
-const parseCliArgsOrThrow = (
-  args: string[],
-  specs: OptionSpec[],
-  usage: (write?: OutputWriter) => void,
-): ParsedArgs => {
-  try {
-    return parseCliArgs(args, specs);
-  } catch (error) {
-    if (error instanceof CliUsageError) {
-      throw new CliUsageError(error.message, usage, error.hint);
-    }
-    throw error;
-  }
-};
-
-const levenshteinDistance = (left: string, right: string): number => {
-  const matrix = Array.from({ length: left.length + 1 }, () => new Array<number>(right.length + 1).fill(0));
-  for (let i = 0; i <= left.length; i += 1) {
-    matrix[i][0] = i;
-  }
-  for (let j = 0; j <= right.length; j += 1) {
-    matrix[0][j] = j;
-  }
-  for (let i = 1; i <= left.length; i += 1) {
-    for (let j = 1; j <= right.length; j += 1) {
-      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1,
-        matrix[i][j - 1] + 1,
-        matrix[i - 1][j - 1] + cost,
-      );
-    }
-  }
-  return matrix[left.length][right.length];
-};
-
-const renderUnknownOptionMessage = (token: string, specs: OptionSpec[]): string => {
-  const candidates = specs.flatMap((spec) => [
-    `--${spec.long}`,
-    ...(spec.short ? [`-${spec.short}`] : []),
-  ]);
-  let bestCandidate: string | null = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const candidate of candidates) {
-    const distance = levenshteinDistance(token, candidate);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestCandidate = candidate;
-    }
-  }
-
-  if (bestCandidate && bestDistance <= 3) {
-    return `Unknown option '${token}'. Did you mean '${bestCandidate}'?`;
-  }
-  return `Unknown option '${token}'.`;
-};
-
-const renderUnknownCommandMessage = (command: string): string => {
-  let bestCandidate: string | null = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const candidate of ROOT_COMMANDS) {
-    const distance = levenshteinDistance(command, candidate);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestCandidate = candidate;
-    }
-  }
-
-  if (bestCandidate && bestDistance <= 3) {
-    return `Unknown command '${command}'. Did you mean '${bestCandidate}'?`;
-  }
-  return `Unknown command '${command}'.`;
 };
 
 const renderBashCompletion = (): string => `# bash completion for agoryx

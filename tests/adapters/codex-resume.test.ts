@@ -9,14 +9,14 @@ import {
   shouldRestartCodexInteractiveRunner,
 } from "../../internal/adapters/codex/index.js";
 
-test("buildCodexSpawnArgs cold: exec --json <prompt>", () => {
+test("buildCodexSpawnArgs cold: exec --json --skip-git-repo-check <prompt>", () => {
   const args = buildCodexSpawnArgs("hello", null);
-  assert.deepEqual(args, ["exec", "--json", "hello"]);
+  assert.deepEqual(args, ["exec", "--json", "--skip-git-repo-check", "hello"]);
 });
 
-test("buildCodexSpawnArgs resume: exec resume <id> --json <prompt>", () => {
+test("buildCodexSpawnArgs resume: exec resume <id> --json --skip-git-repo-check <prompt>", () => {
   const args = buildCodexSpawnArgs("hello", "thread_abc");
-  assert.deepEqual(args, ["exec", "resume", "thread_abc", "--json", "hello"]);
+  assert.deepEqual(args, ["exec", "resume", "thread_abc", "--json", "--skip-git-repo-check", "hello"]);
 });
 
 test("buildCodexAppServerArgs starts app-server transport", () => {

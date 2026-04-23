@@ -8,10 +8,17 @@ import type {
   TeamRunStage,
   TeamStep,
 } from "../events/types.js";
+import { PASS_RESPONSE_TOKEN, isPassResponse } from "../events/pass-token.js";
 import { createId, nowIso } from "./ids.js";
 import { SQLiteStore } from "../storage/sqlite.js";
 
 const DELTA_PROMPT_MAX_CHARS = 20_000;
+const FREE_MODE_PROMPT_BASE_LINES = [
+  "You are in free mode in a multi-agent room.",
+  "Each agent should contribute once per user round, then stop unless explicitly asked to rebut.",
+  "Use @agent! to hand off a single next turn. Use @agent!! only for an explicit rebuttal/counterpoint.",
+  `If you have nothing useful to add, reply with exactly ${PASS_RESPONSE_TOKEN}.`,
+];
 import type {
   AgentSession,
   CreateTeamCheckInput,
@@ -19,6 +26,8 @@ import type {
   CreateTeamStepInput,
 } from "../storage/sqlite.js";
 import { buildContext, type BuiltContext } from "./context.js";
+import { ContextCache } from "./context-cache.js";
+import { isFeatureEnabled } from "../config/features.js";
 import {
   WorkspaceCollector,
   DEFAULT_WORKSPACE_CONFIG,
@@ -206,6 +215,7 @@ export interface SessionServiceOptions {
 
 export class SessionService {
   private readonly turnLocks = new Map<string, Promise<void>>();
+  private readonly contextCache = new ContextCache();
   private readonly workspaceConfig: WorkspaceConfig;
   private readonly workspaceCollector: WorkspaceCollector;
   private readonly workspaceRootCwd: string;
@@ -308,6 +318,7 @@ export class SessionService {
     pinnedBy = "user",
   ): string {
     const pin = this.store.addPinnedContext(roomId, label, content, pinnedBy);
+    this.contextCache.invalidateRoom(roomId);
     return pin.id;
   }
 
@@ -323,7 +334,9 @@ export class SessionService {
   }
 
   public removePinnedContext(roomId: string, pinId: string): boolean {
-    return this.store.removePinnedContext(roomId, pinId);
+    const result = this.store.removePinnedContext(roomId, pinId);
+    if (result) this.contextCache.invalidateRoom(roomId);
+    return result;
   }
 
   public listPinnedContext(roomId: string): PinnedContext[] {
@@ -349,16 +362,101 @@ export class SessionService {
   /**
    * Rich context build — returns full BuiltContext including token stats and truncation info.
    * Useful for diagnostics and adapters that want to inspect context metadata.
+   *
+   * When the CONTEXT_CACHE feature flag is enabled, the static portions of
+   * context (system prompt, workspace block, pinned messages) are cached so
+   * that only the dynamic conversation history needs to be rebuilt on
+   * subsequent calls with the same static inputs.
    */
   public buildFullContext(room: Room, systemPrompt?: string, agentName?: string): BuiltContext {
-    return buildContext(this.store, {
+    const resolvedSystemPrompt = this.resolveSystemPrompt(room, systemPrompt);
+    const workspaceBlock = this.buildWorkspaceBlock(agentName);
+
+    // Try cache for static context (system prompt + pins + workspace)
+    if (isFeatureEnabled("CONTEXT_CACHE")) {
+      const pinIds = this.store.listPinnedContext(room.id).map(p => p.id);
+      const cacheKey = ContextCache.buildKey(room.id, resolvedSystemPrompt, pinIds, workspaceBlock);
+      const cached = this.contextCache.get(cacheKey);
+
+      if (cached) {
+        // We have cached static messages — only rebuild dynamic messages
+        const dynamicResult = buildContext(this.store, {
+          roomId: room.id,
+          systemPrompt: undefined,
+          workspaceBlock: undefined,
+          skipPins: true,
+          maxHistoryMessages: room.config.maxHistoryMessages,
+          checkpointThreshold: room.config.checkpointThreshold,
+          maxContextTokens: room.config.maxContextTokens - cached.tokenCount,
+        });
+
+        return {
+          messages: [...cached.messages, ...dynamicResult.messages],
+          systemPrompt: resolvedSystemPrompt ?? null,
+          truncated: dynamicResult.truncated,
+          totalEstimatedTokens: cached.tokenCount + dynamicResult.totalEstimatedTokens,
+        };
+      }
+    }
+
+    // Full context build (no cache or cache miss)
+    const result = buildContext(this.store, {
       roomId: room.id,
-      systemPrompt,
-      workspaceBlock: this.buildWorkspaceBlock(agentName),
+      systemPrompt: resolvedSystemPrompt,
+      workspaceBlock,
       maxHistoryMessages: room.config.maxHistoryMessages,
       checkpointThreshold: room.config.checkpointThreshold,
       maxContextTokens: room.config.maxContextTokens,
     });
+
+    // Populate cache for next time
+    if (isFeatureEnabled("CONTEXT_CACHE")) {
+      const pinIds = this.store.listPinnedContext(room.id).map(p => p.id);
+      const cacheKey = ContextCache.buildKey(room.id, resolvedSystemPrompt, pinIds, workspaceBlock);
+      // Extract static messages: system prompt, workspace context, and pinned context blocks
+      const trueStaticMessages = result.messages.filter(m =>
+        m.id === "system-prompt" ||
+        m.id === "workspace-context" ||
+        (m.role === "system" && m.text.startsWith("[Pinned:"))
+      );
+      if (trueStaticMessages.length > 0) {
+        let tokenCount = 0;
+        for (const m of trueStaticMessages) {
+          tokenCount += Math.ceil(m.text.length / 4);
+        }
+        this.contextCache.set(cacheKey, {
+          messages: trueStaticMessages,
+          tokenCount,
+          hash: cacheKey,
+          cachedAt: Date.now(),
+        });
+      }
+    }
+
+    return result;
+  }
+
+  private resolveSystemPrompt(room: Room, systemPrompt?: string): string | undefined {
+    if (room.config.mode !== "free") {
+      return systemPrompt;
+    }
+    const freeModePrompt = this.buildFreeModePromptSuffix(room);
+    if (!systemPrompt) {
+      return freeModePrompt;
+    }
+    return `${systemPrompt}\n\n${freeModePrompt}`;
+  }
+
+  private buildFreeModePromptSuffix(room: Room): string {
+    const mentions = room.participants
+      .filter((participant) => participant.startsWith("agent."))
+      .map((participant) => participant.slice("agent.".length).trim())
+      .filter((name) => name.length > 0)
+      .map((name) => `@${name}`);
+    const mentionHint = mentions.length > 0
+      ? `Supported handoff targets: ${mentions.join(", ")}.`
+      : "When you want a specific agent to answer next, use @agent_name! (or @agent_name!! for rebuttal).";
+    return [...FREE_MODE_PROMPT_BASE_LINES, mentionHint].join("\n");
   }
 
   public buildDeltaPrompt(
@@ -388,15 +486,18 @@ export class SessionService {
       cutoffSeq,
       `agent.${agentName}`,
     );
-    if (delta.length === 0) {
+    const filteredDelta = delta.filter((message) => !isPassResponse(message.text));
+    if (filteredDelta.length === 0) {
       return { prompt: "", cutoffSeq };
     }
 
+    const freeModePrompt = this.buildFreeModePromptSuffix(room);
     const workspaceBlock = this.buildWorkspaceBlock(agentName);
     const promptParts = [
+      ...(room.config.mode === "free" ? [`[Free mode protocol]\n${freeModePrompt}`, ""] : []),
       ...(workspaceBlock ? [workspaceBlock, ""] : []),
       "[Team context since your last response]",
-      ...delta.map((message) => `- [${message.author}][${message.id}] ${message.text}`),
+      ...filteredDelta.map((message) => `- [${message.author}][${message.id}] ${message.text}`),
     ];
     const prompt = promptParts.join("\n");
 

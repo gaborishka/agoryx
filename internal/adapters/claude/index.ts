@@ -6,6 +6,9 @@ import type {
   AdapterMode,
   AdapterStatus,
   AgentInput,
+  ApprovalCallback,
+  ApprovalRequest,
+  ApprovalResponseFn,
   PersistentAdapter,
   SendTurnInput,
 } from "../adapter.js";
@@ -43,6 +46,7 @@ interface ClaudeInteractiveTurn {
   requestId: string;
   output: string;
   resultText: string | null;
+  deltaState: ClaudeDeltaState;
   idleTimeout: ReturnType<typeof createIdleTimeoutController>;
   onDelta: (text: string) => void;
   onSessionId: (sessionId: string) => void;
@@ -50,8 +54,39 @@ interface ClaudeInteractiveTurn {
   reject: (error: Error) => void;
 }
 
+interface ClaudeDeltaState {
+  sawStreamEventDelta: boolean;
+  previousAssistantChunk: string | null;
+}
+
+interface ClaudeDeltaPart {
+  text: string;
+  source: "stream_event" | "assistant" | "generic";
+}
+
 export class ClaudeAdapter implements PersistentAdapter {
   public readonly name = "claude";
+  public onApprovalRequest: ApprovalCallback | undefined;
+  private allowedToolsOverride: string[] = [];
+  private pendingDenials = new Map<string, string>();
+
+  public respondToApproval: ApprovalResponseFn = (approvalId, decision) => {
+    const toolName = this.pendingDenials.get(approvalId);
+    if (toolName && (decision === "accept" || decision === "acceptForSession")) {
+      this.allowedToolsOverride.push(toolName);
+    }
+    this.pendingDenials.delete(approvalId);
+  };
+
+  public getAllowedToolsOverride(): string[] {
+    return [...this.allowedToolsOverride];
+  }
+
+  public clearAllowedToolsOverride(): void {
+    this.allowedToolsOverride = [];
+    this.pendingDenials.clear();
+  }
+
   private readonly running = new Map<string, OneShotProcess>();
   private readonly interactiveRequestIds = new Set<string>();
   private status: AdapterStatus = "ready";
@@ -126,6 +161,7 @@ export class ClaudeAdapter implements PersistentAdapter {
 
     try {
       let resultText: string | null = null;
+      const deltaState = createClaudeDeltaState();
       for await (const chunk of child.stdout) {
         idleTimeout.touch();
         const parsedChunk = parseClaudeChunk(chunk.toString("utf8"));
@@ -137,10 +173,11 @@ export class ClaudeAdapter implements PersistentAdapter {
           continue;
         }
 
-        const chunkParts = parsedChunk.deltaParts.map((part, index) =>
-          index === 0 ? part : `\n${part}`,
-        );
-        for (const text of chunkParts) {
+        for (const part of parsedChunk.deltaParts) {
+          const text = normalizeClaudeDeltaPart(part, deltaState);
+          if (!text) {
+            continue;
+          }
           output += text;
           yield messageDelta(baseArgs(input), {
             ...startedPayload,
@@ -178,7 +215,7 @@ export class ClaudeAdapter implements PersistentAdapter {
       } else {
         yield messageCompleted(baseArgs(input), {
           ...startedPayload,
-          text: output.trim() || resultText?.trim() || "(no content)",
+          text: resolveClaudeFinalText(output, resultText),
         });
       }
     } catch (error) {
@@ -267,6 +304,7 @@ export class ClaudeAdapter implements PersistentAdapter {
     });
 
     try {
+      const deltaState = createClaudeDeltaState();
       for await (const chunk of child.stdout) {
         idleTimeout.touch();
         const raw = chunk.toString("utf8");
@@ -287,10 +325,11 @@ export class ClaudeAdapter implements PersistentAdapter {
           continue;
         }
 
-        const chunkParts = parsedChunk.deltaParts.map((part, index) =>
-          index === 0 ? part : `\n${part}`,
-        );
-        for (const text of chunkParts) {
+        for (const part of parsedChunk.deltaParts) {
+          const text = normalizeClaudeDeltaPart(part, deltaState);
+          if (!text) {
+            continue;
+          }
           output += text;
           yield messageDelta(baseArgs(input), {
             ...startedPayload,
@@ -328,7 +367,7 @@ export class ClaudeAdapter implements PersistentAdapter {
       } else {
         yield messageCompleted(baseArgs(input), {
           ...startedPayload,
-          text: output.trim() || resultText?.trim() || "(no content)",
+          text: resolveClaudeFinalText(output, resultText),
         });
       }
     } catch (error) {
@@ -486,7 +525,12 @@ export class ClaudeAdapter implements PersistentAdapter {
         cwd,
         buildClaudeSpawnEnv(process.env),
         nativeSessionId,
+        this.allowedToolsOverride,
       );
+      runner.onApprovalRequest = this.onApprovalRequest ?? null;
+      runner.onDenial = (approvalId: string, toolName: string) => {
+        this.pendingDenials.set(approvalId, toolName);
+      };
       this.interactiveRunner = runner;
       this.interactiveSessionId = runner.sessionId();
       this.interactiveCwd = cwd;
@@ -597,6 +641,8 @@ export class ClaudeAdapter implements PersistentAdapter {
 
 class ClaudeInteractiveRunner {
   private readonly child: InteractiveProcess;
+  public onApprovalRequest: ApprovalCallback | null = null;
+  public onDenial: ((approvalId: string, toolName: string) => void) | null = null;
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private closed = false;
@@ -607,9 +653,10 @@ class ClaudeInteractiveRunner {
     cwd: string,
     env: NodeJS.ProcessEnv,
     nativeSessionId: string | null,
+    allowedTools: string[] = [],
   ) {
     this.sessionIdValue = nativeSessionId;
-    this.child = spawn("claude", buildClaudeInteractiveSpawnArgs(nativeSessionId), {
+    this.child = spawn("claude", buildClaudeInteractiveSpawnArgs(nativeSessionId, allowedTools), {
       stdio: ["pipe", "pipe", "pipe"],
       env,
       cwd,
@@ -657,6 +704,7 @@ class ClaudeInteractiveRunner {
         requestId: input.requestId,
         output: "",
         resultText: null,
+        deltaState: createClaudeDeltaState(),
         idleTimeout: createIdleTimeoutController(timeoutMs, () => {
           void this.cancelActiveTurn("TIMEOUT: claude interactive request timed out");
         }),
@@ -791,14 +839,34 @@ class ClaudeInteractiveRunner {
 
     const chunk = parseClaudeChunk(line);
     for (const part of chunk.deltaParts) {
-      this.activeTurn.output += part;
-      this.activeTurn.onDelta(part);
+      const text = normalizeClaudeDeltaPart(part, this.activeTurn.deltaState);
+      if (!text) {
+        continue;
+      }
+      this.activeTurn.output += text;
+      this.activeTurn.onDelta(text);
     }
     if (chunk.resultText) {
       this.activeTurn.resultText = chunk.resultText;
     }
 
     if (isClaudeResultEvent(parsed)) {
+      // Detect permission denials before resolving the turn
+      const denials = extractClaudePermissionDenials(
+        parsed as Record<string, unknown>,
+      );
+      if (denials.length > 0 && this.onApprovalRequest) {
+        for (const denial of denials) {
+          const approvalId = `apr_claude_${createId("apr")}`;
+          this.onDenial?.(approvalId, denial.toolName);
+          this.onApprovalRequest({
+            ...denial,
+            approvalId,
+            agent: "claude",
+          });
+        }
+      }
+
       const activeTurn = this.activeTurn;
       this.activeTurn = null;
       activeTurn.idleTimeout.clear();
@@ -867,6 +935,7 @@ export const buildClaudeSpawnArgs = (
 
 export const buildClaudeInteractiveSpawnArgs = (
   nativeSessionId: string | null = null,
+  allowedTools: string[] = [],
 ): string[] => [
   ...(nativeSessionId ? ["--resume", nativeSessionId] : []),
   "--print",
@@ -876,6 +945,7 @@ export const buildClaudeInteractiveSpawnArgs = (
   "stream-json",
   "--verbose",
   "--include-partial-messages",
+  ...(allowedTools.length > 0 ? ["--allowedTools", ...allowedTools] : []),
 ];
 
 export const buildClaudeInteractiveInput = (prompt: string): Record<string, unknown> => ({
@@ -916,9 +986,9 @@ export const buildClaudeSpawnCwd = (
 
 export const parseClaudeChunk = (
   raw: string,
-): { deltaParts: string[]; resultText: string | null } => {
+): { deltaParts: ClaudeDeltaPart[]; resultText: string | null } => {
   const lines = raw.split(/\r?\n/);
-  const parts: string[] = [];
+  const parts: ClaudeDeltaPart[] = [];
   let resultText: string | null = null;
 
   for (const line of lines) {
@@ -942,19 +1012,30 @@ export const parseClaudeChunk = (
       continue;
     }
 
-    if ((maybeObject as Record<string, unknown>).type === "stream_event") {
+    const type = (maybeObject as Record<string, unknown>).type;
+    if (type === "stream_event") {
       const extracted = extractTextFromUnknown(
         (maybeObject as Record<string, unknown>).event,
       );
       if (extracted) {
-        parts.push(extracted);
+        parts.push({ text: extracted, source: "stream_event" });
+      }
+      continue;
+    }
+
+    if (type === "assistant") {
+      const extracted = extractTextFromUnknown(
+        (maybeObject as Record<string, unknown>).message,
+      );
+      if (extracted) {
+        parts.push({ text: extracted, source: "assistant" });
       }
       continue;
     }
 
     const text = extractTextFromJsonLine(trimmed);
     if (text) {
-      parts.push(text);
+      parts.push({ text, source: "generic" });
     }
   }
 
@@ -963,6 +1044,62 @@ export const parseClaudeChunk = (
     resultText,
   };
 };
+
+const createClaudeDeltaState = (): ClaudeDeltaState => ({
+  sawStreamEventDelta: false,
+  previousAssistantChunk: null,
+});
+
+export const normalizeClaudeDeltaPart = (
+  part: ClaudeDeltaPart,
+  state: ClaudeDeltaState,
+): string => {
+  if (part.source === "stream_event") {
+    state.sawStreamEventDelta = true;
+    state.previousAssistantChunk = null;
+    return part.text;
+  }
+
+  if (part.source !== "assistant") {
+    state.previousAssistantChunk = null;
+    return part.text;
+  }
+
+  if (state.sawStreamEventDelta) {
+    state.previousAssistantChunk = part.text;
+    return "";
+  }
+
+  const previous = state.previousAssistantChunk;
+  if (previous === null) {
+    state.previousAssistantChunk = part.text;
+    return part.text;
+  }
+
+  if (part.text === previous) {
+    return "";
+  }
+
+  if (part.text.startsWith(previous)) {
+    const suffix = part.text.slice(previous.length);
+    state.previousAssistantChunk = part.text;
+    return suffix;
+  }
+
+  if (previous.startsWith(part.text)) {
+    state.previousAssistantChunk = part.text;
+    return "";
+  }
+
+  state.previousAssistantChunk = part.text;
+  return part.text;
+};
+
+export const resolveClaudeFinalText = (
+  streamedOutput: string,
+  resultText: string | null,
+): string =>
+  resultText?.trim() || streamedOutput.trim() || "(no content)";
 
 export const extractClaudeSessionId = (line: string): string | null => {
   const trimmed = line.trim();
@@ -1148,4 +1285,52 @@ const classifyClaudeInteractiveError = (message: string): ErrorClass => {
     return "PROTOCOL_ERROR";
   }
   return "PROCESS_CRASH";
+};
+
+const readStringField = (
+  obj: Record<string, unknown>,
+  key: string,
+): string | null => {
+  const value = obj[key];
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  return null;
+};
+
+export const extractClaudePermissionDenials = (
+  resultEvent: Record<string, unknown>,
+): Array<Omit<ApprovalRequest, "approvalId" | "agent">> => {
+  const denials = resultEvent.permission_denials;
+  if (!Array.isArray(denials) || denials.length === 0) {
+    return [];
+  }
+
+  return denials.map((denial: Record<string, unknown>) => {
+    const toolName = readStringField(denial, "tool_name") ?? "Unknown";
+    const toolInput =
+      denial.tool_input && typeof denial.tool_input === "object"
+        ? (denial.tool_input as Record<string, unknown>)
+        : {};
+
+    const isFileOp = /write|edit|create/i.test(toolName);
+    const kind: "command" | "file" = isFileOp ? "file" : "command";
+    const command = readStringField(toolInput, "command") ?? undefined;
+    const filePath = readStringField(toolInput, "file_path") ?? undefined;
+    const description = command
+      ? `Run: ${command}`
+      : filePath
+        ? `${toolName}: ${filePath}`
+        : `Use tool: ${toolName}`;
+
+    return {
+      kind,
+      toolName,
+      description,
+      command,
+      filePath,
+      availableDecisions: ["accept", "decline"],
+      raw: denial,
+    };
+  });
 };

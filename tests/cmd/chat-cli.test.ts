@@ -382,3 +382,27 @@ test("top-level agoryx command defaults to chat mode", async (t) => {
   assert.match(result.stdout, /Agoryx v/);
   assert.match(result.stdout, /Type \/help for commands/);
 });
+
+test("chat defaults to free mode and includes all available agents", async (t) => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "agoryx-default-free-"));
+  t.after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const dbPath = join(tmpDir, "chat.db");
+  const result = await runChatCli(
+    [
+      "--adapter-mode",
+      "stub",
+      "--db",
+      dbPath,
+    ],
+    "/quit\n",
+  );
+
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Mode:\s+free/);
+  assert.match(result.stdout, /- codex: mode=stub/);
+  assert.match(result.stdout, /- claude: mode=stub/);
+});

@@ -269,6 +269,17 @@ test("/mode switches orchestration mode", async (t) => {
   assert.match(result.stdout, /Mode switched to: auto/);
 });
 
+test("/mode switches to free mode", async (t) => {
+  const dir = makeTmpDir(t, "agoryx-cmd-mode-free-");
+  const result = await runChat(
+    baseArgs(join(dir, "test.db")),
+    "/mode free\n/quit\n",
+  );
+
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Mode switched to: free/);
+});
+
 test("/mode rejects invalid mode", async (t) => {
   const dir = makeTmpDir(t, "agoryx-cmd-mode-invalid-");
   const result = await runChat(

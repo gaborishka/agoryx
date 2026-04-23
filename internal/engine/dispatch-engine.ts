@@ -2,9 +2,12 @@ import type {
   Adapter,
   AdapterEvent,
   AdapterConfig,
+  ApprovalRequest,
   PersistentAdapter,
 } from "../adapters/adapter.js";
+import type { ApprovalQueue } from "./approval-queue.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
+import { isFeatureEnabled } from "../config/features.js";
 import type {
   Message,
   SessionBoundPayload,
@@ -14,6 +17,7 @@ import type { MemoryService } from "../memory/service.js";
 import type { Dispatch } from "../orchestrator/policy.js";
 import { createId } from "../session/ids.js";
 import { SessionService } from "../session/service.js";
+import type { HookRegistry } from "./hooks.js";
 import type { EngineLogger } from "./logger.js";
 import type {
   DispatchResult,
@@ -30,6 +34,8 @@ interface DispatchEngineOptions {
   onAdapterEvent?: (adapterName: string, event: AdapterEvent) => void;
   logger: EngineLogger;
   memoryService?: MemoryService;
+  approvalQueue?: ApprovalQueue;
+  hookRegistry?: HookRegistry;
 }
 
 export class DispatchEngine implements TeamDispatchApi {
@@ -43,6 +49,8 @@ export class DispatchEngine implements TeamDispatchApi {
   ) => void;
   private readonly logger: EngineLogger;
   private readonly memoryService?: MemoryService;
+  private readonly approvalQueue?: ApprovalQueue;
+  private readonly hookRegistry?: HookRegistry;
 
   public constructor(options: DispatchEngineOptions) {
     this.session = options.session;
@@ -52,6 +60,8 @@ export class DispatchEngine implements TeamDispatchApi {
     this.onAdapterEvent = options.onAdapterEvent;
     this.logger = options.logger;
     this.memoryService = options.memoryService;
+    this.approvalQueue = options.approvalQueue;
+    this.hookRegistry = options.hookRegistry;
   }
 
   public getLastFailedRequest(adapter: string): string | null {
@@ -204,6 +214,7 @@ export class DispatchEngine implements TeamDispatchApi {
     dispatch: Dispatch,
     isSessionRetry = false,
   ): Promise<DispatchResult> {
+    const startTime = Date.now();
     const state = this.getState();
     const adapter = this.adapters[dispatch.targetAdapter];
     if (!adapter) {
@@ -223,6 +234,18 @@ export class DispatchEngine implements TeamDispatchApi {
       dispatchId: dispatch.dispatchId,
       reason: dispatch.reason,
     });
+
+    // Pre-dispatch hooks
+    if (this.hookRegistry && isFeatureEnabled("HOOK_SYSTEM")) {
+      await this.hookRegistry.runPreHooks({
+        dispatchId: dispatch.dispatchId,
+        requestId: dispatch.requestId,
+        targetAdapter: dispatch.targetAdapter,
+        roomId: state.room.id,
+        reason: dispatch.reason,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     this.memoryService?.recordDispatchStart(state.room.id, dispatch.targetAdapter, dispatch.requestId);
 
@@ -271,6 +294,21 @@ export class DispatchEngine implements TeamDispatchApi {
       this.memoryService?.recordDispatchEnd(state.room.id, dispatch.targetAdapter, "done", []);
     } else {
       this.memoryService?.recordError(state.room.id, dispatch.targetAdapter, result.error ?? "unknown error");
+    }
+
+    // Post-dispatch hooks
+    if (this.hookRegistry && isFeatureEnabled("HOOK_SYSTEM")) {
+      await this.hookRegistry.runPostHooks({
+        dispatchId: dispatch.dispatchId,
+        requestId: dispatch.requestId,
+        targetAdapter: dispatch.targetAdapter,
+        roomId: state.room.id,
+        success: result.success,
+        text: result.text,
+        error: result.error,
+        durationMs: Date.now() - startTime,
+        timestamp: new Date().toISOString(),
+      });
     }
 
     return result;
@@ -398,6 +436,15 @@ export class DispatchEngine implements TeamDispatchApi {
     const { prompt, cutoffSeq } = promptResult;
     const turnPrompt = withPersistentSystemPrompt(prompt, adapterConfig.systemPrompt);
 
+    // Wire approval callback for adapters that support it
+    if (this.approvalQueue && "respondToApproval" in adapter) {
+      adapter.onApprovalRequest = (request: ApprovalRequest) => {
+        this.approvalQueue!.enqueue(request, (decision: string) => {
+          adapter.respondToApproval?.(request.approvalId, decision);
+        });
+      };
+    }
+
     let finalText = "";
     let failed: { errorClass: string; message: string } | undefined;
     let boundNativeId: string | null = null;
@@ -488,6 +535,32 @@ export class DispatchEngine implements TeamDispatchApi {
     }
     if ((options?.trackCursor ?? true) && cutoffSeq !== null) {
       this.session.updateAgentSessionCursor(agentSession.id, cutoffSeq);
+    }
+
+    // Claude retry flow: if adapter collected allowed tools from user approvals,
+    // destroy current runner and retry with --allowedTools
+    if (
+      adapter.getAllowedToolsOverride &&
+      adapter.clearAllowedToolsOverride
+    ) {
+      const allowedTools = adapter.getAllowedToolsOverride();
+      if (allowedTools.length > 0) {
+        this.logger.log("info", "dispatch.retry_with_allowed_tools", {
+          adapter: dispatch.targetAdapter,
+          tools: allowedTools,
+        });
+        // Destroy current runner so next dispatch creates one with allowedTools
+        if (adapter.destroy) {
+          await adapter.destroy(agentSession.nativeSessionId ?? "");
+        }
+        // Retry dispatch (allowedToolsOverride stays populated; new runner uses them)
+        const retryDispatch: Dispatch = {
+          ...dispatch,
+          dispatchId: createId("dsp"),
+          requestId: createId("req"),
+        };
+        return this.runPersistentDispatch(retryDispatch, adapter, adapterConfig, true, options);
+      }
     }
 
     const resolvedText = applyOutputTransform(

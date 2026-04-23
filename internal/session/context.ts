@@ -14,7 +14,10 @@
  */
 
 import type { Message, Checkpoint, PinnedContext } from "../events/types.js";
+import { isPassResponse } from "../events/pass-token.js";
 import type { SQLiteStore } from "../storage/sqlite.js";
+import { snipMessages } from "./snipping.js";
+import { isFeatureEnabled } from "../config/features.js";
 
 export interface ContextBuildOptions {
   roomId: string;
@@ -23,6 +26,12 @@ export interface ContextBuildOptions {
   maxHistoryMessages: number;
   checkpointThreshold: number;
   maxContextTokens: number;
+  /**
+   * When true, skip injecting pinned context messages into the result.
+   * Used by the context cache to avoid duplicating static sections that
+   * are already cached and will be prepended by the caller.
+   */
+  skipPins?: boolean;
 }
 
 export interface BuiltContext {
@@ -30,6 +39,7 @@ export interface BuiltContext {
   systemPrompt: string | null;
   truncated: boolean;
   totalEstimatedTokens: number;
+  snippedCount?: number;
 }
 
 /**
@@ -83,6 +93,18 @@ export function buildContext(
     messages = allMessages;
   }
 
+  // `::pass::` is a protocol signal in free mode and should not enter
+  // downstream agent prompts as conversational content.
+  messages = messages.filter((message) => !isPassResponse(message.text));
+
+  // Snip old messages when feature enabled (reduces token usage before budget trim)
+  let snipResult: { snippedCount: number } | undefined;
+  if (isFeatureEnabled("MESSAGE_SNIPPING") && messages.length > 0) {
+    const result = snipMessages(messages);
+    messages = result.messages;
+    snipResult = { snippedCount: result.snippedCount };
+  }
+
   // Build output, tracking token budget
   const result: Message[] = [];
   let tokenBudget = maxContextTokens;
@@ -127,25 +149,27 @@ export function buildContext(
     }
   }
 
-  // Add pinned context as synthetic system messages
-  for (const pin of pinnedContexts) {
-    const pinText = `[Pinned: ${pin.label}] ${pin.content}`;
-    const tokens = estimateTokens(pinText);
-    if (tokens > tokenBudget) {
-      truncated = true;
-      break;
+  // Add pinned context as synthetic system messages (skipped when caller has cached them)
+  if (!opts.skipPins) {
+    for (const pin of pinnedContexts) {
+      const pinText = `[Pinned: ${pin.label}] ${pin.content}`;
+      const tokens = estimateTokens(pinText);
+      if (tokens > tokenBudget) {
+        truncated = true;
+        break;
+      }
+      tokenBudget -= tokens;
+      result.push({
+        id: pin.id,
+        roomId,
+        author: "system",
+        role: "system",
+        text: pinText,
+        format: "plain",
+        metadata: {},
+        createdAt: pin.createdAt,
+      });
     }
-    tokenBudget -= tokens;
-    result.push({
-      id: pin.id,
-      roomId,
-      author: "system",
-      role: "system",
-      text: pinText,
-      format: "plain",
-      metadata: {},
-      createdAt: pin.createdAt,
-    });
   }
 
   // Add checkpoint summary
@@ -203,5 +227,6 @@ export function buildContext(
     systemPrompt: systemPrompt ?? null,
     truncated,
     totalEstimatedTokens,
+    snippedCount: snipResult?.snippedCount,
   };
 }

@@ -256,3 +256,29 @@ test("context fallback returns newest messages, not oldest window (P3)", () => {
   assert.equal(userMsgs[0].id, "msg_41",
     "first message should be msg_41 (newest 10)");
 });
+
+test("buildContext excludes ::pass:: protocol responses from prompt messages", () => {
+  const store = createTestStore();
+  const room = store.createRoom("test", ["user", "agent.codex"], {
+    mode: "free",
+    checkpointThreshold: 50,
+    maxHistoryMessages: 100,
+    maxContextTokens: 100_000,
+  });
+
+  saveMsg(store, room.id, "msg_1", "hello", "user", "user");
+  saveMsg(store, room.id, "msg_2", "::pass::", "agent.codex", "assistant");
+  saveMsg(store, room.id, "msg_3", "continue", "user", "user");
+
+  const ctx = buildContext(store, {
+    roomId: room.id,
+    maxHistoryMessages: 100,
+    checkpointThreshold: 50,
+    maxContextTokens: 100_000,
+  });
+
+  assert.ok(
+    !ctx.messages.some((message) => message.text.trim().toLowerCase() === "::pass::"),
+    "pass protocol marker should not be included in context messages",
+  );
+});

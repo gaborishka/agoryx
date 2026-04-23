@@ -1,10 +1,13 @@
 import util from "node:util";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput } from "ink";
-import type { AdapterEvent } from "../../internal/adapters/adapter.js";
+import type { AdapterEvent, ApprovalRequest } from "../../internal/adapters/adapter.js";
+import type { ApprovalQueue } from "../../internal/engine/approval-queue.js";
 import type { ChatRuntimeConfig } from "../../internal/config/default.js";
-import type { OrchestrationMode } from "../../internal/events/types.js";
+import type { MessageEventPayload, OrchestrationMode } from "../../internal/events/types.js";
+import { isPassResponse } from "../../internal/events/pass-token.js";
 import { sanitizeRenderedDelta } from "../../internal/rendering/sanitize.js";
+import { renderMarkdownToAnsi } from "../../internal/rendering/markdown.js";
 import {
   describeSessionBinding,
   extractPayloadText,
@@ -25,6 +28,7 @@ interface InkLine {
   id: number;
   kind: LineKind;
   text: string;
+  preformatted?: boolean;
 }
 
 interface InkChatOptions {
@@ -43,6 +47,7 @@ interface InkChatOptions {
   attachAdapterEventSink: (
     sink: ((adapterName: string, event: AdapterEvent) => void) | null,
   ) => void;
+  approvalQueue?: ApprovalQueue;
 }
 
 interface InkChatAppProps extends InkChatOptions {
@@ -65,10 +70,10 @@ interface AdapterLiveState {
 
 const MAX_RENDERED_LINES = 220;
 const MAX_PROMPT_HISTORY = 50;
-const ACTIVE_PREVIEW_MAX_LINES = 6;
-const ACTIVE_PREVIEW_MAX_TOTAL_CHARS = 500;
-const ACTIVE_PREVIEW_MAX_LINE_CHARS = 160;
 const ACTIVE_PREVIEW_WRAP_CHARS = 88;
+const ACTIVE_PREVIEW_HEAD_LINES = 6;
+const ACTIVE_PREVIEW_TAIL_LINES = 14;
+const ACTIVE_PREVIEW_COMPLETION_LINGER_MS = 420;
 const FINAL_MESSAGE_WRAP_CHARS = 100;
 const SPINNER_FRAMES = ["-", "\\", "|", "/"] as const;
 const CLAUDE_LIKE_RULE_WIDTH = 96;
@@ -104,25 +109,24 @@ const formatActivePreviewLines = (text: string): string[] => {
     return [];
   }
 
-  const normalized = text.replace(/\r\n/g, "\n");
-  const tailText =
-    normalized.length <= ACTIVE_PREVIEW_MAX_TOTAL_CHARS
-      ? normalized
-      : `...${normalized.slice(-(ACTIVE_PREVIEW_MAX_TOTAL_CHARS - 3))}`;
-
-  const lines = tailText
+  const lines = text
+    .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) => line.replace(/\t/g, "  "))
     .filter((line, index, array) => !(line.trim().length === 0 && (index === 0 || index === array.length - 1)));
 
   const wrapped = lines.flatMap((line) => wrapLine(line, ACTIVE_PREVIEW_WRAP_CHARS));
-  return wrapped
-    .slice(-ACTIVE_PREVIEW_MAX_LINES)
-    .map((line) =>
-      line.length <= ACTIVE_PREVIEW_MAX_LINE_CHARS
-        ? line
-        : `${line.slice(0, ACTIVE_PREVIEW_MAX_LINE_CHARS - 3)}...`
-    );
+  const maxVisible = ACTIVE_PREVIEW_HEAD_LINES + ACTIVE_PREVIEW_TAIL_LINES;
+  if (wrapped.length <= maxVisible) {
+    return wrapped;
+  }
+
+  const hiddenCount = wrapped.length - maxVisible;
+  return [
+    ...wrapped.slice(0, ACTIVE_PREVIEW_HEAD_LINES),
+    `... (${hiddenCount} lines hidden while streaming) ...`,
+    ...wrapped.slice(-ACTIVE_PREVIEW_TAIL_LINES),
+  ];
 };
 
 const formatElapsed = (totalSeconds: number): string => {
@@ -328,6 +332,47 @@ const lineColor = (kind: LineKind): "red" | "cyan" | "green" | "white" => {
   }
 };
 
+interface ApprovalPromptProps {
+  request: ApprovalRequest;
+  queueSize: number;
+  onRespond: (decision: string) => void;
+}
+
+const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({ request, queueSize, onRespond }) => {
+  useInput((_input, key) => {
+    if (key.return) {
+      onRespond("accept");
+    } else if (_input === "s" && request.availableDecisions.includes("acceptForSession")) {
+      onRespond("acceptForSession");
+    } else if (key.escape) {
+      onRespond("decline");
+    }
+  });
+
+  const borderColor = request.agent === "claude" ? "magenta" : "cyan";
+  const header = request.agent === "claude"
+    ? `${request.agent} was denied permission`
+    : `${request.agent} wants to ${request.kind === "command" ? "run a command" : request.kind === "file" ? "modify a file" : "escalate permissions"}`;
+
+  const detail = request.command || request.filePath || request.description;
+  const hasSessionOption = request.availableDecisions.includes("acceptForSession");
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1}>
+      <Text bold>{header}</Text>
+      <Text> </Text>
+      <Text>{detail}</Text>
+      <Text> </Text>
+      <Text dimColor>
+        {"[Enter] Accept"}
+        {hasSessionOption ? "  [s] Accept for session" : ""}
+        {"  [Esc] Deny"}
+        {queueSize > 0 ? `  (${queueSize} more queued)` : ""}
+      </Text>
+    </Box>
+  );
+};
+
 const InkChatApp = ({
   version,
   roomId,
@@ -343,6 +388,7 @@ const InkChatApp = ({
   interruptActiveRun,
   attachAdapterEventSink,
   bindConsoleSink,
+  approvalQueue,
 }: InkChatAppProps): React.JSX.Element => {
   const { exit } = useApp();
   const [currentMode, setCurrentMode] = useState<OrchestrationMode>(mode);
@@ -362,10 +408,13 @@ const InkChatApp = ({
   const [lastSubmittedLine, setLastSubmittedLine] = useState<string>("");
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [activeApproval, setActiveApproval] = useState<ApprovalRequest | null>(null);
+  const [approvalQueueSize, setApprovalQueueSize] = useState(0);
 
   const nextLineId = useRef(1);
   const pendingTextByAdapter = useRef(new Map<string, string>());
   const liveStateByAdapter = useRef(new Map<string, AdapterLiveState>());
+  const completionCleanupTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const lastInterruptAtMs = useRef(0);
   const historyDraftSnapshot = useRef<string>("");
 
@@ -399,6 +448,25 @@ const InkChatApp = ({
     return created;
   }, []);
 
+  const clearCompletionCleanupTimer = useCallback((adapterName: string): void => {
+    const timer = completionCleanupTimers.current.get(adapterName);
+    if (!timer) {
+      return;
+    }
+    clearTimeout(timer);
+    completionCleanupTimers.current.delete(adapterName);
+  }, []);
+
+  useEffect(
+    () => () => {
+      for (const timer of completionCleanupTimers.current.values()) {
+        clearTimeout(timer);
+      }
+      completionCleanupTimers.current.clear();
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!richUi || hideSystem || activeCount === 0) {
       return;
@@ -431,6 +499,7 @@ const InkChatApp = ({
     const sink = (adapterName: string, event: AdapterEvent): void => {
       switch (event.type) {
         case "message.started": {
+          clearCompletionCleanupTimer(adapterName);
           const now = Date.now();
           const previous = liveStateByAdapter.current.get(adapterName);
           liveStateByAdapter.current.set(adapterName, {
@@ -472,6 +541,7 @@ const InkChatApp = ({
             const current = pendingTextByAdapter.current.get(adapterName) ?? "";
             pendingTextByAdapter.current.set(adapterName, `${current}${text}`);
             state.lastActivityMs = now;
+            bumpFrame();
           }
           return;
         }
@@ -499,6 +569,7 @@ const InkChatApp = ({
           return;
         }
         case "message.completed": {
+          clearCompletionCleanupTimer(adapterName);
           const state = ensureLiveState(adapterName);
           const accumulated = pendingTextByAdapter.current.get(adapterName) ?? "";
           const completedRaw = extractPayloadText(event.payload);
@@ -508,12 +579,52 @@ const InkChatApp = ({
           const rendered = completedSanitized.trim().length > 0 ? completedSanitized : accumulated;
           const normalizedFinalText = rendered.replace(/^\n+/, "").trimEnd();
           const finalText = normalizedFinalText.length > 0 ? normalizedFinalText : "(empty response)";
-          const wrappedFinal = wrapTextLines(finalText, FINAL_MESSAGE_WRAP_CHARS).join("\n");
-          pushLine("agent", `${adapterName}:`);
-          pushLine("agent", wrappedFinal);
-          pendingTextByAdapter.current.delete(adapterName);
-          liveStateByAdapter.current.delete(adapterName);
-          setActiveCount(liveStateByAdapter.current.size);
+          if (!isPassResponse(finalText)) {
+            const payload = event.payload as MessageEventPayload;
+            pushLine("agent", `${adapterName}:`);
+            if (payload.format === "markdown") {
+              const ansi = renderMarkdownToAnsi(finalText, FINAL_MESSAGE_WRAP_CHARS);
+              const mdLines = ansi.split("\n").map((chunk): InkLine => ({
+                id: nextLineId.current++,
+                kind: "agent",
+                text: chunk,
+                preformatted: true,
+              }));
+              setLines((prev) => {
+                const merged = [...prev, ...mdLines];
+                return merged.length <= MAX_RENDERED_LINES
+                  ? merged
+                  : merged.slice(merged.length - MAX_RENDERED_LINES);
+              });
+            } else {
+              const wrappedFinal = wrapTextLines(finalText, FINAL_MESSAGE_WRAP_CHARS).join("\n");
+              pushLine("agent", wrappedFinal);
+            }
+          }
+          const shouldLingerPreview = richUi && !hideSystem && !isPassResponse(finalText);
+          if (shouldLingerPreview) {
+            const previewText = accumulated.trim().length > 0 ? accumulated : normalizedFinalText;
+            if (previewText.trim().length > 0) {
+              pendingTextByAdapter.current.set(adapterName, previewText);
+            } else {
+              pendingTextByAdapter.current.delete(adapterName);
+            }
+            state.statusText = "done";
+            state.lastActivityMs = Date.now();
+            setActiveCount(liveStateByAdapter.current.size);
+            const timer = setTimeout(() => {
+              completionCleanupTimers.current.delete(adapterName);
+              pendingTextByAdapter.current.delete(adapterName);
+              liveStateByAdapter.current.delete(adapterName);
+              setActiveCount(liveStateByAdapter.current.size);
+              bumpFrame();
+            }, ACTIVE_PREVIEW_COMPLETION_LINGER_MS);
+            completionCleanupTimers.current.set(adapterName, timer);
+          } else {
+            pendingTextByAdapter.current.delete(adapterName);
+            liveStateByAdapter.current.delete(adapterName);
+            setActiveCount(liveStateByAdapter.current.size);
+          }
           if (!hideSystem) {
             pushLine("status", `[${adapterName}] done`);
           }
@@ -521,6 +632,7 @@ const InkChatApp = ({
           return;
         }
         case "message.error": {
+          clearCompletionCleanupTimer(adapterName);
           pendingTextByAdapter.current.delete(adapterName);
           liveStateByAdapter.current.delete(adapterName);
           setActiveCount(liveStateByAdapter.current.size);
@@ -545,7 +657,33 @@ const InkChatApp = ({
     return () => {
       attachAdapterEventSink(null);
     };
-  }, [attachAdapterEventSink, bumpFrame, ensureLiveState, getMode, hideSystem, pushLine, richUi]);
+  }, [
+    attachAdapterEventSink,
+    bumpFrame,
+    clearCompletionCleanupTimer,
+    ensureLiveState,
+    getMode,
+    hideSystem,
+    pushLine,
+    richUi,
+  ]);
+
+  // Wire approval queue callbacks
+  useEffect(() => {
+    if (!approvalQueue) {
+      return;
+    }
+    approvalQueue.setCallbacks(
+      (item) => {
+        setActiveApproval(item.request);
+        setApprovalQueueSize(approvalQueue.pending - 1);
+      },
+      () => {
+        setActiveApproval(null);
+        setApprovalQueueSize(0);
+      },
+    );
+  }, [approvalQueue]);
 
   const resetHistoryNavigation = useCallback((): void => {
     setHistoryIndex(-1);
@@ -886,6 +1024,19 @@ const InkChatApp = ({
       return `${adapterName}: ${state.statusText}${sessionSuffix}`;
     })
     : [];
+  const activePreviewByAdapter = useMemo(
+    () =>
+      hasActiveWork
+        ? activeEntries
+          .map(([adapterName]) => {
+            const raw = pendingTextByAdapter.current.get(adapterName) ?? "";
+            const lines = formatActivePreviewLines(raw);
+            return { adapterName, lines };
+          })
+          .filter((item) => item.lines.length > 0)
+        : [],
+    [activeEntries, frameTick, hasActiveWork],
+  );
   const shouldShowRunningLine = hasActiveWork || isSubmitting || isInterrupting;
   const commandPreview = trimPreview(lastSubmittedLine || "waiting for input");
 
@@ -903,11 +1054,10 @@ const InkChatApp = ({
           ))}
         </Box>
       ) : null}
-
       <Box flexDirection="column">
         {lines.length === 0 ? <Text dimColor>Type /help for commands.</Text> : null}
         {lines.map((line) => (
-          <Text key={line.id} color={lineColor(line.kind)}>
+          <Text key={line.id} color={line.preformatted ? undefined : lineColor(line.kind)}>
             {line.text}
           </Text>
         ))}
@@ -935,15 +1085,37 @@ const InkChatApp = ({
           )}
         </Box>
       ) : null}
+      {activePreviewByAdapter.length > 0 ? (
+        <Box flexDirection="column">
+          {activePreviewByAdapter.map(({ adapterName, lines }) => (
+            <Box key={`preview-${adapterName}`} flexDirection="column">
+              <Text color="green">{adapterName} (live):</Text>
+              {lines.map((line, index) => (
+                <Text key={`preview-${adapterName}-${index}`} color="green">
+                  {line}
+                </Text>
+              ))}
+            </Box>
+          ))}
+        </Box>
+      ) : null}
 
       <Text dimColor>{headerRule}</Text>
-      <Box>
-        <Text color="white">› </Text>
-        <Text>{draft.slice(0, cursorIndex)}</Text>
-        <Text inverse>{draft[cursorIndex] ?? " "}</Text>
-        <Text>{draft.slice(cursorIndex + 1)}</Text>
-        {isSubmitting ? <Text dimColor> (running)</Text> : null}
-      </Box>
+      {activeApproval ? (
+        <ApprovalPrompt
+          request={activeApproval}
+          queueSize={approvalQueueSize}
+          onRespond={(decision) => approvalQueue?.respondToActive(decision)}
+        />
+      ) : (
+        <Box>
+          <Text color="white">› </Text>
+          <Text>{draft.slice(0, cursorIndex)}</Text>
+          <Text inverse>{draft[cursorIndex] ?? " "}</Text>
+          <Text>{draft.slice(cursorIndex + 1)}</Text>
+          {isSubmitting ? <Text dimColor> (running)</Text> : null}
+        </Box>
+      )}
 
       {shouldShowRunningLine ? (
         <Text color="cyan">

@@ -1,4 +1,4 @@
-export type OrchestrationMode = "manual" | "round-robin" | "auto" | "team";
+export type OrchestrationMode = "manual" | "round-robin" | "auto" | "team" | "free";
 export type MessageRole = "user" | "assistant" | "system";
 export type MessageFormat = "markdown" | "plain";
 export type TeamStrategy = "debate" | "pipeline";
@@ -84,6 +84,8 @@ export type EventType =
   | "session.bound"
   | "tool.call.started"
   | "tool.call.completed"
+  | "tool.approval.requested"
+  | "tool.approval.responded"
   | "agent.status"
   | "session.checkpoint";
 
@@ -115,6 +117,23 @@ export interface MessageErrorPayload {
 
 export interface SessionBoundPayload {
   nativeSessionId: string;
+}
+
+export interface ToolApprovalRequestedPayload {
+  approvalId: string;
+  agent: string;
+  kind: "command" | "file" | "permissions";
+  toolName: string;
+  description: string;
+  command?: string;
+  filePath?: string;
+  availableDecisions: string[];
+  raw: unknown;
+}
+
+export interface ToolApprovalRespondedPayload {
+  approvalId: string;
+  decision: string;
 }
 
 export interface TeamConfig {

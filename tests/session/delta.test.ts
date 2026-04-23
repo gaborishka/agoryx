@@ -84,6 +84,28 @@ test("buildDeltaPrompt returns empty delta section when no new messages", () => 
   }
 });
 
+test("buildDeltaPrompt excludes ::pass:: protocol responses from warm delta", () => {
+  const store = new SQLiteStore(":memory:");
+  store.init();
+
+  try {
+    const service = new SessionService(store);
+    const room = store.createRoom("test", ["user"], { ...ROOM_CONFIG, mode: "free" });
+    store.saveMessage(createMessage(room.id, "msg_1", "user", "first"));
+    const seq1 = store.getMaxMessageSeq(room.id);
+
+    store.saveMessage(createMessage(room.id, "msg_2", "agent.codex", "::pass::"));
+    store.saveMessage(createMessage(room.id, "msg_3", "agent.codex", "I can add one detail"));
+
+    assert.ok(seq1 !== null);
+    const result = service.buildDeltaPrompt(room, "claude", seq1!);
+    assert.ok(result.prompt.includes("I can add one detail"));
+    assert.ok(!result.prompt.includes("- [agent.codex][msg_2] ::pass::"));
+  } finally {
+    store.close();
+  }
+});
+
 test("acquireTurnLock serializes concurrent turns for same agent", async () => {
   const store = new SQLiteStore(":memory:");
   store.init();

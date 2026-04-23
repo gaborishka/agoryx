@@ -1987,3 +1987,236 @@
 - Ready for re-review/merge; optional follow-up is reducing non-failing git fatal cleanup noise in temporary worktree tests
 
 ---
+## 2026-03-04T21:41:46Z | codex
+### Summary
+- Refactor phase 1: extracted CLI args/parsing module
+
+### Changes
+- Added cmd/agoryx/cli-args.ts and removed duplicate parser/usage-error logic from cmd/agoryx/main.ts; wired unknown command suggestion through shared helper
+
+### Risks
+- Low risk: extraction-only refactor in CLI argument handling path
+
+### Next
+- Proceed with phase 2 by extracting usage/help/completion/man rendering into cmd/agoryx/cli-help.ts
+
+---
+## 2026-03-04T22:19:40Z | codex
+### Summary
+- Implemented free orchestration mode with pass protocol filtering
+
+### Changes
+- Added free policy + factory/index wiring, free-mode agent chaining in chat engine, new pass token helper, context/delta/UI pass filtering, and CLI mode/help updates; added free-mode policy/engine/session/cmd tests
+
+### Risks
+- Low-to-medium: free mode now allows chained agent turns (guarded to 6); output rendering in free mode switched to completed-message print path to suppress pass token
+
+### Next
+- Optional follow-up: tune free mode turn cap/ordering via config if user feedback shows too much or too little agent back-and-forth
+
+---
+## 2026-03-04T22:31:56Z | codex
+### Summary
+- Refined free-mode chaining semantics after review
+
+### Changes
+- Updated FreePolicy so agent messages without mentions stop chaining; autonomy guard now limits emitted follow-up dispatches; free-mode prompt mention hints are generated dynamically from room participants (no hardcoded codex/claude); updated free policy tests accordingly
+
+### Risks
+- Low risk: behavior intentionally changes free mode from implicit chain-on-every-agent-message to explicit mention-driven chaining
+
+### Next
+- Optional follow-up: expose free-mode max autonomous turns as a config value instead of constant
+
+---
+## 2026-03-04T22:38:06Z | codex
+### Summary
+- Made free mode and all-agents default behavior
+
+### Changes
+- Set DEFAULT_CONFIG.defaultMode to free; updated chat startup so omitted --agents resolves to all registry agents with auto-filled missing config entries; refreshed CLI help/usage and architecture docs; added chat CLI regression for default mode+agents
+
+### Risks
+- Low-to-medium: users who relied on config narrowing without --agents now get all registry agents by default
+
+### Next
+- Optional follow-up: add a config toggle to opt back into config-defined-only default agent selection
+
+---
+## 2026-03-04T22:57:33Z | codex
+### Summary
+- Hardened run-from-anywhere behavior and fixed Claude duplicate output
+
+### Changes
+- Added --skip-git-repo-check to codex exec args; suppressed expected non-git workspace/worktree warnings; implemented source-aware Claude delta normalization to avoid duplicate final text; updated adapter/worktree tests; rebuilt and linked global binary.
+
+### Risks
+- Low-to-medium: codex app-server path remains unchanged; worktree/workspace warnings still surface for non-git errors other than expected repo-missing.
+
+### Next
+- Ready for Ivan smoke-check from ~/ and any non-git directory using global agoryx.
+
+---
+## 2026-03-04T22:59:55Z | codex
+### Summary
+- Switched Claude final text precedence to canonical result
+
+### Changes
+- In claude adapter one-shot and resume flows, message.completed now uses resolveClaudeFinalText(result-first) instead of streamed-first; added tests for final-text precedence in claude-stream-parser suite.
+
+### Risks
+- Low risk: changes only final text selection at completion; streaming behavior unchanged.
+
+### Next
+- If Ivan wants, we can also redesign event contract to support true in-place stream replacement in UI.
+
+---
+## 2026-03-04T23:05:21Z | codex
+### Summary
+- Restored live free-mode streaming in CLI renderer
+
+### Changes
+- Updated cmd/agoryx/main.ts to stream free-mode message.delta chunks immediately and suppress duplicate final echo on message.completed; kept fallback final print when no deltas exist.
+
+### Risks
+- Low risk: touches rendering-only behavior for free mode in plain/rich terminal path.
+
+### Next
+- If needed, apply same live transcript pattern to Ink message list (currently shows active status + final lines).
+
+---
+## 2026-03-04T23:10:07Z | codex
+### Summary
+- Deduped free-mode pending queue to prevent repeated same-agent turns
+
+### Changes
+- Updated internal/engine/chat.ts to skip enqueuing follow-up dispatches when target adapter is already pending; added free-mode regression in tests/engine/free-mode.test.ts and adjusted chaining scenario.
+
+### Risks
+- Low risk: affects only free-mode follow-up enqueue behavior; does not change adapter dispatch runtime or storage.
+
+### Next
+- Ivan can now retest the theological conversation scenario and should no longer see back-to-back duplicate codex turns from pending mention collisions.
+
+---
+## 2026-03-04T23:15:43Z | codex
+### Summary
+- Added free-mode round stop logic for repeated opinions
+
+### Changes
+- Updated internal/engine/chat.ts so each agent gets one substantive turn per user round; repeat turns now require explicit mention plus disagreement signal in trigger message; kept pending queue dedupe; added free-mode engine regressions for neutral mention vs disagreement follow-up.
+
+### Risks
+- Medium: disagreement keyword heuristic is lexical and may miss nuanced disagreement or false-positive on some phrasing.
+
+### Next
+- Ivan can tune disagreement patterns next (UA/EN phrases) based on real chat transcripts.
+
+---
+## 2026-03-04T23:27:47Z | codex
+### Summary
+- Implemented Free Mode v2 baton flow (@agent! / @agent!!) with deterministic round stop
+
+### Changes
+- Added parseAgentHandoffs and dot-safe parseMentions; free policy now chains only on explicit baton handoffs and marks rebuttal reasons; chat free-loop now carries allowRepeat, permits repeats only via rebuttal reason, and skips unchanged repeat triggers; updated free policy/engine tests and rebuilt+linked binary.
+
+### Risks
+- Medium: rebuttal novelty uses trigger-text fingerprint and may still need tuning for multilingual phrasing edge cases.
+
+### Next
+- Monitor real chats and tune fingerprint normalization / rebuttal syntax UX if users overuse @agent!!.
+
+---
+## 2026-03-04T23:35:01Z | codex
+### Summary
+- Made streaming visible in rich Ink UI
+
+### Changes
+- Updated cmd/agoryx/ink-chat.tsx to render per-agent live preview text from pending delta buffers during generation; this exposes real-time streaming in default UI instead of only final completed message.
+
+### Risks
+- Low risk: rendering-only change in Ink path; plain UI and adapter transport untouched.
+
+### Next
+- If needed, next iteration can merge live preview directly into transcript lines for a single unified stream view.
+
+---
+## 2026-03-04T23:39:29Z | codex
+### Summary
+- Improved Ink live stream readability
+
+### Changes
+- Changed cmd/agoryx/ink-chat.tsx live preview lines from dimColor to green so streaming text is clearly visible during generation; rebuilt and linked.
+
+### Risks
+- Low risk: presentation-only Ink style change.
+
+### Next
+- If Ivan wants, next tweak can move live preview block lower near input for stronger focus.
+
+---
+## 2026-03-04T23:40:56Z | codex
+### Summary
+- Moved Ink live preview from top header to bottom area near input
+
+### Changes
+- Repositioned activePreviewByAdapter render block in cmd/agoryx/ink-chat.tsx from header section to lower section (after picker, before prompt separator) for more natural streaming visibility while typing; rebuilt+linked.
+
+### Risks
+- Low risk: layout-only change in Ink rendering order.
+
+### Next
+- If needed, next tweak can make live preview collapsible when transcript is long.
+
+---
+## 2026-03-05T08:16:19Z | codex
+### Summary
+- Polished Ink stream stability and visibility for free mode
+
+### Changes
+- Updated ink-chat live preview to head+tail rendering with hidden-lines marker; added short completion linger and adapter-scoped cleanup timers; ensured pass-token completions do not linger; revalidated typecheck/build and cmd chat tests.
+
+### Risks
+- Low risk: Ink rendering-only behavior changed; slight temporary linger of completed previews by design.
+
+### Next
+- Ivan can retest codex/claude streaming in rich UI and report if linger duration should be tuned.
+
+---
+## 2026-03-05T08:20:01Z | codex
+### Summary
+- Relaxed free-mode repeat gating for explicit @agent! handoffs
+
+### Changes
+- Updated engine free-loop repeat model from boolean to mode-based (none/handoff/rebuttal); @agent! now grants one extra turn even if agent already spoke; kept fingerprint dedupe and self-trigger guards; adjusted free-mode tests for plain mention vs explicit handoff.
+
+### Risks
+- Low-to-medium: behavior intentionally allows more follow-up replies in explicit handoff debates; still bounded by autonomy + dedupe.
+
+### Next
+- Ivan can retest the case where Claude ends with @codex! and should now get a Codex response.
+
+---
+## 2026-03-08T06:58:37Z | codex
+### Summary
+- Reviewed uncommitted free-mode changes, fixed markdown renderer regressions, and revalidated the branch cleanly
+
+### Changes
+- Identified and fixed two concrete issues in the current working tree:
+  - `internal/rendering/markdown.ts` used `marked-terminal` defaults that degraded to raw markdown in non-TTY test runs, so headings were not actually rendered/styled.
+  - TypeScript failed on `marked-terminal` because the package provides no declarations.
+- Added forced ANSI style overrides via `picocolors.createColors(true)` in `internal/rendering/markdown.ts`.
+- Added local typings in `internal/rendering/marked-terminal.d.ts` returning `MarkedExtension`.
+- Re-ran validation and a second review pass:
+  - `npx tsx --test tests/rendering/markdown.test.ts`
+  - `npm run typecheck`
+  - `npm test -- --runInBand`
+  - `git diff --check`
+
+### Risks
+- Low risk: change is scoped to terminal markdown rendering and local TS typing surface for `marked-terminal`.
+
+### Next
+- Branch is ready to commit; no further findings remained after the second review/fix cycle.
+
+---

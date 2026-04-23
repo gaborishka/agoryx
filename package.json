@@ -25,6 +25,8 @@
     "better-sqlite3": "^11.8.1",
     "cli-cursor": "^5.0.0",
     "ink": "^6.8.0",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
     "ora": "^9.3.0",
     "picocolors": "^1.1.1",
     "react": "^19.2.0"

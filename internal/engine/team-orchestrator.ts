@@ -51,6 +51,7 @@ interface TeamAdapterConfigSnapshot {
 export class TeamOrchestrator {
   private readonly teamLoopByRoom = new Map<string, Promise<void>>();
   private readonly teamStopFlags = new Set<string>();
+  private readonly checksAbortByRun = new Map<string, AbortController>();
   private readonly teamActiveDispatchesByRun = new Map<string, Map<string, ActiveTeamDispatch>>();
   private readonly runStartWarningsByRun = new Map<string, string[]>();
   private readonly interruptedRequestIds = new Set<string>();
@@ -315,6 +316,7 @@ export class TeamOrchestrator {
     }
 
     this.teamStopFlags.add(run.id);
+    this.abortActiveChecks(run.id);
     void this.interrupt(undefined, run.id).catch((error: unknown) => {
       this.logger.log("warn", "team.stop_interrupt_failed", {
         runId: run.id,
@@ -454,6 +456,7 @@ export class TeamOrchestrator {
     }
 
     this.teamStopFlags.add(run.id);
+    this.abortActiveChecks(run.id);
     await this.interrupt(undefined, run.id);
     this.session.updateTeamRunStatus(run.id, "stopped", {
       completedAt: new Date().toISOString(),
@@ -513,6 +516,7 @@ export class TeamOrchestrator {
           this.teamActiveDispatchesByRun.delete(runId);
         }
         this.teamStopFlags.delete(runId);
+        this.checksAbortByRun.delete(runId);
       });
 
     this.teamLoopByRoom.set(roomId, loopPromise);
@@ -566,10 +570,23 @@ export class TeamOrchestrator {
         ? [`Step budget (maxSteps=${run.maxSteps}) exhausted; skipped agents: ${skippedAgents.join(", ")}.`]
         : [];
 
-    // Phase 3: Checks
+    // Phase 3: Checks. Re-check the deadline first — implementation may have
+    // consumed the remaining budget, and each check can run up to its own
+    // timeout. The merge phase still runs: it dispatches nothing and ends at
+    // the user gate, so the change report is not lost to the limit.
     const afterImplement = this.session.getTeamRun(runId);
     if (afterImplement && afterImplement.status === "active") {
-      mergeNotes.push(...(await this.runChecksPhase(afterImplement, stepIdByAgent)));
+      if (this.isPastDeadline(afterImplement)) {
+        mergeNotes.push(
+          `Checks skipped: run exceeded maxDurationMs (${afterImplement.maxDurationMs}ms).`,
+        );
+        this.logger.log("warn", "team.checks_skipped_deadline", {
+          runId: run.id,
+          maxDurationMs: afterImplement.maxDurationMs,
+        });
+      } else {
+        mergeNotes.push(...(await this.runChecksPhase(afterImplement, stepIdByAgent)));
+      }
     }
     if (this.teamStopFlags.has(runId)) return;
 
@@ -596,29 +613,55 @@ export class TeamOrchestrator {
     const state = this.getState();
 
     const workspaces: Array<{ agent: string | null; cwd: string }> = [];
+    // When worktree creation failed for some agent at startRun, that agent
+    // worked in the main workspace — checks must cover it too.
+    let mainWorkspaceNeeded = !this.worktreeManager;
     if (this.worktreeManager) {
       for (const agent of state.availableAgents) {
         const wt = this.worktreeManager.getForAgent(agent);
         if (wt) {
           workspaces.push({ agent, cwd: wt.path });
+        } else {
+          mainWorkspaceNeeded = true;
         }
       }
     }
-    if (workspaces.length === 0) {
+    if (mainWorkspaceNeeded) {
       workspaces.push({
         agent: null,
         cwd: this.worktreeManager?.getRepoRoot() ?? process.cwd(),
       });
     }
 
+    const abortController = new AbortController();
+    this.checksAbortByRun.set(run.id, abortController);
+    try {
+      return await this.executeChecks(run, workspaces, commands, stepIdByAgent, abortController.signal);
+    } finally {
+      if (this.checksAbortByRun.get(run.id) === abortController) {
+        this.checksAbortByRun.delete(run.id);
+      }
+    }
+  }
+
+  private async executeChecks(
+    run: TeamRun,
+    workspaces: Array<{ agent: string | null; cwd: string }>,
+    commands: string[],
+    stepIdByAgent: Map<string, string>,
+    abortSignal: AbortSignal,
+  ): Promise<string[]> {
     let passedCount = 0;
     const failures: string[] = [];
     for (const workspace of workspaces) {
       for (const command of commands) {
-        if (this.teamStopFlags.has(run.id)) {
+        if (this.teamStopFlags.has(run.id) || abortSignal.aborted) {
           return [];
         }
-        const outcome = await runCheckCommand(command, workspace.cwd);
+        const outcome = await runCheckCommand(command, workspace.cwd, abortSignal);
+        if (outcome.status === "aborted") {
+          return [];
+        }
         this.session.addTeamCheck({
           runId: run.id,
           stepId: workspace.agent ? (stepIdByAgent.get(workspace.agent) ?? null) : null,
@@ -666,11 +709,18 @@ export class TeamOrchestrator {
     if (run.noProgressCount >= run.maxNoProgressSteps) {
       return `no progress for ${run.noProgressCount} steps`;
     }
-    const elapsedMs = Date.now() - Date.parse(run.startedAt);
-    if (elapsedMs >= run.maxDurationMs) {
+    if (this.isPastDeadline(run)) {
       return `max duration (${run.maxDurationMs}ms)`;
     }
     return null;
+  }
+
+  private isPastDeadline(run: TeamRun): boolean {
+    return Date.now() - Date.parse(run.startedAt) >= run.maxDurationMs;
+  }
+
+  private abortActiveChecks(runId: string): void {
+    this.checksAbortByRun.get(runId)?.abort();
   }
 
   private finalizeForLimits(run: TeamRun, reason: string): void {
@@ -761,6 +811,18 @@ export class TeamOrchestrator {
     });
 
     latestPlan = parseTeamPlan(proposeResult.text, agents);
+
+    // Budget/deadline guard between rounds: skip the review dispatch when the
+    // proposal already consumed the last allowed step or the run is out of
+    // limits — the outer post-plan guard finalizes the run.
+    const afterPropose = this.session.getTeamRun(run.id);
+    if (
+      !afterPropose ||
+      afterPropose.status !== "active" ||
+      this.getLimitViolation(afterPropose) !== null
+    ) {
+      return latestPlan;
+    }
 
     // Round 2: Second agent reviews and accepts/amends
     const reviewer = agents[1]!;
@@ -1189,7 +1251,8 @@ const CHECK_TIMEOUT_MS = 120_000;
 const CHECK_OUTPUT_LIMIT = 20_000;
 
 interface CheckOutcome {
-  status: "passed" | "failed" | "timeout";
+  /** "aborted" means the run was stopped mid-check; the result is not persisted. */
+  status: "passed" | "failed" | "timeout" | "aborted";
   exitCode: number | null;
   stdout: string;
   stderr: string;
@@ -1204,7 +1267,11 @@ const truncateCheckOutput = (text: string): string =>
  * whitespace: validateCheckCommands rejects shell metacharacters, so every
  * token is a literal argument.
  */
-const runCheckCommand = async (command: string, cwd: string): Promise<CheckOutcome> => {
+const runCheckCommand = async (
+  command: string,
+  cwd: string,
+  abortSignal?: AbortSignal,
+): Promise<CheckOutcome> => {
   const [file, ...args] = command.split(/\s+/);
   const startedAt = Date.now();
   try {
@@ -1213,6 +1280,7 @@ const runCheckCommand = async (command: string, cwd: string): Promise<CheckOutco
       timeout: CHECK_TIMEOUT_MS,
       maxBuffer: 10 * 1024 * 1024,
       encoding: "utf-8",
+      signal: abortSignal,
     });
     return {
       status: "passed",
@@ -1230,6 +1298,15 @@ const runCheckCommand = async (command: string, cwd: string): Promise<CheckOutco
       stderr?: string;
       message?: string;
     };
+    if (abortSignal?.aborted) {
+      return {
+        status: "aborted",
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        durationMs: Date.now() - startedAt,
+      };
+    }
     const timedOut = err.killed === true || err.signal === "SIGTERM";
     return {
       status: timedOut ? "timeout" : "failed",

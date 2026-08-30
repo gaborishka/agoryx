@@ -123,6 +123,16 @@ The user left the choice "restore checks phase vs delete the subsystem" to Ivan 
 - **Check execution**: `command.split(/\s+/)` → `execFile(argv0, args, { cwd, timeout: 120_000 })`; safe because `validateCheckCommands` rejects `| ; & $ ( ) < > #` and backticks. stdout/stderr truncated to 20k chars each before persisting.
 - **Interrupt map**: inner map keyed by `requestId` (unique per dispatch); `(runId, agent)` would break if an agent ever had two dispatches in one run stage.
 
+## PR #5 Review Follow-ups (Codex, 2026-08-30)
+
+All five inline findings addressed on top of the completed plan:
+
+- [x] `CHECK_COMMAND_PATTERN` also rejects `"` and `'` in arguments — quotes are not parsed by the whitespace split, so they would silently change the command's meaning (test: `tests/config/merge.test.ts`)
+- [x] planning loop re-checks run status and limits between negotiation rounds — a review round can no longer dispatch past the step budget (test: `tests/engine/team-full-cycle.test.ts`)
+- [x] checks phase is skipped with a merge-summary note when the implement phase already exceeded `maxDurationMs` (test: `tests/engine/team-checks-phase.test.ts`)
+- [x] checks fall back to the main workspace for agents whose worktree is missing, even when a worktree manager exists (test: `tests/engine/team-checks-phase.test.ts`)
+- [x] `/team stop` and shutdown abort in-flight check child processes via `AbortController`; aborted outcomes are not persisted (test: `tests/engine/team-checks-phase.test.ts`)
+
 ## Post-Completion
 
 - Ivan confirms (or overrides) the "restore checks phase" decision — if overridden, drop `runChecksPhase` + `team_checks`/`addTeamCheck`/`listTeamChecks`/`TeamCheck` and the `--no-checks` CLI flag in a follow-up.

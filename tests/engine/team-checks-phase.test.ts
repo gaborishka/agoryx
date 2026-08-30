@@ -16,10 +16,22 @@ import {
 } from "../../internal/adapters/event-factory.js";
 import { createId } from "../../internal/session/ids.js";
 import type { ChatRuntimeConfig } from "../../internal/config/default.js";
+import type { WorktreeManager } from "../../internal/worktree/manager.js";
+
+// Workspace context collection is irrelevant to these tests
+const WORKSPACE_DISABLED = {
+  enabled: false,
+  maxContextTokens: 0,
+  statusLines: 0,
+  diffLines: 0,
+  treeLines: 0,
+  pinnedDocCharsPerFile: 0,
+};
 
 const makeSoloAdapter = (
   name: string,
   text: string,
+  delayMs = 0,
 ): PersistentAdapter & { calls: SendTurnInput[] } => {
   const calls: SendTurnInput[] = [];
   return {
@@ -44,6 +56,9 @@ const makeSoloAdapter = (
       };
       yield messageStarted(base, { ...payload, text: "" });
       yield sessionBound(base, "native-session");
+      if (delayMs > 0) {
+        await wait(delayMs);
+      }
       yield messageCompleted(base, payload);
     },
     async cancel() {},
@@ -53,7 +68,11 @@ const makeSoloAdapter = (
 
 const createSoloEngine = (
   adapter: PersistentAdapter,
-  options: { checksEnabledByDefault?: boolean; checkCommands?: string[] } = {},
+  options: {
+    checksEnabledByDefault?: boolean;
+    checkCommands?: string[];
+    maxDurationMs?: number;
+  } = {},
 ) => {
   const store = new SQLiteStore(":memory:");
   store.init();
@@ -76,7 +95,7 @@ const createSoloEngine = (
       profile: "enthusiast",
       maxSteps: 10,
       maxNoProgressSteps: 5,
-      maxDurationMs: 900_000,
+      maxDurationMs: options.maxDurationMs ?? 900_000,
       checksEnabledByDefault: options.checksEnabledByDefault ?? true,
       checkCommands: options.checkCommands ?? [],
       strict: { maxSteps: 8, maxNoProgressSteps: 2, maxDurationMs: 900_000, checksEnabledByDefault: true },
@@ -85,6 +104,7 @@ const createSoloEngine = (
       trigger: { autoOnMessage: true, commandStart: true },
     },
     agentSkills: {},
+    workspace: { ...WORKSPACE_DISABLED },
   };
   const engine = new ChatEngine(session, { [adapter.name]: adapter }, config);
   engine.init();
@@ -161,6 +181,147 @@ test("checks phase is skipped when checksEnabled is false", async () => {
     const status = engine.teamStatus();
     assert.ok(status);
     assert.doesNotMatch(status.run.finalSummary ?? "", /Checks:/);
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("checks are skipped when the duration limit is exceeded during implement", async () => {
+  // Implement takes ~1.5s while maxDurationMs is 1s: the run passes the
+  // pre-implement guards but is past its deadline when checks would start.
+  const solo = makeSoloAdapter("solo", IMPLEMENT_OUTPUT, 1_500);
+  const { engine, store, session } = createSoloEngine(solo, {
+    checksEnabledByDefault: true,
+    checkCommands: ["node --version"],
+    maxDurationMs: 1_000,
+  });
+  try {
+    const run = engine.startTeamRun("Ship the feature");
+    await waitForRunStatus(engine, "done");
+
+    assert.equal(session.listTeamChecks(run.id, 10).length, 0, "no check may run past the deadline");
+    const status = engine.teamStatus();
+    assert.ok(status);
+    assert.match(status.run.finalSummary ?? "", /Checks skipped: run exceeded maxDurationMs/);
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("stopping the run aborts an in-flight check command", async () => {
+  const solo = makeSoloAdapter("solo", IMPLEMENT_OUTPUT);
+  const { engine, store, session } = createSoloEngine(solo, {
+    checksEnabledByDefault: true,
+    // Without an abort this check would hold the loop for 8 seconds
+    checkCommands: ["node -e setTimeout(function(){},8000)"],
+  });
+  try {
+    const run = engine.startTeamRun("Ship the feature");
+
+    let reachedChecks = false;
+    for (let i = 0; i < 300; i++) {
+      if (engine.teamStatus()?.run.stage === "checks") {
+        reachedChecks = true;
+        break;
+      }
+      await wait(10);
+    }
+    await wait(50); // let the check child process spawn
+
+    const stopStartedAt = Date.now();
+    engine.teamStop(run.id);
+    await engine.shutdown();
+    const stopDurationMs = Date.now() - stopStartedAt;
+
+    assert.ok(reachedChecks, "run must reach the checks stage");
+    assert.ok(
+      stopDurationMs < 4_000,
+      `stop+shutdown took ${stopDurationMs}ms — the in-flight check was not aborted`,
+    );
+    assert.equal(engine.teamStatus()?.run.status, "stopped");
+    assert.equal(
+      session.listTeamChecks(run.id, 10).length,
+      0,
+      "an aborted check must not be persisted",
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("checks cover the main workspace when a worktree is missing for an agent", async () => {
+  // Stub worktree manager: agent "solo" has no worktree (creation failed at
+  // startRun), so the checks phase must fall back to the main workspace.
+  const solo = makeSoloAdapter("solo", IMPLEMENT_OUTPUT);
+  const store = new SQLiteStore(":memory:");
+  store.init();
+  const session = new SessionService(store);
+  const stubWorktreeManager = {
+    reconcile() {},
+    create() {
+      throw new Error("worktree creation unavailable in this test");
+    },
+    getForAgent() {
+      return null;
+    },
+    getRepoRoot() {
+      return process.cwd();
+    },
+    list() {
+      return [];
+    },
+    merge() {
+      return { success: true };
+    },
+  };
+  const config = {
+    dbPath: ":memory:",
+    mode: "team",
+    roomName: "checks-partial-room",
+    agents: ["solo"],
+    roomConfig: {
+      mode: "team",
+      checkpointThreshold: 50,
+      maxHistoryMessages: 100,
+      maxContextTokens: 30_000,
+    },
+    adapterConfig: {
+      solo: { mode: "agentic", timeoutMs: 30_000, maxTokens: 4_000 },
+    },
+    team: {
+      profile: "enthusiast",
+      maxSteps: 10,
+      maxNoProgressSteps: 5,
+      maxDurationMs: 900_000,
+      checksEnabledByDefault: true,
+      checkCommands: ["node --version"],
+      strict: { maxSteps: 8, maxNoProgressSteps: 2, maxDurationMs: 900_000, checksEnabledByDefault: true },
+      finalGate: "proposal",
+      singleActive: true,
+      trigger: { autoOnMessage: true, commandStart: true },
+    },
+    agentSkills: {},
+    workspace: { ...WORKSPACE_DISABLED },
+  } as unknown as ChatRuntimeConfig;
+  const engine = new ChatEngine(
+    session,
+    { solo },
+    config,
+    {},
+    undefined,
+    stubWorktreeManager as unknown as WorktreeManager,
+  );
+  engine.init();
+  try {
+    const run = engine.startTeamRun("Ship the feature");
+    await waitForRunStatus(engine, "done");
+
+    const checks = session.listTeamChecks(run.id, 10);
+    assert.equal(checks.length, 1, "main-workspace fallback must run the check");
+    assert.equal(checks[0]!.status, "passed");
+    assert.equal(checks[0]!.stepId, null, "fallback checks are not tied to an agent worktree step");
   } finally {
     await engine.shutdown();
     store.close();

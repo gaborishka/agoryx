@@ -184,7 +184,7 @@ interface Dispatch {
 
 1. **Plan** — two negotiation rounds: the first agent proposes a work split (`PLAN:`/`PLAN_END` format), the second accepts (`PLAN_ACCEPT`) or amends it. A single agent skips negotiation.
 2. **Implement** — every assigned agent runs in parallel, each in its own git worktree when worktree isolation is available.
-3. **Checks** — when `checksEnabled` and `team.checkCommands` is non-empty, each configured command runs per agent worktree (or once in the main workspace) via shell-less `execFile`; results are persisted to `team_checks` and summarized for the user. Failures do not fail the run — the user decides at approval.
+3. **Checks** — when `checksEnabled` and `team.checkCommands` is non-empty, each configured command runs per agent worktree (falling back to the main workspace for agents without one) via shell-less `execFile`; results are persisted to `team_checks` and summarized for the user. Failures do not fail the run — the user decides at approval. The phase is skipped (with a note in the merge summary) when the implement phase already exceeded `maxDurationMs`, and `/team stop` aborts any in-flight check command.
 4. **Merge** — file changes are reported and the run becomes `waiting_user_input`; `/team approve` commits and merges the worktree branches.
 
 Behavior:

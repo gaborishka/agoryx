@@ -167,7 +167,10 @@ function mergeAgents(
   return result;
 }
 
-const CHECK_COMMAND_PATTERN = /^[a-zA-Z0-9_./-]+(\s+[^\s|;&`$()<>#]+)*$/;
+// Check commands are executed without a shell: the runtime splits them on
+// whitespace into argv. Quotes are rejected (not parsed) — passing them
+// through literally would silently change the command's meaning.
+const CHECK_COMMAND_PATTERN = /^[a-zA-Z0-9_./-]+(\s+[^\s|;&`$()<>#"']+)*$/;
 
 function validateCheckCommands(commands: string[]): string[] {
   const valid: string[] = [];

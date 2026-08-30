@@ -320,6 +320,32 @@ test("limits: implement dispatches are clamped to the remaining step budget", as
   }
 });
 
+test("limits: step budget exhausted mid-planning skips the review round", async () => {
+  const codex = makeSequentialAdapter("codex", [
+    `PLAN:\n- agent: codex\n  task: Implement sorting\n  files: sort.ts\n- agent: claude\n  task: Write tests\n  files: sort.test.ts\nPLAN_END`,
+  ]);
+  const claude = makeSequentialAdapter("claude", ["PLAN_ACCEPT"]);
+
+  // maxSteps 1: the propose round consumes the whole budget, so the
+  // negotiation must stop before dispatching the review round.
+  const { engine, store } = createDualEngine([codex, claude], { maxSteps: 1 });
+  try {
+    engine.startTeamRun("Implement merge sort with tests");
+    await waitForRunStatus(engine, "waiting_user_input", 5_000);
+
+    assert.equal(codex.calls.length, 1, "codex: propose round only");
+    assert.equal(claude.calls.length, 0, "review round must not dispatch past the step budget");
+
+    const status = engine.teamStatus();
+    assert.ok(status);
+    assert.equal(status.run.stepCount, 1);
+    assert.match(status.run.finalSummary ?? "", /Team limits reached: max steps/);
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
 test("limits: resumed run with exhausted noProgress budget finalizes immediately", async () => {
   const codex = makeSequentialAdapter("codex", []);
   const claude = makeSequentialAdapter("claude", []);

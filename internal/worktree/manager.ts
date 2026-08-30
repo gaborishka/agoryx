@@ -47,6 +47,10 @@ export class WorktreeManager {
     this.worktreeDir = worktreeDir ? resolve(worktreeDir) : join(repoRoot, ".agoryx", "worktrees");
   }
 
+  public getRepoRoot(): string {
+    return this.repoRoot;
+  }
+
   public create(agent: string): WorktreeInfo {
     const normalizedAgent = normalizeWorktreeAgentName(agent);
     if (!isValidWorktreeAgentName(normalizedAgent)) {

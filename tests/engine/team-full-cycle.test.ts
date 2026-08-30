@@ -54,6 +54,52 @@ const makeSequentialAdapter = (
   };
 };
 
+const makeCancellableAdapter = (
+  name: string,
+  responses: string[],
+  slowFromCall: number,
+  slowMs: number,
+): PersistentAdapter & { calls: SendTurnInput[]; cancelled: string[] } => {
+  const calls: SendTurnInput[] = [];
+  const cancelled: string[] = [];
+  let idx = 0;
+  return {
+    name,
+    calls,
+    cancelled,
+    async *send() { throw new Error("unused"); },
+    async *sendTurn(input: SendTurnInput): AsyncGenerator<AdapterEvent> {
+      const i = idx++;
+      calls.push(input);
+      const base = {
+        roomId: input.roomId,
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+        source: `adapter.${name}`,
+      };
+      const text = responses[i] ?? `fallback-${i}`;
+      const payload = {
+        messageId: createId("msg"),
+        author: `agent.${name}`,
+        role: "assistant" as const,
+        text,
+        format: "markdown" as const,
+        metadata: { provider: "test", model: "test", requestId: input.requestId },
+      };
+      yield messageStarted(base, { ...payload, text: "" });
+      yield sessionBound(base, "native-session");
+      if (i >= slowFromCall) {
+        await wait(slowMs);
+      }
+      yield messageCompleted(base, payload);
+    },
+    async cancel(requestId: string) {
+      cancelled.push(requestId);
+    },
+    async health() { return "ready" as const; },
+  };
+};
+
 // Helper to create engine with 2 adapters
 const createDualEngine = (
   adapters: PersistentAdapter[],
@@ -142,6 +188,64 @@ test("full cycle: plan -> parallel execute -> merge -> complete", async () => {
     const implSteps = steps.filter((s) => s.stage === "implement");
     assert.ok(planSteps.length >= 2, "should have 2 planning steps");
     assert.ok(implSteps.length >= 2, "should have 2 implementation steps");
+
+    const seqs = steps.map((s) => s.seq).sort((a, b) => a - b);
+    assert.deepEqual(seqs, [1, 2, 3, 4], "seqs must be unique and continuous across phases");
+    for (const step of implSteps) {
+      assert.ok(step.seq > 2, "implement seqs must continue after planning seqs");
+    }
+    assert.equal(status.run.stepCount, 4, "stepCount must include planning and implement steps");
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("interrupt cancels every in-flight parallel dispatch", async () => {
+  const codex = makeCancellableAdapter(
+    "codex",
+    [
+      `PLAN:\n- agent: codex\n  task: Implement sorting\n  files: sort.ts\n- agent: claude\n  task: Write tests\n  files: sort.test.ts\nPLAN_END`,
+      "Implemented sorting algorithm.",
+    ],
+    1,
+    600,
+  );
+  const claude = makeCancellableAdapter(
+    "claude",
+    ["PLAN_ACCEPT", "Written test suite."],
+    1,
+    600,
+  );
+
+  const { engine, store, session } = createDualEngine([codex, claude]);
+  try {
+    engine.startTeamRun("Implement merge sort with tests");
+
+    // Wait until both implement dispatches are in flight
+    for (let i = 0; i < 200; i++) {
+      if (codex.calls.length >= 2 && claude.calls.length >= 2) break;
+      await wait(25);
+    }
+    assert.equal(codex.calls.length, 2, "codex implement dispatch in flight");
+    assert.equal(claude.calls.length, 2, "claude implement dispatch in flight");
+
+    const result = await engine.interruptTeamRun();
+    assert.ok(result, "interrupt should find the active run");
+    assert.equal(result.interrupted, true);
+    assert.equal(codex.cancelled.length, 1, "codex dispatch must be cancelled");
+    assert.equal(claude.cancelled.length, 1, "claude dispatch must be cancelled");
+
+    await waitForRunStatus(engine, "done", 10_000);
+    const status = engine.teamStatus();
+    assert.ok(status);
+    const implSteps = session
+      .listTeamSteps(status.run.id, 10)
+      .filter((s) => s.stage === "implement");
+    assert.equal(implSteps.length, 2);
+    for (const step of implSteps) {
+      assert.equal(step.result, "stopped", "interrupted implement steps record as stopped");
+    }
   } finally {
     await engine.shutdown();
     store.close();

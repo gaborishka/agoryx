@@ -439,6 +439,152 @@ test("shutdown does NOT remove worktrees", async () => {
   }
 });
 
+test("agent commits in worktree -> report sees changes -> merge phase runs", async () => {
+  const repo = createTempGitRepo();
+  const store = new SQLiteStore(":memory:");
+  store.init();
+  const session = new SessionService(store);
+  const memoryService = new MemoryService(store);
+  const worktreeManager = new WorktreeManager(repo);
+
+  // Adapter that follows the implement prompt: creates a file in its
+  // worktree and commits it with git, leaving a clean working tree.
+  const calls: SendTurnInput[] = [];
+  const committingAdapter: PersistentAdapter & { calls: SendTurnInput[] } = {
+    name: "codex",
+    calls,
+    async *send() {
+      throw new Error("send() should not be used in these tests");
+    },
+    async *sendTurn(input: SendTurnInput): AsyncGenerator<AdapterEvent> {
+      calls.push(input);
+      const wtPath = input.config.workspaceCwd;
+      if (wtPath) {
+        writeFileSync(join(wtPath, "feature.ts"), "export const feature = 1;\n");
+        execFileSync("git", ["add", "-A"], { cwd: wtPath });
+        execFileSync("git", ["commit", "-m", "feat: add feature"], { cwd: wtPath });
+      }
+      const base = {
+        roomId: input.roomId,
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+        source: "adapter.codex",
+      };
+      const payload = {
+        messageId: createId("msg"),
+        author: "agent.codex",
+        role: "assistant" as const,
+        text: "Implemented and committed.\nTEAM_DONE",
+        format: "markdown" as const,
+        metadata: { provider: "test", model: "test", requestId: input.requestId },
+      };
+      yield messageStarted(base, { ...payload, text: "" });
+      yield sessionBound(base, "native-session");
+      yield messageCompleted(base, payload);
+    },
+    async cancel() {},
+    async health() {
+      return "ready" as const;
+    },
+  };
+
+  const config: ChatRuntimeConfig = {
+    dbPath: ":memory:",
+    mode: "team",
+    roomName: "wt-test",
+    agents: ["codex"],
+    roomConfig: {
+      mode: "team",
+      checkpointThreshold: 50,
+      maxHistoryMessages: 100,
+      maxContextTokens: 30_000,
+    },
+    adapterConfig: {
+      codex: {
+        mode: "agentic",
+        timeoutMs: 30_000,
+        maxTokens: 4_000,
+      },
+    },
+    team: {
+      profile: "enthusiast",
+      maxSteps: 1,
+      maxNoProgressSteps: 2,
+      maxDurationMs: 900_000,
+      checksEnabledByDefault: false,
+      checkCommands: [],
+      strict: {
+        maxSteps: 8,
+        maxNoProgressSteps: 2,
+        maxDurationMs: 900_000,
+        checksEnabledByDefault: true,
+      },
+      finalGate: "proposal",
+      singleActive: true,
+      trigger: {
+        autoOnMessage: true,
+        commandStart: true,
+      },
+    },
+    agentSkills: {},
+  };
+
+  const engine = new ChatEngine(
+    session,
+    { codex: committingAdapter },
+    config,
+    {},
+    memoryService,
+    worktreeManager,
+  );
+  engine.init();
+
+  try {
+    const run = engine.startTeamRun("Add feature module");
+
+    for (let i = 0; i < 200; i++) {
+      const status = engine.teamStatus();
+      if (
+        status?.run.status === "waiting_user_input" ||
+        status?.run.status === "done"
+      ) {
+        break;
+      }
+      await wait(25);
+    }
+
+    // Committed work must NOT be treated as "no file changes": the run has
+    // to stop at the approval gate with the committed files in the report.
+    const gated = session.getTeamRun(run.id);
+    assert.ok(gated);
+    assert.equal(
+      gated!.status,
+      "waiting_user_input",
+      `run should wait for approval, got '${gated!.status}' (${gated!.finalSummary})`,
+    );
+    assert.match(gated!.finalSummary ?? "", /\[committed\]/);
+    assert.match(gated!.finalSummary ?? "", /feature\.ts/);
+
+    // Approve -> merge phase executes and the file lands on the main branch
+    const approved = engine.teamApprove(run.id);
+    assert.ok(approved);
+    assert.equal(approved!.status, "done");
+    const merged = execFileSync(
+      "git",
+      ["ls-tree", "--name-only", "HEAD"],
+      { cwd: repo, encoding: "utf-8" },
+    );
+    assert.ok(
+      merged.split("\n").includes("feature.ts"),
+      `feature.ts should be merged into main repo HEAD, got: ${merged}`,
+    );
+  } finally {
+    await engine.shutdown();
+    store.close();
+    cleanupRepo(repo);
+  }
+});
+
 test("reconcile() called at engine init recovers worktree map", async () => {
   const repo = createTempGitRepo();
   const store = new SQLiteStore(":memory:");

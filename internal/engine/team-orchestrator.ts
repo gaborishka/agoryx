@@ -60,7 +60,7 @@ export class TeamOrchestrator {
   private readonly teamLoopByRoom = new Map<string, Promise<void>>();
   private readonly teamStopFlags = new Set<string>();
   private readonly teamNextActorByRun = new Map<string, string>();
-  private readonly teamActiveDispatchByRun = new Map<string, ActiveTeamDispatch>();
+  private readonly teamActiveDispatchesByRun = new Map<string, Map<string, ActiveTeamDispatch>>();
   private readonly runStartWarningsByRun = new Map<string, string[]>();
   private readonly interruptedRequestIds = new Set<string>();
   private teamAdapterConfigSnapshot: Partial<Record<string, TeamAdapterConfigSnapshot>> | null =
@@ -365,8 +365,8 @@ export class TeamOrchestrator {
       feedbackQueued = true;
     }
 
-    const activeDispatch = this.teamActiveDispatchByRun.get(run.id);
-    if (!activeDispatch) {
+    const activeDispatches = this.teamActiveDispatchesByRun.get(run.id);
+    if (!activeDispatches || activeDispatches.size === 0) {
       return {
         run,
         interrupted: false,
@@ -374,23 +374,35 @@ export class TeamOrchestrator {
       };
     }
 
-    this.interruptedRequestIds.add(activeDispatch.requestId);
-    const adapter = this.adapters[activeDispatch.adapterName];
-    try {
-      await adapter?.cancel(activeDispatch.requestId);
-    } catch (error: unknown) {
-      this.logger.log("warn", "team.interrupt_cancel_failed", {
-        runId: run.id,
-        requestId: activeDispatch.requestId,
-        adapterName: activeDispatch.adapterName,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    // Mark every request id before awaiting any cancellation: while a slow
+    // cancel() is in flight, a still-unmarked dispatch could complete and be
+    // recorded as a successful step instead of a stopped one.
+    const dispatchesToCancel = [...activeDispatches.values()];
+    const interruptedRequestIds: string[] = [];
+    for (const activeDispatch of dispatchesToCancel) {
+      this.interruptedRequestIds.add(activeDispatch.requestId);
+      interruptedRequestIds.push(activeDispatch.requestId);
     }
+    await Promise.all(
+      dispatchesToCancel.map(async (activeDispatch) => {
+        const adapter = this.adapters[activeDispatch.adapterName];
+        try {
+          await adapter?.cancel(activeDispatch.requestId);
+        } catch (error: unknown) {
+          this.logger.log("warn", "team.interrupt_cancel_failed", {
+            runId: run.id,
+            requestId: activeDispatch.requestId,
+            adapterName: activeDispatch.adapterName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }),
+    );
 
     this.logger.log("info", "team.run_interrupted", {
       roomId: run.roomId,
       runId: run.id,
-      requestId: activeDispatch.requestId,
+      requestIds: interruptedRequestIds,
       feedbackQueued,
     });
 
@@ -504,10 +516,12 @@ export class TeamOrchestrator {
         if (this.teamLoopByRoom.get(roomId) === loopPromise) {
           this.teamLoopByRoom.delete(roomId);
         }
-        const activeDispatch = this.teamActiveDispatchByRun.get(runId);
-        if (activeDispatch) {
-          this.interruptedRequestIds.delete(activeDispatch.requestId);
-          this.teamActiveDispatchByRun.delete(runId);
+        const activeDispatches = this.teamActiveDispatchesByRun.get(runId);
+        if (activeDispatches) {
+          for (const activeDispatch of activeDispatches.values()) {
+            this.interruptedRequestIds.delete(activeDispatch.requestId);
+          }
+          this.teamActiveDispatchesByRun.delete(runId);
         }
         this.teamStopFlags.delete(runId);
         this.teamNextActorByRun.delete(runId);
@@ -562,6 +576,7 @@ export class TeamOrchestrator {
     }
 
     let latestPlan: TeamPlan | null = null;
+    const baseSeq = run.stepCount;
 
     // Round 1: First agent proposes
     const proposer = agents[0]!;
@@ -603,7 +618,7 @@ export class TeamOrchestrator {
 
     this.session.addTeamStep({
       runId: run.id,
-      seq: 1,
+      seq: baseSeq + 1,
       stage: "plan",
       actor: proposer,
       dispatchId: proposeDispatch.dispatchId,
@@ -613,7 +628,11 @@ export class TeamOrchestrator {
       result: "ok",
       errorClass: null,
     });
-    this.session.updateTeamRunProgress(run.id, { stage: "plan", stepCount: 1, noProgressCount: 0 });
+    this.session.updateTeamRunProgress(run.id, {
+      stage: "plan",
+      stepCount: baseSeq + 1,
+      noProgressCount: 0,
+    });
 
     latestPlan = parseTeamPlan(proposeResult.text, agents);
 
@@ -649,7 +668,7 @@ export class TeamOrchestrator {
 
     this.session.addTeamStep({
       runId: run.id,
-      seq: 2,
+      seq: baseSeq + 2,
       stage: "plan",
       actor: reviewer,
       dispatchId: reviewDispatch.dispatchId,
@@ -659,7 +678,11 @@ export class TeamOrchestrator {
       result: reviewResult.success ? "ok" : "error",
       errorClass: normalizeErrorClass(reviewResult.error),
     });
-    this.session.updateTeamRunProgress(run.id, { stage: "plan", stepCount: 2, noProgressCount: 0 });
+    this.session.updateTeamRunProgress(run.id, {
+      stage: "plan",
+      stepCount: baseSeq + 2,
+      noProgressCount: 0,
+    });
 
     if (!reviewResult.success) return latestPlan;
 
@@ -681,6 +704,10 @@ export class TeamOrchestrator {
     const state = this.getState();
     this.session.updateTeamRunProgress(run.id, { stage: "implement" });
 
+    // Planning steps updated stepCount in the DB after `run` was fetched — refetch
+    // so implement seqs continue after the planning seqs instead of colliding.
+    const baseSeq = this.session.getTeamRun(run.id)?.stepCount ?? run.stepCount;
+    let dispatchedCount = 0;
     const dispatchPromises: Promise<void>[] = [];
 
     for (const assignment of plan.assignments) {
@@ -712,7 +739,8 @@ export class TeamOrchestrator {
       );
       this.trackActiveTeamDispatch(run.id, agent, dispatch.requestId);
 
-      const stepSeq = run.stepCount + plan.assignments.indexOf(assignment) + 1;
+      dispatchedCount += 1;
+      const stepSeq = baseSeq + dispatchedCount;
       const promise = this.dispatchApi
         .runPromptDispatch(dispatch, prompt, false, {
           outputTransform: sanitizeTeamOutput,
@@ -720,7 +748,8 @@ export class TeamOrchestrator {
         .then((result) => {
           this.clearActiveTeamDispatch(run.id, dispatch.requestId);
 
-          const errorClass = normalizeErrorClass(result.error);
+          const interrupted = this.consumeInterruptedRequest(dispatch.requestId);
+          const errorClass = interrupted ? null : normalizeErrorClass(result.error);
           this.session.addTeamStep({
             runId: run.id,
             seq: stepSeq,
@@ -730,16 +759,18 @@ export class TeamOrchestrator {
             requestId: dispatch.requestId,
             inputText: prompt,
             outputText: result.text,
-            result: result.success ? "ok" : "error",
+            result: interrupted ? "stopped" : result.success ? "ok" : "error",
             errorClass,
           });
 
-          this.memoryService?.recordTeamStep(
-            run.roomId,
-            run.id,
-            agent,
-            result.text.slice(0, 200),
-          );
+          if (!interrupted) {
+            this.memoryService?.recordTeamStep(
+              run.roomId,
+              run.id,
+              agent,
+              result.text.slice(0, 200),
+            );
+          }
         })
         .catch((error) => {
           this.clearActiveTeamDispatch(run.id, dispatch.requestId);
@@ -760,7 +791,7 @@ export class TeamOrchestrator {
     if (updatedRun) {
       this.session.updateTeamRunProgress(updatedRun.id, {
         stage: "implement",
-        stepCount: run.stepCount + plan.assignments.length,
+        stepCount: baseSeq + dispatchedCount,
       });
     }
   }
@@ -844,17 +875,21 @@ export class TeamOrchestrator {
       }
     }
 
-    // Committed changes on this branch (files changed vs merge-base)
+    // Committed changes on this branch (files changed vs merge-base).
+    // The merge-base must be computed in the main repo, where HEAD is the
+    // base branch: inside the worktree HEAD *is* `branch`, so the merge-base
+    // there always equals the branch tip and the diff comes back empty.
     try {
+      const repoRoot = this.worktreeManager?.getRepoRoot() ?? wtPath;
       const mergeBase = execFileSync(
         "git",
         ["merge-base", "HEAD", branch],
-        { cwd: wtPath, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+        { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
       ).trim();
       const committed = execFileSync(
         "git",
         ["diff", "--name-status", mergeBase, branch],
-        { cwd: wtPath, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+        { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
       ).trim();
       if (committed) {
         for (const line of committed.split("\n")) {
@@ -954,18 +989,26 @@ export class TeamOrchestrator {
     adapterName: string,
     requestId: string,
   ): void {
-    this.teamActiveDispatchByRun.set(runId, {
+    let dispatches = this.teamActiveDispatchesByRun.get(runId);
+    if (!dispatches) {
+      dispatches = new Map<string, ActiveTeamDispatch>();
+      this.teamActiveDispatchesByRun.set(runId, dispatches);
+    }
+    dispatches.set(requestId, {
       adapterName,
       requestId,
     });
   }
 
   private clearActiveTeamDispatch(runId: string, requestId: string): void {
-    const current = this.teamActiveDispatchByRun.get(runId);
-    if (!current || current.requestId !== requestId) {
+    const dispatches = this.teamActiveDispatchesByRun.get(runId);
+    if (!dispatches) {
       return;
     }
-    this.teamActiveDispatchByRun.delete(runId);
+    dispatches.delete(requestId);
+    if (dispatches.size === 0) {
+      this.teamActiveDispatchesByRun.delete(runId);
+    }
   }
 
   private consumeInterruptedRequest(requestId: string): boolean {

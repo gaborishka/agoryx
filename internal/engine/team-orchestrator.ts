@@ -1,18 +1,11 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import type { Adapter, AdapterConfig } from "../adapters/adapter.js";
 import type { ChatRuntimeConfig } from "../config/default.js";
-import type {
-  TeamCheck,
-  TeamPlan,
-  TeamRun,
-  TeamStep,
-  Message,
-  SessionBoundPayload,
-} from "../events/types.js";
+import type { TeamPlan, TeamRun } from "../events/types.js";
 import type { MemoryService } from "../memory/service.js";
 import type { WorktreeManager } from "../worktree/manager.js";
 import { createPolicy } from "../orchestrator/factory.js";
-import { TeamPolicy } from "../orchestrator/team.js";
 import { sanitizeTeamOutput } from "../rendering/sanitize.js";
 import { createId } from "../session/ids.js";
 import { SessionService } from "../session/service.js";
@@ -56,10 +49,9 @@ interface TeamAdapterConfigSnapshot {
 }
 
 export class TeamOrchestrator {
-  private readonly teamPolicy = new TeamPolicy();
   private readonly teamLoopByRoom = new Map<string, Promise<void>>();
   private readonly teamStopFlags = new Set<string>();
-  private readonly teamNextActorByRun = new Map<string, string>();
+  private readonly checksAbortByRun = new Map<string, AbortController>();
   private readonly teamActiveDispatchesByRun = new Map<string, Map<string, ActiveTeamDispatch>>();
   private readonly runStartWarningsByRun = new Map<string, string[]>();
   private readonly interruptedRequestIds = new Set<string>();
@@ -305,7 +297,6 @@ export class TeamOrchestrator {
       completedAt: new Date().toISOString(),
     });
     this.restoreTeamAdapterModes();
-    this.teamNextActorByRun.delete(run.id);
 
     this.logger.log("info", "team.run_approved", {
       roomId: run.roomId,
@@ -325,6 +316,7 @@ export class TeamOrchestrator {
     }
 
     this.teamStopFlags.add(run.id);
+    this.abortActiveChecks(run.id);
     void this.interrupt(undefined, run.id).catch((error: unknown) => {
       this.logger.log("warn", "team.stop_interrupt_failed", {
         runId: run.id,
@@ -335,7 +327,6 @@ export class TeamOrchestrator {
       completedAt: new Date().toISOString(),
     });
     this.restoreTeamAdapterModes();
-    this.teamNextActorByRun.delete(run.id);
 
     this.logger.log("warn", "team.run_stopped", {
       roomId: run.roomId,
@@ -465,6 +456,7 @@ export class TeamOrchestrator {
     }
 
     this.teamStopFlags.add(run.id);
+    this.abortActiveChecks(run.id);
     await this.interrupt(undefined, run.id);
     this.session.updateTeamRunStatus(run.id, "stopped", {
       completedAt: new Date().toISOString(),
@@ -524,7 +516,7 @@ export class TeamOrchestrator {
           this.teamActiveDispatchesByRun.delete(runId);
         }
         this.teamStopFlags.delete(runId);
-        this.teamNextActorByRun.delete(runId);
+        this.checksAbortByRun.delete(runId);
       });
 
     this.teamLoopByRoom.set(roomId, loopPromise);
@@ -542,6 +534,13 @@ export class TeamOrchestrator {
       return;
     }
 
+    // Limits guard before any dispatch — a resumed run may already be exhausted.
+    const startViolation = this.getLimitViolation(run);
+    if (startViolation) {
+      this.finalizeForLimits(run, startViolation);
+      return;
+    }
+
     // Phase 1: Planning
     const plan = await this.runPlanningPhase(run);
     if (!plan || this.teamStopFlags.has(runId)) {
@@ -550,17 +549,191 @@ export class TeamOrchestrator {
         this.session.updateTeamRunProgress(run.id, { finalSummary: msg });
         this.session.updateTeamRunStatus(run.id, "failed", { finalSummary: msg });
         this.restoreTeamAdapterModes();
-        this.teamNextActorByRun.delete(run.id);
       }
       return;
     }
 
+    const planned = this.session.getTeamRun(runId);
+    if (!planned || planned.status !== "active") return;
+    const postPlanViolation = this.getLimitViolation(planned);
+    if (postPlanViolation) {
+      this.finalizeForLimits(planned, postPlanViolation);
+      return;
+    }
+
     // Phase 2: Parallel execution
-    await this.runParallelExecution(run, plan);
+    const { skippedAgents, stepIdByAgent } = await this.runParallelExecution(planned, plan);
     if (this.teamStopFlags.has(runId)) return;
 
-    // Phase 3: Merge
-    await this.runMergePhase(run);
+    const mergeNotes =
+      skippedAgents.length > 0
+        ? [`Step budget (maxSteps=${run.maxSteps}) exhausted; skipped agents: ${skippedAgents.join(", ")}.`]
+        : [];
+
+    // Phase 3: Checks. Re-check the deadline first — implementation may have
+    // consumed the remaining budget, and each check can run up to its own
+    // timeout. The merge phase still runs: it dispatches nothing and ends at
+    // the user gate, so the change report is not lost to the limit.
+    const afterImplement = this.session.getTeamRun(runId);
+    if (afterImplement && afterImplement.status === "active") {
+      if (this.isPastDeadline(afterImplement)) {
+        mergeNotes.push(
+          `Checks skipped: run exceeded maxDurationMs (${afterImplement.maxDurationMs}ms).`,
+        );
+        this.logger.log("warn", "team.checks_skipped_deadline", {
+          runId: run.id,
+          maxDurationMs: afterImplement.maxDurationMs,
+        });
+      } else {
+        mergeNotes.push(...(await this.runChecksPhase(afterImplement, stepIdByAgent)));
+      }
+    }
+    if (this.teamStopFlags.has(runId)) return;
+
+    // Phase 4: Merge
+    await this.runMergePhase(run, mergeNotes);
+  }
+
+  /**
+   * Runs the configured check commands after the implement phase and records
+   * every result into team_checks. Checks are per agent worktree when worktree
+   * isolation is on, otherwise a single pass in the main workspace. Failures
+   * do not fail the run — per finalGate "proposal" the user sees the outcomes
+   * in the merge summary and decides at /team approve.
+   */
+  private async runChecksPhase(
+    run: TeamRun,
+    stepIdByAgent: Map<string, string>,
+  ): Promise<string[]> {
+    if (!run.checksEnabled) return [];
+    const commands = this.config.team.checkCommands;
+    if (commands.length === 0) return [];
+
+    this.session.updateTeamRunProgress(run.id, { stage: "checks" });
+    const state = this.getState();
+
+    const workspaces: Array<{ agent: string | null; cwd: string }> = [];
+    // When worktree creation failed for some agent at startRun, that agent
+    // worked in the main workspace — checks must cover it too.
+    let mainWorkspaceNeeded = !this.worktreeManager;
+    if (this.worktreeManager) {
+      for (const agent of state.availableAgents) {
+        const wt = this.worktreeManager.getForAgent(agent);
+        if (wt) {
+          workspaces.push({ agent, cwd: wt.path });
+        } else {
+          mainWorkspaceNeeded = true;
+        }
+      }
+    }
+    if (mainWorkspaceNeeded) {
+      workspaces.push({
+        agent: null,
+        cwd: this.worktreeManager?.getRepoRoot() ?? process.cwd(),
+      });
+    }
+
+    const abortController = new AbortController();
+    this.checksAbortByRun.set(run.id, abortController);
+    try {
+      return await this.executeChecks(run, workspaces, commands, stepIdByAgent, abortController.signal);
+    } finally {
+      if (this.checksAbortByRun.get(run.id) === abortController) {
+        this.checksAbortByRun.delete(run.id);
+      }
+    }
+  }
+
+  private async executeChecks(
+    run: TeamRun,
+    workspaces: Array<{ agent: string | null; cwd: string }>,
+    commands: string[],
+    stepIdByAgent: Map<string, string>,
+    abortSignal: AbortSignal,
+  ): Promise<string[]> {
+    let passedCount = 0;
+    const failures: string[] = [];
+    for (const workspace of workspaces) {
+      for (const command of commands) {
+        if (this.teamStopFlags.has(run.id) || abortSignal.aborted) {
+          return [];
+        }
+        const outcome = await runCheckCommand(command, workspace.cwd, abortSignal);
+        if (outcome.status === "aborted") {
+          return [];
+        }
+        this.session.addTeamCheck({
+          runId: run.id,
+          stepId: workspace.agent ? (stepIdByAgent.get(workspace.agent) ?? null) : null,
+          command,
+          status: outcome.status,
+          exitCode: outcome.exitCode,
+          stdoutText: outcome.stdout,
+          stderrText: outcome.stderr,
+          durationMs: outcome.durationMs,
+        });
+        if (outcome.status === "passed") {
+          passedCount += 1;
+        } else {
+          const scope = workspace.agent ? `${workspace.agent}: ` : "";
+          const exitInfo = outcome.exitCode === null ? "" : `, exit ${outcome.exitCode}`;
+          failures.push(`${scope}${command} (${outcome.status}${exitInfo})`);
+        }
+        this.logger.log(
+          outcome.status === "passed" ? "info" : "warn",
+          "team.check_completed",
+          {
+            runId: run.id,
+            agent: workspace.agent,
+            command,
+            status: outcome.status,
+            exitCode: outcome.exitCode,
+            durationMs: outcome.durationMs,
+          },
+        );
+      }
+    }
+
+    if (failures.length === 0) {
+      return [`Checks: ${passedCount} passed.`];
+    }
+    return [
+      `Checks: ${passedCount} passed, ${failures.length} failed:\n  ${failures.join("\n  ")}`,
+    ];
+  }
+
+  private getLimitViolation(run: TeamRun): string | null {
+    if (run.stepCount >= run.maxSteps) {
+      return `max steps (${run.maxSteps})`;
+    }
+    if (run.noProgressCount >= run.maxNoProgressSteps) {
+      return `no progress for ${run.noProgressCount} steps`;
+    }
+    if (this.isPastDeadline(run)) {
+      return `max duration (${run.maxDurationMs}ms)`;
+    }
+    return null;
+  }
+
+  private isPastDeadline(run: TeamRun): boolean {
+    return Date.now() - Date.parse(run.startedAt) >= run.maxDurationMs;
+  }
+
+  private abortActiveChecks(runId: string): void {
+    this.checksAbortByRun.get(runId)?.abort();
+  }
+
+  private finalizeForLimits(run: TeamRun, reason: string): void {
+    const summary = `Team limits reached: ${reason}.`;
+    this.session.updateTeamRunProgress(run.id, { finalSummary: summary });
+    this.session.updateTeamRunStatus(run.id, "waiting_user_input", { finalSummary: summary });
+    this.restoreTeamAdapterModes();
+
+    this.logger.log("warn", "team.run_limits_reached", {
+      roomId: run.roomId,
+      runId: run.id,
+      reason,
+    });
   }
 
   private async runPlanningPhase(run: TeamRun): Promise<TeamPlan | null> {
@@ -628,13 +801,28 @@ export class TeamOrchestrator {
       result: "ok",
       errorClass: null,
     });
+    let noProgressCount = isProgressOutput(proposeResult.success, proposeResult.text)
+      ? 0
+      : run.noProgressCount + 1;
     this.session.updateTeamRunProgress(run.id, {
       stage: "plan",
       stepCount: baseSeq + 1,
-      noProgressCount: 0,
+      noProgressCount,
     });
 
     latestPlan = parseTeamPlan(proposeResult.text, agents);
+
+    // Budget/deadline guard between rounds: skip the review dispatch when the
+    // proposal already consumed the last allowed step or the run is out of
+    // limits — the outer post-plan guard finalizes the run.
+    const afterPropose = this.session.getTeamRun(run.id);
+    if (
+      !afterPropose ||
+      afterPropose.status !== "active" ||
+      this.getLimitViolation(afterPropose) !== null
+    ) {
+      return latestPlan;
+    }
 
     // Round 2: Second agent reviews and accepts/amends
     const reviewer = agents[1]!;
@@ -678,15 +866,21 @@ export class TeamOrchestrator {
       result: reviewResult.success ? "ok" : "error",
       errorClass: normalizeErrorClass(reviewResult.error),
     });
+    const reviewPlan = reviewResult.success ? parseTeamPlan(reviewResult.text, agents) : null;
+    // Accepting or amending the plan is progress even when the reply is short.
+    const reviewProgressed =
+      reviewResult.success &&
+      (reviewPlan?.accepted ||
+        (reviewPlan !== null && reviewPlan.assignments.length > 0) ||
+        isProgressOutput(true, reviewResult.text));
+    noProgressCount = reviewProgressed ? 0 : noProgressCount + 1;
     this.session.updateTeamRunProgress(run.id, {
       stage: "plan",
       stepCount: baseSeq + 2,
-      noProgressCount: 0,
+      noProgressCount,
     });
 
     if (!reviewResult.success) return latestPlan;
-
-    const reviewPlan = parseTeamPlan(reviewResult.text, agents);
     if (reviewPlan?.accepted) {
       // Reviewer accepted — use the proposer's plan
       return latestPlan;
@@ -700,19 +894,29 @@ export class TeamOrchestrator {
     return latestPlan;
   }
 
-  private async runParallelExecution(run: TeamRun, plan: TeamPlan): Promise<void> {
+  private async runParallelExecution(
+    run: TeamRun,
+    plan: TeamPlan,
+  ): Promise<{ skippedAgents: string[]; stepIdByAgent: Map<string, string> }> {
     const state = this.getState();
     this.session.updateTeamRunProgress(run.id, { stage: "implement" });
 
     // Planning steps updated stepCount in the DB after `run` was fetched — refetch
     // so implement seqs continue after the planning seqs instead of colliding.
     const baseSeq = this.session.getTeamRun(run.id)?.stepCount ?? run.stepCount;
+    const stepBudget = Math.max(0, run.maxSteps - baseSeq);
     let dispatchedCount = 0;
+    const skippedAgents: string[] = [];
+    const stepIdByAgent = new Map<string, string>();
     const dispatchPromises: Promise<void>[] = [];
 
     for (const assignment of plan.assignments) {
       if (!state.availableAgents.includes(assignment.agent)) continue;
       if (this.teamStopFlags.has(run.id)) break;
+      if (dispatchedCount >= stepBudget) {
+        skippedAgents.push(assignment.agent);
+        continue;
+      }
 
       const agent = assignment.agent;
       const prompt = this.session.buildTeamPrompt(
@@ -728,8 +932,7 @@ export class TeamOrchestrator {
             `Create or modify the files listed above to complete your task. ` +
             `You have full filesystem access in your workspace.\n` +
             `IMPORTANT: After creating/modifying files, commit your changes with git:\n` +
-            `  git add -A && git commit -m "feat: <short description>"\n` +
-            `When done, output TEAM_DONE.`,
+            `  git add -A && git commit -m "feat: <short description>"`,
         },
       );
 
@@ -750,7 +953,7 @@ export class TeamOrchestrator {
 
           const interrupted = this.consumeInterruptedRequest(dispatch.requestId);
           const errorClass = interrupted ? null : normalizeErrorClass(result.error);
-          this.session.addTeamStep({
+          const step = this.session.addTeamStep({
             runId: run.id,
             seq: stepSeq,
             stage: "implement",
@@ -762,6 +965,16 @@ export class TeamOrchestrator {
             result: interrupted ? "stopped" : result.success ? "ok" : "error",
             errorClass,
           });
+          stepIdByAgent.set(agent, step.id);
+
+          const current = this.session.getTeamRun(run.id);
+          if (current && current.status === "active") {
+            const progressed =
+              !interrupted && isProgressOutput(result.success, result.text);
+            this.session.updateTeamRunProgress(run.id, {
+              noProgressCount: progressed ? 0 : current.noProgressCount + 1,
+            });
+          }
 
           if (!interrupted) {
             this.memoryService?.recordTeamStep(
@@ -794,25 +1007,34 @@ export class TeamOrchestrator {
         stepCount: baseSeq + dispatchedCount,
       });
     }
+
+    if (skippedAgents.length > 0) {
+      this.logger.log("warn", "team.step_budget_exhausted", {
+        runId: run.id,
+        maxSteps: run.maxSteps,
+        skippedAgents,
+      });
+    }
+
+    return { skippedAgents, stepIdByAgent };
   }
 
-  private async runMergePhase(run: TeamRun): Promise<void> {
+  private async runMergePhase(run: TeamRun, notes: string[] = []): Promise<void> {
+    const notePrefix = notes.length > 0 ? notes.join("\n") + "\n\n" : "";
     if (!this.worktreeManager) {
       // No worktree manager — skip merge, just mark done
-      const msg = "Run completed (no worktree merge).";
+      const msg = notePrefix + "Run completed (no worktree merge).";
       this.session.updateTeamRunProgress(run.id, { finalSummary: msg });
       this.session.updateTeamRunStatus(run.id, "done", {
         completedAt: new Date().toISOString(),
         finalSummary: msg,
       });
       this.restoreTeamAdapterModes();
-      this.teamNextActorByRun.delete(run.id);
       return;
     }
 
     this.session.updateTeamRunProgress(run.id, { stage: "finalize" });
     const state = this.getState();
-    const mergeErrors: string[] = [];
 
     // Collect file changes per agent for user review (do NOT commit yet)
     const changeReport: string[] = [];
@@ -836,6 +1058,7 @@ export class TeamOrchestrator {
 
     if (changeReport.length > 0) {
       const summary =
+        notePrefix +
         "Agents completed. Files created/modified:\n\n" +
         changeReport.join("\n\n") +
         "\n\nUse /team approve to commit and merge, or /team stop to discard.";
@@ -844,14 +1067,13 @@ export class TeamOrchestrator {
       this.restoreTeamAdapterModes();
     } else {
       // No file changes — nothing to approve, mark as done directly
-      const noChangesMsg = "All agents completed (no file changes detected).";
+      const noChangesMsg = notePrefix + "All agents completed (no file changes detected).";
       this.session.updateTeamRunProgress(run.id, { finalSummary: noChangesMsg });
       this.session.updateTeamRunStatus(run.id, "done", {
         completedAt: new Date().toISOString(),
         finalSummary: noChangesMsg,
       });
       this.restoreTeamAdapterModes();
-      this.teamNextActorByRun.delete(run.id);
       this.logger.log("info", "team.run_completed_no_changes", {
         roomId: run.roomId,
         runId: run.id,
@@ -1021,63 +1243,88 @@ export class TeamOrchestrator {
 
 }
 
-interface TeamDebateControl {
-  done: boolean;
-  nextActor: string | null;
+const execFileAsync = promisify(execFile);
+
+/** Wall-clock limit for a single check command. */
+const CHECK_TIMEOUT_MS = 120_000;
+/** Cap persisted check output so one noisy command cannot bloat the DB. */
+const CHECK_OUTPUT_LIMIT = 20_000;
+
+interface CheckOutcome {
+  /** "aborted" means the run was stopped mid-check; the result is not persisted. */
+  status: "passed" | "failed" | "timeout" | "aborted";
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
 }
 
-const TEAM_DONE_PATTERN = /^\s*TEAM_DONE(?:\b|:)/i;
-const TEAM_NEXT_PATTERN = /^\s*TEAM_NEXT\s*:\s*@?([a-z0-9._-]+)/i;
-const TEAM_STOP_WORD_PATTERNS = [
-  /^\s*AGORYX_STOP\s*$/i,
-  /^\s*TEAM_STOP\s*$/i,
-];
-const INLINE_CODE_WRAPPER_PATTERN = /^(`{1,3})([^`]+)\1$/;
-const MENTION_PATTERN = /@([a-z0-9._-]+)/g;
+const truncateCheckOutput = (text: string): string =>
+  text.length > CHECK_OUTPUT_LIMIT ? text.slice(0, CHECK_OUTPUT_LIMIT) + "\n[truncated]" : text;
 
-/** Max number of trailing lines to scan for control directives. */
-const CONTROL_TAIL_LINES = 5;
-export const parseTeamDebateControl = (text: string): TeamDebateControl => {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return { done: false, nextActor: null };
-  }
-
-  const lines = trimmed.split(/\r?\n/);
-  const tail = lines.slice(-CONTROL_TAIL_LINES);
-
-  for (const line of tail) {
-    const normalizedLine = normalizeTeamControlLine(line);
-    if (
-      TEAM_DONE_PATTERN.test(normalizedLine) ||
-      TEAM_STOP_WORD_PATTERNS.some((pattern) => pattern.test(normalizedLine))
-    ) {
-      return { done: true, nextActor: null };
-    }
-  }
-
-  for (const line of tail) {
-    const normalizedLine = normalizeTeamControlLine(line);
-    const nextMatch = TEAM_NEXT_PATTERN.exec(normalizedLine);
-    if (nextMatch?.[1]) {
+/**
+ * Executes one validated check command without a shell. Safe to split on
+ * whitespace: validateCheckCommands rejects shell metacharacters, so every
+ * token is a literal argument.
+ */
+const runCheckCommand = async (
+  command: string,
+  cwd: string,
+  abortSignal?: AbortSignal,
+): Promise<CheckOutcome> => {
+  const [file, ...args] = command.split(/\s+/);
+  const startedAt = Date.now();
+  try {
+    const { stdout, stderr } = await execFileAsync(file!, args, {
+      cwd,
+      timeout: CHECK_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
+      encoding: "utf-8",
+      signal: abortSignal,
+    });
+    return {
+      status: "passed",
+      exitCode: 0,
+      stdout: truncateCheckOutput(stdout),
+      stderr: truncateCheckOutput(stderr),
+      durationMs: Date.now() - startedAt,
+    };
+  } catch (error: unknown) {
+    const err = error as {
+      code?: number | string;
+      killed?: boolean;
+      signal?: string;
+      stdout?: string;
+      stderr?: string;
+      message?: string;
+    };
+    if (abortSignal?.aborted) {
       return {
-        done: false,
-        nextActor: nextMatch[1].toLowerCase(),
+        status: "aborted",
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        durationMs: Date.now() - startedAt,
       };
     }
+    const timedOut = err.killed === true || err.signal === "SIGTERM";
+    return {
+      status: timedOut ? "timeout" : "failed",
+      exitCode: typeof err.code === "number" ? err.code : null,
+      stdout: truncateCheckOutput(err.stdout ?? ""),
+      stderr: truncateCheckOutput(err.stderr || (err.message ?? "")),
+      durationMs: Date.now() - startedAt,
+    };
   }
-
-  return { done: false, nextActor: null };
 };
 
-const normalizeTeamControlLine = (line: string): string => {
-  const trimmed = line.trim();
-  const inlineCodeMatch = INLINE_CODE_WRAPPER_PATTERN.exec(trimmed);
-  if (!inlineCodeMatch) {
-    return trimmed;
-  }
-  return inlineCodeMatch[2]?.trim() ?? trimmed;
-};
+/** A successful step with at least this much output counts as progress. */
+const MIN_PROGRESS_LENGTH = 80;
+
+const isProgressOutput = (success: boolean, text: string): boolean =>
+  success && text.trim().length >= MIN_PROGRESS_LENGTH;
+
+const MENTION_PATTERN = /@([a-z0-9._-]+)/g;
 
 const resolveMentionTargets = (
   text: string,

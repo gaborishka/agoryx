@@ -62,12 +62,12 @@ The user left the choice "restore checks phase vs delete the subsystem" to Ivan 
 - Modify: `internal/engine/team-orchestrator.ts`
 - Modify: `tests/engine/team-mode.test.ts`
 
-- [ ] `teamActiveDispatchByRun` becomes `Map<runId, Map<requestId, ActiveTeamDispatch>>`
-- [ ] `interrupt()` cancels **all** active dispatches of the run and marks each requestId interrupted
-- [ ] `launchLoop` finally-cleanup clears the whole inner map
-- [ ] parallel `.then` consumes interrupted requestIds and records the step with `result: "stopped"`
-- [ ] test: interrupt during parallel implement cancels both agents' dispatches (stub adapters record `cancel` calls)
-- [ ] run `npm run typecheck && npm test` — must pass
+- [x] `teamActiveDispatchByRun` becomes `Map<runId, Map<requestId, ActiveTeamDispatch>>`
+- [x] `interrupt()` cancels **all** active dispatches of the run and marks each requestId interrupted
+- [x] `launchLoop` finally-cleanup clears the whole inner map
+- [x] parallel `.then` consumes interrupted requestIds and records the step with `result: "stopped"`
+- [x] test: interrupt during parallel implement cancels both agents (in `team-full-cycle.test.ts`, not `team-mode.test.ts` — the dual-adapter harness lives there)
+- [x] run `npm run typecheck && npm test` — must pass
 
 ### Task 3: Enforce maxSteps / maxDurationMs / maxNoProgressSteps in runLoop (review item 1)
 
@@ -75,13 +75,13 @@ The user left the choice "restore checks phase vs delete the subsystem" to Ivan 
 - Modify: `internal/engine/team-orchestrator.ts`
 - Modify: `tests/engine/team-full-cycle.test.ts`
 
-- [ ] `getLimitViolation(run)` helper mirroring old `shouldFinalizeRun` (steps / no-progress / duration)
-- [ ] `finalizeForLimits(run, reason)` → `waiting_user_input` + "Team limits reached: …" summary + adapter-mode restore (old `completeRun` semantics)
-- [ ] guard at `runLoop` start (protects `/team resume` of exhausted runs) and again between planning and implement
-- [ ] planning steps update `noProgressCount` (≥80-char successful output resets, else +1 — old rule); implement steps likewise
-- [ ] `runParallelExecution` clamps assignments to the remaining `maxSteps` budget; skipped assignments logged and reported in the merge summary
-- [ ] tests: exhausted maxSteps at start → finalize with zero dispatches; `maxDurationMs: 0` → same; budget clamp dispatches only what fits; resumed run with `noProgressCount ≥ max` finalizes immediately
-- [ ] run `npm run typecheck && npm test` — must pass
+- [x] `getLimitViolation(run)` helper mirroring old `shouldFinalizeRun` (steps / no-progress / duration)
+- [x] `finalizeForLimits(run, reason)` → `waiting_user_input` + "Team limits reached: …" summary + adapter-mode restore (old `completeRun` semantics)
+- [x] guard at `runLoop` start (protects `/team resume` of exhausted runs) and again between planning and implement
+- [x] planning steps update `noProgressCount` (≥80-char successful output resets, else +1 — old rule); implement steps likewise
+- [x] `runParallelExecution` clamps assignments to the remaining `maxSteps` budget; skipped assignments logged and reported in the merge summary
+- [x] tests: exhausted maxSteps at start → finalize with zero dispatches; `maxDurationMs: 0` → same; budget clamp dispatches only what fits; resumed run with `noProgressCount ≥ max` finalizes immediately
+- [x] run `npm run typecheck && npm test` — must pass
 
 ### Task 4: Implement the checks phase (review item 2 — decision above)
 
@@ -89,12 +89,12 @@ The user left the choice "restore checks phase vs delete the subsystem" to Ivan 
 - Modify: `internal/engine/team-orchestrator.ts`
 - Create: `tests/engine/team-checks-phase.test.ts`
 
-- [ ] `runChecksPhase(run, stepIdByAgent)` between implement and merge; sets stage `"checks"`
-- [ ] per-worktree (or repo-root fallback) async `execFile` execution, 120s timeout, output truncation, stop-flag aware
-- [ ] `addTeamCheck` for every command run (passed / failed / timeout), `stepId` linked to the agent's implement step
-- [ ] merge summary prepends "Checks: X passed, Y failed …" so the user sees results before `/team approve`
-- [ ] tests: passing command recorded as `passed`; failing as `failed` with exit code; `checksEnabled: false` and empty `checkCommands` skip the phase entirely
-- [ ] run `npm run typecheck && npm test` — must pass
+- [x] `runChecksPhase(run, stepIdByAgent)` between implement and merge; sets stage `"checks"`
+- [x] per-worktree (or repo-root fallback) async `execFile` execution, 120s timeout, output truncation, stop-flag aware
+- [x] `addTeamCheck` for every command run (passed / failed / timeout), `stepId` linked to the agent's implement step
+- [x] merge summary prepends "Checks: X passed, Y failed …" so the user sees results before `/team approve`
+- [x] tests: passing command recorded as `passed`; failing as `failed` with exit code; `checksEnabled: false` and empty `checkCommands` skip the phase entirely
+- [x] run `npm run typecheck && npm test` — must pass
 
 ### Task 5: Remove dead debate code (review item 5)
 
@@ -103,18 +103,18 @@ The user left the choice "restore checks phase vs delete the subsystem" to Ivan 
 - Delete: `tests/engine/parse-team-control.test.ts`
 - Create: `tests/rendering/sanitize.test.ts`
 
-- [ ] remove `parseTeamDebateControl`, `TeamDebateControl`, `TEAM_DONE`/`TEAM_NEXT`/stop-word patterns, `normalizeTeamControlLine`, `CONTROL_TAIL_LINES`
-- [ ] remove `teamNextActorByRun` (field + all `delete` calls) and the unused `teamPolicy` field/import
-- [ ] remove the vestigial "When done, output TEAM_DONE." instruction from the implement prompt
-- [ ] delete `tests/engine/parse-team-control.test.ts`; move the generic `sanitizeTeamOutput` regression tests to `tests/rendering/sanitize.test.ts` (drop TEAM_* control-line-preservation cases)
-- [ ] run `npm run typecheck && npm test` — must pass
+- [x] remove `parseTeamDebateControl`, `TeamDebateControl`, `TEAM_DONE`/`TEAM_NEXT`/stop-word patterns, `normalizeTeamControlLine`, `CONTROL_TAIL_LINES`
+- [x] remove `teamNextActorByRun` (and dead `mergeErrors` in `runMergePhase`) (field + all `delete` calls) and the unused `teamPolicy` field/import
+- [x] remove the vestigial "When done, output TEAM_DONE." instruction from the implement prompt
+- [x] delete `tests/engine/parse-team-control.test.ts`; move the generic `sanitizeTeamOutput` regression tests to `tests/rendering/sanitize.test.ts` (drop TEAM_* control-line-preservation cases)
+- [x] run `npm run typecheck && npm test` — must pass
 
 ### Task 6: Verify acceptance criteria & docs
 
-- [ ] all five review findings addressed; limits round-trip config → run → enforcement
-- [ ] full suite green: `npm run typecheck && npm test`
-- [ ] update `docs/ARCHITECTURE.md` team section (plan → implement → checks → merge; limits enforcement; checks semantics)
-- [ ] update Claude project memory (plan location + checks decision awaiting Ivan's confirmation)
+- [x] all five review findings addressed; limits round-trip config → run → enforcement
+- [x] full suite green: `npm run typecheck && npm test`
+- [x] update `docs/ARCHITECTURE.md` team section (plan → implement → checks → merge; limits enforcement; checks semantics)
+- [x] update Claude project memory (plan location + checks decision awaiting Ivan's confirmation)
 
 ## Technical Details
 
@@ -122,6 +122,16 @@ The user left the choice "restore checks phase vs delete the subsystem" to Ivan 
 - **Progress rule**: `MIN_PROGRESS_LENGTH = 80` chars of successful output = progress (reset counter), else +1 — restored verbatim from the old loop.
 - **Check execution**: `command.split(/\s+/)` → `execFile(argv0, args, { cwd, timeout: 120_000 })`; safe because `validateCheckCommands` rejects `| ; & $ ( ) < > #` and backticks. stdout/stderr truncated to 20k chars each before persisting.
 - **Interrupt map**: inner map keyed by `requestId` (unique per dispatch); `(runId, agent)` would break if an agent ever had two dispatches in one run stage.
+
+## PR #5 Review Follow-ups (Codex, 2026-08-30)
+
+All five inline findings addressed on top of the completed plan:
+
+- [x] `CHECK_COMMAND_PATTERN` also rejects `"` and `'` in arguments — quotes are not parsed by the whitespace split, so they would silently change the command's meaning (test: `tests/config/merge.test.ts`)
+- [x] planning loop re-checks run status and limits between negotiation rounds — a review round can no longer dispatch past the step budget (test: `tests/engine/team-full-cycle.test.ts`)
+- [x] checks phase is skipped with a merge-summary note when the implement phase already exceeded `maxDurationMs` (test: `tests/engine/team-checks-phase.test.ts`)
+- [x] checks fall back to the main workspace for agents whose worktree is missing, even when a worktree manager exists (test: `tests/engine/team-checks-phase.test.ts`)
+- [x] `/team stop` and shutdown abort in-flight check child processes via `AbortController`; aborted outcomes are not persisted (test: `tests/engine/team-checks-phase.test.ts`)
 
 ## Post-Completion
 

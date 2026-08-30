@@ -103,7 +103,7 @@ const makeCancellableAdapter = (
 // Helper to create engine with 2 adapters
 const createDualEngine = (
   adapters: PersistentAdapter[],
-  options: { maxSteps?: number } = {},
+  options: { maxSteps?: number; maxNoProgressSteps?: number; maxDurationMs?: number } = {},
 ) => {
   const store = new SQLiteStore(":memory:");
   store.init();
@@ -129,8 +129,8 @@ const createDualEngine = (
     team: {
       profile: "enthusiast",
       maxSteps: options.maxSteps ?? 10,
-      maxNoProgressSteps: 5,
-      maxDurationMs: 900_000,
+      maxNoProgressSteps: options.maxNoProgressSteps ?? 5,
+      maxDurationMs: options.maxDurationMs ?? 900_000,
       checksEnabledByDefault: false,
       checkCommands: [],
       strict: { maxSteps: 8, maxNoProgressSteps: 2, maxDurationMs: 900_000, checksEnabledByDefault: false },
@@ -246,6 +246,134 @@ test("interrupt cancels every in-flight parallel dispatch", async () => {
     for (const step of implSteps) {
       assert.equal(step.result, "stopped", "interrupted implement steps record as stopped");
     }
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("limits: exhausted maxSteps finalizes run without any dispatch", async () => {
+  const codex = makeSequentialAdapter("codex", []);
+  const claude = makeSequentialAdapter("claude", []);
+  const { engine, store } = createDualEngine([codex, claude], { maxSteps: 0 });
+  try {
+    engine.startTeamRun("Goal that must not dispatch");
+    await waitForRunStatus(engine, "waiting_user_input", 5_000);
+
+    const status = engine.teamStatus();
+    assert.ok(status);
+    assert.match(status.run.finalSummary ?? "", /Team limits reached: max steps/);
+    assert.equal(codex.calls.length, 0, "no dispatch when step limit is exhausted");
+    assert.equal(claude.calls.length, 0, "no dispatch when step limit is exhausted");
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("limits: exceeded maxDurationMs finalizes run without any dispatch", async () => {
+  const codex = makeSequentialAdapter("codex", []);
+  const claude = makeSequentialAdapter("claude", []);
+  const { engine, store } = createDualEngine([codex, claude], { maxDurationMs: 0 });
+  try {
+    engine.startTeamRun("Goal that must not dispatch");
+    await waitForRunStatus(engine, "waiting_user_input", 5_000);
+
+    const status = engine.teamStatus();
+    assert.ok(status);
+    assert.match(status.run.finalSummary ?? "", /Team limits reached: max duration/);
+    assert.equal(codex.calls.length, 0, "no dispatch when duration limit is exceeded");
+    assert.equal(claude.calls.length, 0, "no dispatch when duration limit is exceeded");
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("limits: implement dispatches are clamped to the remaining step budget", async () => {
+  const codex = makeSequentialAdapter("codex", [
+    `PLAN:\n- agent: codex\n  task: Implement sorting\n  files: sort.ts\n- agent: claude\n  task: Write tests\n  files: sort.test.ts\nPLAN_END`,
+    "Implemented sorting algorithm within the step budget of this limited run.",
+  ]);
+  const claude = makeSequentialAdapter("claude", ["PLAN_ACCEPT"]);
+
+  // maxSteps 3 = 2 planning steps + budget for a single implement step
+  const { engine, store, session } = createDualEngine([codex, claude], { maxSteps: 3 });
+  try {
+    engine.startTeamRun("Implement merge sort with tests");
+    await waitForRunStatus(engine, "done", 10_000);
+
+    assert.equal(codex.calls.length, 2, "codex: plan + 1 implement dispatch");
+    assert.equal(claude.calls.length, 1, "claude: plan review only — implement skipped");
+
+    const status = engine.teamStatus();
+    assert.ok(status);
+    assert.equal(status.run.stepCount, 3);
+    assert.match(status.run.finalSummary ?? "", /skipped agents: claude/);
+    const implSteps = session
+      .listTeamSteps(status.run.id, 10)
+      .filter((s) => s.stage === "implement");
+    assert.equal(implSteps.length, 1);
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("limits: step budget exhausted mid-planning skips the review round", async () => {
+  const codex = makeSequentialAdapter("codex", [
+    `PLAN:\n- agent: codex\n  task: Implement sorting\n  files: sort.ts\n- agent: claude\n  task: Write tests\n  files: sort.test.ts\nPLAN_END`,
+  ]);
+  const claude = makeSequentialAdapter("claude", ["PLAN_ACCEPT"]);
+
+  // maxSteps 1: the propose round consumes the whole budget, so the
+  // negotiation must stop before dispatching the review round.
+  const { engine, store } = createDualEngine([codex, claude], { maxSteps: 1 });
+  try {
+    engine.startTeamRun("Implement merge sort with tests");
+    await waitForRunStatus(engine, "waiting_user_input", 5_000);
+
+    assert.equal(codex.calls.length, 1, "codex: propose round only");
+    assert.equal(claude.calls.length, 0, "review round must not dispatch past the step budget");
+
+    const status = engine.teamStatus();
+    assert.ok(status);
+    assert.equal(status.run.stepCount, 1);
+    assert.match(status.run.finalSummary ?? "", /Team limits reached: max steps/);
+  } finally {
+    await engine.shutdown();
+    store.close();
+  }
+});
+
+test("limits: resumed run with exhausted noProgress budget finalizes immediately", async () => {
+  const codex = makeSequentialAdapter("codex", []);
+  const claude = makeSequentialAdapter("claude", []);
+  const { engine, store, session } = createDualEngine([codex, claude], {
+    maxNoProgressSteps: 2,
+  });
+  try {
+    // Adapters return non-plan fallback text, so planning yields no plan and the run fails
+    const run = engine.startTeamRun("Stalling goal");
+    await waitForRunStatus(engine, "failed", 5_000);
+
+    // Simulate a stale active run that already burned its no-progress budget
+    session.updateTeamRunStatus(run.id, "active", {});
+    session.updateTeamRunProgress(run.id, { noProgressCount: 2 });
+    const callsBefore = codex.calls.length + claude.calls.length;
+
+    const resumed = engine.teamResume();
+    assert.ok(resumed);
+    await waitForRunStatus(engine, "waiting_user_input", 5_000);
+
+    const status = engine.teamStatus();
+    assert.ok(status);
+    assert.match(status.run.finalSummary ?? "", /Team limits reached: no progress/);
+    assert.equal(
+      codex.calls.length + claude.calls.length,
+      callsBefore,
+      "resume must not dispatch when the no-progress budget is exhausted",
+    );
   } finally {
     await engine.shutdown();
     store.close();

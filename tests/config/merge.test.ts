@@ -280,6 +280,31 @@ test("team checkCommands rejects unsafe commands", () => {
   rmSync(dir, { recursive: true });
 });
 
+test("team checkCommands rejects quoted arguments", () => {
+  // The runtime splits commands on whitespace without a shell, so quotes
+  // would be passed through literally and change the command's meaning.
+  const dir = mkdtempSync(join(tmpdir(), "agoryx-test-"));
+  const configPath = join(dir, "agoryx.json");
+  for (const command of [
+    'node -e "console.log(1)"',
+    "npm run 'lint:fix'",
+  ]) {
+    writeFileSync(
+      configPath,
+      JSON.stringify({ team: { checkCommands: [command] } }),
+    );
+    assert.throws(
+      () => {
+        loadConfig(configPath);
+      },
+      /Invalid team\.checkCommands entry/i,
+      `quoted command must be rejected: ${command}`,
+    );
+  }
+
+  rmSync(dir, { recursive: true });
+});
+
 test("loadConfig auto-detects legacy ./agoryx.json in cwd", () => {
   const dir = mkdtempSync(join(tmpdir(), "agoryx-test-legacy-cwd-"));
   const previousCwd = process.cwd();

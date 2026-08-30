@@ -178,9 +178,14 @@ interface Dispatch {
 
 **Out of scope for v0.1:** agent-to-agent autonomous chaining/debate loops. Cross-agent autonomous turns are deferred to a later version behind explicit guardrails (step limits, loop prevention, budget caps).
 
-### v0.2 Team Policy
+### Team Policy (v0.3: plan → implement → checks → merge)
 
-**team:** Autonomous multi-step runtime with one deterministic round-robin discussion loop toward a goal.
+**team:** Autonomous multi-phase runtime toward a goal. The v0.2 sequential debate loop was replaced in v0.3 with a parallel flow:
+
+1. **Plan** — two negotiation rounds: the first agent proposes a work split (`PLAN:`/`PLAN_END` format), the second accepts (`PLAN_ACCEPT`) or amends it. A single agent skips negotiation.
+2. **Implement** — every assigned agent runs in parallel, each in its own git worktree when worktree isolation is available.
+3. **Checks** — when `checksEnabled` and `team.checkCommands` is non-empty, each configured command runs per agent worktree (or once in the main workspace) via shell-less `execFile`; results are persisted to `team_checks` and summarized for the user. Failures do not fail the run — the user decides at approval.
+4. **Merge** — file changes are reported and the run becomes `waiting_user_input`; `/team approve` commits and merges the worktree branches.
 
 Behavior:
 
@@ -188,7 +193,9 @@ Behavior:
 - User messages during an active run are queued as feedback for the next step.
 - Run completion is proposal-gated: status becomes `waiting_user_input` and requires explicit user approval.
 - Resume after restart is manual (`/team resume`).
-- Defaults are intentionally relaxed for enthusiast workflows; stricter guardrails are opt-in.
+- Safety limits are enforced by the run loop: `maxSteps` (checked before planning and clamping the implement dispatches), `maxDurationMs` (checked at phase boundaries), and `maxNoProgressSteps` (successful steps with ≥ 80 chars of output reset the counter). A violated limit finalizes the run to `waiting_user_input` with a "Team limits reached" summary.
+- Interrupt (`/team interrupt`, Esc) cancels **all** in-flight parallel dispatches of the run; interrupted implement steps are recorded with result `stopped`.
+- Defaults are intentionally relaxed for enthusiast workflows; the strict profile lowers the limits and enables checks by default.
 
 ### Message Flow — Manual Mode
 

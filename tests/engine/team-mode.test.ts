@@ -93,7 +93,7 @@ const createEngine = (
       maxNoProgressSteps: 2,
       maxDurationMs: options.maxDurationMs ?? 900_000,
       checksEnabledByDefault: true,
-      checkCommands: ["npm run typecheck", "npm test"],
+      checkCommands: [], // empty: engine tests must never execute real check commands
       strict: {
         maxSteps: 8,
         maxNoProgressSteps: 2,
@@ -1017,7 +1017,7 @@ test("team auto-start with 2 agents runs planning and parallel execution", async
       maxNoProgressSteps: 5,
       maxDurationMs: 900_000,
       checksEnabledByDefault: false,
-      checkCommands: ["npm run typecheck", "npm test"],
+      checkCommands: [], // empty: engine tests must never execute real check commands
       strict: {
         maxSteps: 8,
         maxNoProgressSteps: 2,
@@ -1083,7 +1083,7 @@ test("@all in team goal forces at least one turn from each agent", async () => {
       maxNoProgressSteps: 5,
       maxDurationMs: 900_000,
       checksEnabledByDefault: false,
-      checkCommands: ["npm run typecheck", "npm test"],
+      checkCommands: [], // empty: engine tests must never execute real check commands
       strict: {
         maxSteps: 8,
         maxNoProgressSteps: 2,

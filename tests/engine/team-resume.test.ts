@@ -75,7 +75,7 @@ const makeConfig = (dbPath: string, resumeRoomId?: string): ChatRuntimeConfig =>
     maxNoProgressSteps: 2,
     maxDurationMs: 900_000,
     checksEnabledByDefault: true,
-    checkCommands: ["npm run typecheck", "npm test"],
+    checkCommands: [], // empty: engine tests must never execute real check commands
     strict: {
       maxSteps: 8,
       maxNoProgressSteps: 2,

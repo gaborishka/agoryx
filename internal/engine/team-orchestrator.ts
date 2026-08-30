@@ -374,22 +374,30 @@ export class TeamOrchestrator {
       };
     }
 
+    // Mark every request id before awaiting any cancellation: while a slow
+    // cancel() is in flight, a still-unmarked dispatch could complete and be
+    // recorded as a successful step instead of a stopped one.
+    const dispatchesToCancel = [...activeDispatches.values()];
     const interruptedRequestIds: string[] = [];
-    for (const activeDispatch of [...activeDispatches.values()]) {
+    for (const activeDispatch of dispatchesToCancel) {
       this.interruptedRequestIds.add(activeDispatch.requestId);
       interruptedRequestIds.push(activeDispatch.requestId);
-      const adapter = this.adapters[activeDispatch.adapterName];
-      try {
-        await adapter?.cancel(activeDispatch.requestId);
-      } catch (error: unknown) {
-        this.logger.log("warn", "team.interrupt_cancel_failed", {
-          runId: run.id,
-          requestId: activeDispatch.requestId,
-          adapterName: activeDispatch.adapterName,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
     }
+    await Promise.all(
+      dispatchesToCancel.map(async (activeDispatch) => {
+        const adapter = this.adapters[activeDispatch.adapterName];
+        try {
+          await adapter?.cancel(activeDispatch.requestId);
+        } catch (error: unknown) {
+          this.logger.log("warn", "team.interrupt_cancel_failed", {
+            runId: run.id,
+            requestId: activeDispatch.requestId,
+            adapterName: activeDispatch.adapterName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }),
+    );
 
     this.logger.log("info", "team.run_interrupted", {
       roomId: run.roomId,

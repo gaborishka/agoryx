@@ -58,7 +58,9 @@ There are only a few possible answers:
 - **Snapshot missing or built by an older reducer** — replay the whole log from scratch.
 - **Snapshot claims to be ahead of an empty log** — it's stale; discard it.
 
-Recovery is cheap when nothing is wrong, and a full replay always yields the same result as incremental updates. That idempotence is the safety net: any corruption can be fixed by running the reducer again.
+Recovery is cheap when nothing is wrong, and a full replay deterministically reproduces the state implied by the log. That determinism is the safety net: any corruption can be fixed by running the reducer again.
+
+The one asymmetry is consolidation (§6): it refines the *snapshot* without rewriting the log. A full replay therefore restores exactly what the log holds — including near-duplicate decisions that a consolidation pass had collapsed — until the next pass runs.
 
 ## 6. Consolidation ("Dream")
 
@@ -68,6 +70,8 @@ Periodically, memory does a pass of pruning:
 - Similar decisions collapse into one. "Use Postgres" and "Decision: use Postgres" are the same thought; the restatement is dropped.
 
 This pass is rule-based, not driven by an LLM. Pruning memory is too consequential to leave to a model that might hallucinate relevance. The rules are conservative, and the whole pass is opt-in — by default, nothing is ever pruned.
+
+The two halves of the pass touch different layers. Aging out stale operational events removes them from the log itself. Collapsing similar decisions edits only the snapshot's decision list — the underlying decision events stay in the log, so a rebuild from the log brings the restatements back until the next pass collapses them again.
 
 The name *dream* is deliberate: it is the background pass that lets an agent wake up with a clearer head.
 
@@ -96,7 +100,7 @@ A reader of memory can rely on the following:
 - **Decisions and notes are never silently lost.** Only an explicit action or a reducer-version bump can remove them.
 - **Events are strictly ordered within a room.** Order is defined by the log's identifiers, not by timestamps.
 - **The viewport is always internally consistent.** You read a complete snapshot or none at all, never a half-written one.
-- **Rebuilds are safe.** Running a full rebuild yields the same state as normal operation.
+- **Rebuilds are safe.** A full rebuild deterministically reproduces the state implied by the log. With consolidation enabled, snapshot-level dedup of similar decisions is not replayed, so collapsed restatements reappear until the next consolidation pass.
 - **Nothing is ever pruned unless consolidation is explicitly enabled.** The default is hoarding, not forgetting.
 
 ## 10. Design Forces

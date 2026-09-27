@@ -1,0 +1,265 @@
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+} from "node:fs";
+import { randomBytes } from "node:crypto";
+import { join, resolve, sep } from "node:path";
+import { applyEvent, initialState } from "./projection.js";
+import type {
+  EphemeralEvent,
+  RoomAgent,
+  RoomCreatedEvent,
+  RoomEvent,
+  RoomEventBody,
+  RoomSettings,
+  RoomState,
+} from "./types.js";
+
+export type StoreListener = (event: RoomEvent | EphemeralEvent) => void;
+
+export interface CreateRoomInput {
+  name: string;
+  workspace: string;
+  createdWorkspace: boolean;
+  human: string;
+  agents: RoomAgent[];
+  settings: RoomSettings;
+  id?: string;
+}
+
+export interface RoomSummary {
+  id: string;
+  name: string;
+  workspace: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: number;
+  lastMessage?: { author: string; text: string };
+  running: boolean;
+}
+
+const EVENTS_FILE = "events.jsonl";
+
+const UK_TRANSLIT: Record<string, string> = {
+  а: "a", б: "b", в: "v", г: "h", ґ: "g", д: "d", е: "e", є: "ie", ж: "zh", з: "z", и: "y", і: "i",
+  ї: "i", й: "i", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u",
+  ф: "f", х: "kh", ц: "ts", ч: "ch", ш: "sh", щ: "shch", ь: "", ю: "iu", я: "ia", ы: "y", э: "e", ё: "e", ъ: "",
+};
+
+export const slugify = (name: string): string => {
+  const translit = [...name.toLowerCase()].map((char) => UK_TRANSLIT[char] ?? char).join("");
+  const slug = translit
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/g, "");
+  return slug || "room";
+};
+
+export const newRoomId = (name: string): string => `${slugify(name)}-${randomBytes(2).toString("hex")}`;
+
+const parseLines = (text: string): { events: RoomEvent[]; consumed: number } => {
+  const events: RoomEvent[] = [];
+  let consumed = 0;
+  let start = 0;
+  while (start < text.length) {
+    const end = text.indexOf("\n", start);
+    if (end === -1) break; // partial trailing line: wait for the writer
+    const line = text.slice(start, end).trim();
+    start = end + 1;
+    consumed = start;
+    if (!line) continue;
+    try {
+      events.push(JSON.parse(line) as RoomEvent);
+    } catch {
+      // A corrupt line (e.g. a crash mid-write followed by more writes) is skipped.
+    }
+  }
+  return { events, consumed: Buffer.byteLength(text.slice(0, consumed)) };
+};
+
+/**
+ * Append-only JSONL event log for one room plus its in-memory projection.
+ * One process writes (the daemon or a foreground `agoryx` run); others may
+ * read and follow the file with refresh().
+ */
+export class RoomStore {
+  readonly dir: string;
+  readonly file: string;
+  readonly events: RoomEvent[] = [];
+  state!: RoomState;
+  private offset = 0;
+  private readonly listeners = new Set<StoreListener>();
+
+  private constructor(dir: string) {
+    this.dir = dir;
+    this.file = join(dir, EVENTS_FILE);
+  }
+
+  static create(root: string, input: CreateRoomInput): RoomStore {
+    const id = input.id ?? newRoomId(input.name);
+    const dir = join(root, id);
+    if (existsSync(join(dir, EVENTS_FILE))) throw new Error(`room ${id} already exists`);
+    mkdirSync(dir, { recursive: true });
+    const store = new RoomStore(dir);
+    const created: RoomCreatedEvent = {
+      type: "room.created",
+      id,
+      name: input.name,
+      workspace: input.workspace,
+      createdWorkspace: input.createdWorkspace,
+      human: input.human,
+      agents: input.agents,
+      settings: input.settings,
+    };
+    const event = { ...created, seq: 1, ts: new Date().toISOString() };
+    appendFileSync(store.file, `${JSON.stringify(event)}\n`);
+    store.offset = Buffer.byteLength(`${JSON.stringify(event)}\n`);
+    store.events.push(event);
+    store.state = initialState(event);
+    return store;
+  }
+
+  static open(root: string, id: string): RoomStore {
+    const dir = join(root, id);
+    const file = join(dir, EVENTS_FILE);
+    if (!existsSync(file)) throw new Error(`no room '${id}'`);
+    const store = new RoomStore(dir);
+    const { events, consumed } = parseLines(readFileSync(file, "utf8"));
+    const first = events[0];
+    if (!first || first.type !== "room.created") throw new Error(`room '${id}' has a corrupt event log`);
+    store.state = initialState(first);
+    store.events.push(first);
+    for (const event of events.slice(1)) {
+      store.events.push(event);
+      applyEvent(store.state, event);
+    }
+    store.offset = consumed;
+    return store;
+  }
+
+  static list(root: string): RoomSummary[] {
+    if (!existsSync(root)) return [];
+    const rooms: RoomSummary[] = [];
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const store = RoomStore.open(root, entry.name);
+        rooms.push(store.summary());
+      } catch {
+        // skip unreadable rooms
+      }
+    }
+    return rooms.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  /**
+   * Resolve a room by id, id prefix, or name; with no ref, by the workspace
+   * containing cwd, then by most recently active.
+   */
+  static resolveId(root: string, ref: string | undefined, cwd: string): string {
+    const rooms = RoomStore.list(root);
+    if (rooms.length === 0) throw new Error("no rooms yet — create one with `agoryx new <name>`");
+    if (ref) {
+      const lower = ref.toLowerCase();
+      const exact = rooms.find((room) => room.id === ref);
+      if (exact) return exact.id;
+      const byName = rooms.filter((room) => room.name.toLowerCase() === lower);
+      if (byName.length === 1) return byName[0]!.id;
+      const byPrefix = rooms.filter((room) => room.id.startsWith(lower));
+      if (byPrefix.length === 1) return byPrefix[0]!.id;
+      if (byPrefix.length > 1 || byName.length > 1) throw new Error(`'${ref}' matches several rooms; use the full id`);
+      throw new Error(`no room matches '${ref}'`);
+    }
+    const here = resolve(cwd);
+    const byWorkspace = rooms.find((room) => here === room.workspace || here.startsWith(`${room.workspace}${sep}`));
+    if (byWorkspace) return byWorkspace.id;
+    return rooms[0]!.id;
+  }
+
+  get id(): string {
+    return this.state.id;
+  }
+
+  summary(): RoomSummary {
+    const last = [...this.state.messages].reverse().find((message) => message.kind !== "pass");
+    const lastEvent = this.events[this.events.length - 1]!;
+    return {
+      id: this.state.id,
+      name: this.state.name,
+      workspace: this.state.workspace,
+      createdAt: this.state.createdAt,
+      updatedAt: lastEvent.ts,
+      messages: this.state.messages.filter((message) => message.kind !== "pass").length,
+      ...(last ? { lastMessage: { author: last.author, text: last.text.slice(0, 200) } } : {}),
+      running: this.state.turns.some((turn) => turn.status === "running"),
+    };
+  }
+
+  append(body: RoomEventBody): RoomEvent {
+    const line = `${JSON.stringify({ ...body, seq: this.state.seq + 1, ts: new Date().toISOString() })}\n`;
+    // Apply the serialized form so the live state is exactly what a replay produces.
+    const event = JSON.parse(line) as RoomEvent;
+    appendFileSync(this.file, line);
+    this.offset += Buffer.byteLength(line);
+    this.events.push(event);
+    applyEvent(this.state, event);
+    this.notify(event);
+    return event;
+  }
+
+  emit(event: EphemeralEvent): void {
+    this.notify(event);
+  }
+
+  subscribe(listener: StoreListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  since(seq: number): RoomEvent[] {
+    // events are dense by seq (1..n), so index = seq.
+    return this.events.slice(Math.max(0, seq));
+  }
+
+  /** Pick up events appended by another process (read-only followers). */
+  refresh(): RoomEvent[] {
+    const fd = openSync(this.file, "r");
+    try {
+      const size = fstatSync(fd).size;
+      if (size <= this.offset) return [];
+      const buffer = Buffer.alloc(size - this.offset);
+      readSync(fd, buffer, 0, buffer.length, this.offset);
+      const { events, consumed } = parseLines(buffer.toString("utf8"));
+      this.offset += consumed;
+      const fresh = events.filter((event) => event.seq > this.state.seq);
+      for (const event of fresh) {
+        this.events.push(event);
+        applyEvent(this.state, event);
+        this.notify(event);
+      }
+      return fresh;
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  private notify(event: RoomEvent | EphemeralEvent): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // listeners must not break the writer
+      }
+    }
+  }
+}

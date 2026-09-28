@@ -68,6 +68,32 @@ keeps its history. It never says what goes in it, and anyone can write it with a
 Writes from the UI stay inside the workspace. They never go through symlinks out of it, or into
 `.git` or `.agoryx`. Revisions over 256 KB are recorded with their stats only.
 
+## Every turn's exact change
+
+What an agent says it did and what it did are different things, and cross-review needs the second.
+So Agoryx keeps **the exact change of every turn**, and the other agents see it.
+
+- **Snapshots, not trust.** When a turn starts and ends, Agoryx writes the whole working tree
+  (untracked files included, ignored ones not) into a git tree object. It uses a scratch copy of the
+  index, so the real index, HEAD and the files are never touched. The diff between the two trees,
+  limited to the files credited to this turn, is the turn's change. Parallel turns don't get each
+  other's edits.
+- **Counts in the delta, depth on demand.** The next delta of every other agent shows
+  `↳ changed: src/clock.ts +2 −1, README.md +40 −0 (new) — the exact diff: agoryx diff t7`. A turn
+  that passed but changed files is still reported. The briefing tells the agents that the diff
+  holds what was actually done.
+- **`agoryx diff`** works inside the sandbox, from the agent shim. It needs no daemon.
+  `agoryx diff` lists recent turns with their files, `agoryx diff t7` prints that turn's patch, and
+  `agoryx diff t7 src/clock.ts` prints one file of it. The human CLI has the same command,
+  with `-r room` to use it from anywhere.
+- **In the UI,** the files a turn changed are chips with `+/−` counts. A chip opens a "Зміни ходу"
+  sheet with every file of the turn and the patch.
+- **Storage:** `.agoryx/turns/t7.patch` in the workspace. The file has a `#` header saying who and
+  when, then a plain `git diff`. The `turn.ended` event carries the counts and both tree ids, so a
+  lost patch file is rebuilt from git. Patches over 256 KB are cut, and the note names the
+  `git diff <before> <after>` that has the rest. Snapshots are skipped when more than 3000 files
+  are dirty. The turn then lists its files without counts.
+
 ## Using it
 
 ### As a daemon without UI
@@ -79,6 +105,7 @@ agoryx tail -f --trace                              # watch the conversation wit
 agoryx table                                        # show the table
 agoryx table decide P2 --note "simplest"
 agoryx doc --log                                    # who changed the canonical file, and how much
+agoryx diff t7                                      # exactly what turn t7 changed in the workspace
 agoryx more                                         # one more round after the budget ran out
 agoryx resume                                       # print `claude --resume …` / `codex resume …`
 ```
@@ -94,7 +121,8 @@ agoryx open         # opens the browser with a one-time login link
 ```
 
 - **Розмова**: the conversation. Blind rounds are shown side by side. Each reply links to its trace
-  (commands, edits), the files it changed, and what it put on the table. Live turns stream in.
+  (commands, edits), the files it changed with +/− counts (each opens the turn's exact patch), and
+  what it put on the table. Live turns stream in.
 - **Стіл**: questions with their options, notes, evidence and previews. The "Де ми зараз" rail
   shows decisions, settled items and facts, next steps and open questions.
 - **Документ**: the room's canonical file, its revision history with diffs, and an editor.
@@ -166,15 +194,16 @@ State lives in `$AGORYX_HOME` (default `~/.local/state/agoryx/agora`):
 
 | File | Role |
 |------|------|
-| `internal/agora/engine.ts` | Room engine: wake rules, deltas, blind rounds, pass, budget, table inbox, attribution, checkpoints |
+| `internal/agora/engine.ts` | Room engine: wake rules, deltas, blind rounds, pass, budget, table inbox, attribution, per-turn changes, checkpoints |
+| `internal/agora/workspace.ts` | Workspace git helpers: dirty snapshots, tree snapshots and turn patches, checkpoints, safe paths |
 | `internal/agora/prompts.ts` | Briefing (first turn) and delta prompts |
 | `internal/agora/runners/{claude,codex}.ts` | Native CLI runners: session ids, stream parsing, activity traces |
 | `internal/agora/native.ts` | Finds and reads the agents' native session files; imports turns taken outside the room |
 | `internal/agora/doc.ts` | The canonical file: path rules, reading, line diff, baseline revision |
-| `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim |
+| `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim (`table`, `diff`) |
 | `internal/agora/store.ts`, `projection.ts` | JSONL event log and state projection |
 | `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |
-| `cmd/agoryx/agora.ts` | `agoryx up/new/say/tail/table/…` |
+| `cmd/agoryx/agora.ts` | `agoryx up/new/say/tail/table/doc/diff/…` |
 | `web/` | The web UI (vanilla JS, no build step) |
 
 Tests: `npx tsx --test tests/agora/*.test.ts`. They use fake `claude`/`codex` binaries and need no

@@ -266,7 +266,37 @@ test("the canonical file: read it, edit it against a base, see each revision's d
 
   const bare = await newRoom("Daemon no doc", { doc: "" });
   assert.equal((await call("GET", `/api/rooms/${bare.id}/doc`)).status, 404);
+  const none = await newRoom("Daemon null doc", { doc: null });
+  assert.equal((await call("GET", `/api/rooms/${none.id}/doc`)).status, 404, "null (agoryx new --doc none) means no canonical file");
   assert.equal((await call("POST", "/api/rooms", { body: { name: "Bad doc", doc: "../up.md" } })).status, 400);
+});
+
+test("a turn's exact change: counts in the snapshot, the patch on request", async () => {
+  writeFileSync(
+    join(home, "rules.json"),
+    JSON.stringify([{ agent: "claude", match: "clock", write: { path: "clock.ts", content: "export const t = 0;\n" }, reply: "Wrote clock.ts.", once: true }]),
+  );
+  try {
+    const room = await newRoom("Daemon changes");
+    await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "@claude write the clock" } });
+    let turn: any;
+    await waitFor(async () => {
+      const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+      turn = snap.state.turns.find((entry: any) => entry.changes?.length);
+      return Boolean(turn) && snap.state.runs.at(-1)?.status === "ended";
+    });
+    assert.deepEqual(turn.changes, [{ path: "clock.ts", status: "A", added: 1, removed: 0 }]);
+    const reply = await call("GET", `/api/rooms/${room.id}/turn-diff?turn=${turn.id}`);
+    assert.equal(reply.status, 200, reply.body);
+    const body = reply.json<any>();
+    assert.equal(body.agent, "claude");
+    assert.match(body.patch, /^diff --git a\/clock\.ts b\/clock\.ts\n[^]*\+export const t = 0;/);
+    assert.equal(body.truncated, false);
+    assert.equal((await call("GET", `/api/rooms/${room.id}/turn-diff?turn=t999`)).status, 404);
+    assert.equal((await call("GET", `/api/rooms/${room.id}/turn-diff?turn=../x`)).status, 400);
+  } finally {
+    writeFileSync(join(home, "rules.json"), "[]");
+  }
 });
 
 test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .git and symlink escapes", async () => {

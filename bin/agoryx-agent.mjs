@@ -5,7 +5,8 @@
 // It also works outside a room turn, when someone talks to the agent directly
 // in its own session: the op is signed with --as, or with a hint from the
 // agent's environment, and the room reads it from the same inbox.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+// `agoryx diff` reads what each turn changed (.agoryx/turns/<turn>.patch).
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -24,6 +25,10 @@ const USAGE = `agoryx — room tools for agents
   agoryx table withdraw P1
   agoryx table decide P1 [--note "why"]
   agoryx table reopen Q1|P1
+
+  agoryx diff              recent turns that changed files: who, when, +/−
+  agoryx diff t7           exactly what turn t7 changed (a patch)
+  agoryx diff t7 src/a.ts  only that file
 
 Outside a room turn (someone talking to you directly in your own session), run it
 from the room's workspace and sign it: agoryx table … --as <your id in the room>.
@@ -116,16 +121,66 @@ const buildOp = (verb, positional, flags) => {
   }
 };
 
+/** A patch file is "# header" lines, then `diff --git` sections. */
+const splitPatch = (text) => {
+  const header = [];
+  const lines = text.split("\n");
+  while (lines.length && lines[0].startsWith("#")) header.push(lines.shift());
+  return { header, body: lines.join("\n") };
+};
+
+const runDiff = (agoryxDir, ref, path) => {
+  const dir = join(agoryxDir, "turns");
+  const turns = existsSync(dir)
+    ? readdirSync(dir)
+        .filter((name) => /^t\d+\.patch$/.test(name))
+        .map((name) => Number(name.slice(1, -".patch".length)))
+        .sort((a, b) => b - a)
+    : [];
+  if (!ref) {
+    if (turns.length === 0) {
+      process.stdout.write("No turn has changed files yet.\n");
+      return;
+    }
+    for (const n of turns.slice(0, 15)) {
+      const { header } = splitPatch(readFileSync(join(dir, `t${n}.patch`), "utf8"));
+      process.stdout.write(`${header.filter((line) => line !== "#").map((line) => line.replace(/^# ?/, "")).join("\n")}\n\n`);
+    }
+    if (turns.length > 15) process.stdout.write(`… ${turns.length - 15} older turns: agoryx diff t<N>\n`);
+    return;
+  }
+  const id = /^t?\d+$/.test(ref) ? `t${ref.replace(/^t/, "")}` : null;
+  if (!id) fail(`'${ref}' is not a turn id (like t7) — agoryx diff lists them`);
+  const file = join(dir, `${id}.patch`);
+  if (!existsSync(file)) fail(`turn ${id} changed no files (or its patch is gone) — agoryx diff lists the ones that did`);
+  const { header, body } = splitPatch(readFileSync(file, "utf8"));
+  if (!path) {
+    process.stdout.write(`${header.join("\n")}\n${body}`);
+    return;
+  }
+  const want = path.replace(/^\.\//, "");
+  const section = body.split(/(?=^diff --git )/m).find((part) => {
+    const first = part.split("\n", 1)[0];
+    return first.endsWith(` b/${want}`) || first.includes(` a/${want} `);
+  });
+  if (!section) fail(`turn ${id} did not change ${want}`);
+  process.stdout.write(`${header[0]}\n${section}`);
+};
+
 const main = async () => {
   const [command, verb, ...args] = process.argv.slice(2);
   if (!command || command === "help" || command === "--help" || command === "-h") {
     process.stdout.write(USAGE);
     return;
   }
-  if (command !== "table") fail(`inside a room only 'agoryx table …' is available\n\n${USAGE}`);
+  if (command !== "table" && command !== "diff") fail(`inside a room only 'agoryx table …' and 'agoryx diff …' are available\n\n${USAGE}`);
 
   const agoryxDir = findAgoryxDir();
   if (!agoryxDir) fail("not inside an Agoryx room workspace (no .agoryx/ directory found)");
+  if (command === "diff") {
+    runDiff(agoryxDir, verb, args[0]);
+    return;
+  }
 
   if (!verb || verb === "show") {
     const tableFile = process.env.AGORYX_TABLE || join(agoryxDir, "TABLE.md");

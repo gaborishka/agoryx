@@ -3,7 +3,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, extname, join, resolve, sep } from "node:path";
-import { DocConflictError, RoomEngine, RoomLockedError } from "./engine.js";
+import { DocConflictError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
@@ -527,7 +527,8 @@ export class AgoraDaemon {
           ...(typeof body.dir === "string" && body.dir.trim() ? { dir: body.dir.trim() } : {}),
           ...(typeof body.budget === "number" ? { budget: body.budget } : {}),
           ...(typeof body.human === "string" ? { human: body.human } : {}),
-          ...(typeof body.doc === "string" ? { doc: body.doc.trim() || null } : {}),
+          // `agoryx new --doc none` sends null: no canonical file.
+          ...(typeof body.doc === "string" ? { doc: body.doc.trim() || null } : body.doc === null ? { doc: null } : {}),
           env: this.env,
         });
         const handle = this.room(store.id);
@@ -564,6 +565,16 @@ export class AgoraDaemon {
 
     if (action === "file" && method === "GET") {
       sendJson(res, 200, this.readWorkspaceFile(handle, url.searchParams.get("path") ?? ""));
+      return;
+    }
+
+    if (action === "turn-diff" && method === "GET") {
+      const turnId = url.searchParams.get("turn") ?? "";
+      if (!/^t\d{1,9}$/.test(turnId)) throw new HttpError(400, "bad turn id");
+      const turn = handle.store.state.turns.find((entry) => entry.id === turnId);
+      const result = turn ? roomTurnPatch(handle.store, turnId) : null;
+      if (!turn || !result) throw new HttpError(404, "this turn changed no files");
+      sendJson(res, 200, { turnId, agent: turn.agent, changes: turn.changes ?? [], ...result });
       return;
     }
 

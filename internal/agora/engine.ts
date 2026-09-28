@@ -12,6 +12,7 @@ import type {
   AgentKind,
   AgentPresence,
   DocRevision,
+  FileChange,
   MessageEntry,
   MessageKind,
   RoomAgent,
@@ -27,9 +28,15 @@ import {
   clearStaleAcks,
   diffSnapshots,
   drainOpsInbox,
+  MAX_TREE_SNAPSHOT_DIRTY,
   prepareWorkspace,
+  readTurnPatch,
   snapshotChanges,
+  snapshotTree,
+  treeChanges,
+  workspacePaths,
   writeAck,
+  writeTurnPatch,
   type ChangeSnapshot,
   type WorkspacePaths,
 } from "./workspace.js";
@@ -82,6 +89,8 @@ interface RunningTurn {
   agent: RoomAgent;
   controller: AbortController;
   snapshot: ChangeSnapshot | null;
+  /** The workspace as a git tree when the turn started (null without git, or too dirty to snapshot). */
+  tree: string | null;
   startedAt: number;
   done: Promise<void>;
 }
@@ -101,6 +110,22 @@ export class RoomLockedError extends Error {}
 
 /** Rooms driven by an engine in this process (the lock file covers other processes). */
 const lockedHere = new Set<string>();
+
+/**
+ * One turn's exact patch: the file written when it ended, or regenerated from
+ * the git trees in its turn.ended event. Needs only the log and the workspace,
+ * so the CLI and a daemon that does not drive the room can read it too.
+ */
+export const roomTurnPatch = (store: RoomStore, turnId: string): { patch: string; truncated: boolean } | null => {
+  const turn = store.state.turns.find((entry) => entry.id === turnId);
+  if (!turn?.changes?.length) return null;
+  const ended = store.events.find((event) => event.type === "turn.ended" && event.turnId === turnId);
+  const trees = ended?.type === "turn.ended" ? ended.trees : undefined;
+  return readTurnPatch(workspacePaths(store.state.workspace), turnId, {
+    ...(trees ? { trees } : {}),
+    files: turn.changes.map((change) => change.path),
+  });
+};
 
 /**
  * Drives one room. There is no orchestrator deciding who speaks: every new
@@ -533,6 +558,7 @@ export class RoomEngine {
 
     const controller = new AbortController();
     const snapshot = snapshotChanges(this.state.workspace);
+    const tree = snapshot && snapshot.size <= MAX_TREE_SNAPSHOT_DIRTY ? snapshotTree(this.state.workspace) : null;
     const startedAt = Date.now();
     const env = this.agentEnv(agent, turnId);
 
@@ -576,9 +602,9 @@ export class RoomEngine {
         sessionId: null,
         error: { kind: "unknown", message: error instanceof Error ? error.message : String(error) },
       }))
-      .then((result) => this.finishTurn(agent, turnId, run.id, result, snapshot, startedAt));
+      .then((result) => this.finishTurn(agent, turnId, run.id, result, snapshot, tree, startedAt));
 
-    this.running.set(agent.id, { turnId, agent, controller, snapshot, startedAt, done });
+    this.running.set(agent.id, { turnId, agent, controller, snapshot, tree, startedAt, done });
     this.notePresence();
     this.ensureOpsPolling();
     this.log(`${agent.id} ${turnId} started (${sessionId ? "resume" : "fresh"}, ${prompt.length} chars)`);
@@ -590,13 +616,18 @@ export class RoomEngine {
     runId: string,
     result: TurnResult,
     snapshot: ChangeSnapshot | null,
+    tree: string | null,
     startedAt: number,
   ): void {
     // Sweep the inbox while this turn still counts as running, so its ops are attributed to it.
     this.ingestOps();
     this.running.delete(agent.id);
     this.notePresence();
-    const files = this.attributeFiles(turnId, diffSnapshots(snapshot, snapshotChanges(this.state.workspace)));
+    const dirty = snapshotChanges(this.state.workspace);
+    let files = this.attributeFiles(turnId, diffSnapshots(snapshot, dirty));
+    const changed = this.turnChanges(agent, turnId, tree, files, dirty);
+    // A file only touched (same content) is not a change.
+    if (changed) files = files.filter((file) => changed.changes.some((change) => change.path === file));
     const doc = this.state.settings.doc;
     // Credited by git status, or — without git to tell — changed while this was the only turn.
     if (doc && (files.includes(doc) || (!snapshot && this.running.size === 0))) this.recordDoc(agent.id, { turnId });
@@ -645,6 +676,7 @@ export class RoomEngine {
       ...(result.error ? { error: result.error } : {}),
       durationMs: Date.now() - startedAt,
       ...(files.length > 0 ? { files } : {}),
+      ...(changed && changed.changes.length > 0 ? changed : {}),
     });
     this.log(`${agent.id} ${turnId} ${status}`);
     // With native sync on, the inbox stays watched between turns (ops from the agents' own sessions).
@@ -653,6 +685,34 @@ export class RoomEngine {
       this.opsTimer = undefined;
     }
     this.requestSchedule();
+  }
+
+  /**
+   * Exactly what a turn changed: the diff between the trees taken at its start and
+   * end, limited to the files credited to it. Counts go into the event; the patch
+   * goes to .agoryx/turns/<turn>.patch, where anyone in the room can read it.
+   */
+  private turnChanges(
+    agent: RoomAgent,
+    turnId: string,
+    before: string | null,
+    files: string[],
+    dirty: ChangeSnapshot | null,
+  ): { changes: FileChange[]; trees: { before: string; after: string } } | null {
+    if (!before || files.length === 0 || (dirty && dirty.size > MAX_TREE_SNAPSHOT_DIRTY)) return null;
+    const after = snapshotTree(this.state.workspace);
+    if (!after) return null;
+    const diff = treeChanges(this.state.workspace, before, after, files);
+    if (!diff) return null;
+    if (diff.changes.length > 0) {
+      writeTurnPatch(this.ws, { id: turnId, author: agent.label, ts: new Date().toISOString() }, diff.changes, diff.patch);
+    }
+    return { changes: diff.changes, trees: { before, after } };
+  }
+
+  /** The patch a turn made (for the UI and the CLI); null when it changed nothing git could see. */
+  turnPatch(turnId: string): { patch: string; truncated: boolean } | null {
+    return roomTurnPatch(this.store, turnId);
   }
 
   /**

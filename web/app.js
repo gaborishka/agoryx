@@ -522,6 +522,16 @@ const turnSummary = (turn) => {
 const revStats = (r) =>
   r.deleted ? '<span class="minus">видалено</span>' : `<span class="plus">+${r.added}</span> <span class="minus">−${r.removed}</span>`;
 
+const changeStats = (c) =>
+  c.added === null
+    ? '<span class="faint">двійковий</span>'
+    : c.status === "D"
+      ? `<span class="minus">видалено −${c.removed}</span>`
+      : `<span class="plus">+${c.added}</span> <span class="minus">−${c.removed}</span>${c.status === "A" ? ' <span class="faint">новий</span>' : ""}`;
+
+const changeChip = (turn, c) =>
+  `<button class="pill file" data-act="turn-diff" data-turn="${esc(turn.id)}" data-path="${esc(c.path)}" title="Що саме змінив цей хід у ${esc(c.path)}"><span class="ell">${esc(c.path)}</span> ${changeStats(c)}</button>`;
+
 const docChip = (r) =>
   `<button class="pill doc" data-act="doc-open" data-seq="${r.seq}" title="Правка канонічного файлу — показати, що змінилося">✎ <span class="ell">${esc(r.path)}</span> ${revStats(r)}</button>`;
 
@@ -533,8 +543,12 @@ const turnBar = (turn, ops, docs) => {
   if (summary) bits.push(`<button class="pill" data-act="trace" data-turn="${esc(turn.id)}" aria-expanded="${open}">${open ? "▾" : "▸"} ${esc(summary)}</button>`);
   for (const r of docs ?? []) bits.push(docChip(r));
   const docPaths = new Set((docs ?? []).map((r) => r.path));
-  for (const file of turn.files ?? []) {
-    if (!docPaths.has(file)) bits.push(`<button class="pill file" data-act="file" data-path="${esc(file)}" title="${esc(file)}"><span class="ell">${esc(file)}</span></button>`);
+  if (turn.changes?.length) {
+    for (const c of turn.changes) if (!docPaths.has(c.path)) bits.push(changeChip(turn, c));
+  } else {
+    for (const file of turn.files ?? []) {
+      if (!docPaths.has(file)) bits.push(`<button class="pill file" data-act="file" data-path="${esc(file)}" title="${esc(file)}"><span class="ell">${esc(file)}</span></button>`);
+    }
   }
   for (const o of ops ?? []) bits.push(opChip(o));
   if (!bits.length) return "";
@@ -1194,21 +1208,57 @@ const showFile = async (path) => {
   }
 };
 
+const classifyPatch = (line) =>
+  line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff --git")
+    ? "fileh"
+    : line.startsWith("@@")
+      ? "hunk"
+      : line.startsWith("+")
+        ? "add"
+        : line.startsWith("-")
+          ? "del"
+          : "";
+
+// One file's `diff --git` section of a turn's patch.
+const patchSection = (patch, path) =>
+  patch.split(/(?=^diff --git )/m).find((part) => {
+    const first = part.split("\n", 1)[0];
+    return first.startsWith("diff --git ") && (first.endsWith(` b/${path}`) || first.includes(` a/${path} `));
+  }) ?? null;
+
+const showTurnDiff = async (turnId, path) => {
+  const st = state();
+  const turn = st.turns.find((t) => t.id === turnId);
+  const who = turn ? nameOf(turn.agent) : "";
+  openSheet(`Зміни ходу ${turnId}`, `${who}${turn?.endedAt ? ` · ${fullDate(turn.endedAt)}` : ""}`, '<div class="faint">Завантажую…</div>');
+  try {
+    const { changes, patch, truncated } = await api("GET", `${roomPath("/turn-diff")}?turn=${encodeURIComponent(turnId)}`);
+    const narrowed = path && changes.length > 1;
+    const rows = changes
+      .map(
+        (c) =>
+          `<div class="chg${narrowed && c.path === path ? " on" : ""}"><button data-act="turn-diff" data-turn="${esc(turnId)}" data-path="${esc(c.path)}" class="mono ell" title="Показати лише цей файл">${esc(c.path)}</button><span class="stats">${changeStats(c)}</span>${
+            c.status === "D" ? "" : `<button class="linkbtn" data-act="file" data-path="${esc(c.path)}">файл</button>`
+          }</div>`,
+      )
+      .join("");
+    const shown = narrowed ? patchSection(patch, path) : null;
+    const scope = narrowed
+      ? `<div class="faint chg-scope">Лише ${esc(path)} · <button class="linkbtn" data-act="turn-diff" data-turn="${esc(turnId)}">усі файли ходу</button></div>`
+      : "";
+    const note = truncated ? '<div class="faint chg-scope">Патч великий — показано початок. Повністю: <span class="mono">agoryx diff ' + esc(turnId) + "</span></div>" : "";
+    const intro = `<p class="faint" style="margin:0">Точно те, що цей хід змінив у робочій теці — знімок git до і після ходу. Інші агенти бачать ці рядки +/− у своїй дельті й можуть витягти патч командою <span class="mono">agoryx diff ${esc(turnId)}</span>.</p>`;
+    if (S.sheet) els.sheetBody.innerHTML = `${intro}<div class="chgs">${rows}</div>${scope}${note}${codeTable(shown ?? patch, classifyPatch)}`;
+  } catch (error) {
+    if (S.sheet) els.sheetBody.innerHTML = `<div class="err-box">${esc(error.message)}</div>`;
+  }
+};
+
 const showCommit = async (sha) => {
   openSheet(`Контрольна точка ${sha.slice(0, 7)}`, "git show", '<div class="faint">Завантажую…</div>');
   try {
     const { text } = await api("GET", `${roomPath("/commit")}?sha=${encodeURIComponent(sha)}`);
-    const classify = (line) =>
-      line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff --git")
-        ? "fileh"
-        : line.startsWith("@@")
-          ? "hunk"
-          : line.startsWith("+")
-            ? "add"
-            : line.startsWith("-")
-              ? "del"
-              : "";
-    if (S.sheet) els.sheetBody.innerHTML = codeTable(text, classify);
+    if (S.sheet) els.sheetBody.innerHTML = codeTable(text, classifyPatch);
   } catch (error) {
     if (S.sheet) els.sheetBody.innerHTML = `<div class="err-box">${esc(error.message)}</div>`;
   }
@@ -1455,6 +1505,9 @@ const onClick = async (event) => {
       break;
     case "commit":
       showCommit(target.dataset.sha);
+      break;
+    case "turn-diff":
+      showTurnDiff(target.dataset.turn, target.dataset.path);
       break;
     case "files":
       showFiles();

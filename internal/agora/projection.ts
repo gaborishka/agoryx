@@ -116,6 +116,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       if (event.usage) turn.usage = event.usage;
       if (event.error) turn.error = event.error;
       if (event.files) turn.files = event.files;
+      if (event.changes) turn.changes = event.changes;
       for (const entry of turn.activity) {
         if (entry.status === "running") entry.status = event.status === "ok" || event.status === "pass" ? "ok" : "fail";
       }

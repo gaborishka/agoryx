@@ -244,6 +244,10 @@ export type RoomEventBody =
       error?: TurnError;
       durationMs: number;
       files?: string[];
+      /** Per-file line counts for `files`, from git trees taken at the turn's start and end. */
+      changes?: FileChange[];
+      /** Those two trees; `git diff before after` shows the whole workspace change. */
+      trees?: { before: string; after: string };
     }
   | { type: "session.bound"; agent: string; sessionId: string }
   | { type: "table.op"; op: TableOp }
@@ -313,6 +317,18 @@ export interface TurnState {
   error?: TurnError;
   durationMs?: number;
   files?: string[];
+  changes?: FileChange[];
+}
+
+/** One file a turn changed. */
+export interface FileChange {
+  /** Relative to the repository root, like git status. */
+  path: string;
+  /** A added, M modified, D deleted, T type changed. */
+  status: string;
+  /** Line counts; null for a binary file. */
+  added: number | null;
+  removed: number | null;
 }
 
 export interface RunState {

@@ -3,7 +3,7 @@
 //
 // Behaviour comes from $FAKE_RULES (JSON array). The first rule whose `agent`
 // (optional) and `match` (substring of the prompt, optional) fit is used:
-//   { agent, match, reply, table: [[...argv]], write: {path, content},
+//   { agent, match, reply, table: [[...argv]], write: {path, content} (or a list),
 //     command: "shown as the tool call; {cwd} and {cli} expand", sleepMs,
 //     error: "text", exitCode, once: true }
 // Without a matching rule: first turn replies "<agent> here", later turns pass.
@@ -157,9 +157,9 @@ const main = async () => {
   }
   if (tableOutputs.length) appendFileSync(process.env.FAKE_LOG, `${JSON.stringify({ kind, turn, tableOutputs })}\n`);
 
-  if (rule?.write) {
-    mkdirSync(dirname(join(process.cwd(), rule.write.path)), { recursive: true });
-    writeFileSync(join(process.cwd(), rule.write.path), rule.write.content);
+  for (const write of [rule?.write ?? []].flat()) {
+    mkdirSync(dirname(join(process.cwd(), write.path)), { recursive: true });
+    writeFileSync(join(process.cwd(), write.path), write.content);
   }
 
   if (rule?.error) {

@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -12,17 +14,20 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { FileChange } from "./types.js";
 
 export const AGORYX_DIR = ".agoryx";
 
-const git = (cwd: string, args: string[], timeout = 15_000): string | null => {
+const git = (cwd: string, args: string[], timeout = 15_000, env?: NodeJS.ProcessEnv): string | null => {
   try {
     return execFileSync("git", args, {
       cwd,
       encoding: "utf8",
       timeout,
+      ...(env ? { env } : {}),
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 16 * 1024 * 1024,
     });
@@ -111,6 +116,145 @@ export const diffSnapshots = (before: ChangeSnapshot | null, after: ChangeSnapsh
   for (const [path, signature] of after) if (before.get(path) !== signature) changed.add(path);
   for (const path of before.keys()) if (!after.has(path)) changed.add(path);
   return [...changed].sort();
+};
+
+/** Past this many dirty files (a fresh `npm install` without .gitignore…) turns are not snapshotted as trees. */
+export const MAX_TREE_SNAPSHOT_DIRTY = 3000;
+
+/**
+ * The working tree as a git tree object: tracked and untracked files, .gitignore
+ * respected. It is built in a scratch copy of the index, so the real index, HEAD
+ * and the files stay untouched. Two of these bracket a turn; their diff is exactly
+ * what the turn changed.
+ */
+export const snapshotTree = (root: string): string | null => {
+  const indexRel = git(root, ["rev-parse", "--git-path", "index"])?.trim();
+  if (!indexRel) return null;
+  const index = isAbsolute(indexRel) ? indexRel : join(root, indexRel);
+  const scratch = join(tmpdir(), `agoryx-index-${process.pid}-${randomBytes(4).toString("hex")}`);
+  try {
+    if (existsSync(index)) copyFileSync(index, scratch);
+    const env = { ...process.env, GIT_INDEX_FILE: scratch };
+    if (git(root, ["add", "-A", "--", ":/"], 30_000, env) === null) return null;
+    return git(root, ["write-tree"], 15_000, env)?.trim() || null;
+  } catch {
+    return null;
+  } finally {
+    rmSync(scratch, { force: true });
+    rmSync(`${scratch}.lock`, { force: true });
+  }
+};
+
+/** Patches bigger than this are cut (the file says so). */
+export const MAX_TURN_PATCH = 256 * 1024;
+const CUT_MARK = "… the patch is cut here";
+const MAX_PATHSPECS = 400;
+
+/**
+ * What changed between two snapshots, limited to `files` (the ones credited to
+ * this turn — a parallel turn's edits are not in it). Null when git can't tell.
+ */
+export const treeChanges = (
+  root: string,
+  before: string,
+  after: string,
+  files: string[],
+): { changes: FileChange[]; patch: string; truncated: boolean } | null => {
+  if (files.length === 0 || before === after) return { changes: [], patch: "", truncated: false };
+  // A turn that rewrote hundreds of files keeps its file list, without counts.
+  if (files.length > MAX_PATHSPECS) return null;
+  const specs = files.map((file) => `:(top,literal)${file}`);
+  const base = ["-c", "core.quotepath=off", "diff", "--no-renames", "--no-ext-diff", "--no-color", before, after];
+  const numstat = git(root, [...base, "--numstat", "-z", "--", ...specs]);
+  const names = git(root, [...base, "--name-status", "-z", "--", ...specs]);
+  if (numstat === null || names === null) return null;
+  const statusOf = new Map<string, string>();
+  const nameParts = names.split("\0");
+  for (let i = 0; i + 1 < nameParts.length; i += 2) statusOf.set(nameParts[i + 1]!, nameParts[i]!.slice(0, 1));
+  const changes: FileChange[] = [];
+  for (const record of numstat.split("\0")) {
+    const match = /^(-|\d+)\t(-|\d+)\t(.+)$/s.exec(record);
+    if (!match) continue;
+    const path = match[3]!;
+    changes.push({
+      path,
+      status: statusOf.get(path) ?? "M",
+      added: match[1] === "-" ? null : Number(match[1]),
+      removed: match[2] === "-" ? null : Number(match[2]),
+    });
+  }
+  let patch = git(root, [...base, "-U3", "--", ...specs], 30_000) ?? "";
+  const truncated = patch.length > MAX_TURN_PATCH;
+  if (truncated) patch = `${patch.slice(0, MAX_TURN_PATCH)}\n${CUT_MARK} (${patch.length - MAX_TURN_PATCH} more chars): git diff ${before.slice(0, 12)} ${after.slice(0, 12)}\n`;
+  return { changes, patch, truncated };
+};
+
+// ---------------------------------------------------------------------------
+// Turn patches: .agoryx/turns/<turn>.patch — what a turn changed, readable by
+// everyone in the room (agents via `agoryx diff t7`, inside their sandbox too)
+// ---------------------------------------------------------------------------
+
+const TURN_ID = /^t\d{1,9}$/;
+
+export const turnPatchPath = (paths: WorkspacePaths, turnId: string): string | null =>
+  TURN_ID.test(turnId) ? join(paths.agoryxDir, "turns", `${turnId}.patch`) : null;
+
+/** "+12 −3", or "(binary)". */
+export const changeStats = (change: FileChange): string =>
+  change.added === null ? "(binary)" : `+${change.added} −${change.removed}`;
+
+/**
+ * The file starts with a `#` header (turn, author, time, one line per file) so a
+ * plain `cat` or `agoryx diff` without arguments tells whose change it is.
+ */
+export const writeTurnPatch = (
+  paths: WorkspacePaths,
+  turn: { id: string; author: string; ts: string },
+  changes: FileChange[],
+  patch: string,
+): void => {
+  const target = turnPatchPath(paths, turn.id);
+  if (!target) return;
+  const header = [
+    `# ${turn.id} · ${turn.author} · ${turn.ts.slice(0, 16).replace("T", " ")} UTC`,
+    ...changes.map((change) => `#   ${change.path}  ${changeStats(change)}${change.status === "A" ? " (new)" : change.status === "D" ? " (deleted)" : ""}`),
+    "#",
+  ];
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, `${header.join("\n")}\n${patch}`);
+  } catch {
+    // the counts are in the event log; only the patch text is lost
+  }
+};
+
+/** The patch without its header; regenerated from the turn's trees when the file is gone. */
+export const readTurnPatch = (
+  paths: WorkspacePaths,
+  turnId: string,
+  fallback?: { trees?: { before: string; after: string }; files: string[] },
+): { patch: string; truncated: boolean } | null => {
+  const target = turnPatchPath(paths, turnId);
+  if (!target) return null;
+  if (existsSync(target)) {
+    const text = readFileSync(target, "utf8");
+    const patch = text.replace(/^(#[^\n]*\n)+/, "");
+    return { patch, truncated: patch.includes(CUT_MARK) };
+  }
+  if (!fallback?.trees || fallback.files.length === 0) return null;
+  const diff = treeChanges(paths.root, fallback.trees.before, fallback.trees.after, fallback.files);
+  return diff ? { patch: diff.patch, truncated: diff.truncated } : null;
+};
+
+/** One file's `diff --git` section of a patch; null when the patch does not touch it. */
+export const patchSection = (patch: string, path: string): string | null => {
+  const want = path.replace(/^\.\//, "");
+  return (
+    patch.split(/(?=^diff --git )/m).find((part) => {
+      const first = part.split("\n", 1)[0]!;
+      return first.startsWith("diff --git ") && (first.endsWith(` b/${want}`) || first.includes(` a/${want} `));
+    }) ?? null
+  );
 };
 
 export const checkpointCommit = (root: string, subject: string, body: string): { sha: string; files: number } | null => {

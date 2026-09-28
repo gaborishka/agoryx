@@ -1,6 +1,7 @@
 import { PASS_RESPONSE_TOKEN } from "../events/pass-token.js";
 import { describeTableOp, summarizeTable } from "./table.js";
-import type { RoomAgent, RoomEvent, RoomState, TableOp } from "./types.js";
+import type { FileChange, RoomAgent, RoomEvent, RoomState, TableOp } from "./types.js";
+import { changeStats } from "./workspace.js";
 
 const MAX_MESSAGE_CHARS = 12_000;
 const MAX_DELTA_CHARS = 60_000;
@@ -36,6 +37,25 @@ const displayName = (state: RoomState, handle: string): string => {
 const clip = (text: string, max = MAX_MESSAGE_CHARS): string =>
   text.length > max ? `${text.slice(0, max)}\n[… ${text.length - max} more chars — full text in the room log]` : text;
 
+interface TurnFiles {
+  agent: string;
+  files: string[];
+  changes?: FileChange[];
+}
+
+/** "↳ changed: a.ts +12 −3, b.ts +40 −0 (new) — the exact diff: agoryx diff t7" */
+const changedLine = (turnId: string, entry: TurnFiles): string => {
+  if (!entry.changes?.length) {
+    const { files } = entry;
+    return `   ↳ changed: ${files.slice(0, 20).join(", ")}${files.length > 20 ? ` (+${files.length - 20} more)` : ""}`;
+  }
+  const shown = entry.changes
+    .slice(0, 20)
+    .map((change) => `${change.path} ${changeStats(change)}${change.status === "A" ? " (new)" : change.status === "D" ? " (deleted)" : ""}`);
+  const more = entry.changes.length > 20 ? ` (+${entry.changes.length - 20} more)` : "";
+  return `   ↳ changed: ${shown.join(", ")}${more} — the exact diff: agoryx diff ${turnId}`;
+};
+
 export interface BriefingInput {
   state: RoomState;
   agent: RoomAgent;
@@ -63,6 +83,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
     `Workspace: ${state.workspace}`,
     `  A shared git directory — everyone works here. ${access}`,
     "  Others may edit files at the same time: check `git status` / `git diff` before overwriting, and say which files you touched.",
+    `  Every turn's exact change is kept. Your delta lists what others changed with +/− counts and the turn id; \`${agentCli} diff t7\` prints that turn's patch (add a path to narrow it, or no id to list recent ones). What was done is in the diff, not only in what was said about it.`,
     "",
     "How the room works:",
     "- Each turn you get only what is new since your last turn. Your final message is posted to the room; your tool calls show up to others as a short activity trace.",
@@ -117,7 +138,7 @@ interface DeltaOptions {
 export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false, doc = null }: DeltaOptions): string => {
   const blocks: string[] = [];
   const opsByTurn = new Map<string, TableOp[]>();
-  const filesByTurn = new Map<string, string[]>();
+  const filesByTurn = new Map<string, TurnFiles>();
   const passes: string[] = [];
 
   for (const event of events) {
@@ -127,7 +148,7 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
       opsByTurn.set(event.op.turnId, list);
     }
     if (event.type === "turn.ended" && event.agent !== agent.id && event.files?.length) {
-      filesByTurn.set(event.turnId, event.files);
+      filesByTurn.set(event.turnId, { agent: event.agent, files: event.files, ...(event.changes ? { changes: event.changes } : {}) });
     }
   }
 
@@ -152,7 +173,12 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
       // The agent's own session already holds what it said and what was said to it there.
       if (own && !replayOwn) continue;
       if (message.kind === "pass") {
-        if (message.author !== agent.id) passes.push(displayName(state, message.author));
+        // Passing after changing files still changed them.
+        const files = message.turnId ? filesByTurn.get(message.turnId) : undefined;
+        if (files) {
+          blocks.push(`── ${displayName(state, message.author)} · ${clock(event.ts)} · passed, after changing files\n${changedLine(message.turnId!, files)}`);
+          filesByTurn.delete(message.turnId!);
+        } else if (message.author !== agent.id) passes.push(displayName(state, message.author));
         continue;
       }
       const who = message.author === agent.id ? `You (${agent.label})` : displayName(state, message.author);
@@ -171,7 +197,7 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
       }
       const files = message.turnId ? filesByTurn.get(message.turnId) : undefined;
       if (files) {
-        lines.push(`   ↳ changed: ${files.slice(0, 20).join(", ")}${files.length > 20 ? ` (+${files.length - 20} more)` : ""}`);
+        lines.push(changedLine(message.turnId!, files));
         filesByTurn.delete(message.turnId!);
       }
       blocks.push(lines.join("\n"));
@@ -184,6 +210,10 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
   const orphanOps = [...opsByTurn.values()].flat();
   if (orphanOps.length > 0) {
     blocks.push(orphanOps.map((op) => `── ${displayName(state, op.by)} on the table: ${describeTableOp(op, state.table)}`).join("\n"));
+  }
+  // Turns that changed files but left no message (interrupted, or a pass before this delta).
+  for (const [turnId, entry] of filesByTurn) {
+    blocks.push(`── ${displayName(state, entry.agent)} · changed files without a message\n${changedLine(turnId, entry)}`);
   }
   if (passes.length > 0) blocks.push(`(${[...new Set(passes)].join(", ")} passed)`);
 

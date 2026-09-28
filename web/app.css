@@ -347,6 +347,14 @@ details summary{font-size:13px;margin-bottom:8px}
 .dview{height:100%;overflow:auto}
 .plus,.minus{font-family:var(--mono);font-size:.92em;font-variant-numeric:tabular-nums}
 .plus{color:var(--add-ink)}.minus{color:var(--del-ink)}
+.chgs{display:flex;flex-direction:column;border:1px solid var(--rule);border-radius:10px;overflow:hidden}
+.chg{display:flex;align-items:center;gap:10px;padding:6px 10px;border-top:1px solid var(--rule);font-size:12.5px;min-width:0}
+.chg:first-child{border-top:0}
+.chg.on{background:var(--hover)}
+.chg>button.mono{flex:1;min-width:0;text-align:left;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chg>button.mono:hover{color:var(--sage)}
+.chg .stats{white-space:nowrap}
+.chg-scope{font-size:12.5px}
 .pill.doc{background:var(--paper2);border:1px solid var(--rule);font-family:var(--mono);font-size:11.5px}
 .pill.doc:hover{border-color:var(--fact);color:var(--ink)}
 .docl .tag{color:var(--fact);background:color-mix(in srgb,var(--fact) 13%,transparent)}

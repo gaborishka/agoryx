@@ -5,11 +5,12 @@ import process from "node:process";
 import pc from "picocolors";
 import { DaemonClient, type DaemonStreamItem } from "../../internal/agora/client.js";
 import { AgoraDaemon, findDaemon, readDaemonInfo, type DaemonInfo } from "../../internal/agora/daemon.js";
-import { RoomLockedError, type RoomEngine } from "../../internal/agora/engine.js";
+import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
 import { agoraHome, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { activeRun } from "../../internal/agora/projection.js";
 import { createRoom, openEngine, resumeCommands } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
+import { changeStats, patchSection } from "../../internal/agora/workspace.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { parseTableCommand, TABLE_USAGE } from "../../internal/agora/table-cli.js";
 import { describeTableOp, renderTableMarkdown } from "../../internal/agora/table.js";
@@ -31,6 +32,7 @@ export const AGORA_COMMANDS = new Set([
   "resume",
   "settings",
   "doc",
+  "diff",
 ]);
 
 export const printAgoraUsage = (write: OutputWriter = console.log): void => {
@@ -50,6 +52,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx stop [-r room]              Stop the current run",
       "  agoryx resume [-r room]            Native session commands (claude --resume / codex resume)",
       "  agoryx doc [-r room] [--log | --diff REV]   The room's canonical file: its text, its revisions, one revision's diff",
+      "  agoryx diff [-r room] [TURN [PATH]]         What each turn changed: recent turns, or one turn's exact patch",
       "  agoryx settings [-r room] [--budget N] [--network on|off] [--autocommit on|off] [--access workspace|readonly] [--doc PATH|none]",
       "",
       "Table ops:",
@@ -159,7 +162,11 @@ export class TranscriptPrinter {
         return;
       }
       case "turn.ended":
-        if (event.files?.length) {
+        if (event.changes?.length) {
+          const listed = event.changes.slice(0, 8).map((change) => `${change.path} ${changeStats(change)}`).join(", ");
+          const more = event.changes.length > 8 ? ` +${event.changes.length - 8} more` : "";
+          this.out(pc.dim(`  ↳ ${this.plainName(event.agent)} changed ${listed}${more} — agoryx diff ${event.turnId}\n`));
+        } else if (event.files?.length) {
           this.out(pc.dim(`  ↳ ${this.plainName(event.agent)} changed ${event.files.slice(0, 8).join(", ")}${event.files.length > 8 ? ` +${event.files.length - 8}` : ""}\n`));
         }
         if (event.status === "interrupted") this.out(pc.dim(`  · ${this.plainName(event.agent)} was interrupted\n`));
@@ -826,6 +833,64 @@ const runDoc = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+const colorPatchLine = (line: string): string =>
+  line.startsWith("diff --git") || line.startsWith("+++") || line.startsWith("---")
+    ? pc.bold(line)
+    : line.startsWith("@@")
+      ? pc.cyan(line)
+      : line.startsWith("+")
+        ? pc.green(line)
+        : line.startsWith("-")
+          ? pc.red(line)
+          : line;
+
+const runDiff = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, [ROOM_OPT]);
+  if (parsed.options.help) {
+    printAgoraUsage();
+    return 0;
+  }
+  const store = RoomStore.open(roomsDir(), resolveRoom(parsed.options.room));
+  const { state } = store;
+  const who = (id: string) => state.agents.find((agent) => agent.id === id)?.label ?? id;
+  const when = (turn: { endedAt?: string; startedAt: string }) => {
+    const ts = turn.endedAt ?? turn.startedAt;
+    return `${new Date(ts).toLocaleDateString("sv-SE")} ${clock(ts)}`;
+  };
+  const [ref, path] = parsed.positionals;
+
+  if (!ref) {
+    const changed = state.turns.filter((turn) => turn.changes?.length).reverse();
+    if (changed.length === 0) console.log(pc.dim("no turn has changed files yet"));
+    for (const turn of changed.slice(0, 20)) {
+      const files = turn.changes!.map((change) => `${change.path} ${changeStats(change)}`).join(", ");
+      console.log(`${pc.bold(turn.id.padEnd(5))} ${who(turn.agent).padEnd(7)} ${pc.dim(when(turn))}  ${files}`);
+    }
+    return 0;
+  }
+
+  const id = `t${ref.replace(/^t/, "")}`;
+  const turn = state.turns.find((entry) => entry.id === id);
+  if (!turn) {
+    console.error(`no turn ${ref} in ${state.name} — agoryx diff lists the turns that changed files`);
+    return 1;
+  }
+  const result = roomTurnPatch(store, id);
+  if (!result) {
+    console.log(pc.dim(`${id} (${who(turn.agent)}) changed no files${turn.files?.length ? ` git could diff — it touched ${turn.files.join(", ")}` : ""}`));
+    return 0;
+  }
+  const text = path ? patchSection(result.patch, path) : result.patch;
+  if (text === null) {
+    console.error(`${id} did not change ${path}`);
+    return 1;
+  }
+  console.log(pc.dim(`${id} · ${who(turn.agent)} · ${when(turn)}`));
+  const colored = process.stdout.isTTY ? text.split("\n").map(colorPatchLine).join("\n") : text;
+  process.stdout.write(colored.endsWith("\n") ? colored : `${colored}\n`);
+  return 0;
+};
+
 export const runAgora = async (command: string, argv: string[]): Promise<number> => {
   switch (command) {
     case "up":
@@ -855,6 +920,8 @@ export const runAgora = async (command: string, argv: string[]): Promise<number>
       return runSettings(argv);
     case "doc":
       return runDoc(argv);
+    case "diff":
+      return runDiff(argv);
     default:
       throw new CliUsageError(`unknown room command '${command}'`, printAgoraUsage);
   }

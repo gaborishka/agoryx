@@ -33,6 +33,7 @@ export const linkPath = (ref: string): string => {
 export const nativePath = (path: string): string => normalize(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
 
 const refsCache = new Map<string, string[]>();
+const HTML_URL = /<(?:img|video|audio|source|a)\b[^>]*?\s(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
 /**
  * Absolute media paths a text links or embeds, in order — read with a markdown lexer, as the
@@ -42,12 +43,15 @@ export const mediaRefs = (text: string): string[] => {
   const cached = refsCache.get(text);
   if (cached) return cached;
   const found: string[] = [];
-  marked.walkTokens(marked.lexer(text), (token) => {
-    if (token.type !== "image" && token.type !== "link") return;
-    const href = (token as Tokens.Image | Tokens.Link).href;
+  const add = (href: string) => {
     if (!/^(file:\/\/|~\/|\/)/.test(href) || href.startsWith("//")) return;
     const path = nativePath(linkPath(href));
     if (isAbsolute(path) && MEDIA_EXTS.has(extname(path).toLowerCase()) && !found.includes(path)) found.push(path);
+  };
+  marked.walkTokens(marked.lexer(text), (token) => {
+    if (token.type === "image" || token.type === "link") add((token as Tokens.Image | Tokens.Link).href);
+    // The UI renders raw HTML too, so <img src>, <video src>, <a href> count as well.
+    else if (token.type === "html") for (const match of token.raw.matchAll(HTML_URL)) add(match[1] ?? match[2] ?? "");
   });
   if (refsCache.size > 5000) refsCache.clear();
   refsCache.set(text, found);

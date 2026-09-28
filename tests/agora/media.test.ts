@@ -28,6 +28,7 @@ test("links count as markdown reads them: references, <spaces>, titles, parenthe
   assert.deepEqual(mediaRefs("![a](/tmp/a.png 'chart') ![b](/tmp/b.png (chart)) ![c](/tmp/c.png \"chart\")"), ["/tmp/a.png", "/tmp/b.png", "/tmp/c.png"]);
   assert.deepEqual(mediaRefs("[page 2](/tmp/report.pdf#page=2) ![](file:///tmp/x%20y.png?v=1)"), ["/tmp/report.pdf", "/tmp/x y.png"]);
   assert.deepEqual(mediaRefs("![](~/pic.png) ![](//host/x.png) ![](https://x/y.png)"), [join(homedir(), "pic.png")]);
+  assert.deepEqual(mediaRefs("<img src=\"/tmp/tag.png\" width=300>\n\n<video src='/tmp/v.mp4'></video> `<img src=\"/tmp/no.png\">`"), ["/tmp/tag.png", "/tmp/v.mp4"]);
   for (const name of ["/tmp/chart (1).png", "/tmp/a#b?c.png", "/tmp/100%20 sure.png", "/tmp/ніч.png"]) {
     assert.deepEqual(mediaRefs(embed(name)), [name], name);
   }

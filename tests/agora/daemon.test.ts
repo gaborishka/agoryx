@@ -446,6 +446,9 @@ test("media outside the workspace is served while the table's prose links it too
     const pct = await call("GET", abs("100%20 sure.png"), { token: null });
     assert.equal(pct.status, 200);
     assert.equal(pct.body, "PCT");
+    writeFileSync(join(outside, "page.htm"), "<p>hi</p>");
+    assert.equal((await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: `[page](${join(outside, "page.htm")})` } })).status, 201);
+    assert.match((await call("GET", abs("page.htm"), { token: null })).headers["content-type"] ?? "", /^text\/html/);
     // A broken escape in the room part is just not a room.
     assert.equal((await call("GET", snap.rawBase.replace(/\/raw\/[^/]+\//, "/raw/%E0%A4%A/") + "x.png", { token: null })).status, 404);
   } finally {

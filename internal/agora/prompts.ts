@@ -67,15 +67,17 @@ export interface BriefingInput {
   agent: RoomAgent;
   /** How agents invoke the room tools; `path` is the absolute fallback if PATH is reset. */
   agentCli: { command: string; path?: string };
+  /** The room's environment, for AGORYX_PROMPT_NORMS; the host's when not given. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
  * First-turn context. Deliberately no role: who is here, where the work lives,
  * how turns and passing work, and how to use the table.
  */
-export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): string => {
+export const buildBriefing = ({ state, agent, agentCli: cli, env }: BriefingInput): string => {
   const agentCli = cli.command;
-  const norms = promptNorms();
+  const norms = promptNorms(env);
   const others = state.agents.filter((entry) => entry.id !== agent.id);
   const peers = others.map((entry) => `${entry.label} (@${entry.id})`).join(", ");
   const access =

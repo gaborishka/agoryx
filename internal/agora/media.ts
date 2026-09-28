@@ -9,11 +9,12 @@ import { homedir } from "node:os";
 import { extname, isAbsolute, join, normalize } from "node:path";
 import type { MessageEntry } from "./types.js";
 
+// Keep in step with VISUAL_EXT in ui/src/lib/format.ts: the UI asks for what it can show.
 export const MEDIA_EXTS = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".ico",
   ".pdf", ".html", ".htm",
   ".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg", ".m4a",
-  ".csv", ".tsv", ".mmd",
+  ".csv", ".tsv", ".mmd", ".mermaid",
 ]);
 
 // ![alt](path "title") and [text](path) with an absolute, ~/ or file:// path: the path is group 1.

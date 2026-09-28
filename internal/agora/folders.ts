@@ -139,11 +139,18 @@ export const createRoomWorktree = (
     const stderr = (error as { stderr?: string }).stderr?.trim();
     throw new Error(`git worktree add failed${stderr ? `: ${stderr.split("\n").at(-1)}` : ""}`);
   }
-  const real = realpathSync(path);
-  // Picked a folder inside the repository: work in the same folder of the worktree.
-  const workspace = info.prefix ? join(real, info.prefix.replace(/\/+$/, "")) : real;
-  mkdirSync(workspace, { recursive: true });
-  return { workspace, worktree: { source, repo: info.root, path: real, branch, base } };
+  const worktree: RoomWorktree = { source, repo: info.root, path, branch, base };
+  try {
+    worktree.path = realpathSync(path);
+    // Picked a folder inside the repository: work in the same folder of the worktree.
+    const workspace = info.prefix ? join(worktree.path, info.prefix.replace(/\/+$/, "")) : worktree.path;
+    mkdirSync(workspace, { recursive: true });
+    return { workspace, worktree };
+  } catch (error) {
+    // The caller never gets the worktree to clean up, so a retry would trip on the branch and folder.
+    removeRoomWorktree(worktree);
+    throw error;
+  }
 };
 
 /** Undo a worktree made for a room that then failed to start. */

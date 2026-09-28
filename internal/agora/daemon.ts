@@ -77,6 +77,7 @@ const MIME: Record<string, string> = {
   ".m4a": "audio/mp4",
   ".tsv": "text/plain; charset=utf-8",
   ".mmd": "text/plain; charset=utf-8",
+  ".mermaid": "text/plain; charset=utf-8",
 };
 
 const MAX_RAW = 25 * 1024 * 1024;

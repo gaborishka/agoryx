@@ -531,6 +531,22 @@ test("a worktree in a subfolder works in the same subfolder; refused worktrees l
   assert.equal(gitIn(repo, "branch", "--list", "agoryx/*"), before);
 });
 
+test("a worktree whose setup fails after git made it is rolled back", async () => {
+  const repo = makeRepo("wt-rollback");
+  // On this base `src` is a file, so the picked src/ folder cannot be made in the worktree.
+  gitIn(repo, "checkout", "-q", "-b", "flat");
+  gitIn(repo, "rm", "-q", "-r", "src");
+  writeFileSync(join(repo, "src"), "a file now\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "commit", "-q", "-m", "src is a file");
+  gitIn(repo, "checkout", "-q", "main");
+  const worktrees = gitIn(repo, "worktree", "list");
+  const reply = await call("POST", "/api/rooms", { body: { name: "Flat", dir: join(repo, "src"), worktree: true, base: "flat" } });
+  assert.ok(reply.status >= 400, reply.body);
+  assert.equal(gitIn(repo, "branch", "--list", "agoryx/*"), "");
+  assert.equal(gitIn(repo, "worktree", "list"), worktrees);
+});
+
 test("the folder picker lists subfolders and says which are git repositories", async () => {
   makeRepo("wt-list");
   const reply = await call("GET", `/api/fs?path=${encodeURIComponent(home)}`);

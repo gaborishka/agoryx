@@ -64,6 +64,7 @@ export const createTestRoom = (options: {
   settings?: Partial<RoomSettings>;
   agents?: RoomAgent[];
   name?: string;
+  env?: NodeJS.ProcessEnv;
 } = {}): TestRoom => {
   const home = mkdtempSync(join(tmpdir(), "agora-test-"));
   const roomsRoot = join(home, "rooms");
@@ -81,6 +82,7 @@ export const createTestRoom = (options: {
     // Native session files (written by the fake CLIs) stay inside the test home.
     CLAUDE_CONFIG_DIR: join(home, "claude-config"),
     CODEX_HOME: join(home, "codex-home"),
+    ...options.env,
   };
   const shimDir = join(home, "shim");
   ensureAgentShim(shimDir);

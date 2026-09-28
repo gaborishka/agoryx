@@ -690,6 +690,7 @@ export class RoomEngine {
         state: this.state,
         agent,
         agentCli: this.agentCliHint(),
+        env: this.env,
         events: this.store.since(rejoin ? 0 : fromSeq).filter((event) => event.seq <= cursor),
         turnsLeft,
         fresh,

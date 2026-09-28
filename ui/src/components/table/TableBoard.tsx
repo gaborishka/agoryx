@@ -637,7 +637,8 @@ function Question({ q, table, room }: { q: TableQuestion; table: TableState; roo
           {show ? "Сховати варіанти" : `Як до цього дійшли · ${plural(options.length, "варіант", "варіанти", "варіантів")}`}
         </button>
       ) : null}
-      {show && options.length ? (
+      {/* An open question always shows its options, also one reopened after it was closed. */}
+      {(show || !closed) && options.length ? (
         <div className="flex flex-col gap-3">
           {options.map((o) => (
             <Debate key={o.id} o={o} table={table} room={room} />

@@ -156,6 +156,19 @@ test("the disagreement norms are on unless a control run switches them off", () 
   assert.equal(promptNorms({ AGORYX_PROMPT_NORMS: "OFF" }), false);
 });
 
+test("a control run switches the norms off through the room's own environment", async () => {
+  const room = createTestRoom({ env: { AGORYX_PROMPT_NORMS: "off" } });
+  try {
+    room.engine.postHuman("Pick a name");
+    await withTimeout(room.engine.waitIdle());
+    const prompts = room.invocations("claude").map((entry) => entry.prompt!);
+    assert.ok(prompts.length > 0);
+    assert.ok(prompts.every((prompt) => !prompt.includes("agreeing for politeness") && !prompt.includes("Disagree when you disagree")));
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("@mention wakes only the addressed agent first; the other hears the reply", async () => {
   const room = createTestRoom({
     rules: [{ agent: "codex", match: "@codex", reply: "Done, @claude please review." }],

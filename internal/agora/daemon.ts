@@ -804,6 +804,8 @@ export class AgoraDaemon {
     };
     const start = Number.isFinite(after) ? after : handle.store.state.seq;
     for (const event of handle.store.since(start)) send(event);
+    // Text streamed since the client's snapshot is not in the log: resend each live turn's whole buffer as a reset.
+    for (const [turnId, buffer] of handle.streams) send({ type: "turn.stream", turnId, agent: buffer.agent, text: buffer.text, reset: true });
     // Who is busy right now, including in their own sessions (not in the log, so not replayed above).
     res.write(`event: presence\ndata: ${JSON.stringify({ agents: this.presence(handle) })}\n\n`);
     const unsubscribe = handle.store.subscribe(send);

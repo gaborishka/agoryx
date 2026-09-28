@@ -486,6 +486,7 @@ const S = {
   menu: false,
   renaming: false,
   openTraces: new Set(),
+  openCards: new Set(),
   seenMessages: new Set(),
   firstPaint: true,
   es: null,
@@ -972,7 +973,35 @@ const opCard = (o) => {
   }
 };
 
-const opCards = (ops) => (ops?.length ? `<div class="tcards">${ops.map(opCard).join("")}</div>` : "");
+// A turn that makes many moves keeps the ones a reader must see (questions, proposals, objections,
+// decisions) and folds the rest into one line; each option card already counts its support and evidence.
+const KEY_OPS = new Set(["ask", "propose", "object", "decide"]);
+const FOLD_AFTER = 4;
+const TC_MANY = {
+  support: ["підтримка", "підтримки", "підтримок"],
+  evidence: ["доказ", "докази", "доказів"],
+  fact: ["факт", "факти", "фактів"],
+  settle: ["узгоджене", "узгоджені", "узгоджених"],
+  next: ["крок", "кроки", "кроків"],
+  done: ["виконано", "виконано", "виконано"],
+  withdraw: ["відкликано", "відкликано", "відкликано"],
+  reopen: ["відкрито знову", "відкрито знову", "відкрито знову"],
+};
+
+const opCards = (ops, key) => {
+  if (!ops?.length) return "";
+  if (ops.length <= FOLD_AFTER || !key || S.openCards.has(key)) {
+    const less = ops.length > FOLD_AFTER && key ? `<button class="tc-fold" data-act="cards" data-key="${esc(key)}">Згорнути дрібні ходи</button>` : "";
+    return `<div class="tcards">${ops.map(opCard).join("")}${less}</div>`;
+  }
+  const shown = ops.filter((o) => KEY_OPS.has(o.op));
+  const folded = ops.filter((o) => !KEY_OPS.has(o.op));
+  if (!folded.length) return `<div class="tcards">${shown.map(opCard).join("")}</div>`;
+  const counts = new Map();
+  for (const o of folded) counts.set(o.op, (counts.get(o.op) ?? 0) + 1);
+  const summary = [...counts].map(([op, n]) => (TC_MANY[op] ? plural(n, ...TC_MANY[op]) : `${n} ${op}`)).join(", ");
+  return `<div class="tcards">${shown.map(opCard).join("")}<button class="tc-fold" data-act="cards" data-key="${esc(key)}">${ICON.table}<span>Ще ${esc(summary)}</span><span class="faint">показати</span></button></div>`;
+};
 
 const revStats = (r) =>
   r.deleted ? '<span class="minus">видалено</span>' : `<span class="plus">+${r.added}</span> <span class="minus">−${r.removed}</span>`;
@@ -1066,7 +1095,7 @@ const messageHtml = (m, ctx) => {
     const chips = docs?.length || turn?.files?.length ? turnBar(turn, ops, docs) : "";
     // A turn with no words can still have moved the table or the files — then it is not a pass.
     const silent = ops?.length ? `без слів — ${ops.length === 1 ? "хід" : "ходи"} на столі` : turn?.files?.length || docs?.length ? "без слів — лише зміни" : `пропускає хід${note || " — нема що додати"}`;
-    return `<div class="passl${fresh}" id="${id}"><div class="pl">${avatar(m.author, 18)}<span><b>${esc(nameOf(m.author))}</b> ${silent}</span></div>${chips}${opCards(ops)}</div>`;
+    return `<div class="passl${fresh}" id="${id}"><div class="pl">${avatar(m.author, 18)}<span><b>${esc(nameOf(m.author))}</b> ${silent}</span></div>${chips}${opCards(ops, m.turnId)}</div>`;
   }
   if (m.kind === "system") {
     const err = /error|failed|could not finish|timed out|rate limit/i.test(m.text) ? " err" : "";
@@ -1086,7 +1115,7 @@ const messageHtml = (m, ctx) => {
     <div class="ahead">${avatar(m.author, 26)}<b class="an ${cls}">${esc(nameOf(m.author))}</b>${nativeTag(m)}<time datetime="${esc(m.ts)}" title="${esc(fullDate(m.ts))}">${clock(m.ts)}</time>${turnMeta(turn)}</div>
     <div class="abody">
       <div class="txt">${markdown(m.text, { ...mdCtx(), source: `m:${m.id}` })}</div>
-      ${opCards(ops)}
+      ${opCards(ops, m.turnId)}
       ${turnBar(turn, ops, docs)}
     </div>
   </article>`;
@@ -1102,7 +1131,7 @@ const liveHtml = (turn, ops) => {
     <div class="abody">
       <div class="stream txt" data-stream="${esc(turn.id)}">${esc(stream.slice(-2400))}</div>
       <div class="trace live-trace" data-trace="${esc(turn.id)}"${last.length ? "" : " hidden"}>${last.map(activityHtml).join("")}</div>
-      ${opCards(ops)}
+      ${opCards(ops, turn.id)}
     </div>
   </article>`;
 };
@@ -2245,6 +2274,13 @@ const onClick = async (event) => {
       if (message) flash(document.getElementById(`m-${message.id}`));
       break;
     }
+    case "cards": {
+      const key = target.dataset.key;
+      if (S.openCards.has(key)) S.openCards.delete(key);
+      else S.openCards.add(key);
+      invalidate("feed");
+      break;
+    }
     case "card-more": {
       const body = target.closest(".tc-body");
       body?.classList.remove("clamp");
@@ -2405,6 +2441,7 @@ const openRoom = async (id, { quiet = false } = {}) => {
     S.firstPaint = true;
     S.seenMessages.clear();
     S.openTraces.clear();
+    S.openCards.clear();
     S.doc = null;
     S.docSel = null;
     S.docHistory = false;

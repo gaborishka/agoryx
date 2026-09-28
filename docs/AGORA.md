@@ -134,7 +134,10 @@ agoryx open         # opens the browser with a one-time login link
   sit under "Параметри" and have defaults. `agoryx new -m "…"` does the same without a name.
 - **The conversation** is one column. Replies stack in order. A divider marks the independent replies
   right after your message. Each reply shows its trace (commands, edits), the files it changed with
-  +/− counts (each opens the turn's exact patch), and what it put on the table. Live turns stream in.
+  +/− counts (each opens the turn's exact patch), and what it put on the table. A turn with more
+  than four table moves keeps questions, proposals, objections and decisions in view and folds the
+  rest (support, evidence, facts, steps) into one line with counts. Live turns stream in, and a page
+  that connects mid-turn gets the text streamed so far.
   A line above the composer says who is working, or that the agents are waiting for you, with
   "Зупинити" / "Продовжити".
 - **Стіл** and **Документ** open in a panel beside the conversation (full screen on a phone):

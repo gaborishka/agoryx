@@ -11,6 +11,12 @@ import { ensureAgentShim } from "../../internal/agora/workspace.js";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 
+// An agent running these tests from inside a room inherits that room's variables (and its CLI's shell
+// hints), which would point the rooms under test at the real one and sign ops as that agent.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("AGORYX_") || key === "CLAUDECODE" || key.startsWith("CODEX_SANDBOX")) delete process.env[key];
+}
+
 export const AGENTS: RoomAgent[] = [
   { id: "claude", kind: "claude", label: "Claude" },
   { id: "codex", kind: "codex", label: "Codex" },

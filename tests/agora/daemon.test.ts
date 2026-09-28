@@ -207,6 +207,26 @@ test("a message wakes both agents; SSE carries patches; the snapshot has the con
   assert.match(snap.resume.codex, /resume/);
 });
 
+test("a client that subscribes mid-turn gets the text already streamed since its snapshot", async () => {
+  writeFileSync(join(home, "rules.json"), JSON.stringify([{ agent: "claude", match: "Stream slowly", reply: "a long streamed answer", streamSleepMs: 2500 }]));
+  try {
+    const room = await newRoom("Late subscriber");
+    await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "Stream slowly" } });
+    let seq = 0;
+    await waitFor(async () => {
+      const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+      seq = snap.state.seq;
+      return Object.values(snap.streams).some((s: any) => s.text === "a long streamed answer");
+    });
+    const frames = await readEvents(`/api/rooms/${room.id}/events?after=${seq}`, (frame) => frame.event === "stream");
+    const stream = frames.find((f) => f.event === "stream")!.data;
+    assert.equal(stream.reset, true);
+    assert.equal(stream.text, "a long streamed answer");
+  } finally {
+    writeFileSync(join(home, "rules.json"), "[]");
+  }
+});
+
 test("table ops from the human land in the snapshot; bad ops are 400", async () => {
   const room = await newRoom("Daemon table");
   const asked = await call("POST", `/api/rooms/${room.id}/table`, { body: { op: "ask", text: "Which storage?" } });

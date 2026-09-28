@@ -5,6 +5,7 @@
 // (optional) and `match` (substring of the prompt, optional) fit is used:
 //   { agent, match, reply, table: [[...argv]], write: {path, content} (or a list),
 //     command: "shown as the tool call; {cwd} and {cli} expand", sleepMs,
+//     streamSleepMs (claude: pause after streaming the reply, before finishing),
 //     error: "text", exitCode, once: true }
 // Without a matching rule: first turn replies "<agent> here", later turns pass.
 // Every invocation is appended to $FAKE_LOG as one JSON line.
@@ -179,6 +180,7 @@ const main = async () => {
     for (const piece of reply.match(/.{1,8}/gs) ?? []) {
       out({ type: "stream_event", session_id: sessionId, event: { type: "content_block_delta", delta: { type: "text_delta", text: piece } } });
     }
+    if (rule?.streamSleepMs) await sleep(rule.streamSleepMs);
     out({ type: "assistant", session_id: sessionId, message: { content: [{ type: "text", text: reply }] } });
     out({ type: "result", subtype: "success", is_error: false, result: reply, session_id: sessionId, usage: { input_tokens: 10, output_tokens: 5 }, total_cost_usd: 0.001 });
   } else {

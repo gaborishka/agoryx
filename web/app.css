@@ -104,6 +104,10 @@ code{font-family:var(--mono);font-size:.88em;background:var(--code);border:1px s
 .tc-body{font-size:14px;color:var(--ink);position:relative}
 .tc-body.clamp{max-height:260px;overflow:hidden}
 .tc-body.clamp::after{content:"";position:absolute;left:0;right:0;bottom:0;height:70px;background:linear-gradient(transparent,var(--paper));pointer-events:none}
+.tc-fold{display:flex;align-items:center;gap:8px;width:100%;text-align:left;font-size:13px;color:var(--soft);background:transparent;border:1px dashed var(--rule);border-radius:12px;padding:7px 12px;cursor:pointer}
+.tc-fold:hover{border-style:solid;background:var(--paper)}
+.tc-fold svg{width:13px;height:13px;flex:none;color:var(--sage)}
+.tc-fold span:first-of-type{flex:1;min-width:0}
 .tc-more{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);z-index:1;font-size:12.5px;font-weight:500;color:var(--sage);background:var(--paper);border:1px solid var(--rule);border-radius:14px;padding:3px 12px}
 .tc-acts{display:flex;gap:2px;flex-wrap:wrap;margin:0 -6px -4px;border-top:1px solid var(--rule);padding-top:5px}
 .tc-text{font-size:14px;min-width:0}

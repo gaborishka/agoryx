@@ -252,6 +252,7 @@ export type RoomEventBody =
   | { type: "session.bound"; agent: string; sessionId: string }
   | { type: "table.op"; op: TableOp }
   | { type: "settings.changed"; patch: Partial<RoomSettings> }
+  | { type: "room.renamed"; name: string }
   | { type: "commit.created"; sha: string; subject: string; files: number }
   | DocRevisedEvent;
 

@@ -339,6 +339,14 @@ export class RoomEngine {
     }
   }
 
+  /** A new name for the room; it wakes nobody. */
+  rename(name: string): void {
+    const clean = name.replace(/\s+/g, " ").trim().slice(0, 120);
+    if (!clean) throw new Error("a room needs a name");
+    if (clean === this.state.name) return;
+    this.store.append({ type: "room.renamed", name: clean });
+  }
+
   async stop(reason: "human" | "shutdown" = "human"): Promise<void> {
     this.stopping = true;
     const turns = [...this.running.values()];

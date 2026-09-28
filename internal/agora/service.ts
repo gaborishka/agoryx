@@ -49,6 +49,22 @@ export interface CreateRoomOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+/**
+ * A room name from its first message, for rooms started without one: the first
+ * line, without markdown or @mentions, cut at a word boundary.
+ */
+export const roomNameFrom = (text: string): string => {
+  const line =
+    text
+      .split("\n")
+      .map((entry) => entry.replace(/[#>*_`~[\]]/g, "").replace(/(^|\s)@[\w-]+/g, " ").replace(/\s+/g, " ").trim())
+      .find(Boolean) ?? "";
+  if (line.length <= 60) return line || "Нова кімната";
+  const cut = line.slice(0, 60);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > 30 ? cut.slice(0, space) : cut).replace(/[\s,.;:!?—–-]+$/, "")}…`;
+};
+
 const isEmptyDir = (dir: string): boolean => !existsSync(dir) || readdirSync(dir).length === 0;
 
 export const createRoom = (options: CreateRoomOptions): RoomStore => {

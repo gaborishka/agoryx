@@ -7,7 +7,7 @@ import { DocConflictError, RoomEngine, RoomLockedError, roomTurnPatch } from "./
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
-import { createRoom, defaultRunners, openEngine, resumeCommands } from "./service.js";
+import { createRoom, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import type { AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomEvent, RoomSettings } from "./types.js";
@@ -517,8 +517,10 @@ export class AgoraDaemon {
       }
       if (method === "POST") {
         const body = (await readBody(req)) as Record<string, unknown>;
-        const name = typeof body.name === "string" ? body.name : "";
-        if (!name.trim()) throw new HttpError(400, "name is required");
+        const text = typeof body.text === "string" ? body.text : "";
+        // A room started from its first message takes its name from it; rename it later.
+        const name = typeof body.name === "string" && body.name.trim() ? body.name : text.trim() ? roomNameFrom(text) : "";
+        if (!name.trim()) throw new HttpError(400, "a name or a first message is required");
         if (typeof body.doc === "string" && body.doc.trim() && !normalizeDocPath(body.doc)) {
           throw new HttpError(400, "the canonical file must be a path inside the workspace (not in .git or .agoryx)");
         }
@@ -532,7 +534,7 @@ export class AgoraDaemon {
           env: this.env,
         });
         const handle = this.room(store.id);
-        if (typeof body.text === "string" && body.text.trim()) this.engineFor(handle).postHuman(body.text);
+        if (text.trim()) this.engineFor(handle).postHuman(text);
         sendJson(res, 201, { room: handle.store.summary() });
         return;
       }
@@ -619,6 +621,15 @@ export class AgoraDaemon {
         const seq = engine.state.seq + 1;
         engine.continueRun();
         sendJson(res, 200, { ok: true, seq });
+        return;
+      }
+      case "rename": {
+        try {
+          engine.rename(typeof body.name === "string" ? body.name : "");
+        } catch (error) {
+          throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
+        sendJson(res, 200, { room: handle.store.summary() });
         return;
       }
       case "stop": {

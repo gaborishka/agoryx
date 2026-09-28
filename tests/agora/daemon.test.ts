@@ -231,6 +231,23 @@ test("settings are validated; an unknown action is 404", async () => {
   assert.equal((await call("GET", "/api/rooms/no-such-room")).status, 404);
 });
 
+test("a room can start from its first message alone, and be renamed later", async () => {
+  const created = await call("POST", "/api/rooms", { body: { text: "@codex Порівняй SQLite і JSONL для журналу подій, будь ласка, з цифрами" } });
+  assert.equal(created.status, 201, created.body);
+  const room = created.json<{ room: { id: string; name: string } }>().room;
+  assert.equal(room.name, "Порівняй SQLite і JSONL для журналу подій, будь ласка, з…");
+  await waitFor(async () => (await call("GET", `/api/rooms/${room.id}`)).json<any>().state.runs.at(-1)?.status === "ended");
+  assert.equal((await call("POST", "/api/rooms", { body: {} })).status, 400);
+
+  const renamed = await call("POST", `/api/rooms/${room.id}/rename`, { body: { name: "  Журнал подій  " } });
+  assert.equal(renamed.status, 200, renamed.body);
+  assert.equal(renamed.json<{ room: { name: string } }>().room.name, "Журнал подій");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+  assert.equal(snap.state.name, "Журнал подій");
+  assert.equal(snap.state.runs.length, 1, "a rename wakes nobody");
+  assert.equal((await call("POST", `/api/rooms/${room.id}/rename`, { body: { name: " " } })).status, 400);
+});
+
 test("the canonical file: read it, edit it against a base, see each revision's diff", async () => {
   const room = await newRoom("Daemon doc");
   const first = await call("GET", `/api/rooms/${room.id}/doc`);

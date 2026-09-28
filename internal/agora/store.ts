@@ -191,7 +191,7 @@ export class RoomStore {
   }
 
   summary(): RoomSummary {
-    const last = [...this.state.messages].reverse().find((message) => message.kind !== "pass");
+    const last = [...this.state.messages].reverse().find((message) => message.kind !== "pass" && message.kind !== "system");
     const lastEvent = this.events[this.events.length - 1]!;
     return {
       id: this.state.id,

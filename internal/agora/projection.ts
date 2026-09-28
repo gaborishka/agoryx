@@ -131,6 +131,9 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
     case "settings.changed":
       state.settings = { ...state.settings, ...event.patch };
       return;
+    case "room.renamed":
+      state.name = event.name;
+      return;
     case "commit.created":
       state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq });
       return;

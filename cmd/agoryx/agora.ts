@@ -8,7 +8,7 @@ import { AgoraDaemon, findDaemon, readDaemonInfo, type DaemonInfo } from "../../
 import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
 import { agoraHome, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { activeRun } from "../../internal/agora/projection.js";
-import { createRoom, openEngine, resumeCommands } from "../../internal/agora/service.js";
+import { createRoom, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
 import { changeStats, patchSection } from "../../internal/agora/workspace.js";
 import { RoomStore } from "../../internal/agora/store.js";
@@ -43,7 +43,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx up [--port N] [-d]          Start the daemon (web UI + API). -d runs it in the background",
       "  agoryx down                        Stop the background daemon",
       "  agoryx open [room]                 Open the web UI (starts the daemon if needed)",
-      '  agoryx new "name" [--dir D] [--budget N] [--doc PATH|none] [-m "first message"]',
+      '  agoryx new ["name"] [--dir D] [--budget N] [--doc PATH|none] [-m "first message"]   (no name: the message names it)',
       "  agoryx rooms                       List rooms",
       '  agoryx say [-r room] "text"        Post to the room and follow the run until it goes quiet',
       "  agoryx tail [-r room] [-f] [-n N] [--trace]   Print the conversation (and follow it)",
@@ -491,7 +491,8 @@ const runNew = async (argv: string[]): Promise<number> => {
     { long: "doc", takesValue: true },
     { long: "message", short: "m", takesValue: true },
   ]);
-  const name = parsed.positionals.join(" ").trim();
+  // No name: the first message names the room (rename it later in the web UI).
+  const name = parsed.positionals.join(" ").trim() || (parsed.options.message?.trim() ? roomNameFrom(parsed.options.message) : "");
   if (!name || parsed.options.help) {
     printAgoraUsage();
     return name ? 0 : 2;

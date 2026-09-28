@@ -60,7 +60,7 @@ keeps its history. It never says what goes in it, and anyone can write it with a
 - **The others get the diff.** An agent's delta carries the revisions made since its last turn, as a
   compact diff with a few lines of context. It sees who made each one. The briefing names the file.
   A revision wakes nobody. Agents read it when something else wakes them.
-- **In the UI,** the Документ tab renders the file (markdown as paper, code as code). A "Історія" rail
+- **In the UI,** the Документ panel renders the file (markdown as paper, code as code). "Історія"
   lists the revisions, and each one opens as a diff with a link to its turn in the conversation.
   "Редагувати" edits the file in place. A save carries the version it started from. If the file
   changed meanwhile, the UI shows the conflict and loses nothing. Revisions also appear in the
@@ -89,8 +89,8 @@ So Agoryx keeps **the exact change of every turn**, and the other agents see it.
   `agoryx diff` lists recent turns with their files, `agoryx diff t7` prints that turn's patch, and
   `agoryx diff t7 src/clock.ts` prints one file of it. The human CLI has the same command,
   with `-r room` to use it from anywhere.
-- **In the UI,** the files a turn changed are chips with `+/−` counts. A chip opens a "Зміни ходу"
-  sheet with every file of the turn and the patch.
+- **In the UI,** the files a turn changed are chips with `+/−` counts. A chip opens a dialog with every
+  file of the turn and the patch.
 - **Storage:** `.agoryx/turns/t7.patch` in the workspace. The file has a `#` header saying who and
   when, then a plain `git diff`. The `turn.ended` event carries the counts and both tree ids, so a
   lost patch file is rebuilt from git. Patches over 256 KB are cut, and the note names the
@@ -123,14 +123,19 @@ agoryx up -d        # start the daemon in the background
 agoryx open         # opens the browser with a one-time login link
 ```
 
-- **Розмова**: the conversation. Blind rounds are shown side by side. Each reply links to its trace
-  (commands, edits), the files it changed with +/− counts (each opens the turn's exact patch), and
-  what it put on the table. Live turns stream in.
-- **Стіл**: questions with their options, notes, evidence and previews. The "Де ми зараз" rail
-  shows decisions, settled items and facts, next steps and open questions.
-- **Документ**: the room's canonical file, its revision history with diffs, and an editor.
-- Table ids in messages (`P1`, `X1` …) link to the table. The header links to the workspace files,
-  the native sessions and the room settings.
+- **Start by writing.** "Нова кімната" opens a composer: the first message starts the room and names it
+  (the name is editable later by clicking the title). The workspace, canonical file and turn budget
+  sit under "Параметри" and have defaults. `agoryx new -m "…"` does the same without a name.
+- **The conversation** is one column. Replies stack in order. A divider marks the independent replies
+  right after your message. Each reply shows its trace (commands, edits), the files it changed with
+  +/− counts (each opens the turn's exact patch), and what it put on the table. Live turns stream in.
+  A line above the composer says who is working, or that the agents are waiting for you, with
+  "Зупинити" / "Продовжити".
+- **Стіл** and **Документ** open in a panel beside the conversation (full screen on a phone):
+  questions with their options, notes and evidence, a "Де ми зараз" summary of decisions, settled
+  items and next steps; the canonical file with its history, diffs and an editor.
+- Table ids in messages (`P1`, `X1` …) open the table at that item. The header shows each agent's
+  state and holds the workspace files, the native sessions and the room settings.
 
 ### In the agents' own apps
 

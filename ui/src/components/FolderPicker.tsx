@@ -88,7 +88,7 @@ export function useFolderGit(
 }
 
 const chip =
-  "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-border bg-card/70 px-2.5 text-[13px] text-muted-foreground transition hover:bg-card hover:text-foreground data-[state=open]:bg-card data-[state=open]:text-foreground";
+  "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[13px] text-muted-foreground transition hover:bg-card hover:text-foreground data-[state=open]:bg-card data-[state=open]:text-foreground";
 
 /**
  * Where the room works: a folder (or a fresh one Agoryx makes), and in a git repository the branch
@@ -199,7 +199,7 @@ export function FolderBar({
         </DropdownMenu>
 
         {folder && git ? (
-          <div className={cn(chip, "gap-0 p-0 hover:bg-card/70")}>
+          <div className={cn(chip, "gap-0 p-0 hover:bg-card")}>
             {worktree && git.branches.length ? (
               <DropdownMenu>
                 <Tip tip="Гілка, від якої почнеться worktree кімнати">

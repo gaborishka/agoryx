@@ -1,4 +1,4 @@
-import { EllipsisIcon, FileTextIcon, FolderIcon, LayoutPanelLeftIcon, MenuIcon, SettingsIcon, SquareKanbanIcon, TerminalIcon } from "lucide-react";
+import { EllipsisIcon, FileTextIcon, FolderIcon, LayoutPanelLeftIcon, MenuIcon, MessagesSquareIcon, ScaleIcon, SettingsIcon, TerminalIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -110,13 +110,43 @@ export function NavButton() {
   );
 }
 
+/** The room is two views of one thing: the conversation, and the table it produced. */
+function ViewSwitch() {
+  const room = useStore((s) => s.snap?.state);
+  const view = useStore((s) => s.view);
+  const setView = useStore((s) => s.setView);
+  if (!room) return null;
+  const count = tableCount(room);
+  const tab = (on: boolean) =>
+    cn(
+      "inline-flex h-8 items-center gap-1.5 rounded-[9px] px-2.5 text-[13px] font-medium transition sm:px-3",
+      on ? "bg-card text-foreground shadow-soft ring-1 ring-border" : "text-muted-foreground hover:text-foreground",
+    );
+  return (
+    <div role="tablist" aria-label="Вигляд кімнати" className="flex shrink-0 items-center gap-0.5 rounded-xl bg-muted p-1">
+      <button type="button" role="tab" aria-selected={view === "chat"} className={tab(view === "chat")} onClick={() => setView("chat")}>
+        <MessagesSquareIcon className="size-4" />
+        <span className="hidden sm:inline">Розмова</span>
+      </button>
+      <Tip tip="Стіл: питання, варіанти, аргументи й рішення — вибір, розкладений по поличках">
+        <button type="button" role="tab" aria-selected={view === "table"} className={tab(view === "table")} onClick={() => setView("table")}>
+          <ScaleIcon className="size-4" />
+          <span className="hidden sm:inline">Стіл</span>
+          {count ? (
+            <span className="tabular grid h-4.5 min-w-4.5 place-items-center rounded-full bg-amber px-1 text-[10.5px] font-semibold text-white dark:text-background">{count}</span>
+          ) : null}
+        </button>
+      </Tip>
+    </div>
+  );
+}
+
 export function RoomHeader() {
   const room = useStore((s) => s.snap?.state);
   const panel = useStore((s) => s.panel);
   const togglePanel = useStore((s) => s.togglePanel);
   const openDialog = useStore((s) => s.openDialog);
   if (!room) return null;
-  const count = tableCount(room);
   const toggle = (on: boolean) =>
     cn("h-8 gap-1.5 rounded-lg px-2.5 text-[13px] text-muted-foreground", on && "bg-secondary text-secondary-foreground hover:bg-secondary");
   return (
@@ -130,19 +160,13 @@ export function RoomHeader() {
           </button>
         </Tip>
       </div>
-      <div className="hidden items-center gap-1.5 sm:flex">
+      <ViewSwitch />
+      <div className="hidden items-center gap-1.5 md:flex">
         {room.agents.map((a) => (
           <Presence key={a.id} a={a} />
         ))}
       </div>
-      <span className="mx-1 hidden h-5 w-px bg-border sm:block" />
-      <Tip tip="Стіл: питання, пропозиції, рішення">
-        <Button variant="ghost" className={toggle(panel === "table")} aria-label="Стіл" aria-pressed={panel === "table"} onClick={() => togglePanel("table")}>
-          <SquareKanbanIcon className="size-4" />
-          <span className="hidden md:inline">Стіл</span>
-          {count ? <span className="tabular grid h-4.5 min-w-4.5 place-items-center rounded-full bg-primary px-1 text-[10.5px] font-semibold text-primary-foreground">{count}</span> : null}
-        </Button>
-      </Tip>
+      <span className="mx-1 hidden h-5 w-px bg-border md:block" />
       <Tip tip={room.settings.doc ? `Спільний документ: ${room.settings.doc}` : "Спільний документ кімнати"}>
         <Button variant="ghost" className={toggle(panel === "doc")} aria-label="Документ" aria-pressed={panel === "doc"} onClick={() => togglePanel("doc")}>
           <FileTextIcon className="size-4" />

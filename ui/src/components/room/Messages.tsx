@@ -9,6 +9,7 @@ import { useStore } from "@/lib/store";
 import type { DocRevision, MessageEntry, TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Name, NativeBadge, NativeTag, Stats, Time } from "./bits";
+import { Clamp } from "./Clamp";
 import { TurnBar } from "./Trace";
 
 export function Fresh({ fresh, children, className, id }: { fresh: boolean; children: ReactNode; className?: string; id?: string }) {
@@ -40,11 +41,36 @@ function TurnMeta({ turn }: { turn?: TurnState }) {
 
 const railTone = { claude: "bg-claude/35", codex: "bg-codex/35", human: "bg-human/35", sys: "bg-border" } as const;
 
-export const AgentMessage = memo(function AgentMessage({ m, turn, ops, docs, card }: { m: MessageEntry; turn?: TurnState; ops?: TableOp[]; docs?: DocRevision[]; card?: boolean }) {
+const cardTone = { claude: "before:bg-claude", codex: "before:bg-codex", human: "before:bg-human", sys: "before:bg-border" } as const;
+
+export const AgentMessage = memo(function AgentMessage({
+  m,
+  turn,
+  ops,
+  docs,
+  card,
+  clamp,
+}: {
+  m: MessageEntry;
+  turn?: TurnState;
+  ops?: TableOp[];
+  docs?: DocRevision[];
+  card?: boolean;
+  /** Fold a long reply to this height (px); the rest opens on demand. */
+  clamp?: number;
+}) {
   const room = useStore((s) => s.snap?.state);
   const p = participant(room, m.author);
+  const text = <Markdown text={m.text} source={`m:${m.id}`} />;
   return (
-    <article className={cn("group/msg relative min-w-0", card && "h-full rounded-2xl border border-border bg-card p-4 shadow-soft")}>
+    <article
+      className={cn(
+        "group/msg relative min-w-0",
+        card &&
+          "overflow-hidden rounded-2xl border border-border bg-card p-4 pt-5 shadow-soft before:absolute before:inset-x-0 before:top-0 before:h-[3px] sm:p-5 sm:pt-6",
+        card && cardTone[p.tone],
+      )}
+    >
       <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Avatar handle={m.author} size={28} />
         <Name handle={m.author} className="text-[14.5px]" />
@@ -54,9 +80,9 @@ export const AgentMessage = memo(function AgentMessage({ m, turn, ops, docs, car
       </header>
       <div className={cn("relative mt-1.5", !card && "pl-[38px]")}>
         {!card ? <span className={cn("absolute top-1 bottom-1 left-[13px] w-[2px] rounded-full opacity-0 transition group-hover/msg:opacity-100", railTone[p.tone])} /> : null}
-        <Markdown text={m.text} source={`m:${m.id}`} />
-        <OpCards ops={ops} />
-        <TurnBar turn={turn} docs={docs} />
+        {clamp ? <Clamp max={clamp}>{text}</Clamp> : text}
+        <OpCards ops={ops} compact={Boolean(clamp)} />
+        <TurnBar turn={turn} docs={docs} compact={Boolean(clamp)} />
       </div>
     </article>
   );

@@ -41,7 +41,7 @@ export type FeedItem =
 
 export type FeedRow =
   | FeedItem
-  | { key: string; type: "group"; text: string; title: string; items: Array<Extract<FeedItem, { type: "msg" }>> }
+  | { key: string; type: "group"; text: string; title: string; blind: boolean; items: Array<Extract<FeedItem, { type: "msg" }>> }
   | { key: string; type: "hello" };
 
 export interface FeedModel {
@@ -115,13 +115,15 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
                 key: `g-${item.m.id}`,
                 type: "group",
                 items: group,
-                text: `${names} відповіли незалежно — не бачачи одне одного`,
+                blind: true,
+                text: `${names} відповіли, не бачачи одне одного`,
                 title: "Перша відповідь на ваше повідомлення: агенти писали одночасно й не бачили відповідей одне одного — щоб думки були незалежні.",
               }
             : {
                 key: `g-${item.m.id}`,
                 type: "group",
                 items: group,
+                blind: false,
                 text: `${names} писали одночасно`,
                 title: "Ці відповіді писалися одночасно: кожен бачив попередні репліки, але не цю відповідь іншого.",
               },
@@ -136,7 +138,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   let liveDivider: string | null = null;
   if (live.length > 1) {
     const prev = st.messages.filter((m) => m.kind !== "system").at(-1);
-    if (prev?.kind === "human") liveDivider = `${live.map((t) => name(t.agent)).join(" і ")} відповідають незалежно — не бачачи одне одного`;
+    if (prev?.kind === "human") liveDivider = `${live.map((t) => name(t.agent)).join(" і ")} відповідають, не бачачи одне одного`;
   }
   return { turns, opsByTurn, docByTurn, rows, live, liveDivider };
 };

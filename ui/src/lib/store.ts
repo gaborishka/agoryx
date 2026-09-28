@@ -3,7 +3,11 @@ import { create } from "zustand";
 import { api, ApiError, local, roomPath, setUnauthorizedHandler, Unauthorized } from "./api";
 import type { AgentPresence, OpEntry, RoomEvent, RoomSummary, RunState, Snapshot, TurnState } from "./types";
 
-export type PanelTab = "table" | "doc";
+/** The right-hand panel holds the shared document; the table is a view of its own. */
+export type PanelTab = "doc";
+
+/** What the room's main area shows: the conversation, or the table laid out as a board. */
+export type RoomView = "chat" | "table";
 
 export type DialogState =
   | { kind: "file"; path: string }
@@ -38,7 +42,7 @@ interface Store {
   /** Messages already shown once — only newer ones animate in. */
   seen: Set<string>;
   panel: PanelTab | null;
-  panelTab: PanelTab;
+  view: RoomView;
   wide: boolean;
   navOpen: boolean;
   dialog: DialogState | null;
@@ -57,7 +61,7 @@ interface Store {
   openRoom: (id: string, quiet?: boolean) => Promise<void>;
   setPanel: (panel: PanelTab | null) => void;
   togglePanel: (tab: PanelTab) => void;
-  setPanelTab: (tab: PanelTab) => void;
+  setView: (view: RoomView) => void;
   setWide: (wide: boolean) => void;
   setNavOpen: (open: boolean) => void;
   openDialog: (dialog: DialogState | null) => void;
@@ -85,7 +89,7 @@ export const useStore = create<Store>((set, get) => ({
   snap: null,
   seen: new Set(),
   panel: null,
-  panelTab: (local.get("panel") as PanelTab) === "doc" ? "doc" : "table",
+  view: local.get("view") === "table" ? "table" : "chat",
   wide: local.get("wide") === "1",
   navOpen: false,
   dialog: null,
@@ -153,16 +157,15 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   setPanel(panel) {
-    if (panel) local.set("panel", panel);
-    set(panel ? { panel, panelTab: panel } : { panel: null });
+    set({ panel });
   },
   togglePanel(tab) {
     const { panel } = get();
     get().setPanel(panel === tab ? null : tab);
   },
-  setPanelTab(tab) {
-    local.set("panel", tab);
-    set({ panelTab: tab, panel: tab });
+  setView(view) {
+    local.set("view", view === "table" ? "table" : null);
+    set({ view });
   },
   setWide(wide) {
     local.set("wide", wide ? "1" : null);
@@ -175,8 +178,7 @@ export const useStore = create<Store>((set, get) => ({
     set({ dialog });
   },
   goToRef(ref) {
-    const inFeed = /^m-/.test(ref);
-    if (!inFeed && get().panel !== "table") get().setPanel("table");
+    get().setView(/^m-/.test(ref) ? "chat" : "table");
     set({ flash: { ref, at: Date.now() } });
   },
   openDocRevision(seq) {

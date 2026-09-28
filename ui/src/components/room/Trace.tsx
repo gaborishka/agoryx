@@ -85,8 +85,9 @@ export function ActivityList({ items, className }: { items: Activity[]; classNam
 const chip =
   "inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg border border-border bg-card px-2 text-xs text-muted-foreground transition hover:border-input hover:bg-accent hover:text-foreground";
 
-export function TurnBar({ turn, docs }: { turn?: TurnState; docs?: DocRevision[] }) {
+export function TurnBar({ turn, docs, compact }: { turn?: TurnState; docs?: DocRevision[]; compact?: boolean }) {
   const [open, setOpen] = useState(false);
+  const [all, setAll] = useState(false);
   const openDialog = useStore((s) => s.openDialog);
   const openDocRevision = useStore((s) => s.openDocRevision);
   const docPaths = new Set((docs ?? []).map((r) => r.path));
@@ -94,6 +95,12 @@ export function TurnBar({ turn, docs }: { turn?: TurnState; docs?: DocRevision[]
   const files = turn?.changes?.length ? [] : (turn?.files ?? []).filter((f) => !docPaths.has(f));
   const acts = turn?.activity.length ?? 0;
   if (!acts && !docs?.length && !changes.length && !files.length) return null;
+  const total = (docs?.length ?? 0) + changes.length + files.length;
+  const cap = compact && !all && total > 4 ? 3 : Infinity;
+  const shownDocs = (docs ?? []).slice(0, cap);
+  const shownChanges = changes.slice(0, Math.max(0, cap - shownDocs.length));
+  const shownFiles = files.slice(0, Math.max(0, cap - shownDocs.length - shownChanges.length));
+  const hidden = total - shownDocs.length - shownChanges.length - shownFiles.length;
   return (
     <div className="mt-2.5">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -103,7 +110,7 @@ export function TurnBar({ turn, docs }: { turn?: TurnState; docs?: DocRevision[]
             {plural(acts, "дія", "дії", "дій")}
           </button>
         ) : null}
-        {docs?.map((r) => (
+        {shownDocs.map((r) => (
           <Tip key={r.seq} tip="Правка спільного документа — показати, що змінилося">
             <button type="button" className={cn(chip, "border-primary/25")} onClick={() => openDocRevision(r.seq)}>
               <FileTextIcon className="size-3.5 text-primary" />
@@ -112,7 +119,7 @@ export function TurnBar({ turn, docs }: { turn?: TurnState; docs?: DocRevision[]
             </button>
           </Tip>
         ))}
-        {changes.map((c) => (
+        {shownChanges.map((c) => (
           <Tip key={c.path} tip={`Що саме цей хід змінив у ${c.path}`}>
             <button type="button" className={chip} onClick={() => turn && openDialog({ kind: "turn-diff", turnId: turn.id, path: c.path })}>
               <FilePenLineIcon className="size-3.5" />
@@ -121,12 +128,17 @@ export function TurnBar({ turn, docs }: { turn?: TurnState; docs?: DocRevision[]
             </button>
           </Tip>
         ))}
-        {files.map((f) => (
+        {shownFiles.map((f) => (
           <button key={f} type="button" className={chip} title={f} onClick={() => openDialog({ kind: "file", path: f })}>
             <NotebookPenIcon className="size-3.5" />
             <span className="truncate font-mono text-[11.5px]">{baseName(f)}</span>
           </button>
         ))}
+        {hidden > 0 ? (
+          <button type="button" className={cn(chip, "text-primary")} onClick={() => setAll(true)}>
+            +{plural(hidden, "файл", "файли", "файлів")}
+          </button>
+        ) : null}
       </div>
       <AnimatePresence initial={false}>
         {open && turn ? (

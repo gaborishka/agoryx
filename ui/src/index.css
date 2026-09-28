@@ -187,10 +187,13 @@
 }
 
 /* ---------- prose: chat replies and the room document ---------- */
-.prose-chat {
-  font-size: 15px;
-  line-height: 1.62;
-  overflow-wrap: anywhere;
+/* Layered, so a size passed to <Markdown className> wins over the default. */
+@layer components {
+  .prose-chat {
+    font-size: 15px;
+    line-height: 1.62;
+    overflow-wrap: anywhere;
+  }
 }
 .prose-chat > * + * {
   margin-top: 0.7em;

@@ -358,7 +358,11 @@ function OptionChip({ o }: { o: TableOption }) {
 // A turn that makes many moves keeps the ones a reader must see and folds the rest into one line.
 const KEY_OPS = new Set<TableOp["op"]>(["ask", "propose", "object", "decide"]);
 const FOLD_AFTER = 4;
-const TC_MANY: Partial<Record<TableOp["op"], [string, string, string]>> = {
+const TC_MANY: Record<TableOp["op"], [string, string, string]> = {
+  ask: ["питання", "питання", "питань"],
+  propose: ["пропозиція", "пропозиції", "пропозицій"],
+  object: ["заперечення", "заперечення", "заперечень"],
+  decide: ["рішення", "рішення", "рішень"],
   support: ["підтримка", "підтримки", "підтримок"],
   evidence: ["доказ", "докази", "доказів"],
   fact: ["факт", "факти", "фактів"],
@@ -369,15 +373,45 @@ const TC_MANY: Partial<Record<TableOp["op"], [string, string, string]>> = {
   reopen: ["відкрито знову", "відкрито знову", "відкрито знову"],
 };
 
-export function OpCards({ ops }: { ops?: TableOp[] }) {
+/** A turn's table moves in one line: what kinds, how many, and a way to open them. */
+function OpSummary({ ops, onOpen }: { ops: TableOp[]; onOpen: () => void }) {
+  const setView = useStore((s) => s.setView);
+  const counts = new Map<TableOp["op"], number>();
+  for (const o of ops) counts.set(o.op, (counts.get(o.op) ?? 0) + 1);
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-muted/50 px-2.5 py-2 text-[12.5px]">
+      <span className="font-medium text-muted-foreground">На столі:</span>
+      {[...counts].map(([op, n]) => {
+        const Icon = KIND_ICON[op];
+        return (
+          <span key={op} className={cn("inline-flex items-center gap-1 font-medium", KIND_TONE[op])}>
+            <Icon className="size-3.5" />
+            {plural(n, ...TC_MANY[op])}
+          </span>
+        );
+      })}
+      <span className="ml-auto flex items-center gap-1">
+        <button type="button" onClick={onOpen} className="rounded-md px-1.5 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground">
+          показати
+        </button>
+        <button type="button" onClick={() => setView("table")} className="rounded-md px-1.5 py-0.5 font-medium text-primary hover:bg-accent">
+          на Столі →
+        </button>
+      </span>
+    </div>
+  );
+}
+
+export function OpCards({ ops, compact }: { ops?: TableOp[]; compact?: boolean }) {
   const [all, setAll] = useState(false);
   if (!ops?.length) return null;
+  if (compact && !all) return <OpSummary ops={ops} onOpen={() => setAll(true)} />;
   const foldable = ops.length > FOLD_AFTER;
   const shown = foldable && !all ? ops.filter((o) => KEY_OPS.has(o.op)) : ops;
   const folded = foldable && !all ? ops.filter((o) => !KEY_OPS.has(o.op)) : [];
   const counts = new Map<TableOp["op"], number>();
   for (const o of folded) counts.set(o.op, (counts.get(o.op) ?? 0) + 1);
-  const summary = [...counts].map(([op, n]) => (TC_MANY[op] ? plural(n, ...TC_MANY[op]!) : `${n} ${op}`)).join(", ");
+  const summary = [...counts].map(([op, n]) => plural(n, ...TC_MANY[op])).join(", ");
   return (
     <div className="mt-2.5 flex flex-col gap-2">
       {shown.map((o, i) => (

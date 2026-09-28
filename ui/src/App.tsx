@@ -1,4 +1,4 @@
-import { FileTextIcon, LayoutListIcon, Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react";
+import { FileTextIcon, Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Palette } from "@/components/Palette";
 import { AgoraGlyph } from "@/components/room/bits";
@@ -7,13 +7,12 @@ import { Feed } from "@/components/room/Feed";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { Sidebar } from "@/components/Sidebar";
 import { StartScreen } from "@/components/StartScreen";
-import { TablePanel } from "@/components/table/TablePanel";
+import { TableBoard } from "@/components/table/TableBoard";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { tableCount } from "@/lib/room";
-import { type PanelTab, useStore } from "@/lib/store";
+import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 // Diffs and file views (Pierre + Shiki) are the heavy part of the page: they load with the first
@@ -60,32 +59,6 @@ function Notice({ title, children }: { title: string; children: React.ReactNode 
 
 const Cmd = ({ children }: { children: string }) => <code className="rounded-lg border border-border bg-code px-2.5 py-1.5 font-mono text-[13px] text-foreground">{children}</code>;
 
-function PanelTabs() {
-  const room = useStore((s) => s.snap?.state);
-  const panel = useStore((s) => s.panel);
-  const setPanelTab = useStore((s) => s.setPanelTab);
-  const tab = (id: PanelTab, label: string, Icon: typeof FileTextIcon, badge?: number) => (
-    <button
-      type="button"
-      onClick={() => setPanelTab(id)}
-      className={cn(
-        "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium transition",
-        panel === id ? "bg-card text-foreground shadow-soft ring-1 ring-border" : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      <Icon className="size-3.5" />
-      {label}
-      {badge ? <span className="tabular rounded-full bg-secondary px-1.5 text-[11px] text-secondary-foreground">{badge}</span> : null}
-    </button>
-  );
-  return (
-    <div className="flex items-center gap-1 rounded-xl bg-muted/70 p-1">
-      {tab("table", "Стіл", LayoutListIcon, room ? tableCount(room) : 0)}
-      {tab("doc", "Документ", FileTextIcon)}
-    </div>
-  );
-}
-
 function SidePanel({ overlay }: { overlay: boolean }) {
   const panel = useStore((s) => s.panel);
   const wide = useStore((s) => s.wide);
@@ -96,14 +69,17 @@ function SidePanel({ overlay }: { overlay: boolean }) {
     <>
       {overlay ? <button type="button" aria-label="Закрити панель" className="fixed inset-0 z-30 bg-black/25 backdrop-blur-[1px]" onClick={() => setPanel(null)} /> : null}
       <aside
-        aria-label={panel === "table" ? "Стіл" : "Документ"}
+        aria-label="Документ"
         className={cn(
           "flex min-h-0 flex-col border-l border-border bg-background",
           overlay ? "fixed inset-y-0 right-0 z-40 w-[min(560px,100vw)] shadow-lift" : wide ? "w-[min(760px,52vw)]" : "w-[440px] xl:w-[480px]",
         )}
       >
         <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 px-3">
-          <PanelTabs />
+          <span className="flex items-center gap-2 px-1 text-[14px] font-semibold">
+            <FileTextIcon className="size-4 text-primary" />
+            Документ
+          </span>
           <div className="ml-auto flex items-center">
             {!overlay ? (
               <Button variant="ghost" size="icon" className="size-8" onClick={() => setWide(!wide)} aria-label={wide ? "Вужче" : "Ширше"} title={wide ? "Вужче" : "Ширше"}>
@@ -115,13 +91,11 @@ function SidePanel({ overlay }: { overlay: boolean }) {
             </Button>
           </div>
         </div>
-        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">{panel === "table" ? (
-            <TablePanel />
-          ) : (
-            <Suspense fallback={<PanelLoading />}>
-              <DocPanel />
-            </Suspense>
-          )}</div>
+        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+          <Suspense fallback={<PanelLoading />}>
+            <DocPanel />
+          </Suspense>
+        </div>
       </aside>
     </>
   );
@@ -151,12 +125,13 @@ function RoomLoading() {
 
 function Room() {
   const loaded = useStore((s) => Boolean(s.snap));
+  const view = useStore((s) => s.view);
   if (!loaded) return <RoomLoading />;
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <RoomHeader />
-      <Feed />
-      <div className="shrink-0 px-3 pb-3 sm:px-5 sm:pb-4">
+      {view === "table" ? <TableBoard /> : <Feed />}
+      <div className={cn("shrink-0 px-3 pb-3 sm:px-5 sm:pb-4", view === "table" && "border-t border-border/70 bg-canvas pt-3")}>
         <div className="mx-auto flex w-full max-w-[860px] flex-col gap-2">
           <StatusBar />
           <Composer />

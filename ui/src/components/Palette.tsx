@@ -21,6 +21,8 @@ export function Palette() {
   const room = useStore((s) => s.snap?.state);
   const go = useStore((s) => s.go);
   const togglePanel = useStore((s) => s.togglePanel);
+  const view = useStore((s) => s.view);
+  const setView = useStore((s) => s.setView);
   const openDialog = useStore((s) => s.openDialog);
   const theme = useTheme();
   const run = (fn: () => void) => () => {
@@ -39,10 +41,10 @@ export function Palette() {
           </CommandItem>
           {room ? (
             <>
-              <CommandItem onSelect={run(() => togglePanel("table"))}>
+              <CommandItem onSelect={run(() => setView(view === "table" ? "chat" : "table"))}>
                 <LayoutListIcon />
-                Стіл
-                <CommandShortcut>панель</CommandShortcut>
+                {view === "table" ? "Розмова" : "Стіл"}
+                <CommandShortcut>вигляд</CommandShortcut>
               </CommandItem>
               <CommandItem onSelect={run(() => togglePanel("doc"))}>
                 <FileTextIcon />

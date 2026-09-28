@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { claudeProjectKey, isAgoryxPrompt, locateNativeSession, scanNativeSession } from "../../internal/agora/native.js";
-import { createTestRoom, withTimeout } from "./helpers.js";
+import { agentCliScript } from "../../internal/agora/workspace.js";
+import { createTestRoom, withTimeout, type TestRoom } from "./helpers.js";
 
 const jsonl = (lines: unknown[]) => lines.map((line) => `${JSON.stringify(line)}\n`).join("");
 
@@ -304,6 +306,73 @@ test("while someone is mid-exchange with an agent in its own app, its room turn 
     const lastCodexPrompt = room.invocations("codex").at(-1)!.prompt!;
     assert.match(lastCodexPrompt, /Status\?/);
     assert.doesNotMatch(lastCodexPrompt, /Refactor the store/);
+  } finally {
+    await room.cleanup();
+  }
+});
+
+/** Run the agent tool the way an agent's own session would: in the workspace, with no room-turn env. */
+const agentTool = (room: TestRoom, args: string[], env: Record<string, string> = {}) =>
+  new Promise<{ code: number; out: string; err: string }>((resolve) => {
+    const base = Object.fromEntries(
+      Object.entries(room.env).filter(([key]) => !/^(AGORYX_|CLAUDECODE$|CODEX_SANDBOX)/.test(key)),
+    ) as Record<string, string>;
+    const child = spawn(process.execPath, [agentCliScript(), "table", ...args], {
+      cwd: room.store.state.workspace,
+      env: { ...base, ...env },
+    });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    child.stderr.on("data", (chunk) => (err += chunk));
+    child.on("exit", (code) => resolve({ code: code ?? 1, out, err }));
+  });
+
+test("agents write to the table from their own sessions; the room signs, shows and relays those moves", async () => {
+  const room = createTestRoom();
+  try {
+    room.engine.postHuman("Hello both");
+    await withTimeout(room.engine.waitIdle());
+    assert.match(room.invocations("claude")[0]!.prompt!, /Outside a room turn[^\n]*table … --as claude/);
+    const runsBefore = room.store.state.runs.length;
+
+    // Claude, in Claude Code: its shell says who it is.
+    const proposed = await agentTool(room, ["propose", "Store kelvin", "--body", "no negative values"], { CLAUDECODE: "1" });
+    assert.equal(proposed.code, 0, proposed.err);
+    assert.match(proposed.out, /^P1 · /);
+    const option = room.store.state.table.options[0]!;
+    assert.equal(option.by, "claude");
+    assert.equal(room.store.state.runs.length, runsBefore, "a table move from a native session starts no run");
+
+    // Nobody is working and nothing says who wrote it: the room refuses to guess.
+    const unsigned = await agentTool(room, ["ask", "Which unit in the UI?"]);
+    assert.equal(unsigned.code, 1);
+    assert.match(unsigned.err, /--as claude or --as codex/);
+
+    // Explicit signature.
+    const asked = await agentTool(room, ["ask", "Which unit in the UI?", "--as", "codex"]);
+    assert.equal(asked.code, 0, asked.err);
+    assert.equal(room.store.state.table.questions[0]!.by, "codex");
+
+    // Unsigned, while someone is mid-exchange with Codex in its own app: that is Codex.
+    const codexFile = locateNativeSession("codex", room.store.state.sessions.codex!.sessionId, room.store.state.workspace, room.env)!;
+    appendFileSync(codexFile, jsonl(xTurn("native-t", "What do you think of P1?", null, null)));
+    const supported = await agentTool(room, ["support", "P1", "kelvin keeps the math simple"]);
+    assert.equal(supported.code, 0, supported.err);
+    assert.equal(room.store.state.table.notes.at(-1)!.by, "codex");
+    appendFileSync(codexFile, jsonl([xEvent({ type: "task_complete", turn_id: "native-t", last_agent_message: "Supported P1." })]));
+    await waitUntil(() => room.store.state.messages.some((message) => message.text === "Supported P1."));
+
+    room.engine.postHuman("Where are we?");
+    await withTimeout(room.engine.waitIdle());
+    const claudePrompt = room.invocations("claude").at(-1)!.prompt!;
+    const codexPrompt = room.invocations("codex").at(-1)!.prompt!;
+    assert.match(claudePrompt, /Codex \(in its own session, outside the room\) on the table: .*P1/);
+    assert.doesNotMatch(claudePrompt, /Claude \(in its own session, outside the room\) on the table/, "its own moves are not echoed back");
+    assert.match(codexPrompt, /Claude \(in its own session, outside the room\) on the table: .*Store kelvin/);
+    assert.doesNotMatch(codexPrompt, /Codex \(in its own session/);
+    // Chronological: Claude's proposal comes before the human's question.
+    assert.ok(codexPrompt.indexOf("Store kelvin") < codexPrompt.indexOf("Where are we?"));
   } finally {
     await room.cleanup();
   }

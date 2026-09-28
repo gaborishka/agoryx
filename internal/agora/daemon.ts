@@ -31,6 +31,8 @@ export interface DaemonOptions {
   /** Write daemon.json so the CLI can find us (default true). */
   advertise?: boolean;
   opsPollMs?: number;
+  /** Rooms active within this many days are opened at start, so their native sessions are watched (default 14; 0 = lazily only). */
+  watchDays?: number;
 }
 
 class HttpError extends Error {
@@ -249,7 +251,26 @@ export class AgoraDaemon {
       chmodSync(path, 0o600);
     }
     this.log(`listening on ${this.url} (state: ${agoraHome(this.env)})`);
+    this.watchRecentRooms();
     return info;
+  }
+
+  /**
+   * Open recently active rooms right away, so what happens in the agents' own
+   * sessions (exchanges, table moves) reaches them without anyone opening the room.
+   */
+  private watchRecentRooms(): void {
+    const days = this.options.watchDays ?? 14;
+    if (days <= 0) return;
+    const cutoff = Date.now() - days * 86_400_000;
+    for (const summary of RoomStore.list(roomsDir(this.env))) {
+      if (Date.parse(summary.updatedAt) < cutoff) continue;
+      try {
+        this.room(summary.id);
+      } catch (error) {
+        this.log(`cannot watch room ${summary.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 
   async close(): Promise<void> {

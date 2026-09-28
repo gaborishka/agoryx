@@ -84,6 +84,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
     ...(cli.path
       ? [
           `  If \`${agentCli}\` is missing or says "Unknown command 'table'" (another install earlier on PATH), use "$AGORYX_CLI" table … — it always points at ${cli.path}`,
+          `  Outside a room turn — when someone talks to you directly in this session — the table still works: run "${cli.path}" table … --as ${agent.id} from the workspace.`,
         ]
       : []),
   ].join("\n");
@@ -106,26 +107,35 @@ interface DeltaOptions {
 export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false }: DeltaOptions): string => {
   const blocks: string[] = [];
   const opsByTurn = new Map<string, TableOp[]>();
-  const looseOps: TableOp[] = [];
   const filesByTurn = new Map<string, string[]>();
   const passes: string[] = [];
 
   for (const event of events) {
-    if (event.type === "table.op" && event.op.by !== agent.id) {
-      if (event.op.turnId) {
-        const list = opsByTurn.get(event.op.turnId) ?? [];
-        list.push(event.op);
-        opsByTurn.set(event.op.turnId, list);
-      } else {
-        looseOps.push(event.op);
-      }
+    if (event.type === "table.op" && event.op.by !== agent.id && event.op.turnId) {
+      const list = opsByTurn.get(event.op.turnId) ?? [];
+      list.push(event.op);
+      opsByTurn.set(event.op.turnId, list);
     }
     if (event.type === "turn.ended" && event.agent !== agent.id && event.files?.length) {
       filesByTurn.set(event.turnId, event.files);
     }
   }
 
+  // Consecutive table moves made outside any room turn share one block.
+  let looseBlock = -1;
   for (const event of events) {
+    if (event.type === "table.op" && !event.op.turnId) {
+      // By the human directly, or by an agent from its own session. A decision has its own message.
+      if (event.op.by === agent.id || event.op.op === "decide") continue;
+      const outside = state.agents.some((entry) => entry.id === event.op.by) ? " (in its own session, outside the room)" : "";
+      const line = `── ${displayName(state, event.op.by)}${outside} on the table: ${describeTableOp(event.op, state.table)}`;
+      if (looseBlock >= 0 && looseBlock === blocks.length - 1) blocks[looseBlock] += `\n${line}`;
+      else {
+        blocks.push(line);
+        looseBlock = blocks.length - 1;
+      }
+      continue;
+    }
     if (event.type === "message.posted") {
       const message = event.message;
       const own = message.author === agent.id || message.native?.agent === agent.id;
@@ -160,8 +170,8 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false 
     }
   }
 
-  // Table ops made in turns that produced no posted message (pass or error), or by the human directly.
-  const orphanOps = [...looseOps, ...[...opsByTurn.values()].flat()];
+  // Table ops made in turns that produced no posted message (pass or error).
+  const orphanOps = [...opsByTurn.values()].flat();
   if (orphanOps.length > 0) {
     blocks.push(orphanOps.map((op) => `── ${displayName(state, op.by)} on the table: ${describeTableOp(op, state.table)}`).join("\n"));
   }

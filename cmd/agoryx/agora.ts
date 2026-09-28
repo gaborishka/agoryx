@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import process from "node:process";
 import pc from "picocolors";
 import { DaemonClient, type DaemonStreamItem } from "../../internal/agora/client.js";
@@ -147,10 +147,12 @@ export class TranscriptPrinter {
         }
         if (event.status === "interrupted") this.out(pc.dim(`  · ${this.plainName(event.agent)} was interrupted\n`));
         return;
-      case "table.op":
+      case "table.op": {
         if (event.op.op === "decide") return; // the decision message says it
-        this.out(pc.green(`  ▸ ${this.plainName(event.op.by)} ${describeTableOp(event.op)}\n`));
+        const outside = !event.op.turnId && this.agents.some((agent) => agent.id === event.op.by) ? pc.dim(" (in its own session)") : "";
+        this.out(pc.green(`  ▸ ${this.plainName(event.op.by)} ${describeTableOp(event.op)}`) + `${outside}\n`);
         return;
+      }
       case "commit.created":
         this.out(pc.dim(`  ✓ checkpoint ${event.sha.slice(0, 7)} — ${event.files} file${event.files === 1 ? "" : "s"}\n`));
         return;
@@ -553,20 +555,48 @@ const runTail = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+/** The room workspace containing `dir`, if any (it has .agoryx/ops). */
+const roomWorkspaceOf = (dir: string): string | null => {
+  for (let current = dir; ; current = dirname(current)) {
+    if (existsSync(join(current, ".agoryx", "ops"))) return current;
+    if (dirname(current) === current) return null;
+  }
+};
+
+const runAgentTool = async (argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> => {
+  const { agentCliScript } = await import("../../internal/agora/workspace.js");
+  const child = spawn(process.execPath, [agentCliScript(), "table", ...argv], { stdio: "inherit", env });
+  return new Promise((resolveChild) => child.on("exit", (code) => resolveChild(code ?? 1)));
+};
+
 const runTable = async (argv: string[]): Promise<number> => {
   // Inside an agent turn, behave exactly like the agent tool.
-  if (process.env.AGORYX_OPS_DIR && process.env.AGORYX_AGENT) {
-    const { agentCliScript } = await import("../../internal/agora/workspace.js");
-    const child = spawn(process.execPath, [agentCliScript(), "table", ...argv], { stdio: "inherit" });
-    return new Promise((resolveChild) => child.on("exit", (code) => resolveChild(code ?? 1)));
-  }
+  if (process.env.AGORYX_OPS_DIR && process.env.AGORYX_AGENT) return runAgentTool(argv);
   let room: string | undefined;
+  let signedAs: string | undefined;
   const rest: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!;
     if (arg === "-r" || arg === "--room") room = argv[++index];
     else if (arg.startsWith("--room=")) room = arg.slice(7);
+    else if (arg === "--as") signedAs = argv[++index];
+    else if (arg.startsWith("--as=")) signedAs = arg.slice(5);
     else rest.push(arg);
+  }
+  // An agent in its own session (outside a room turn): sign the op as that agent,
+  // not as the human. --as <human> keeps it a human move.
+  const agentShell = Boolean(process.env.CLAUDECODE || process.env.CODEX_SANDBOX || process.env.CODEX_SANDBOX_NETWORK_DISABLED);
+  const verbIsWrite = rest[0] !== undefined && !["show", "help", "-h", "--help"].includes(rest[0]);
+  if (verbIsWrite && (signedAs || (agentShell && roomWorkspaceOf(process.cwd())))) {
+    const store = RoomStore.open(roomsDir(), resolveRoom(room));
+    if (!signedAs || signedAs.toLowerCase() !== store.state.human.toLowerCase()) {
+      const { workspacePaths } = await import("../../internal/agora/workspace.js");
+      return runAgentTool([...rest, ...(signedAs ? ["--as", signedAs] : [])], {
+        ...process.env,
+        AGORYX_OPS_DIR: workspacePaths(store.state.workspace).opsDir,
+        AGORYX_TABLE: workspacePaths(store.state.workspace).tableFile,
+      });
+    }
   }
   const [verb, ...args] = rest;
   if (verb === "-h" || verb === "--help" || verb === "help") {

@@ -136,6 +136,8 @@ export class RoomEngine {
     if (this.nativePollMs > 0) {
       this.nativeTimer = setInterval(() => this.syncNative(), this.nativePollMs);
       this.nativeTimer.unref();
+      // Agents can write to the table from their own sessions too, not only during room turns.
+      this.ensureOpsPolling();
     }
   }
 
@@ -595,7 +597,8 @@ export class RoomEngine {
       ...(files.length > 0 ? { files } : {}),
     });
     this.log(`${agent.id} ${turnId} ${status}`);
-    if (this.running.size === 0 && this.opsTimer) {
+    // With native sync on, the inbox stays watched between turns (ops from the agents' own sessions).
+    if (this.running.size === 0 && this.opsTimer && this.nativePollMs <= 0) {
       clearInterval(this.opsTimer);
       this.opsTimer = undefined;
     }
@@ -672,9 +675,14 @@ export class RoomEngine {
   }
 
   /** Someone is mid-conversation with this agent in its own app: don't resume the same session under them. */
-  private nativeBusy(agent: RoomAgent): boolean {
+  /** Someone is mid-exchange with this agent in its own session. */
+  private nativeOpen(agent: RoomAgent): boolean {
     const tracker = this.native.get(agent.id);
-    const busy = Boolean(tracker?.openNative && Date.now() - tracker.mtimeMs < NATIVE_BUSY_MS);
+    return Boolean(tracker?.openNative && Date.now() - tracker.mtimeMs < NATIVE_BUSY_MS);
+  }
+
+  private nativeBusy(agent: RoomAgent): boolean {
+    const busy = this.nativeOpen(agent);
     if (!busy) {
       this.nativeBusyNoted.delete(agent.id);
       return false;
@@ -769,13 +777,39 @@ export class RoomEngine {
     this.opsTimer.unref();
   }
 
+  /**
+   * Which room agent wrote an inbox op. The shim signs it with the agent's id (or
+   * kind, from a hint in its environment); an unsigned op belongs to the only
+   * agent that is working right now, in a room turn or in its own session.
+   */
+  private opAuthor(signed: string): RoomAgent | undefined {
+    const agents = this.state.agents;
+    const byId = agents.find((entry) => entry.id === signed);
+    if (byId) return byId;
+    const byKind = agents.filter((entry) => entry.kind === signed);
+    if (byKind.length === 1) return byKind[0];
+    const active = () => agents.filter((entry) => this.running.has(entry.id) || this.nativeOpen(entry));
+    let candidates = active();
+    if (candidates.length !== 1) {
+      this.syncNative();
+      candidates = active();
+    }
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }
+
   /** Pull table ops agents wrote via the `agoryx table` shim and ack them. */
   ingestOps(): void {
     for (const { agent, raw } of drainOpsInbox(this.ws)) {
-      const member = this.state.agents.find((entry) => entry.id === agent);
-      const by = member?.id ?? agent;
-      const turnId = member ? this.running.get(member.id)?.turnId : undefined;
+      const member = this.opAuthor(agent);
       const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
+      if (!member) {
+        const ids = this.state.agents.map((entry) => entry.id).join(" or --as ");
+        if (nonce) writeAck(this.ws, nonce, { ok: false, error: `can't tell which agent wrote this — add --as ${ids}` });
+        this.log(`rejected unsigned table op (${agent})`);
+        continue;
+      }
+      const by = member.id;
+      const turnId = this.running.get(member.id)?.turnId;
       try {
         const op = this.applyTableOp(raw, by, false, turnId);
         if (nonce) writeAck(this.ws, nonce, { ok: true, id: op.id ?? op.op, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, this.state.table)}` });

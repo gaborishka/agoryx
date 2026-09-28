@@ -2,6 +2,9 @@
 // The `agoryx` command agents see inside a room. Zero dependencies on purpose:
 // it runs inside the agents' sandboxes, writes table ops into the workspace
 // inbox (.agoryx/ops/<agent>.jsonl) and waits briefly for the room to ack.
+// It also works outside a room turn, when someone talks to the agent directly
+// in its own session: the op is signed with --as, or with a hint from the
+// agent's environment, and the room reads it from the same inbox.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -21,6 +24,9 @@ const USAGE = `agoryx — room tools for agents
   agoryx table withdraw P1
   agoryx table decide P1 [--note "why"]
   agoryx table reopen Q1|P1
+
+Outside a room turn (someone talking to you directly in your own session), run it
+from the room's workspace and sign it: agoryx table … --as <your id in the room>.
 `;
 
 const findAgoryxDir = () => {
@@ -57,6 +63,20 @@ const fail = (message) => {
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Who is writing. A room turn sets AGORYX_AGENT; outside one, --as says it, or
+ * the agent's own environment hints at it. "unknown" lets the room decide by
+ * who is mid-exchange in its own session right now.
+ */
+const signer = (flags) => {
+  const clean = (value) => String(value).replace(/[^a-z0-9_-]/gi, "");
+  if (flags.as) return clean(flags.as) || "unknown";
+  if (process.env.AGORYX_AGENT) return clean(process.env.AGORYX_AGENT) || "unknown";
+  if (process.env.CLAUDECODE) return "claude";
+  if (process.env.CODEX_SANDBOX || process.env.CODEX_SANDBOX_NETWORK_DISABLED) return "codex";
+  return "unknown";
+};
 
 const buildOp = (verb, positional, flags) => {
   const rest = positional.join(" ").trim();
@@ -114,10 +134,11 @@ const main = async () => {
   }
 
   const { positional, flags } = parseArgs(args);
+  const agent = signer(flags);
+  delete flags.as;
   const op = buildOp(verb, positional, flags);
   for (const key of Object.keys(op)) if (op[key] === undefined) delete op[key];
   const nonce = randomBytes(6).toString("hex");
-  const agent = (process.env.AGORYX_AGENT || "agent").replace(/[^a-z0-9_-]/gi, "") || "agent";
   const opsDir = process.env.AGORYX_OPS_DIR || join(agoryxDir, "ops");
   mkdirSync(opsDir, { recursive: true });
   appendFileSync(join(opsDir, `${agent}.jsonl`), `${JSON.stringify({ ...op, nonce })}\n`);
@@ -140,7 +161,11 @@ const main = async () => {
     }
     await sleep(100);
   }
-  process.stdout.write("queued — the room will pick it up when your turn ends\n");
+  process.stdout.write(
+    process.env.AGORYX_AGENT
+      ? "queued — the room will pick it up when your turn ends\n"
+      : "queued — nothing is watching this room right now; it is applied when the room next opens (agoryx up, or any agoryx command for this room)\n",
+  );
 };
 
 main().catch((error) => fail(error instanceof Error ? error.message : String(error)));

@@ -650,7 +650,11 @@ const renderFeed = () => {
     if (item.type === "msg") html.push(messageHtml(item.m, ctx));
     else if (item.type === "commit")
       html.push(`<div class="commit">✓ контрольна точка <button data-act="commit" data-sha="${esc(item.c.sha)}">${esc(item.c.sha.slice(0, 7))}</button> · ${esc(plural(item.c.files, "файл", "файли", "файлів"))}</div>`);
-    else if (item.type === "op") html.push(`<div class="opline"><span class="tag">Стіл</span><span>${inline(opSentence(item.op), mdCtx())}</span></div>`);
+    else if (item.type === "op") {
+      const who = participant(item.op.by);
+      const outside = who?.agent && !item.op.turnId ? `<span class="nat ${who.cls}" title="${esc(`Зроблено з рідної сесії ${who.label}, поза ходом у кімнаті.`)}">у власній сесії</span>` : "";
+      html.push(`<div class="opline"><span class="tag">Стіл</span><span>${inline(opSentence(item.op), mdCtx())}</span>${outside}</div>`);
+    }
   }
   for (const turn of st.turns) if (turn.status === "running") html.push(liveHtml(turn, ctx.opsByTurn.get(turn.id)));
   els.feedIn.innerHTML = html.join("");

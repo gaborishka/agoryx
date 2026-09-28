@@ -96,6 +96,15 @@ It works both ways. Whatever you say to an agent there comes back into the room:
 - **Busy guard.** While you are mid-exchange with an agent in its own app (the session file changed in
   the last 5 minutes and the turn is still open), the room does not resume that session in parallel.
   Its room turn waits until your exchange ends, and the room says so once.
+- **The table works there too.** An agent in its own session can run `agoryx table …` from the room's
+  workspace (the briefing gives it the exact command, with `--as <id>`). The move is signed as that agent:
+  by `--as`, by its shell (`CLAUDECODE` for Claude Code, `CODEX_SANDBOX` for Codex), or, when unsigned,
+  as the only agent working right now (in a room turn or mid-exchange in its own session). If it can't
+  tell, the room refuses and asks for `--as`. Such moves are marked "у власній сесії" and, like side
+  conversations, wake nobody. Run from your own terminal, `agoryx table` stays a human move (inside an
+  agent's shell, use `--as <your name>` for that).
+- The daemon opens rooms active in the last 14 days at start, so all of this reaches them without
+  anyone opening the room first.
 
 ## Safety
 

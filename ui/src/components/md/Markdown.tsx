@@ -1,6 +1,6 @@
 import { liveBlocks } from "@agora/blocks";
 import { createCodePlugin } from "@streamdown/code";
-import { createMermaidPlugin } from "@streamdown/mermaid";
+import type { DiagramPlugin, MermaidConfig } from "@streamdown/mermaid";
 import { Code2Icon, ExternalLinkIcon, FileIcon, Maximize2Icon } from "lucide-react";
 import { type ComponentProps, memo, type ReactNode, useMemo } from "react";
 import { type Components, type CustomRendererProps, defaultRemarkPlugins, Streamdown, type StreamdownTranslations } from "streamdown";
@@ -13,8 +13,34 @@ import { LiveFrame } from "./LiveFrame";
 import { remarkAgora } from "./remark-agora";
 
 const code = createCodePlugin({ themes: ["vitesse-light", "vitesse-dark"] });
-const mermaidLight = createMermaidPlugin({ config: { theme: "neutral", fontFamily: "Onest Variable, system-ui, sans-serif" } });
-const mermaidDark = createMermaidPlugin({ config: { theme: "dark", fontFamily: "Onest Variable, system-ui, sans-serif", darkMode: true } });
+/**
+ * The @streamdown/mermaid plugin, but mermaid (half a megabyte) is imported on the first diagram,
+ * not with the page. Mermaid is one global, so each render applies its own theme first.
+ */
+const lazyMermaid = (base: MermaidConfig): DiagramPlugin => {
+  let config: MermaidConfig = { startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true, ...base };
+  const instance = {
+    initialize(next: MermaidConfig) {
+      config = { ...config, ...next };
+    },
+    async render(id: string, source: string) {
+      const { default: mermaid } = await import("mermaid");
+      mermaid.initialize(config);
+      return mermaid.render(id, source);
+    },
+  };
+  return {
+    name: "mermaid",
+    type: "diagram",
+    language: "mermaid",
+    getMermaid(next) {
+      if (next) instance.initialize(next);
+      return instance;
+    },
+  };
+};
+const mermaidLight = lazyMermaid({ theme: "neutral", fontFamily: "Onest Variable, system-ui, sans-serif" });
+const mermaidDark = lazyMermaid({ theme: "dark", fontFamily: "Onest Variable, system-ui, sans-serif", darkMode: true });
 
 const translations: Partial<StreamdownTranslations> = {
   close: "Закрити",

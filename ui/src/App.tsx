@@ -1,7 +1,5 @@
 import { FileTextIcon, LayoutListIcon, Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react";
-import { useEffect, useState } from "react";
-import { Dialogs } from "@/components/dialogs/Dialogs";
-import { DocPanel } from "@/components/doc/DocPanel";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Palette } from "@/components/Palette";
 import { AgoraGlyph } from "@/components/room/bits";
 import { Composer, StatusBar } from "@/components/room/Composer";
@@ -17,6 +15,23 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { tableCount } from "@/lib/room";
 import { type PanelTab, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+
+// Diffs and file views (Pierre + Shiki) are the heavy part of the page: they load with the first
+// dialog or document panel, and are fetched in the background once the room is up.
+const loadDialogs = () => import("@/components/dialogs/Dialogs");
+const loadDocPanel = () => import("@/components/doc/DocPanel");
+const Dialogs = lazy(() => loadDialogs().then((m) => ({ default: m.Dialogs })));
+const DocPanel = lazy(() => loadDocPanel().then((m) => ({ default: m.DocPanel })));
+
+function PanelLoading() {
+  return (
+    <div className="flex flex-col gap-2.5 p-4">
+      <Skeleton className="h-4 w-2/5" />
+      <Skeleton className="h-3 w-full" />
+      <Skeleton className="h-3 w-4/5" />
+    </div>
+  );
+}
 
 const useWideScreen = (query: string) => {
   const [on, setOn] = useState(() => window.matchMedia(query).matches);
@@ -100,7 +115,13 @@ function SidePanel({ overlay }: { overlay: boolean }) {
             </Button>
           </div>
         </div>
-        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">{panel === "table" ? <TablePanel /> : <DocPanel />}</div>
+        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">{panel === "table" ? (
+            <TablePanel />
+          ) : (
+            <Suspense fallback={<PanelLoading />}>
+              <DocPanel />
+            </Suspense>
+          )}</div>
       </aside>
     </>
   );
@@ -176,6 +197,17 @@ function Shell() {
 export function App() {
   const gate = useStore((s) => s.gate);
   const bootError = useStore((s) => s.bootError);
+  const dialogOpen = useStore((s) => s.dialog !== null);
+  useEffect(() => {
+    // Warm the lazy chunks while the page is idle, so the first dialog opens without a wait.
+    const warm = () => void Promise.all([loadDialogs(), loadDocPanel()]).catch(() => {});
+    if ("requestIdleCallback" in window) {
+      const id = window.requestIdleCallback(warm, { timeout: 4000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const timer = setTimeout(warm, 1500);
+    return () => clearTimeout(timer);
+  }, []);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       const s = useStore.getState();
@@ -210,7 +242,11 @@ export function App() {
   return (
     <TooltipProvider delayDuration={350}>
       {body}
-      <Dialogs />
+      {dialogOpen ? (
+        <Suspense fallback={null}>
+          <Dialogs />
+        </Suspense>
+      ) : null}
       <Palette />
       <Toaster position="bottom-center" />
     </TooltipProvider>

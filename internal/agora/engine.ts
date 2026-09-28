@@ -1,8 +1,8 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { activeRun } from "./projection.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
-import type { AgentRunner, TurnResult } from "./runners/types.js";
+import { truncate, type AgentRunner, type TurnResult } from "./runners/types.js";
 import type { RoomStore } from "./store.js";
 import { describeTableOp, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
 import type {
@@ -16,6 +16,7 @@ import type {
   RoomSettings,
   RunState,
   TableOp,
+  TurnState,
 } from "./types.js";
 import {
   checkpointCommit,
@@ -356,6 +357,38 @@ export class RoomEngine {
       AGORYX_TURN: turnId,
       AGORYX_OPS_DIR: this.ws.opsDir,
       AGORYX_TABLE: this.ws.tableFile,
+      // Login shells may reorder PATH so another `agoryx` wins; env vars survive.
+      ...(this.shimDir ? { AGORYX_CLI: join(this.shimDir, "agoryx") } : {}),
+    };
+  }
+
+  /** Show the shim as plain `agoryx` in activity traces instead of its absolute path. */
+  /** Rewrites of machine paths into what a reader recognises, longest first. */
+  private tidyRules?: Array<[string, string]>;
+
+  private tidyActivity(activity: Activity): Activity {
+    if (!this.tidyRules) {
+      const variants = (path: string) => {
+        let real = path;
+        try { real = realpathSync(path); } catch { /* keep as given */ }
+        return [...new Set([path, real])];
+      };
+      const rules: Array<[string, string]> = [];
+      if (this.shimDir) {
+        for (const dir of variants(this.shimDir)) {
+          rules.push([`"${join(dir, "agoryx")}"`, "agoryx"], [join(dir, "agoryx"), "agoryx"]);
+        }
+      }
+      for (const root of variants(this.state.workspace)) rules.push([`${root}/`, ""], [root, "."]);
+      this.tidyRules = rules.sort((a, b) => b[0].length - a[0].length);
+    }
+    // Runners keep labels long enough for this to see whole paths; clip afterwards.
+    const tidy = (text: string, max: number) =>
+      truncate(this.tidyRules!.reduce((acc, [from, to]) => acc.split(from).join(to), text), max);
+    return {
+      ...activity,
+      label: tidy(activity.label, 200),
+      ...(activity.detail ? { detail: tidy(activity.detail, 240) } : {}),
     };
   }
 
@@ -408,7 +441,7 @@ export class RoomEngine {
         this.store.emit({ type: "turn.stream", turnId, agent: agent.id, text, ...(reset ? { reset } : {}) });
       },
       onActivity: (activity: Activity) => {
-        this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity });
+        this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity: this.tidyActivity(activity) });
       },
     };
 
@@ -456,7 +489,7 @@ export class RoomEngine {
     // Sweep the inbox while this turn still counts as running, so its ops are attributed to it.
     this.ingestOps();
     this.running.delete(agent.id);
-    const files = diffSnapshots(snapshot, snapshotChanges(this.state.workspace));
+    const files = this.attributeFiles(turnId, diffSnapshots(snapshot, snapshotChanges(this.state.workspace)));
 
     let messageId: string | undefined;
     let status: "ok" | "pass" | "error" | "interrupted" = result.status;
@@ -509,6 +542,24 @@ export class RoomEngine {
       this.opsTimer = undefined;
     }
     this.requestSchedule();
+  }
+
+  /**
+   * Turns run in parallel in one workspace, so a git diff alone would credit
+   * a file to everyone who was running. A file another overlapping turn
+   * reported editing (and this one did not) belongs to that turn.
+   */
+  private attributeFiles(turnId: string, files: string[]): string[] {
+    if (files.length === 0) return files;
+    const turn = this.state.turns.find((entry) => entry.id === turnId);
+    if (!turn) return files;
+    const claims = (entry: TurnState, file: string) =>
+      entry.activity.some((activity) => activity.kind === "edit" && activity.label.includes(file));
+    const overlapping = this.state.turns.filter(
+      (entry) => entry.id !== turnId && (entry.status === "running" || (entry.endedAt !== undefined && entry.endedAt >= turn.startedAt)),
+    );
+    if (overlapping.length === 0) return files;
+    return files.filter((file) => claims(turn, file) || !overlapping.some((entry) => claims(entry, file)));
   }
 
   // -------------------------------------------------------------------------

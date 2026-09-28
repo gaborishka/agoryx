@@ -4,7 +4,8 @@
 // Behaviour comes from $FAKE_RULES (JSON array). The first rule whose `agent`
 // (optional) and `match` (substring of the prompt, optional) fit is used:
 //   { agent, match, reply, table: [[...argv]], write: {path, content},
-//     sleepMs, error: "text", exitCode, once: true }
+//     command: "shown as the tool call; {cwd} and {cli} expand", sleepMs,
+//     error: "text", exitCode, once: true }
 // Without a matching rule: first turn replies "<agent> here", later turns pass.
 // Every invocation is appended to $FAKE_LOG as one JSON line.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -124,8 +125,9 @@ const main = async () => {
     process.exit(rule.exitCode ?? 1);
   }
 
+  const command = (rule?.command ?? "ls -a").replaceAll("{cwd}", process.cwd()).replaceAll("{cli}", process.env.AGORYX_CLI ?? "agoryx");
   if (kind === "claude") {
-    out({ type: "assistant", session_id: sessionId, message: { content: [{ type: "tool_use", id: `tu${turn}`, name: "Bash", input: { command: "ls -a" } }] } });
+    out({ type: "assistant", session_id: sessionId, message: { content: [{ type: "tool_use", id: `tu${turn}`, name: "Bash", input: { command } }] } });
     out({ type: "user", session_id: sessionId, message: { content: [{ type: "tool_result", tool_use_id: `tu${turn}`, content: "ok", is_error: false }] } });
     out({ type: "stream_event", session_id: sessionId, event: { type: "message_start" } });
     for (const piece of reply.match(/.{1,8}/gs) ?? []) {
@@ -134,8 +136,9 @@ const main = async () => {
     out({ type: "assistant", session_id: sessionId, message: { content: [{ type: "text", text: reply }] } });
     out({ type: "result", subtype: "success", is_error: false, result: reply, session_id: sessionId, usage: { input_tokens: 10, output_tokens: 5 }, total_cost_usd: 0.001 });
   } else {
-    out({ type: "item.started", item: { id: "item_1", type: "command_execution", command: "/bin/zsh -lc 'ls -a'", status: "in_progress" } });
-    out({ type: "item.completed", item: { id: "item_1", type: "command_execution", command: "/bin/zsh -lc 'ls -a'", aggregated_output: ".\n", exit_code: 0, status: "completed" } });
+    const wrapped = `/bin/zsh -lc '${command.replace(/'/g, "'\\''")}'`;
+    out({ type: "item.started", item: { id: "item_1", type: "command_execution", command: wrapped, status: "in_progress" } });
+    out({ type: "item.completed", item: { id: "item_1", type: "command_execution", command: wrapped, aggregated_output: ".\n", exit_code: 0, status: "completed" } });
     out({ type: "item.completed", item: { id: "item_2", type: "agent_message", text: reply } });
     out({ type: "turn.completed", usage: { input_tokens: 12, cached_input_tokens: 2, output_tokens: 6 } });
   }

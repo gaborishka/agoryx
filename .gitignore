@@ -22,3 +22,5 @@ coverage/
 # OS
 .DS_Store
 .idea/
+# Local browser-automation artifacts
+.playwright-mcp/

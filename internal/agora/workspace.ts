@@ -3,10 +3,10 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -171,11 +171,14 @@ export const resolveInside = (root: string, relPath: string): string | null => {
   const full = resolve(root, cleaned);
   if (full !== root && !full.startsWith(`${root}${sep}`)) return null;
   try {
-    if (lstatSync(full).isSymbolicLink()) return null;
+    // Dereference every component: a symlinked directory must not lead out.
+    const realRoot = realpathSync(root);
+    const real = realpathSync(full);
+    if (real !== realRoot && !real.startsWith(`${realRoot}${sep}`)) return null;
+    return real;
   } catch {
     return null;
   }
-  return full;
 };
 
 // ---------------------------------------------------------------------------
@@ -248,7 +251,7 @@ export const clearStaleAcks = (paths: WorkspacePaths, olderThanMs = 10 * 60_000)
 // The `agoryx` command agents see on their PATH
 // ---------------------------------------------------------------------------
 
-const repoRoot = (): string => {
+export const repoRoot = (): string => {
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 6; i += 1) {
     if (existsSync(join(dir, "package.json")) && existsSync(join(dir, "bin", "agoryx-agent.mjs"))) return dir;

@@ -89,7 +89,7 @@ export const describeClaudeTool = (name: string, input: Json | undefined): { kin
   };
   switch (kind) {
     case "command":
-      return { kind, label: truncate(pick("command", "bash_id", "shell_id") ?? name, 160), detail: pick("description") };
+      return { kind, label: truncate(pick("command", "bash_id", "shell_id") ?? name, 800), detail: pick("description") };
     case "edit":
     case "read":
       return { kind, label: pick("file_path", "notebook_path", "path") ?? name };

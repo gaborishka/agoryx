@@ -81,7 +81,11 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
     `  ${agentCli} table decide P1 --note "why"   (when the room has actually converged, or the human asked you to decide)`,
     `  ${agentCli} table show`,
     "  Proposals with --file get a live preview (html, svg, images, markdown, code).",
-    ...(cli.path ? [`  (\`${agentCli}\` is on your PATH; if your shell cannot find it, use ${cli.path})`] : []),
+    ...(cli.path
+      ? [
+          `  If \`${agentCli}\` is missing or says "Unknown command 'table'" (another install earlier on PATH), use "$AGORYX_CLI" table … — it always points at ${cli.path}`,
+        ]
+      : []),
   ].join("\n");
 };
 

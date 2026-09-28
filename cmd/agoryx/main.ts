@@ -15,6 +15,7 @@ import {
   renderSessionExport,
 } from "./session-export.js";
 import { runInkChat } from "./ink-chat.js";
+import { AGORA_COMMANDS, printAgoraUsage, runAgora } from "./agora.js";
 import { createDefaultAdapterConfig, type ChatRuntimeConfig } from "../../internal/config/default.js";
 import { loadConfig, toRuntimeConfig, type AgoryxConfig } from "../../internal/config/index.js";
 import {
@@ -52,7 +53,26 @@ import {
 } from "./cli-args.js";
 
 const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team", "free"];
-const ROOT_COMMANDS = ["chat", "sessions", "config", "completion", "man", "help"] as const;
+const ROOT_COMMANDS = [
+  "chat",
+  "sessions",
+  "config",
+  "completion",
+  "man",
+  "help",
+  "up",
+  "down",
+  "open",
+  "new",
+  "rooms",
+  "say",
+  "tail",
+  "table",
+  "more",
+  "stop",
+  "resume",
+  "settings",
+] as const;
 const APP_VERSION = resolveAppVersion();
 
 const CHAT_OPTION_SPECS: OptionSpec[] = [
@@ -317,9 +337,17 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (AGORA_COMMANDS.has(command)) {
+    const code = await runAgora(command, rest);
+    if (code !== 0) process.exitCode = code;
+    return;
+  }
+
   switch (command) {
     case "help":
-      if (rest[0] === "chat") {
+      if (rest[0] === "rooms" || (rest[0] && AGORA_COMMANDS.has(rest[0]))) {
+        printAgoraUsage();
+      } else if (rest[0] === "chat") {
         printChatUsage();
       } else if (rest[0] === "sessions") {
         printSessionsUsage();
@@ -1985,11 +2013,21 @@ const printUsage = (write: OutputWriter = console.log): void => {
     title,
     "",
     "Usage:",
+    "  agoryx up | open | new | say | tail | table | more | stop | resume   (rooms: Claude + Codex together)",
     "  agoryx [chat] [options]",
     "  agoryx sessions <list|export> [options]",
     "  agoryx config explain [--config <path>] [--db <path>]",
     "  agoryx completion <bash|zsh|fish>",
     "  agoryx man",
+    "",
+    "Rooms (see `agoryx help rooms`):",
+    "  up           Start the daemon (web UI + API); -d to background it",
+    "  open         Open the web UI",
+    "  new          Create a room with its own workspace",
+    "  say          Post to a room and follow the agents' run",
+    "  tail         Print or follow a room's conversation",
+    "  table        Show or act on the room's table (questions, options, decisions)",
+    "  resume       Print the agents' native session resume commands",
     "",
     "Commands:",
     "  chat         Start interactive/non-interactive chat (default command)",

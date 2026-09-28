@@ -52,7 +52,7 @@ export const describeCodexItem = (item: Json): Omit<Activity, "id"> | null => {
       const output = str(item.aggregated_output) ?? "";
       return {
         kind: "command",
-        label: truncate(unwrapShellCommand(str(item.command) ?? ""), 160),
+        label: truncate(unwrapShellCommand(str(item.command) ?? ""), 800),
         status: status === "in_progress" ? "running" : failed ? "fail" : "ok",
         ...(failed && output ? { detail: truncate(output, 240) } : {}),
       };
@@ -62,7 +62,7 @@ export const describeCodexItem = (item: Json): Omit<Activity, "id"> | null => {
       const paths = changes.map((change) => `${str(change.kind) === "add" ? "+" : str(change.kind) === "delete" ? "−" : "~"}${str(change.path) ?? "?"}`);
       return {
         kind: "edit",
-        label: truncate(paths.join(" "), 200) || "files",
+        label: truncate(paths.join(" "), 800) || "files",
         status: str(item.status) === "failed" ? "fail" : "ok",
       };
     }

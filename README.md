@@ -23,6 +23,14 @@ Working with multiple LLMs today means copying text between apps and re-explaini
 - **No API keys:** wraps `codex exec` and `claude -p` — uses your existing CLI subscriptions
 - **Agentic adapter mode:** persistent turn-based execution with workspace-aware cwd
 
+## Rooms (v0.4 preview)
+
+Claude and Codex in one conversation, each in its own native session, with a shared **table** of
+questions, options, objections, evidence and decisions. Agoryx only sets the context. It has no
+orchestrator and assigns no roles. Every new message wakes the agents that haven't seen it, and a run
+ends when the room goes quiet. Use it headless (`agoryx new`, `say`, `tail -f`, `table`) or through the
+local web UI (`agoryx up -d && agoryx open`). See [docs/AGORA.md](docs/AGORA.md).
+
 ## Prerequisites
 
 - Node.js >= 22

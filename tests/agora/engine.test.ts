@@ -315,6 +315,22 @@ test("workspace changes are attributed per turn and checkpointed at run end", as
   }
 });
 
+test("activity traces show workspace-relative paths and a plain `agoryx`, not machine paths", async () => {
+  const room = createTestRoom({
+    rules: [{ command: 'cat {cwd}/src/app.ts && "{cli}" table ask "why?" && ls {cwd}', reply: "looked" }],
+  });
+  try {
+    room.engine.postHuman("look around");
+    await withTimeout(room.engine.waitIdle());
+    for (const agent of ["claude", "codex"]) {
+      const turn = room.store.state.turns.find((entry) => entry.agent === agent)!;
+      assert.equal(turn.activity[0]?.label, 'cat src/app.ts && agoryx table ask "why?" && ls .', agent);
+    }
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("a second engine cannot drive the same room; restart closes stale turns", async () => {
   const room = createTestRoom({ rules: [{ sleepMs: 30_000 }] });
   try {

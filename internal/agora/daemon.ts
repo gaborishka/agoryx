@@ -1,0 +1,711 @@
+import { execFileSync } from "node:child_process";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { dirname, extname, join, resolve, sep } from "node:path";
+import { RoomEngine, RoomLockedError } from "./engine.js";
+import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
+import { runningTurnsPresence, roomSnapshot, eventPatch, type StreamBuffer } from "./snapshot.js";
+import type { AgentRunner } from "./runners/types.js";
+import { createRoom, defaultRunners, openEngine, resumeCommands } from "./service.js";
+import { RoomStore } from "./store.js";
+import { describeTableOp, TableOpError } from "./table.js";
+import type { AgentKind, EphemeralEvent, RoomEvent, RoomSettings } from "./types.js";
+import { listWorkspaceFiles, repoRoot, resolveInside } from "./workspace.js";
+
+export interface DaemonInfo {
+  pid: number;
+  port: number;
+  url: string;
+  token: string;
+  startedAt: string;
+}
+
+export interface DaemonOptions {
+  env?: NodeJS.ProcessEnv;
+  port?: number;
+  runners?: Partial<Record<AgentKind, AgentRunner>>;
+  log?: (message: string) => void;
+  /** Directory with the web UI; defaults to <repo>/web. */
+  webDir?: string;
+  /** Write daemon.json so the CLI can find us (default true). */
+  advertise?: boolean;
+  opsPollMs?: number;
+}
+
+class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".json": "application/json; charset=utf-8",
+  ".woff2": "font/woff2",
+  ".avif": "image/avif",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain; charset=utf-8",
+  ".md": "text/plain; charset=utf-8",
+  ".csv": "text/plain; charset=utf-8",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+};
+
+const MAX_RAW = 25 * 1024 * 1024;
+/**
+ * Workspace files are agent-authored: serve them as sandboxed documents with an
+ * opaque origin, so an agent's HTML can run its own scripts but can never talk
+ * to the daemon API with the human's cookie.
+ */
+const RAW_CSP = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads; frame-ancestors 'self'";
+
+const MAX_BODY = 1024 * 1024;
+const MAX_FILE_PREVIEW = 2 * 1024 * 1024;
+
+const readBody = (req: IncomingMessage): Promise<unknown> =>
+  new Promise((resolveBody, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        reject(new HttpError(413, "request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      const text = Buffer.concat(chunks).toString("utf8").trim();
+      if (!text) return resolveBody({});
+      try {
+        resolveBody(JSON.parse(text));
+      } catch {
+        reject(new HttpError(400, "body is not valid JSON"));
+      }
+    });
+    req.on("error", reject);
+  });
+
+const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
+  const text = JSON.stringify(body);
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "content-length": Buffer.byteLength(text),
+  });
+  res.end(text);
+};
+
+const safeEqual = (a: string, b: string): boolean => {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+};
+
+const TOKEN_FILE = "daemon.token";
+const COOKIE = "agoryx_token";
+
+/** The token survives daemon restarts so an open browser tab keeps working. */
+export const loadOrCreateToken = (env: NodeJS.ProcessEnv = process.env): string => {
+  const path = join(agoraHome(env), TOKEN_FILE);
+  try {
+    const existing = readFileSync(path, "utf8").trim();
+    if (existing.length >= 32) return existing;
+  } catch {
+    // create below
+  }
+  const token = randomBytes(24).toString("base64url");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, token, { mode: 0o600 });
+  chmodSync(path, 0o600);
+  return token;
+};
+
+const cookieValue = (req: IncomingMessage, name: string): string | undefined => {
+  const header = req.headers.cookie;
+  if (!header) return undefined;
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return undefined;
+};
+
+const findWebDir = (): string | null => {
+  try {
+    const dir = join(repoRoot(), "web");
+    return existsSync(join(dir, "index.html")) ? dir : null;
+  } catch {
+    return null;
+  }
+};
+
+interface RoomHandle {
+  store: RoomStore;
+  engine?: RoomEngine;
+  /** Why this process cannot drive the room (another agoryx process holds it). */
+  lockedBy?: string;
+  streams: Map<string, StreamBuffer>;
+  followers: number;
+  followTimer?: NodeJS.Timeout;
+}
+
+/**
+ * The Agoryx daemon: owns the room engines, exposes a small local HTTP API
+ * (JSON + server-sent events) and serves the web UI. Bound to 127.0.0.1 only;
+ * every /api call needs the token from daemon.json (or the page's meta tag).
+ */
+export class AgoraDaemon {
+  readonly env: NodeJS.ProcessEnv;
+  readonly token: string;
+  private readonly options: DaemonOptions;
+  private readonly rooms = new Map<string, RoomHandle>();
+  private readonly log: (message: string) => void;
+  private readonly runners: Partial<Record<AgentKind, AgentRunner>>;
+  private readonly webDir: string | null;
+  private server: Server | null = null;
+  private sseClients = new Set<ServerResponse>();
+  private heartbeat?: NodeJS.Timeout;
+  port = 0;
+
+  constructor(options: DaemonOptions = {}) {
+    this.options = options;
+    this.env = options.env ?? process.env;
+    this.token = loadOrCreateToken(this.env);
+    this.log = options.log ?? (() => {});
+    this.runners = options.runners ?? defaultRunners(this.env);
+    this.webDir = options.webDir ?? findWebDir();
+  }
+
+  get url(): string {
+    return `http://127.0.0.1:${this.port}`;
+  }
+
+  async start(): Promise<DaemonInfo> {
+    const wanted = this.options.port ?? DEFAULT_PORT;
+    const server = createServer((req, res) => {
+      this.handle(req, res).catch((error: unknown) => {
+        const status = error instanceof HttpError ? error.status : error instanceof TableOpError ? 400 : 500;
+        const message = error instanceof Error ? error.message : String(error);
+        if (status >= 500) this.log(`error: ${error instanceof Error ? (error.stack ?? message) : message}`);
+        if (!res.headersSent) sendJson(res, status, { error: message });
+        else res.end();
+      });
+    });
+    this.server = server;
+    const listen = (port: number) =>
+      new Promise<number>((resolveListen, reject) => {
+        const onError = (error: NodeJS.ErrnoException) => {
+          server.off("listening", onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.off("error", onError);
+          const address = server.address();
+          resolveListen(typeof address === "object" && address ? address.port : port);
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(port, "127.0.0.1");
+      });
+    let port: number | null = null;
+    const attempts = wanted === 0 ? [0] : Array.from({ length: 20 }, (_, index) => wanted + index);
+    for (const candidate of attempts) {
+      try {
+        port = await listen(candidate);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+      }
+    }
+    if (port === null) throw new Error(`no free port in ${wanted}..${wanted + 19}`);
+    this.port = port;
+    this.heartbeat = setInterval(() => {
+      for (const client of this.sseClients) client.write(": ping\n\n");
+    }, 15_000);
+    this.heartbeat.unref();
+    const info: DaemonInfo = { pid: process.pid, port, url: this.url, token: this.token, startedAt: new Date().toISOString() };
+    if (this.options.advertise !== false) {
+      const path = daemonInfoPath(this.env);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(info, null, 2), { mode: 0o600 });
+      chmodSync(path, 0o600);
+    }
+    this.log(`listening on ${this.url} (state: ${agoraHome(this.env)})`);
+    return info;
+  }
+
+  async close(): Promise<void> {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    for (const client of this.sseClients) client.end();
+    this.sseClients.clear();
+    await Promise.all(
+      [...this.rooms.values()].map(async (handle) => {
+        if (handle.followTimer) clearInterval(handle.followTimer);
+        if (handle.engine) await handle.engine.close();
+      }),
+    );
+    this.rooms.clear();
+    await new Promise<void>((resolveClose) => (this.server ? this.server.close(() => resolveClose()) : resolveClose()));
+    this.server?.closeAllConnections?.();
+    if (this.options.advertise !== false) {
+      const path = daemonInfoPath(this.env);
+      try {
+        const current = JSON.parse(readFileSync(path, "utf8")) as DaemonInfo;
+        if (current.pid === process.pid && current.port === this.port) rmSync(path, { force: true });
+      } catch {
+        // already gone
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Rooms
+  // -------------------------------------------------------------------------
+
+  private room(ref: string): RoomHandle {
+    const root = roomsDir(this.env);
+    let id: string;
+    try {
+      id = RoomStore.resolveId(root, decodeURIComponent(ref), process.cwd());
+    } catch (error) {
+      throw new HttpError(404, error instanceof Error ? error.message : String(error));
+    }
+    const existing = this.rooms.get(id);
+    if (existing) {
+      if (!existing.engine) this.tryDrive(existing);
+      return existing;
+    }
+    const store = RoomStore.open(root, id);
+    const handle: RoomHandle = { store, streams: new Map(), followers: 0 };
+    this.rooms.set(id, handle);
+    this.tryDrive(handle);
+    return handle;
+  }
+
+  /** Take over driving the room unless another process holds its lock. */
+  private tryDrive(handle: RoomHandle): void {
+    if (handle.engine) return;
+    try {
+      const fresh = RoomStore.open(roomsDir(this.env), handle.store.id);
+      const engine = openEngine(fresh, {
+        env: this.env,
+        runners: this.runners,
+        log: (message) => this.log(`[${fresh.id}] ${message}`),
+        ...(this.options.opsPollMs ? { opsPollMs: this.options.opsPollMs } : {}),
+      });
+      handle.store = fresh;
+      handle.engine = engine;
+      delete handle.lockedBy;
+      if (handle.followTimer) {
+        clearInterval(handle.followTimer);
+        delete handle.followTimer;
+      }
+      fresh.subscribe((event) => this.onRoomEvent(handle, event));
+    } catch (error) {
+      if (!(error instanceof RoomLockedError)) throw error;
+      handle.lockedBy = error.message;
+      handle.store.refresh();
+    }
+  }
+
+  private onRoomEvent(handle: RoomHandle, event: RoomEvent | EphemeralEvent): void {
+    if (event.type === "turn.stream") {
+      const buffer = handle.streams.get(event.turnId) ?? { agent: event.agent, text: "" };
+      buffer.text = event.reset ? event.text : buffer.text + event.text;
+      handle.streams.set(event.turnId, buffer);
+    } else if (event.type === "turn.ended") {
+      handle.streams.delete(event.turnId);
+    }
+  }
+
+  private engineFor(handle: RoomHandle): RoomEngine {
+    if (!handle.engine) {
+      throw new HttpError(409, `${handle.lockedBy ?? "room is not available"} — stop that agoryx process or wait until it finishes`);
+    }
+    return handle.engine;
+  }
+
+  // -------------------------------------------------------------------------
+  // HTTP
+  // -------------------------------------------------------------------------
+
+  private checkHost(req: IncomingMessage): void {
+    const host = (req.headers.host ?? "").toLowerCase();
+    const allowed = [`127.0.0.1:${this.port}`, `localhost:${this.port}`, `[::1]:${this.port}`];
+    if (!allowed.includes(host)) throw new HttpError(421, "unexpected Host header");
+    const origin = req.headers.origin;
+    if (origin && req.method !== "GET" && req.method !== "HEAD") {
+      const ok = allowed.some((entry) => origin.toLowerCase() === `http://${entry}`);
+      if (!ok) throw new HttpError(403, "cross-origin request refused");
+    }
+  }
+
+  private checkToken(req: IncomingMessage, url: URL): void {
+    const header = req.headers["x-agoryx-token"];
+    const given = (Array.isArray(header) ? header[0] : header) ?? cookieValue(req, COOKIE) ?? url.searchParams.get("token") ?? "";
+    if (!given || !safeEqual(given, this.token)) throw new HttpError(401, "missing or wrong agoryx token (see daemon.json)");
+  }
+
+  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    this.checkHost(req);
+    const url = new URL(req.url ?? "/", this.url);
+    const path = url.pathname;
+    if (path === "/api/health") {
+      sendJson(res, 200, { ok: true, pid: process.pid, version: 1 });
+      return;
+    }
+    if (path.startsWith("/raw/")) {
+      this.serveRaw(req, res, path);
+      return;
+    }
+    if (path.startsWith("/api/")) {
+      this.checkToken(req, url);
+      await this.api(req, res, url);
+      return;
+    }
+    if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method not allowed");
+    const login = url.searchParams.get("t");
+    if (login !== null) {
+      // `agoryx open` hands the browser the token once; it lives on as a same-site cookie.
+      if (!safeEqual(login, this.token)) throw new HttpError(401, "wrong token — run `agoryx open` again");
+      res.writeHead(302, {
+        location: "/",
+        "set-cookie": `${COOKIE}=${encodeURIComponent(this.token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${60 * 60 * 24 * 30}`,
+        "cache-control": "no-store",
+      });
+      res.end();
+      return;
+    }
+    this.serveStatic(res, path);
+  }
+
+  /** Per-room capability for /raw/: lets sandboxed previews load relative assets without the cookie. */
+  private rawKey(roomId: string): string {
+    return createHmac("sha256", this.token).update(`raw:${roomId}`).digest("hex").slice(0, 32);
+  }
+
+  private rawBase(roomId: string): string {
+    return `/raw/${encodeURIComponent(roomId)}/${this.rawKey(roomId)}/`;
+  }
+
+  private serveRaw(req: IncomingMessage, res: ServerResponse, path: string): void {
+    if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method not allowed");
+    const [, , roomPart = "", key = "", ...rest] = path.split("/");
+    const roomId = decodeURIComponent(roomPart);
+    if (!/^[\w.-]+$/.test(roomId) || !safeEqual(key, this.rawKey(roomId))) throw new HttpError(404, "not found");
+    let relPath: string;
+    try {
+      relPath = rest.map((part) => decodeURIComponent(part)).join("/");
+    } catch {
+      throw new HttpError(400, "bad path");
+    }
+    if (!relPath || relPath.endsWith("/")) relPath += "index.html";
+    if (relPath === ".git" || relPath.startsWith(".git/")) throw new HttpError(404, "not found");
+    const handle = this.room(roomId);
+    const full = resolveInside(handle.store.state.workspace, relPath);
+    if (!full || !existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
+    const size = statSync(full).size;
+    if (size > MAX_RAW) throw new HttpError(413, "file too large to preview");
+    res.writeHead(200, {
+      "content-type": MIME[extname(full).toLowerCase()] ?? "text/plain; charset=utf-8",
+      "content-length": size,
+      "cache-control": "no-cache",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "cross-origin-resource-policy": "same-origin",
+      "content-security-policy": RAW_CSP,
+    });
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    res.end(readFileSync(full));
+  }
+
+  private serveStatic(res: ServerResponse, path: string): void {
+    if (!this.webDir) {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end("agoryx daemon is running. The web UI was not found next to this build.\n");
+      return;
+    }
+    const relative = path === "/" || !extname(path) ? "index.html" : decodeURIComponent(path).replace(/^\/+/, "");
+    const full = resolve(this.webDir, relative);
+    if (!full.startsWith(`${this.webDir}${sep}`) || !existsSync(full) || !statSync(full).isFile()) {
+      throw new HttpError(404, "not found");
+    }
+    const body = readFileSync(full);
+    const type = MIME[extname(full).toLowerCase()] ?? "application/octet-stream";
+    res.writeHead(200, {
+      "content-type": type,
+      "cache-control": relative === "index.html" ? "no-store" : "no-cache",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      ...(relative === "index.html"
+        ? {
+            "content-security-policy":
+              "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+          }
+        : {}),
+    });
+    res.end(body);
+  }
+
+  private async api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const parts = url.pathname.split("/").filter(Boolean).slice(1); // drop "api"
+    const method = req.method ?? "GET";
+
+    if (parts[0] === "info" && method === "GET") {
+      sendJson(res, 200, {
+        pid: process.pid,
+        url: this.url,
+        home: agoraHome(this.env),
+        rooms: RoomStore.list(roomsDir(this.env)).length,
+      });
+      return;
+    }
+
+    if (parts[0] !== "rooms") throw new HttpError(404, "unknown endpoint");
+
+    if (parts.length === 1) {
+      if (method === "GET") {
+        const rooms = RoomStore.list(roomsDir(this.env)).map((summary) => {
+          const handle = this.rooms.get(summary.id);
+          return handle ? { ...handle.store.summary(), driven: Boolean(handle.engine) } : summary;
+        });
+        sendJson(res, 200, { rooms });
+        return;
+      }
+      if (method === "POST") {
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const name = typeof body.name === "string" ? body.name : "";
+        if (!name.trim()) throw new HttpError(400, "name is required");
+        const store = createRoom({
+          name,
+          ...(typeof body.dir === "string" && body.dir.trim() ? { dir: body.dir.trim() } : {}),
+          ...(typeof body.budget === "number" ? { budget: body.budget } : {}),
+          ...(typeof body.human === "string" ? { human: body.human } : {}),
+          env: this.env,
+        });
+        const handle = this.room(store.id);
+        if (typeof body.text === "string" && body.text.trim()) this.engineFor(handle).postHuman(body.text);
+        sendJson(res, 201, { room: handle.store.summary() });
+        return;
+      }
+      throw new HttpError(405, "method not allowed");
+    }
+
+    const handle = this.room(parts[1]!);
+    const action = parts[2];
+
+    if (!action && method === "GET") {
+      sendJson(res, 200, this.snapshot(handle));
+      return;
+    }
+
+    if (action === "events" && method === "GET") {
+      this.stream(req, res, handle, Number.parseInt(url.searchParams.get("after") ?? "", 10));
+      return;
+    }
+
+    if (action === "tree" && method === "GET") {
+      sendJson(res, 200, { files: listWorkspaceFiles(handle.store.state.workspace) });
+      return;
+    }
+
+    if (action === "file" && method === "GET") {
+      sendJson(res, 200, this.readWorkspaceFile(handle, url.searchParams.get("path") ?? ""));
+      return;
+    }
+
+    if (action === "commit" && method === "GET") {
+      const sha = url.searchParams.get("sha") ?? "";
+      if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new HttpError(400, "bad sha");
+      let text: string;
+      try {
+        text = execFileSync("git", ["show", "--stat", "--patch", "--no-color", "--format=%H%n%s%n%n%b", sha], {
+          cwd: handle.store.state.workspace,
+          encoding: "utf8",
+          maxBuffer: 8 * 1024 * 1024,
+          timeout: 10_000,
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+      } catch {
+        throw new HttpError(404, "commit not found");
+      }
+      sendJson(res, 200, { sha, text: text.length > 400_000 ? `${text.slice(0, 400_000)}\n… (truncated)` : text });
+      return;
+    }
+
+    if (method !== "POST") throw new HttpError(405, "method not allowed");
+    const body = (await readBody(req)) as Record<string, unknown>;
+    const engine = this.engineFor(handle);
+
+    switch (action) {
+      case "messages": {
+        const text = typeof body.text === "string" ? body.text : "";
+        if (!text.trim()) throw new HttpError(400, "text is required");
+        const message = engine.postHuman(text);
+        sendJson(res, 201, { message });
+        return;
+      }
+      case "table": {
+        const seq = engine.state.seq + 1;
+        const op = engine.tableOp(body);
+        sendJson(res, 201, { op, seq, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, engine.state.table)}` });
+        return;
+      }
+      case "continue": {
+        const seq = engine.state.seq + 1;
+        engine.continueRun();
+        sendJson(res, 200, { ok: true, seq });
+        return;
+      }
+      case "stop": {
+        await engine.stop("human");
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      case "settings": {
+        engine.updateSettings(body as Partial<RoomSettings>);
+        sendJson(res, 200, { settings: engine.state.settings });
+        return;
+      }
+      default:
+        throw new HttpError(404, "unknown room action");
+    }
+  }
+
+  private snapshot(handle: RoomHandle) {
+    const ops = handle.store
+      .since(0)
+      .flatMap((event) => (event.type === "table.op" ? [{ seq: event.seq, ts: event.ts, op: event.op }] : []));
+    return {
+      ...roomSnapshot(handle.store.state, handle.streams),
+      ops,
+      rawBase: this.rawBase(handle.store.id),
+      resume: resumeCommands(handle.store, this.runners),
+      driven: Boolean(handle.engine),
+      ...(handle.lockedBy ? { lockedBy: handle.lockedBy } : {}),
+    };
+  }
+
+  private readWorkspaceFile(handle: RoomHandle, relPath: string) {
+    const root = handle.store.state.workspace;
+    const full = relPath === ".agoryx/TABLE.md" ? join(root, ".agoryx", "TABLE.md") : resolveInside(root, relPath);
+    if (!full || !existsSync(full)) throw new HttpError(404, "no such file in the workspace");
+    const stats = statSync(full);
+    if (!stats.isFile()) throw new HttpError(400, "not a file");
+    const buffer = readFileSync(full, { flag: "r" }).subarray(0, MAX_FILE_PREVIEW);
+    const binary = buffer.subarray(0, 8000).includes(0);
+    return {
+      path: relPath,
+      size: stats.size,
+      mtime: stats.mtime.toISOString(),
+      binary,
+      truncated: stats.size > MAX_FILE_PREVIEW,
+      text: binary ? "" : buffer.toString("utf8"),
+    };
+  }
+
+  private stream(req: IncomingMessage, res: ServerResponse, handle: RoomHandle, after: number): void {
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    res.write("retry: 1500\n\n");
+    const send = (event: RoomEvent | EphemeralEvent) => {
+      if (event.type === "turn.stream") {
+        res.write(`event: stream\ndata: ${JSON.stringify(event)}\n\n`);
+        return;
+      }
+      if (event.type === "presence") return;
+      const state = handle.store.state;
+      res.write(`id: ${event.seq}\nevent: room\ndata: ${JSON.stringify({ event, patch: eventPatch(state, event) })}\n\n`);
+    };
+    const start = Number.isFinite(after) ? after : handle.store.state.seq;
+    for (const event of handle.store.since(start)) send(event);
+    const unsubscribe = handle.store.subscribe(send);
+    this.sseClients.add(res);
+    handle.followers += 1;
+    if (!handle.engine && !handle.followTimer) {
+      // Another process drives this room: follow its event log.
+      handle.followTimer = setInterval(() => {
+        try {
+          handle.store.refresh();
+          if (!runningTurnsPresence(handle.store.state).some(Boolean)) this.tryDrive(handle);
+        } catch {
+          // keep following
+        }
+      }, 700);
+      handle.followTimer.unref();
+    }
+    req.on("close", () => {
+      unsubscribe();
+      this.sseClients.delete(res);
+      handle.followers -= 1;
+      if (handle.followers <= 0 && handle.followTimer) {
+        clearInterval(handle.followTimer);
+        delete handle.followTimer;
+      }
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Finding a running daemon
+// ---------------------------------------------------------------------------
+
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+export const readDaemonInfo = (env: NodeJS.ProcessEnv = process.env): DaemonInfo | null => {
+  const path = daemonInfoPath(env);
+  if (!existsSync(path)) return null;
+  try {
+    const info = JSON.parse(readFileSync(path, "utf8")) as DaemonInfo;
+    if (!info.pid || !info.port || !info.token || !pidAlive(info.pid)) return null;
+    return info;
+  } catch {
+    return null;
+  }
+};
+
+/** A daemon that is alive and answers /api/health, or null. */
+export const findDaemon = async (env: NodeJS.ProcessEnv = process.env): Promise<DaemonInfo | null> => {
+  const info = readDaemonInfo(env);
+  if (!info) return null;
+  try {
+    const response = await fetch(`${info.url}/api/health`, { signal: AbortSignal.timeout(1500) });
+    if (!response.ok) return null;
+    const health = (await response.json()) as { pid?: number };
+    return health.pid === info.pid ? info : null;
+  } catch {
+    return null;
+  }
+};

@@ -1,0 +1,124 @@
+# Agoryx Rooms
+
+A room puts Claude, Codex and you in one conversation. Each agent works in its **own native session**
+(`claude -p --session-id/--resume`, `codex exec` / `codex exec resume`), with its full toolset, in a
+shared workspace. Agoryx sets the context; it does not assign roles, pick speakers or summarise for anyone.
+
+```
+you ──┐                     ┌── Claude  (native session, sandboxed, full tools)
+      ├── room event log ───┤
+table ┘   (JSONL, replayable)└── Codex   (native session, workspace-write sandbox)
+```
+
+## How a room runs
+
+- **No orchestrator.** Every new message wakes the agents that have not seen it yet. Each gets only the
+  **delta** since its last turn — its native session already holds the rest.
+- **Blind first round.** On a human message both agents answer in parallel without seeing each other,
+  so the first opinions are independent. After that they see each other's replies.
+- **Silence is an answer.** An agent that has nothing to add replies `::pass::` (optionally with a short
+  reason). A run ends when the room goes **quiet** (everyone passed) or the **turn budget** runs out.
+- **The human is a participant,** not a dispatcher. Write any time — your message reaches both agents in
+  their next delta. `@claude` / `@codex` wakes only that agent first.
+- **Work is attributed.** Files changed during a turn are credited to that turn; at run end Agoryx makes a
+  checkpoint commit (in workspaces it created, or when `autocommit` is on).
+
+## The table (Стіл)
+
+The conversation is where agents think; the table is where the room keeps what matters. Agents and the
+human write to it with the same verbs:
+
+| Op | Meaning |
+|----|---------|
+| `ask "question"` | Open question `Q1` |
+| `propose "title" [--body …] [--file path] [--q Q1]` | Option `P1` (a file can be previewed in the UI) |
+| `object P1 "why"` / `support P1 "why"` | Objection or support note `N1` |
+| `evidence P1 "finding" [--source …]` | Evidence that backs or breaks an option |
+| `fact "…"` / `settle "…"` | Established fact `F1` / something both sides agree on `S1` |
+| `next "…"` → `done X1` | Next step `X1`, and marking it done |
+| `decide P1 [--note …]` | Decision: posts "Decision №N" into the conversation and wakes the agents |
+| `withdraw P1` / `reopen Q1` | Retract an option / reopen a question |
+
+Agents use `agoryx table …` from their shell. Agoryx puts a shim first on `PATH` and also exports
+`AGORYX_CLI` (absolute path), because login shells can reorder `PATH` and an older global `agoryx` may win.
+Each op is acknowledged, and the rendered table lives at `<workspace>/.agoryx/TABLE.md`.
+
+## Using it
+
+### As a daemon without UI
+
+```bash
+agoryx new "Storage choice" -m "Pick a storage format for rooms and prototype it"
+agoryx say "Keep it to one file, no native deps"   # posts and follows until quiet
+agoryx tail -f --trace                              # watch the conversation with tool traces
+agoryx table                                        # show the table
+agoryx table decide P2 --note "simplest"
+agoryx more                                         # one more round after the budget ran out
+agoryx resume                                       # print `claude --resume …` / `codex resume …`
+```
+
+Without a running daemon, `say`, `table` and `more` drive the room in the current process until it goes
+quiet. With `agoryx up -d` the daemon drives all rooms and the CLI becomes a client.
+
+### Web UI
+
+```bash
+agoryx up -d        # start the daemon in the background
+agoryx open         # opens the browser with a one-time login link
+```
+
+- **Розмова**: the conversation. Blind rounds are shown side by side. Each reply links to its trace
+  (commands, edits), the files it changed, and what it put on the table. Live turns stream in.
+- **Стіл**: questions with their options, notes, evidence and previews. The "Де ми зараз" rail
+  shows decisions, settled items and facts, next steps and open questions.
+- Table ids in messages (`P1`, `X1` …) link to the table. The header links to the workspace files,
+  the native sessions and the room settings.
+
+### In the agents' own apps
+
+The conversation is **their** session. `agoryx resume` (or the sessions button in the UI) prints the
+exact `claude --resume <id>` and `codex resume <id>` commands. Open them to see or continue the same
+thread natively.
+
+## Safety
+
+- Agents run **sandboxed but capable**:
+  - Codex: `-s workspace-write`, with network off unless the room enables it.
+  - Claude: `--permission-mode acceptEdits` with a sandbox settings file that auto-allows Bash only
+    inside the sandbox.
+- No bypass or "dangerous" flags are ever passed.
+- The daemon listens on `127.0.0.1` only, checks the `Host` header (DNS rebinding) and refuses
+  cross-origin writes.
+- Every `/api/*` call needs the token from `daemon.json` (mode 0600). The token arrives as a header,
+  or as an HttpOnly, SameSite=Strict cookie set by the `agoryx open` login link.
+- Workspace files are served under `/raw/<room>/<hmac>/…`, with a `sandbox` CSP and an opaque origin.
+  Agent-made HTML can be previewed but cannot call the API. Paths are resolved through symlinks and
+  must stay inside the workspace. `.git` is never served.
+
+## Storage
+
+State lives in `$AGORYX_HOME` (default `~/.local/state/agoryx/agora`):
+
+| Path | What |
+|------|------|
+| `rooms/<id>/events.jsonl` | Append-only event log. Replaying it reproduces the room state. |
+| `rooms/<id>/engine.lock` | Single-writer lock. A second process follows the log instead of driving. |
+| `bin/agoryx` | The agent shim. |
+| `daemon.json`, `daemon.token` | The running daemon's address and token. |
+| `workspaces/<slug>/` | Default room workspaces (git-initialised). Override with `--dir`. |
+
+## Code map
+
+| File | Role |
+|------|------|
+| `internal/agora/engine.ts` | Room engine: wake rules, deltas, blind rounds, pass, budget, table inbox, attribution, checkpoints |
+| `internal/agora/prompts.ts` | Briefing (first turn) and delta prompts |
+| `internal/agora/runners/{claude,codex}.ts` | Native CLI runners: session ids, stream parsing, activity traces |
+| `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim |
+| `internal/agora/store.ts`, `projection.ts` | JSONL event log and state projection |
+| `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |
+| `cmd/agoryx/agora.ts` | `agoryx up/new/say/tail/table/…` |
+| `web/` | The web UI (vanilla JS, no build step) |
+
+Tests: `npx tsx --test tests/agora/*.test.ts`. They use fake `claude`/`codex` binaries and need no
+network or subscriptions.

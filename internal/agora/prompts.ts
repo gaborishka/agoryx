@@ -1,0 +1,297 @@
+import { PASS_RESPONSE_TOKEN } from "../events/pass-token.js";
+import { describeTableOp, summarizeTable } from "./table.js";
+import type { FileChange, RoomAgent, RoomEvent, RoomState, TableOp } from "./types.js";
+import { changeStats } from "./workspace.js";
+
+const MAX_MESSAGE_CHARS = 12_000;
+const MAX_DELTA_CHARS = 60_000;
+
+export const PASS_TOKEN = PASS_RESPONSE_TOKEN;
+
+/**
+ * A reply is a pass when it is empty or starts with the token (possibly
+ * wrapped in quotes/backticks). Returns the optional note after the token,
+ * or null when the reply is a real message.
+ */
+export const passNote = (text: string): string | null => {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  const core = trimmed.replace(/^[`"'*_\s]+/, "");
+  if (!core.toLowerCase().startsWith(PASS_TOKEN)) return null;
+  const rest = core.slice(PASS_TOKEN.length).replace(/^[`"'*_\s.:—–-]+/, "").trim();
+  return rest.length > 280 ? null : rest;
+};
+
+const clock = (iso: string): string => {
+  const date = new Date(iso);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+};
+
+const displayName = (state: RoomState, handle: string): string => {
+  const agent = state.agents.find((entry) => entry.id === handle);
+  if (agent) return agent.label;
+  if (handle === state.human) return `${state.human} (human)`;
+  return handle;
+};
+
+const clip = (text: string, max = MAX_MESSAGE_CHARS): string =>
+  text.length > max ? `${text.slice(0, max)}\n[… ${text.length - max} more chars — full text in the room log]` : text;
+
+interface TurnFiles {
+  agent: string;
+  files: string[];
+  changes?: FileChange[];
+}
+
+/** "↳ changed: a.ts +12 −3, b.ts +40 −0 (new) — the exact diff: agoryx diff t7" */
+const changedLine = (turnId: string, entry: TurnFiles): string => {
+  if (!entry.changes?.length) {
+    const { files } = entry;
+    return `   ↳ changed: ${files.slice(0, 20).join(", ")}${files.length > 20 ? ` (+${files.length - 20} more)` : ""}`;
+  }
+  const shown = entry.changes
+    .slice(0, 20)
+    .map((change) => `${change.path} ${changeStats(change)}${change.status === "A" ? " (new)" : change.status === "D" ? " (deleted)" : ""}`);
+  const more = entry.changes.length > 20 ? ` (+${entry.changes.length - 20} more)` : "";
+  return `   ↳ changed: ${shown.join(", ")}${more} — the exact diff: agoryx diff ${turnId}`;
+};
+
+export interface BriefingInput {
+  state: RoomState;
+  agent: RoomAgent;
+  /** How agents invoke the room tools; `path` is the absolute fallback if PATH is reset. */
+  agentCli: { command: string; path?: string };
+}
+
+/**
+ * First-turn context. Deliberately no role: who is here, where the work lives,
+ * how turns and passing work, and how to use the table.
+ */
+export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): string => {
+  const agentCli = cli.command;
+  const others = state.agents.filter((entry) => entry.id !== agent.id);
+  const peers = others.map((entry) => `${entry.label} (@${entry.id})`).join(", ");
+  const access =
+    state.settings.access === "readonly"
+      ? "You can read the workspace; writes are disabled in this room."
+      : "You can read, create and run anything inside the workspace (sandboxed).";
+  return [
+    `You are ${agent.label}, in an Agoryx room — one shared conversation between ${state.human} (human, @${state.human.toLowerCase()}) and ${peers || "no other agents yet"}.`,
+    "Nobody here has an assigned role. Act as yourself, with everything you can do: read and write code, run things, research, draw, write, argue.",
+    "",
+    `Room: "${state.name}"`,
+    `Workspace: ${state.workspace}`,
+    `  A shared git directory — everyone works here. ${access}`,
+    "  Others may edit files at the same time: check `git status` / `git diff` before overwriting, and say which files you touched.",
+    `  Every turn's exact change is kept. Your delta lists what others changed with +/− counts and the turn id; \`${agentCli} diff t7\` prints that turn's patch (add a path to narrow it, or no id to list recent ones). What was done is in the diff, not only in what was said about it.`,
+    "",
+    "How the room works:",
+    "- Each turn you get only what is new since your last turn. Your final message is posted to the room; your tool calls show up to others as a short activity trace.",
+    "- When the human writes, agents answer in parallel without seeing each other first — give your own independent view, not a guess at the consensus.",
+    "- After that the agents take turns, one at a time: when you speak, you have seen everything said before you. It is one conversation — answer the latest state, not an old message.",
+    `- Nothing substantive to add? Reply exactly ${PASS_TOKEN} and nothing else. Silence is fine; agreeing for politeness is noise.`,
+    "- Disagree when you disagree, and say what would change your mind. An unresolved disagreement, stated clearly, is a valid outcome.",
+    `- Address someone with @name. ${state.human} is a participant, not a gatekeeper: you don't need permission to do the work being discussed.`,
+    "- Each run has a turn budget; the prompt says how many turns remain. Converge or leave a clear state before it runs out.",
+    "- Reply in the language the human writes in.",
+    "",
+    ...(state.settings.doc
+      ? [
+          `The room's canonical file: ${state.settings.doc} (in the workspace)`,
+          "  The one text this room is making. Anyone edits it, with their own tools, when the conversation changes what it should say — there is no owner and no turn order for it.",
+          "  Keep it the current version, not a log: the conversation and git hold the history. When others change it, your next turn shows you the diff.",
+          "",
+        ]
+      : []),
+    "The room has two surfaces, and they are not two chats:",
+    "- The conversation is the talk: reasoning, questions to each other, what you did and found. It scrolls away.",
+    "- The table is the room's working state — what the room currently holds: open questions, the real alternatives with the",
+    "  arguments and evidence attached to each, what is settled, what someone still has to do, what was decided. It does not",
+    "  scroll away: every turn ends with its current state, and the human sees it as a board beside the conversation.",
+    "  You change it with a tool, during your turn, the way you would edit a file. Each move appears as a card under your",
+    "  message, so don't repeat the card in prose — refer to it by id (P2, Q1) and spend your words on the reasoning.",
+    "  Use it when there are real alternatives, when a claim needs its evidence next to it, or when something must outlive",
+    "  the scroll (a finding, a settled point, a step someone owns). Don't mirror small talk into it.",
+    `  ${agentCli} table ask "question"`,
+    `  ${agentCli} table propose "short title" --body "what and why (markdown)" [--file path/in/workspace] [--q Q1]`,
+    "    (a long body with a diagram: write it to a file and pass --body-file notes.md, or pipe it with --body -)",
+    `  ${agentCli} table object P1 "reason"   |   support P1 "reason"   |   evidence P1 "finding" --source <url|path>`,
+    `  ${agentCli} table settle "what is now established"   |   fact "a checked fact"   |   next "concrete next step"   |   done X1`,
+    `  ${agentCli} table decide P1 --note "why"   (when the room has actually converged, or the human asked you to decide)`,
+    `  ${agentCli} table show`,
+    "  One op per command, not chained with && or ; — each runs without an approval prompt that way.",
+    ...(cli.path
+      ? [
+          `  If \`${agentCli}\` is missing or says "Unknown command 'table'" (another install earlier on PATH), use "${cli.path}" table … instead`,
+          `  Outside a room turn — when someone talks to you directly in this session — the table still works: run "${cli.path}" table … --as ${agent.id} from the workspace.`,
+        ]
+      : []),
+    "",
+    "Show, don't only tell. Everyone reads the room rendered, so your messages (and table --body) can carry more than text:",
+    "- ```mermaid fences render as diagrams (flowchart, sequence, class, state, gantt, pie, …).",
+    "- ```html fences render live in a sandbox: a whole self-contained page — inline CSS/JS, CDN scripts are fine — for",
+    "  charts, interactive prototypes, visual comparisons. ```svg fences render as pictures.",
+    "- Code fences with a language are highlighted. Tables in markdown render as tables.",
+    "- ![caption](path/in/workspace) embeds a workspace file: images show inline, .html/.svg/.pdf render live, anything",
+    "  else opens as a file. Make the artifact with your own tools (a script that plots a PNG, an HTML page) and embed it.",
+    "- A proposal with --file gets the same live preview on the table — put the mockup or chart on the option it argues for.",
+    "Use this when a picture carries the point better than a paragraph; plain text is still the default.",
+  ].join("\n");
+};
+
+interface DeltaOptions {
+  state: RoomState;
+  events: RoomEvent[];
+  agent: RoomAgent;
+  /** Turns left in the current run after this one. */
+  turnsLeft: number;
+  /**
+   * The agent's session is new (rejoin): replay its own messages too, including
+   * what was said in its previous native session, since this session has none of it.
+   */
+  replayOwn?: boolean;
+  /** What changed in the canonical file since this agent last looked (built by the engine). */
+  doc?: string | null;
+}
+
+/** Everything others did since this agent's last turn, rendered as a thin transcript. */
+export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false, doc = null }: DeltaOptions): string => {
+  const blocks: string[] = [];
+  const opsByTurn = new Map<string, TableOp[]>();
+  const filesByTurn = new Map<string, TurnFiles>();
+  const passes: string[] = [];
+
+  for (const event of events) {
+    if (event.type === "table.op" && event.op.by !== agent.id && event.op.turnId) {
+      const list = opsByTurn.get(event.op.turnId) ?? [];
+      list.push(event.op);
+      opsByTurn.set(event.op.turnId, list);
+    }
+    if (event.type === "turn.ended" && event.agent !== agent.id && event.files?.length) {
+      filesByTurn.set(event.turnId, { agent: event.agent, files: event.files, ...(event.changes ? { changes: event.changes } : {}) });
+    }
+  }
+
+  // Consecutive table moves made outside any room turn share one block.
+  let looseBlock = -1;
+  for (const event of events) {
+    if (event.type === "table.op" && !event.op.turnId) {
+      // By the human directly, or by an agent from its own session. A decision has its own message.
+      if (event.op.by === agent.id || event.op.op === "decide") continue;
+      const outside = state.agents.some((entry) => entry.id === event.op.by) ? " (in its own session, outside the room)" : "";
+      const line = `── ${displayName(state, event.op.by)}${outside} on the table: ${describeTableOp(event.op, state.table)}`;
+      if (looseBlock >= 0 && looseBlock === blocks.length - 1) blocks[looseBlock] += `\n${line}`;
+      else {
+        blocks.push(line);
+        looseBlock = blocks.length - 1;
+      }
+      continue;
+    }
+    if (event.type === "message.posted") {
+      const message = event.message;
+      const own = message.author === agent.id || message.native?.agent === agent.id;
+      // The agent's own session already holds what it said and what was said to it there.
+      if (own && !replayOwn) continue;
+      if (message.kind === "pass") {
+        // Passing after changing files still changed them.
+        const files = message.turnId ? filesByTurn.get(message.turnId) : undefined;
+        if (files) {
+          blocks.push(`── ${displayName(state, message.author)} · ${clock(event.ts)} · passed, after changing files\n${changedLine(message.turnId!, files)}`);
+          filesByTurn.delete(message.turnId!);
+        } else if (message.author !== agent.id) passes.push(displayName(state, message.author));
+        continue;
+      }
+      const who = message.author === agent.id ? `You (${agent.label})` : displayName(state, message.author);
+      const where = message.native ? nativeWhere(state, message.native.agent, message.author, agent) : "";
+      const header =
+        message.kind === "system"
+          ? `── Agoryx · ${clock(event.ts)}`
+          : message.kind === "decision"
+            ? `── ${who} · decision · ${clock(event.ts)}`
+            : `── ${who}${where} · ${clock(event.ts)}`;
+      const lines = [header, clip(message.text.trim())];
+      const ops = message.turnId ? opsByTurn.get(message.turnId) : undefined;
+      if (ops) {
+        for (const op of ops) lines.push(`   ↳ table: ${describeTableOp(op, state.table)}`);
+        opsByTurn.delete(message.turnId!);
+      }
+      const files = message.turnId ? filesByTurn.get(message.turnId) : undefined;
+      if (files) {
+        lines.push(changedLine(message.turnId!, files));
+        filesByTurn.delete(message.turnId!);
+      }
+      blocks.push(lines.join("\n"));
+    } else if (event.type === "commit.created") {
+      blocks.push(`── Agoryx · ${clock(event.ts)}\nworkspace checkpoint ${event.sha.slice(0, 8)}: ${event.subject}`);
+    }
+  }
+
+  // Table ops made in turns that produced no posted message (pass or error).
+  const orphanOps = [...opsByTurn.values()].flat();
+  if (orphanOps.length > 0) {
+    blocks.push(orphanOps.map((op) => `── ${displayName(state, op.by)} on the table: ${describeTableOp(op, state.table)}`).join("\n"));
+  }
+  // Turns that changed files but left no message (interrupted, or a pass before this delta).
+  for (const [turnId, entry] of filesByTurn) {
+    blocks.push(`── ${displayName(state, entry.agent)} · changed files without a message\n${changedLine(turnId, entry)}`);
+  }
+  if (passes.length > 0) blocks.push(`(${[...new Set(passes)].join(", ")} passed)`);
+
+  let body = blocks.join("\n\n");
+  if (body.length > MAX_DELTA_CHARS) {
+    body = `[… earlier part of the conversation omitted — ${body.length - MAX_DELTA_CHARS} chars]\n${body.slice(-MAX_DELTA_CHARS)}`;
+  }
+  // The file's current state, not a moment in the transcript: it goes last.
+  if (doc) body = body ? `${body}\n\n${doc}` : doc;
+
+  const footer: string[] = [];
+  const table = summarizeTable(state.table);
+  if (table) footer.push(`The table now (\`agoryx table show\` for bodies and notes):\n${table}`);
+  footer.push(
+    turnsLeft <= 0
+      ? "This is the last agent turn of this run — leave the room in a clear state."
+      : `Turns left in this run after yours: ${turnsLeft}.`,
+  );
+  footer.push(`Reply to the room, or ${PASS_TOKEN}.`);
+
+  return [`[agoryx · ${state.name} · new since your last turn]`, "", body || "(nothing new — you were asked to continue)", "", footer.join("\n")].join("\n");
+};
+
+/** " → Claude, in Claude's own session" for a human line; " (in its own session)" for the agent's reply. */
+const nativeWhere = (state: RoomState, source: string, author: string, reader: RoomAgent): string => {
+  const label = source === reader.id ? "you" : displayName(state, source);
+  if (author === source) return source === reader.id ? " (in your previous session, outside the room)" : " (in its own session, outside the room)";
+  return source === reader.id
+    ? " → you, in your previous session (outside the room)"
+    : ` → ${label}, directly in ${label}'s own session (outside the room)`;
+};
+
+export const buildTurnPrompt = (
+  input: BriefingInput & { events: RoomEvent[]; turnsLeft: number; fresh: boolean; rejoin: boolean; doc?: string | null },
+): string => {
+  const delta = buildDelta({
+    state: input.state,
+    events: input.events,
+    agent: input.agent,
+    turnsLeft: input.turnsLeft,
+    replayOwn: input.rejoin,
+    doc: input.doc ?? null,
+  });
+  if (!input.fresh) return delta;
+  const intro = input.rejoin
+    ? "Your previous session for this room could not be resumed, so here is the room context again, followed by the conversation so far."
+    : "Here is the conversation so far.";
+  return `${buildBriefing(input)}\n\n${intro}\n\n${delta}`;
+};
+
+const MENTION = /(^|[^\w@])@([a-z][\w-]{1,31})/gi;
+
+export const parseMentions = (text: string, handles: string[]): string[] => {
+  const known = new Set(handles.map((handle) => handle.toLowerCase()));
+  const found = new Set<string>();
+  for (const match of text.matchAll(MENTION)) {
+    const handle = match[2]!.toLowerCase();
+    if (known.has(handle) || handle === "all") found.add(handle);
+  }
+  return [...found];
+};

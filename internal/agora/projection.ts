@@ -18,6 +18,7 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   cursors: Object.fromEntries(event.agents.map((agent) => [agent.id, 0])),
   table: emptyTable(),
   commits: [],
+  docRevisions: [],
   counters: { m: 0, t: 0, r: 0 },
 });
 
@@ -131,6 +132,20 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       return;
     case "commit.created":
       state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq });
+      return;
+    case "doc.revised":
+      state.docRevisions.push({
+        seq: event.seq,
+        ts: event.ts,
+        path: event.path,
+        by: event.by,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        ...(event.native ? { native: true } : {}),
+        hash: event.hash,
+        ...(event.text === null ? { deleted: true } : {}),
+        added: event.added,
+        removed: event.removed,
+      });
       return;
   }
 };

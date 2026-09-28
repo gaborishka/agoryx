@@ -404,3 +404,32 @@ test("agents write to the table from their own sessions; the room signs, shows a
     await room.cleanup();
   }
 });
+
+test("an edit to the canonical file made in an agent's own session is credited to that agent", async () => {
+  const room = createTestRoom({ settings: { doc: "README.md" } });
+  try {
+    const readme = join(room.store.state.workspace, "README.md");
+    writeFileSync(readme, "# Units\n");
+    room.engine.postHuman("Hello both");
+    await withTimeout(room.engine.waitIdle());
+    await waitUntil(() => room.store.state.docRevisions.length === 1);
+    assert.equal(room.store.state.docRevisions[0]!.by, "Ivan", "a file that appears between turns, with no one in their own session, is the human's");
+
+    const file = locateNativeSession("codex", room.store.state.sessions.codex!.sessionId, room.store.state.workspace, room.env)!;
+    appendFileSync(file, jsonl(xTurn("native-doc", "Write down the unit decision", null, null)));
+    await waitUntil(() => room.engine.presence().codex === "native");
+    writeFileSync(readme, "# Units\n\nStore kelvin; convert at the edges.\n");
+    await waitUntil(() => room.store.state.docRevisions.length === 2);
+    const revision = room.store.state.docRevisions[1]!;
+    assert.deepEqual([revision.by, revision.native, revision.turnId], ["codex", true, undefined]);
+    appendFileSync(file, jsonl([xEvent({ type: "task_complete", turn_id: "native-doc", last_agent_message: "Wrote it down." })]));
+
+    room.engine.postHuman("@claude does the README match what we agreed?");
+    await withTimeout(room.engine.waitIdle());
+    const prompt = room.invocations("claude").at(-1)!.prompt!;
+    assert.match(prompt, /README\.md \(the room's canonical file\) changed since your last turn — Codex \(in its own session\) \+2 −0/);
+    assert.match(prompt, /\+ Store kelvin; convert at the edges\./);
+  } finally {
+    await room.cleanup();
+  }
+});

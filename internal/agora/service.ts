@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { baselineRevision, normalizeDocPath } from "./doc.js";
 import { RoomEngine } from "./engine.js";
 import { defaultWorkspaceRoot, roomsDir, shimDir } from "./paths.js";
 import { createClaudeRunner } from "./runners/claude.js";
@@ -9,6 +10,8 @@ import type { AgentRunner } from "./runners/types.js";
 import { newRoomId, RoomStore, slugify } from "./store.js";
 import { DEFAULT_SETTINGS, type AgentKind, type RoomAgent, type RoomSettings } from "./types.js";
 import { ensureAgentShim, prepareWorkspace } from "./workspace.js";
+
+export const DEFAULT_DOC = "README.md";
 
 export const DEFAULT_AGENTS: RoomAgent[] = [
   { id: "claude", kind: "claude", label: "Claude" },
@@ -40,6 +43,8 @@ export interface CreateRoomOptions {
   network?: boolean;
   autoCommit?: boolean;
   access?: RoomSettings["access"];
+  /** The canonical file (relative to the workspace). Default: README.md in a workspace Agoryx creates; none in a directory you bring. */
+  doc?: string | null;
   models?: Partial<Record<string, string>>;
   env?: NodeJS.ProcessEnv;
 }
@@ -62,6 +67,13 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     workspace = isEmptyDir(bySlug) ? bySlug : join(root, id);
     createdWorkspace = true;
   }
+  let doc: string | null = null;
+  if (options.doc) {
+    doc = normalizeDocPath(options.doc);
+    if (!doc) throw new Error(`the canonical file must be a path inside the workspace: ${options.doc}`);
+  } else if (options.doc === undefined && createdWorkspace) {
+    doc = DEFAULT_DOC;
+  }
   const agents = (options.agents ?? DEFAULT_AGENTS).map((agent) =>
     options.models?.[agent.id] ? { ...agent, model: options.models[agent.id] } : agent,
   );
@@ -72,9 +84,15 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     ...(options.access ? { access: options.access } : {}),
     // Never auto-commit into a directory the human brought unless asked.
     autoCommit: options.autoCommit ?? createdWorkspace,
+    doc,
   };
   prepareWorkspace(workspace, { initGit: createdWorkspace });
-  return RoomStore.create(roomsDir(env), {
+  if (doc && !existsSync(join(workspace, doc))) {
+    // Only the title: what the file says is up to the room.
+    mkdirSync(dirname(join(workspace, doc)), { recursive: true });
+    writeFileSync(join(workspace, doc), `# ${name}\n`);
+  }
+  const store = RoomStore.create(roomsDir(env), {
     id,
     name,
     workspace,
@@ -83,6 +101,9 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     agents,
     settings,
   });
+  const baseline = doc ? baselineRevision(workspace, doc) : null;
+  if (baseline) store.append(baseline);
+  return store;
 };
 
 export const defaultRunners = (env: NodeJS.ProcessEnv = process.env): Record<AgentKind, AgentRunner> => ({

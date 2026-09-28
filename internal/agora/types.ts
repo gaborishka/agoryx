@@ -31,6 +31,11 @@ export interface RoomSettings {
   network: boolean;
   /** Commit workspace changes at the end of every run. */
   autoCommit: boolean;
+  /**
+   * The room's canonical file, relative to the workspace: the one text the room is making.
+   * Every revision is kept with its author; agents see the others' changes as a diff.
+   */
+  doc?: string | null;
 }
 
 export const DEFAULT_SETTINGS: RoomSettings = {
@@ -39,6 +44,7 @@ export const DEFAULT_SETTINGS: RoomSettings = {
   access: "workspace",
   network: true,
   autoCommit: true,
+  doc: null,
 };
 
 export type MessageKind = "human" | "agent" | "pass" | "system" | "decision";
@@ -242,7 +248,39 @@ export type RoomEventBody =
   | { type: "session.bound"; agent: string; sessionId: string }
   | { type: "table.op"; op: TableOp }
   | { type: "settings.changed"; patch: Partial<RoomSettings> }
-  | { type: "commit.created"; sha: string; subject: string; files: number };
+  | { type: "commit.created"; sha: string; subject: string; files: number }
+  | DocRevisedEvent;
+
+/** The canonical file changed. `text` is the whole new version (omitted past MAX_DOC_TEXT). */
+export interface DocRevisedEvent {
+  type: "doc.revised";
+  path: string;
+  /** Agent id or the human's name. */
+  by: string;
+  /** The room turn that made the change; absent for edits made outside a turn. */
+  turnId?: string;
+  /** Made by an agent in its own session, outside the room. */
+  native?: boolean;
+  hash: string;
+  /** null: the file was deleted. */
+  text?: string | null;
+  truncated?: boolean;
+  added: number;
+  removed: number;
+}
+
+export interface DocRevision {
+  seq: number;
+  ts: string;
+  path: string;
+  by: string;
+  turnId?: string;
+  native?: boolean;
+  hash: string;
+  deleted?: boolean;
+  added: number;
+  removed: number;
+}
 
 export type RoomEvent = RoomEventBody & { seq: number; ts: string };
 
@@ -310,5 +348,7 @@ export interface RoomState {
   cursors: Record<string, number>;
   table: TableState;
   commits: Array<{ sha: string; subject: string; files: number; seq: number }>;
+  /** Revisions of the canonical file (texts stay in the event log). */
+  docRevisions: DocRevision[];
   counters: Record<string, number>;
 }

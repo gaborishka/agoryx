@@ -3,14 +3,15 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, extname, join, resolve, sep } from "node:path";
-import { RoomEngine, RoomLockedError } from "./engine.js";
+import { DocConflictError, RoomEngine, RoomLockedError } from "./engine.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
 import { createRoom, defaultRunners, openEngine, resumeCommands } from "./service.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
-import type { AgentKind, AgentPresence, EphemeralEvent, RoomEvent, RoomSettings } from "./types.js";
+import type { AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomEvent, RoomSettings } from "./types.js";
+import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
 import { listWorkspaceFiles, repoRoot, resolveInside } from "./workspace.js";
 
 export interface DaemonInfo {
@@ -518,11 +519,15 @@ export class AgoraDaemon {
         const body = (await readBody(req)) as Record<string, unknown>;
         const name = typeof body.name === "string" ? body.name : "";
         if (!name.trim()) throw new HttpError(400, "name is required");
+        if (typeof body.doc === "string" && body.doc.trim() && !normalizeDocPath(body.doc)) {
+          throw new HttpError(400, "the canonical file must be a path inside the workspace (not in .git or .agoryx)");
+        }
         const store = createRoom({
           name,
           ...(typeof body.dir === "string" && body.dir.trim() ? { dir: body.dir.trim() } : {}),
           ...(typeof body.budget === "number" ? { budget: body.budget } : {}),
           ...(typeof body.human === "string" ? { human: body.human } : {}),
+          ...(typeof body.doc === "string" ? { doc: body.doc.trim() || null } : {}),
           env: this.env,
         });
         const handle = this.room(store.id);
@@ -543,6 +548,12 @@ export class AgoraDaemon {
 
     if (action === "events" && method === "GET") {
       this.stream(req, res, handle, Number.parseInt(url.searchParams.get("after") ?? "", 10));
+      return;
+    }
+
+    if (action === "doc" && method === "GET") {
+      const rev = url.searchParams.get("rev");
+      sendJson(res, 200, rev ? this.docRevision(handle, Number.parseInt(rev, 10)) : this.docNow(handle));
       return;
     }
 
@@ -605,8 +616,27 @@ export class AgoraDaemon {
         return;
       }
       case "settings": {
-        engine.updateSettings(body as Partial<RoomSettings>);
+        try {
+          engine.updateSettings(body as Partial<RoomSettings>);
+        } catch (error) {
+          throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
         sendJson(res, 200, { settings: engine.state.settings });
+        return;
+      }
+      case "doc": {
+        if (typeof body.text !== "string" || typeof body.base !== "string") throw new HttpError(400, "text and base are required");
+        if (body.text.length > MAX_DOC_TEXT) throw new HttpError(413, "the text is too large");
+        try {
+          const revision = engine.writeDocument(body.text, body.base);
+          sendJson(res, 200, { revision, ...this.docNow(handle) });
+        } catch (error) {
+          if (error instanceof DocConflictError) {
+            sendJson(res, 409, { error: error.message, current: error.current });
+            return;
+          }
+          throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
         return;
       }
       default:
@@ -627,6 +657,39 @@ export class AgoraDaemon {
       driven: Boolean(handle.engine),
       ...(handle.lockedBy ? { lockedBy: handle.lockedBy } : {}),
     };
+  }
+
+  /** The canonical file as it is on disk now. */
+  private docNow(handle: RoomHandle) {
+    const state = handle.store.state;
+    const path = state.settings.doc;
+    if (!path) throw new HttpError(404, "this room has no canonical file");
+    const now = readDoc(state.workspace, path);
+    return { path, text: now?.text ?? "", hash: now?.hash ?? docHash(""), exists: Boolean(now) };
+  }
+
+  /** One recorded revision, with its diff against the one before it. */
+  private docRevision(handle: RoomHandle, seq: number) {
+    const state = handle.store.state;
+    const index = state.docRevisions.findIndex((revision) => revision.seq === seq);
+    if (index < 0) throw new HttpError(404, "no such revision");
+    const revision = state.docRevisions[index]!;
+    const textAt = (at: number): string | null | undefined => {
+      const event = handle.store.events.find((entry) => entry.seq === at);
+      return event?.type === "doc.revised" ? event.text : undefined;
+    };
+    let previous: DocRevision | undefined;
+    for (let k = index - 1; k >= 0; k -= 1) {
+      if (state.docRevisions[k]!.path === revision.path) {
+        previous = state.docRevisions[k];
+        break;
+      }
+    }
+    const text = textAt(revision.seq);
+    const before = previous && !previous.deleted ? textAt(previous.seq) : "";
+    const diff =
+      text === undefined || before === undefined ? null : diffHunks(diffLines(before ?? "", text ?? ""), 3);
+    return { revision, previous: previous?.seq ?? null, text: text ?? null, truncated: text === undefined, diff };
   }
 
   /** The event log knows who runs a room turn; only the driving engine knows who is busy in its own session. */

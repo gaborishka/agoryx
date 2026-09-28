@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { baselineRevision, diffLines, diffStats, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
@@ -10,6 +11,7 @@ import type {
   Activity,
   AgentKind,
   AgentPresence,
+  DocRevision,
   MessageEntry,
   MessageKind,
   RoomAgent,
@@ -57,6 +59,18 @@ interface NativeTracker {
   /** A native exchange is in progress (someone is talking to the agent in its own app). */
   openNative: boolean;
   nextLocateAt: number;
+  /** When a native exchange was last seen open or imported. */
+  nativeAt?: number;
+}
+
+/** A change to the canonical file this soon after a native exchange is credited to that agent. */
+const NATIVE_EDIT_MS = 20_000;
+
+export class DocConflictError extends Error {
+  constructor(readonly current: { text: string; hash: string } | null) {
+    super("the canonical file changed since you opened it");
+    this.name = "DocConflictError";
+  }
 }
 
 /** A native exchange still being written this recently means the agent is busy there. */
@@ -107,6 +121,8 @@ export class RoomEngine {
   private nativeKeys?: Set<string>;
   private nativeTimer: NodeJS.Timeout | undefined;
   private lastPresence = "";
+  /** Last stat of the canonical file, so the sync tick reads it only when it changed. */
+  private docWatch = "";
   private retryTimer: NodeJS.Timeout | undefined;
   /** Agents already announced as busy in their own session (cleared when they are free). */
   private readonly nativeBusyNoted = new Set<string>();
@@ -135,6 +151,7 @@ export class RoomEngine {
     clearStaleAcks(this.ws);
     this.writeTableFile();
     this.recover();
+    this.recordDocBaseline();
     if (this.nativePollMs > 0) {
       this.nativeTimer = setInterval(() => this.syncNative(), this.nativePollMs);
       this.nativeTimer.unref();
@@ -284,7 +301,17 @@ export class RoomEngine {
     if (typeof patch.autoCommit === "boolean") clean.autoCommit = patch.autoCommit;
     if (patch.access === "workspace" || patch.access === "readonly") clean.access = patch.access;
     if (typeof patch.turnTimeoutMs === "number" && patch.turnTimeoutMs >= 30_000) clean.turnTimeoutMs = patch.turnTimeoutMs;
-    if (Object.keys(clean).length > 0) this.store.append({ type: "settings.changed", patch: clean });
+    if (patch.doc !== undefined) {
+      const doc = patch.doc === null || patch.doc === "" ? null : normalizeDocPath(patch.doc);
+      if (doc === null && patch.doc) throw new Error("the canonical file must be a path inside the workspace (not in .git or .agoryx)");
+      if (doc !== (this.state.settings.doc ?? null)) clean.doc = doc;
+    }
+    if (Object.keys(clean).length === 0) return;
+    this.store.append({ type: "settings.changed", patch: clean });
+    if (clean.doc !== undefined) {
+      this.recordDocBaseline();
+      this.postSystem(clean.doc ? `The room's canonical file is now ${clean.doc}.` : "The room no longer has a canonical file.", false);
+    }
   }
 
   async stop(reason: "human" | "shutdown" = "human"): Promise<void> {
@@ -489,6 +516,7 @@ export class RoomEngine {
         turnsLeft,
         fresh,
         rejoin,
+        doc: this.docDelta(agent, fromSeq, fresh),
       });
     const prompt = promptFor(!sessionId, false);
 
@@ -569,6 +597,9 @@ export class RoomEngine {
     this.running.delete(agent.id);
     this.notePresence();
     const files = this.attributeFiles(turnId, diffSnapshots(snapshot, snapshotChanges(this.state.workspace)));
+    const doc = this.state.settings.doc;
+    // Credited by git status, or — without git to tell — changed while this was the only turn.
+    if (doc && (files.includes(doc) || (!snapshot && this.running.size === 0))) this.recordDoc(agent.id, { turnId });
 
     let messageId: string | undefined;
     let status: "ok" | "pass" | "error" | "interrupted" = result.status;
@@ -634,12 +665,177 @@ export class RoomEngine {
     const turn = this.state.turns.find((entry) => entry.id === turnId);
     if (!turn) return files;
     const claims = (entry: TurnState, file: string) =>
-      entry.activity.some((activity) => activity.kind === "edit" && activity.label.includes(file));
+      entry.activity.some((activity) => activity.kind === "edit" && activity.label.includes(file)) ||
+      this.state.docRevisions.some((revision) => revision.turnId === entry.id && revision.path === file);
     const overlapping = this.state.turns.filter(
       (entry) => entry.id !== turnId && (entry.status === "running" || (entry.endedAt !== undefined && entry.endedAt >= turn.startedAt)),
     );
     if (overlapping.length === 0) return files;
     return files.filter((file) => claims(turn, file) || !overlapping.some((entry) => claims(entry, file)));
+  }
+
+  // -------------------------------------------------------------------------
+  // The canonical file
+  // -------------------------------------------------------------------------
+
+  /** Revisions of the current canonical file, oldest first. */
+  private docRevisions(path = this.state.settings.doc): DocRevision[] {
+    return path ? this.state.docRevisions.filter((revision) => revision.path === path) : [];
+  }
+
+  /** The full text recorded with a revision; undefined when it was too big to keep. */
+  revisionText(seq: number): string | null | undefined {
+    const event = this.store.events.find((entry) => entry.seq === seq);
+    return event?.type === "doc.revised" ? event.text : undefined;
+  }
+
+  /**
+   * Record the file as it is now, if it differs from the last revision.
+   * `by` is who changed it; "agoryx" marks the version the room started from.
+   */
+  private recordDoc(by: string, extra: { turnId?: string; native?: boolean } = {}): boolean {
+    const path = this.state.settings.doc;
+    if (!path) return false;
+    const now = readDoc(this.state.workspace, path);
+    const last = this.docRevisions(path).at(-1);
+    const stat = statDoc(this.state.workspace, path);
+    this.docWatch = stat ? `${stat.size}:${stat.mtimeMs}` : "gone";
+    if (!now) {
+      if (!last || last.deleted) return false;
+      const before = this.revisionText(last.seq) ?? "";
+      this.store.append({ type: "doc.revised", path, by, ...extra, hash: docHash(""), text: null, added: 0, removed: diffStats(diffLines(before, "")).removed });
+      return true;
+    }
+    if (last && !last.deleted && last.hash === now.hash) return false;
+    const truncated = now.text.length > MAX_DOC_TEXT;
+    const before = last && !last.deleted ? (this.revisionText(last.seq) ?? "") : "";
+    const stats = truncated ? { added: now.text.split("\n").length, removed: 0 } : diffStats(diffLines(before, now.text));
+    this.store.append({
+      type: "doc.revised",
+      path,
+      by,
+      ...extra,
+      hash: now.hash,
+      ...(truncated ? { truncated: true } : { text: now.text }),
+      ...stats,
+    });
+    return true;
+  }
+
+  /** The version the room found (or started) the file in, so later diffs have a base. */
+  private recordDocBaseline(): void {
+    const path = this.state.settings.doc;
+    if (!path || this.docRevisions(path).length > 0) return;
+    const baseline = baselineRevision(this.state.workspace, path);
+    if (baseline) this.store.append(baseline);
+    const stat = statDoc(this.state.workspace, path);
+    this.docWatch = stat ? `${stat.size}:${stat.mtimeMs}` : "gone";
+  }
+
+  /** Between turns: pick up edits made in an editor, in the UI or in an agent's own session. */
+  private syncDoc(): void {
+    const path = this.state.settings.doc;
+    if (!path || this.running.size > 0 || this.closed) return;
+    const stat = statDoc(this.state.workspace, path);
+    const key = stat ? `${stat.size}:${stat.mtimeMs}` : "gone";
+    if (key === this.docWatch) return;
+    const author = this.outsideAuthor();
+    this.recordDoc(author.id, author.native ? { native: true } : {});
+  }
+
+  /** Who changed the workspace outside a room turn: the one agent just talked to in its own session, else the human. */
+  private outsideAuthor(): { id: string; native: boolean } {
+    const now = Date.now();
+    const recent = this.state.agents.filter((agent) => {
+      const tracker = this.native.get(agent.id);
+      return this.nativeOpen(agent) || (tracker?.nativeAt !== undefined && now - tracker.nativeAt < NATIVE_EDIT_MS);
+    });
+    return recent.length === 1 ? { id: recent[0]!.id, native: true } : { id: this.state.human, native: false };
+  }
+
+  /** The canonical file now, for readers (UI, CLI). */
+  readDocument(): { path: string; text: string; hash: string; exists: boolean } | null {
+    const path = this.state.settings.doc;
+    if (!path) return null;
+    const now = readDoc(this.state.workspace, path);
+    return { path, text: now?.text ?? "", hash: now?.hash ?? docHash(""), exists: Boolean(now) };
+  }
+
+  /**
+   * The human edits the canonical file. `base` is the hash they started from;
+   * if the file moved on meanwhile, nothing is written and the current version is returned in the error.
+   * Like a side conversation, an edit wakes nobody: agents see the diff in their next turn.
+   */
+  writeDocument(text: string, base: string, author = this.state.human): DocRevision | null {
+    const path = this.state.settings.doc;
+    if (!path) throw new Error("this room has no canonical file");
+    const current = readDoc(this.state.workspace, path);
+    if ((current?.hash ?? docHash("")) !== base) throw new DocConflictError(current ? { text: current.text, hash: current.hash } : { text: "", hash: docHash("") });
+    // Something changed on disk before this edit and was never recorded: credit it first.
+    if (current && this.docRevisions(path).at(-1)?.hash !== current.hash) {
+      const outside = this.outsideAuthor();
+      this.recordDoc(outside.id, outside.native ? { native: true } : {});
+    }
+    // No writing through a symlink, or creating folders, anywhere outside the workspace.
+    const full = join(this.state.workspace, path);
+    const root = realpathSync(this.state.workspace);
+    const inside = (target: string) => {
+      const real = realpathSync(target);
+      return real === root || real.startsWith(`${root}/`);
+    };
+    let ancestor = dirname(full);
+    while (!existsSync(ancestor)) ancestor = dirname(ancestor);
+    const link = lstatSync(full, { throwIfNoEntry: false });
+    const escapes = link?.isSymbolicLink() ? !(existsSync(full) && inside(full)) : Boolean(link) && !inside(full);
+    if (!inside(ancestor) || escapes) throw new Error("the canonical file must stay inside the workspace");
+    mkdirSync(dirname(full), { recursive: true });
+    writeFileSync(full, text);
+    return this.recordDoc(author) ? (this.docRevisions(path).at(-1) ?? null) : null;
+  }
+
+  /** What changed in the canonical file since this agent last looked, as a delta block. */
+  private docDelta(agent: RoomAgent, seen: number, fresh: boolean): string | null {
+    const path = this.state.settings.doc;
+    const revisions = this.docRevisions(path ?? undefined);
+    if (!path || revisions.length === 0) return null;
+    const latest = revisions.at(-1)!;
+    if (fresh) {
+      if (latest.deleted) return `── ${path} (the room's canonical file) does not exist right now.`;
+      const text = this.revisionText(latest.seq);
+      const lines = text ? text.split("\n").length - (text.endsWith("\n") ? 1 : 0) : 0;
+      return `── ${path} (the room's canonical file)${lines ? `: ${lines} line${lines === 1 ? "" : "s"}` : ""}, last changed by ${latest.by === "agoryx" ? "nobody yet" : this.handleName(latest.by)}. Read it before you edit it.`;
+    }
+    let base = -1;
+    revisions.forEach((revision, index) => {
+      if (revision.seq <= seen || revision.by === agent.id) base = index;
+    });
+    const changes = revisions.slice(base + 1).filter((revision) => revision.by !== agent.id);
+    if (changes.length === 0) return null;
+    const authors = new Map<string, { added: number; removed: number; native: boolean }>();
+    for (const change of changes) {
+      const entry = authors.get(change.by) ?? { added: 0, removed: 0, native: false };
+      entry.added += change.added;
+      entry.removed += change.removed;
+      entry.native ||= Boolean(change.native);
+      authors.set(change.by, entry);
+    }
+    const who = [...authors.entries()]
+      .map(([by, stats]) => `${this.handleName(by)}${stats.native ? " (in its own session)" : ""} +${stats.added} −${stats.removed}`)
+      .join(", ");
+    const header = `── ${path} (the room's canonical file) changed since your last turn — ${who}`;
+    if (latest.deleted) return `${header}\nThe file was deleted.`;
+    const before = base >= 0 && !revisions[base]!.deleted ? this.revisionText(revisions[base]!.seq) : "";
+    const after = this.revisionText(latest.seq);
+    if (before === undefined || after === undefined || after === null) return `${header}\n(too large to show here — read the file)`;
+    const diff = renderDiff(before ?? "", after);
+    // A longer fence than any the file is likely to contain.
+    return diff ? `${header}\n~~~~diff\n${diff}\n~~~~` : null;
+  }
+
+  private handleName(handle: string): string {
+    const agent = this.state.agents.find((entry) => entry.id === handle);
+    if (agent) return agent.label;
+    return handle === this.state.human ? `${handle} (human)` : handle;
   }
 
   // -------------------------------------------------------------------------
@@ -684,6 +880,7 @@ export class RoomEngine {
         tracker.offset = scan.offset;
         tracker.lastAgoryx = scan.lastAgoryx;
         tracker.openNative = scan.openNative;
+        if (scan.openNative || scan.exchanges.length > 0) tracker.nativeAt = Date.now();
         tracker.size = size;
         tracker.mtimeMs = mtimeMs;
         for (const exchange of scan.exchanges) this.importNative(agent, exchange);
@@ -693,6 +890,7 @@ export class RoomEngine {
     }
     // An exchange that started, finished or went stale changes who looks busy.
     this.notePresence();
+    this.syncDoc();
   }
 
   /** Someone is mid-exchange with this agent in its own session. */

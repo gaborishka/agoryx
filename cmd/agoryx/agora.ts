@@ -9,6 +9,7 @@ import { RoomLockedError, type RoomEngine } from "../../internal/agora/engine.js
 import { agoraHome, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { activeRun } from "../../internal/agora/projection.js";
 import { createRoom, openEngine, resumeCommands } from "../../internal/agora/service.js";
+import { readDoc, renderDiff } from "../../internal/agora/doc.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { parseTableCommand, TABLE_USAGE } from "../../internal/agora/table-cli.js";
 import { describeTableOp, renderTableMarkdown } from "../../internal/agora/table.js";
@@ -29,6 +30,7 @@ export const AGORA_COMMANDS = new Set([
   "continue",
   "resume",
   "settings",
+  "doc",
 ]);
 
 export const printAgoraUsage = (write: OutputWriter = console.log): void => {
@@ -39,7 +41,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx up [--port N] [-d]          Start the daemon (web UI + API). -d runs it in the background",
       "  agoryx down                        Stop the background daemon",
       "  agoryx open [room]                 Open the web UI (starts the daemon if needed)",
-      '  agoryx new "name" [--dir D] [--budget N] [-m "first message"]',
+      '  agoryx new "name" [--dir D] [--budget N] [--doc PATH|none] [-m "first message"]',
       "  agoryx rooms                       List rooms",
       '  agoryx say [-r room] "text"        Post to the room and follow the run until it goes quiet',
       "  agoryx tail [-r room] [-f] [-n N] [--trace]   Print the conversation (and follow it)",
@@ -47,7 +49,8 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx more [-r room]              Ask for another round",
       "  agoryx stop [-r room]              Stop the current run",
       "  agoryx resume [-r room]            Native session commands (claude --resume / codex resume)",
-      "  agoryx settings [-r room] [--budget N] [--network on|off] [--autocommit on|off] [--access workspace|readonly]",
+      "  agoryx doc [-r room] [--log | --diff REV]   The room's canonical file: its text, its revisions, one revision's diff",
+      "  agoryx settings [-r room] [--budget N] [--network on|off] [--autocommit on|off] [--access workspace|readonly] [--doc PATH|none]",
       "",
       "Table ops:",
       ...TABLE_USAGE.map((line) => `  ${line}`),
@@ -165,6 +168,13 @@ export class TranscriptPrinter {
         if (event.op.op === "decide") return; // the decision message says it
         const outside = !event.op.turnId && this.agents.some((agent) => agent.id === event.op.by) ? pc.dim(" (in its own session)") : "";
         this.out(pc.green(`  ▸ ${this.plainName(event.op.by)} ${describeTableOp(event.op)}`) + `${outside}\n`);
+        return;
+      }
+      case "doc.revised": {
+        if (event.by === "agoryx") return;
+        const outside = event.native ? pc.dim(" (in its own session)") : "";
+        const what = event.text === null ? `deleted ${event.path}` : `edited ${event.path} ${pc.green(`+${event.added}`)} ${pc.red(`−${event.removed}`)}`;
+        this.out(`  ${pc.magenta("✎")} ${this.plainName(event.by)} ${what}${outside}\n`);
         return;
       }
       case "commit.created":
@@ -471,6 +481,7 @@ const runNew = async (argv: string[]): Promise<number> => {
   const parsed = parse(argv, [
     { long: "dir", takesValue: true },
     { long: "budget", takesValue: true },
+    { long: "doc", takesValue: true },
     { long: "message", short: "m", takesValue: true },
   ]);
   const name = parsed.positionals.join(" ").trim();
@@ -479,23 +490,27 @@ const runNew = async (argv: string[]): Promise<number> => {
     return name ? 0 : 2;
   }
   const budget = parsed.options.budget ? Number.parseInt(parsed.options.budget, 10) : undefined;
+  const doc = docOption(parsed.options.doc);
+  const input = {
+    name,
+    ...(parsed.options.dir ? { dir: parsed.options.dir } : {}),
+    ...(budget ? { budget } : {}),
+    ...(doc !== undefined ? { doc } : {}),
+  };
   const info = await findDaemon();
   let roomId: string;
   if (info) {
-    const { room } = await new DaemonClient(info).createRoom({
-      name,
-      ...(parsed.options.dir ? { dir: parsed.options.dir } : {}),
-      ...(budget ? { budget } : {}),
-    });
+    const { room } = await new DaemonClient(info).createRoom(input);
     roomId = room.id;
   } else {
-    roomId = createRoom({ name, ...(parsed.options.dir ? { dir: parsed.options.dir } : {}), ...(budget ? { budget } : {}) }).id;
+    roomId = createRoom(input).id;
   }
   const store = RoomStore.open(roomsDir(), roomId);
   console.log(`${pc.bold(store.state.name)} ${pc.dim(`(${roomId})`)}`);
   console.log(`  workspace  ${store.state.workspace}${store.state.createdWorkspace ? pc.dim(" (new git repo)") : ""}`);
   console.log(`  here       ${store.state.agents.map((agent) => agent.label).join(", ")} and ${store.state.human}`);
   console.log(`  budget     ${store.state.settings.budget} agent turns per run`);
+  if (store.state.settings.doc) console.log(`  doc        ${store.state.settings.doc} ${pc.dim("(the room's canonical file)")}`);
   if (parsed.options.message) {
     return say(roomId, parsed.options.message, { trace: true });
   }
@@ -706,8 +721,11 @@ const runSettings = async (argv: string[]): Promise<number> => {
     { long: "network", takesValue: true },
     { long: "autocommit", takesValue: true },
     { long: "access", takesValue: true },
+    { long: "doc", takesValue: true },
   ]);
   const patch: Partial<RoomSettings> = {};
+  const doc = docOption(parsed.options.doc);
+  if (doc !== undefined) patch.doc = doc;
   if (parsed.options.budget) patch.budget = Number.parseInt(parsed.options.budget, 10);
   const network = onOff(parsed.options.network);
   if (network !== undefined) patch.network = network;
@@ -731,6 +749,80 @@ const runSettings = async (argv: string[]): Promise<number> => {
   console.log(`network     ${settings.network ? "on" : "off"}`);
   console.log(`autocommit  ${settings.autoCommit ? "on (checkpoint commit after each run)" : "off"}`);
   console.log(`turn limit  ${Math.round(settings.turnTimeoutMs / 60_000)} min`);
+  console.log(`doc         ${settings.doc ?? pc.dim("none")}`);
+  return 0;
+};
+
+/** `--doc none` (or an empty value) turns the canonical file off. */
+const docOption = (value: string | undefined): string | null | undefined => {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  return trimmed === "" || trimmed.toLowerCase() === "none" ? null : trimmed;
+};
+
+const runDoc = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, [ROOM_OPT, { long: "log", takesValue: false }, { long: "diff", takesValue: true }]);
+  if (parsed.options.help) {
+    printAgoraUsage();
+    return 0;
+  }
+  const store = RoomStore.open(roomsDir(), resolveRoom(parsed.options.room ?? parsed.positionals[0]));
+  const { state } = store;
+  const path = state.settings.doc;
+  if (!path) {
+    console.log(`this room has no canonical file — agoryx settings --doc README.md`);
+    return 1;
+  }
+  const revisions = state.docRevisions.filter((revision) => revision.path === path);
+  const textAt = (seq: number): string | null | undefined => {
+    const event = store.events.find((entry) => entry.seq === seq);
+    return event?.type === "doc.revised" ? event.text : undefined;
+  };
+  const who = (by: string) => (by === "agoryx" ? "(the version the room started from)" : (state.agents.find((agent) => agent.id === by)?.label ?? by));
+
+  if (parsed.options.log) {
+    if (revisions.length === 0) console.log(pc.dim(`${path}: no revisions yet`));
+    for (const revision of revisions) {
+      const stats = revision.by === "agoryx" ? "" : revision.deleted ? pc.red("deleted") : `${pc.green(`+${revision.added}`)} ${pc.red(`−${revision.removed}`)}`;
+      const where = revision.native ? pc.dim(" (in its own session)") : revision.turnId ? pc.dim(" (room turn)") : "";
+      console.log(`${pc.dim(`#${String(revision.seq).padEnd(5)}`)} ${revision.ts.slice(0, 16).replace("T", " ")}  ${who(revision.by)}${where}  ${stats}`);
+    }
+    return 0;
+  }
+
+  if (parsed.options.diff) {
+    const seq = Number.parseInt(parsed.options.diff.replace(/^#/, ""), 10);
+    const index = revisions.findIndex((revision) => revision.seq === seq);
+    if (index < 0) {
+      console.error(`no revision #${parsed.options.diff} of ${path} — agoryx doc --log lists them`);
+      return 1;
+    }
+    const revision = revisions[index]!;
+    const previous = revisions[index - 1];
+    const after = textAt(revision.seq);
+    const before = previous && !previous.deleted ? textAt(previous.seq) : "";
+    console.log(pc.dim(`#${revision.seq} · ${who(revision.by)} · ${revision.ts.slice(0, 16).replace("T", " ")}`));
+    if (after === undefined || before === undefined) {
+      console.log(pc.dim("too large to keep the text of this revision"));
+      return 0;
+    }
+    const diff = renderDiff(before ?? "", after ?? "", 10_000);
+    for (const line of (diff ?? "(no change)").split("\n")) {
+      console.log(line.startsWith("+ ") ? pc.green(line) : line.startsWith("- ") ? pc.red(line) : pc.dim(line));
+    }
+    return 0;
+  }
+
+  const now = readDoc(state.workspace, path);
+  if (process.stdout.isTTY) {
+    const last = revisions.at(-1);
+    console.log(pc.dim(`── ${join(state.workspace, path)}${last ? ` · ${revisions.length} revision${revisions.length === 1 ? "" : "s"}, last by ${who(last.by)}` : ""}`));
+  }
+  if (!now) {
+    console.log(pc.dim(`${path} does not exist yet`));
+    return 0;
+  }
+  process.stdout.write(now.text.endsWith("\n") ? now.text : `${now.text}\n`);
   return 0;
 };
 
@@ -761,6 +853,8 @@ export const runAgora = async (command: string, argv: string[]): Promise<number>
       return runResume(argv);
     case "settings":
       return runSettings(argv);
+    case "doc":
+      return runDoc(argv);
     default:
       throw new CliUsageError(`unknown room command '${command}'`, printAgoraUsage);
   }

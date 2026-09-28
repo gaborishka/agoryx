@@ -106,11 +106,12 @@ const markdown = (raw, ctx) => {
   const isList = (line) => /^\s*([-*+]|\d+[.)])\s+/.test(line);
   while (i < lines.length) {
     const line = lines[i];
-    const fence = /^\s*```\s*([\w+-]*)\s*$/.exec(line);
+    const fence = /^\s*(```+|~~~+)\s*([\w+-]*)\s*$/.exec(line);
     if (fence) {
       const body = [];
+      const close = new RegExp(`^\\s*${fence[1]}\\s*$`);
       i += 1;
-      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) body.push(lines[i++]);
+      while (i < lines.length && !close.test(lines[i])) body.push(lines[i++]);
       i += 1;
       out.push(`<pre><code>${esc(body.join("\n"))}</code></pre>`);
       continue;
@@ -119,9 +120,15 @@ const markdown = (raw, ctx) => {
       i += 1;
       continue;
     }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      out.push("<hr>");
+      i += 1;
+      continue;
+    }
     const heading = /^(#{1,4})\s+(.*)$/.exec(line);
     if (heading) {
-      const level = Math.min(4, heading[1].length + 1);
+      // In chat a "#" is a section, not a page title; the canonical file keeps its own levels.
+      const level = Math.min(4, heading[1].length + (ctx?.doc ? 0 : 1));
       out.push(`<h${level}>${inline(heading[2], ctx)}</h${level}>`);
       i += 1;
       continue;
@@ -158,7 +165,7 @@ const markdown = (raw, ctx) => {
       continue;
     }
     const para = [];
-    while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^#{1,4}\s/.test(lines[i]) && !isList(lines[i]) && !/^\s*>/.test(lines[i])) {
+    while (i < lines.length && lines[i].trim() && !/^\s*(```|~~~)/.test(lines[i]) && !/^#{1,4}\s/.test(lines[i]) && !isList(lines[i]) && !/^\s*>/.test(lines[i])) {
       para.push(lines[i++]);
     }
     out.push(`<p>${para.map((l) => inline(l, ctx)).join("<br>")}</p>`);
@@ -190,7 +197,7 @@ const api = async (method, path, body) => {
     showGate();
     throw new Unauthorized(data.error ?? "unauthorized");
   }
-  if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+  if (!response.ok) throw Object.assign(new Error(data.error ?? `HTTP ${response.status}`), { status: response.status, body: data });
   return data;
 };
 
@@ -213,6 +220,10 @@ const S = {
   dirty: new Set(),
   frame: 0,
   sheet: null,
+  doc: null, // the canonical file now: { path, text, hash, exists } | { error }
+  docSel: null, // seq of the revision being looked at, or null for the current text
+  docRevs: new Map(), // seq -> { revision, previous, text, truncated, diff }
+  docEdit: null, // { base, text, conflict? } while the human edits
 };
 
 const state = () => S.snap?.state;
@@ -271,6 +282,7 @@ const flush = () => {
   if (parts.has("feed")) renderFeed();
   if (parts.has("runbar")) renderRunbar();
   if (parts.has("table")) renderTable();
+  if (parts.has("doc")) renderDoc();
 };
 
 // ---------------------------------------------------------------------------
@@ -305,6 +317,7 @@ const buildShell = () => {
           </div>
         </section>
         <section class="tview" id="tview" hidden></section>
+        <section class="dview" id="dview" hidden></section>
         <section class="nowroom" id="noroom" hidden></section>
       </div>
     </main>
@@ -327,6 +340,7 @@ const buildShell = () => {
     csend: document.getElementById("csend"),
     ctools: document.getElementById("ctools"),
     tview: document.getElementById("tview"),
+    dview: document.getElementById("dview"),
     noroom: document.getElementById("noroom"),
     scrim: document.getElementById("scrim"),
     sheet: document.getElementById("sheet"),
@@ -419,6 +433,7 @@ const renderHeader = () => {
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected="${S.tab === "conv"}" class="${S.tab === "conv" ? "on" : ""}" data-act="tab" data-tab="conv">Розмова</button>
       <button role="tab" aria-selected="${S.tab === "table"}" class="${S.tab === "table" ? "on" : ""}" data-act="tab" data-tab="table">Стіл${count ? ` <span class="n">${count}</span>` : ""}</button>
+      <button role="tab" aria-selected="${S.tab === "doc"}" class="${S.tab === "doc" ? "on" : ""}" data-act="tab" data-tab="doc" title="${esc(st.settings.doc ? `${st.settings.doc} — канонічний файл кімнати` : "Канонічний файл кімнати")}">Документ</button>
     </div>
     <div class="right">
       <div class="stack">${people}</div>
@@ -504,13 +519,23 @@ const turnSummary = (turn) => {
   return parts.join(" · ");
 };
 
-const turnBar = (turn, ops) => {
-  if (!turn) return ops?.length ? `<div class="turnbar">${ops.map(opChip).join("")}</div>` : "";
+const revStats = (r) =>
+  r.deleted ? '<span class="minus">видалено</span>' : `<span class="plus">+${r.added}</span> <span class="minus">−${r.removed}</span>`;
+
+const docChip = (r) =>
+  `<button class="pill doc" data-act="doc-open" data-seq="${r.seq}" title="Правка канонічного файлу — показати, що змінилося">✎ <span class="ell">${esc(r.path)}</span> ${revStats(r)}</button>`;
+
+const turnBar = (turn, ops, docs) => {
+  if (!turn) return ops?.length || docs?.length ? `<div class="turnbar">${(docs ?? []).map(docChip).join("")}${(ops ?? []).map(opChip).join("")}</div>` : "";
   const open = S.openTraces.has(turn.id);
   const summary = turnSummary(turn);
   const bits = [];
   if (summary) bits.push(`<button class="pill" data-act="trace" data-turn="${esc(turn.id)}" aria-expanded="${open}">${open ? "▾" : "▸"} ${esc(summary)}</button>`);
-  for (const file of turn.files ?? []) bits.push(`<button class="pill file" data-act="file" data-path="${esc(file)}" title="${esc(file)}"><span class="ell">${esc(file)}</span></button>`);
+  for (const r of docs ?? []) bits.push(docChip(r));
+  const docPaths = new Set((docs ?? []).map((r) => r.path));
+  for (const file of turn.files ?? []) {
+    if (!docPaths.has(file)) bits.push(`<button class="pill file" data-act="file" data-path="${esc(file)}" title="${esc(file)}"><span class="ell">${esc(file)}</span></button>`);
+  }
   for (const o of ops ?? []) bits.push(opChip(o));
   if (!bits.length) return "";
   const trace = open && turn.activity.length ? `<div class="trace">${turn.activity.map(activityHtml).join("")}</div>` : "";
@@ -541,9 +566,10 @@ const messageHtml = (m, ctx, { round = false } = {}) => {
   S.seenMessages.add(m.id);
   const turn = m.turnId ? ctx.turns.get(m.turnId) : undefined;
   const ops = m.turnId ? ctx.opsByTurn.get(m.turnId) : undefined;
+  const docs = m.turnId ? ctx.docByTurn.get(m.turnId) : undefined;
   if (m.kind === "pass") {
     const note = m.text && m.text.trim() && !/^::pass::$/i.test(m.text.trim()) ? ` — ${esc(m.text.replace(/^[`"'*_\s]*::pass::[`"'*_\s.:—–-]*/i, ""))}` : "";
-    const chips = ops?.length || turn?.files?.length ? turnBar(turn, ops) : "";
+    const chips = ops?.length || docs?.length || turn?.files?.length ? turnBar(turn, ops, docs) : "";
     return `<div class="passl${fresh}" id="m-${esc(m.id)}">${avatar(m.author, 18)}<span><b>${esc(nameOf(m.author))}</b> мовчить${note}</span>${chips}</div>`;
   }
   if (m.kind === "system") {
@@ -559,7 +585,7 @@ const messageHtml = (m, ctx, { round = false } = {}) => {
     <div style="min-width:0">
       <div class="meta"><b>${esc(nameOf(m.author))}</b>${nativeTag(m)}<time datetime="${esc(m.ts)}" title="${esc(fullDate(m.ts))}">${clock(m.ts)}</time>${turnMeta(turn)}</div>
       <div class="txt">${markdown(m.text, mdCtx())}</div>
-      ${turnBar(turn, ops)}
+      ${turnBar(turn, ops, docs)}
     </div>
   </article>`;
 };
@@ -608,10 +634,22 @@ const buildFeedModel = () => {
       items.push({ seq: entry.seq, type: "op", op: o });
     }
   }
+  // Revisions of the canonical file: on the reply of the turn that made them, else a line of their own.
+  const docByTurn = new Map();
+  for (const r of st.docRevisions ?? []) {
+    if (r.by === "agoryx") continue;
+    if (r.turnId && withMessage.has(r.turnId)) {
+      const list = docByTurn.get(r.turnId) ?? [];
+      list.push(r);
+      docByTurn.set(r.turnId, list);
+    } else {
+      items.push({ seq: r.seq, type: "doc", r });
+    }
+  }
   for (const m of st.messages) items.push({ seq: m.seq, type: "msg", m });
   for (const c of st.commits) items.push({ seq: c.seq, type: "commit", c });
   items.sort((a, b) => a.seq - b.seq);
-  return { turns, opsByTurn, items };
+  return { turns, opsByTurn, docByTurn, items };
 };
 
 /** Turn behind an agent reply or pass, or null for anything else. */
@@ -656,6 +694,11 @@ const renderFeed = () => {
       const who = participant(item.op.by);
       const outside = who?.agent && !item.op.turnId ? `<span class="nat ${who.cls}" title="${esc(`Зроблено з рідної сесії ${who.label}, поза ходом у кімнаті.`)}">у власній сесії</span>` : "";
       html.push(`<div class="opline"><span class="tag">Стіл</span><span>${inline(opSentence(item.op), mdCtx())}</span>${outside}</div>`);
+    } else if (item.type === "doc") {
+      const r = item.r;
+      const who = participant(r.by);
+      const outside = r.native && who?.agent ? `<span class="nat ${who.cls}" title="${esc(`Змінено в рідній сесії ${who.label}, поза ходом у кімнаті.`)}">у власній сесії</span>` : "";
+      html.push(`<div class="opline docl"><span class="tag">Документ</span><span><b>${esc(nameOf(r.by))}</b> — правка <button class="linkish" data-act="doc-open" data-seq="${r.seq}">${esc(r.path)}</button> ${revStats(r)}</span>${outside}</div>`);
     }
   }
   for (const turn of st.turns) if (turn.status === "running") html.push(liveHtml(turn, ctx.opsByTurn.get(turn.id)));
@@ -866,6 +909,230 @@ const renderTable = () => {
   els.tview.scrollTop = scroll;
 };
 
+
+// ---------------------------------------------------------------------------
+// Document: the room's canonical file
+// ---------------------------------------------------------------------------
+
+const docRevisions = () => {
+  const st = state();
+  const path = st?.settings.doc;
+  return path ? (st.docRevisions ?? []).filter((r) => r.path === path) : [];
+};
+
+const loadDoc = async () => {
+  const st = state();
+  if (!st?.settings.doc) {
+    S.doc = null;
+    invalidate("doc");
+    return;
+  }
+  const room = S.roomId;
+  try {
+    const doc = await api("GET", roomPath("/doc"));
+    if (S.roomId === room) S.doc = doc;
+  } catch (error) {
+    if (error instanceof Unauthorized) return;
+    if (S.roomId === room) S.doc = { error: error.message };
+  }
+  invalidate("doc");
+};
+
+const loadRevision = async (seq) => {
+  if (S.docRevs.has(seq)) return;
+  const room = S.roomId;
+  S.docRevs.set(seq, { loading: true });
+  try {
+    const rev = await api("GET", `${roomPath("/doc")}?rev=${seq}`);
+    if (S.roomId === room) S.docRevs.set(seq, rev);
+  } catch (error) {
+    if (S.roomId === room) S.docRevs.set(seq, { error: error.message });
+  }
+  invalidate("doc");
+};
+
+const revAuthor = (r) => (r.by === "agoryx" ? "Початкова версія" : nameOf(r.by));
+
+const revWhere = (r) => {
+  if (r.by === "agoryx") return "з неї кімната почала";
+  const who = participant(r.by);
+  if (r.turnId) return "хід у кімнаті";
+  if (r.native && who?.agent) return `у власній сесії ${who.label}`;
+  return who?.agent ? "поза ходом" : "редактор або цей екран";
+};
+
+const docRailHtml = (revs) => {
+  const items = [...revs]
+    .reverse()
+    .map((r) => {
+      const who = participant(r.by);
+      const on = S.docSel === r.seq ? " on" : "";
+      const nat = r.native && who?.agent ? ` <span class="nat ${who.cls}">у власній сесії</span>` : "";
+      return `<li><button class="rev${on}" data-act="doc-rev" data-seq="${r.seq}" aria-pressed="${Boolean(on)}">
+        ${avatar(r.by, 22)}
+        <span class="rw"><b>${esc(revAuthor(r))}</b>${nat}<small><time datetime="${esc(r.ts)}" title="${esc(fullDate(r.ts))}">${esc(ago(r.ts))}</time> · ${esc(revWhere(r))}</small></span>
+        <span class="rs">${r.by === "agoryx" ? "" : revStats(r)}</span>
+      </button></li>`;
+    })
+    .join("");
+  return `<h2>Історія</h2>
+    <p class="none">Хто б і де б не змінив файл — хід у кімнаті, власна сесія агента чи ваш редактор, — версія лишається тут з автором, а інші бачать диф у своєму наступному ході.</p>
+    <ul class="revs">${items || '<li class="none">Версій ще немає: файл з\'явиться, коли хтось його запише.</li>'}</ul>`;
+};
+
+const diffHtml = (items) => {
+  let oldN = 1;
+  let newN = 1;
+  const rows = [];
+  for (const item of items) {
+    if ("skip" in item) {
+      rows.push(`<tr class="hunk"><td class="ln"></td><td>  … ${esc(plural(item.skip, "рядок", "рядки", "рядків"))} без змін</td></tr>`);
+      oldN += item.skip;
+      newN += item.skip;
+    } else if (item.t === "+") {
+      rows.push(`<tr class="add"><td class="ln">${newN++}</td><td>+ ${esc(item.s)}</td></tr>`);
+    } else if (item.t === "-") {
+      rows.push(`<tr class="del"><td class="ln">${oldN++}</td><td>− ${esc(item.s)}</td></tr>`);
+    } else {
+      rows.push(`<tr><td class="ln">${newN}</td><td>  ${esc(item.s)}</td></tr>`);
+      oldN += 1;
+      newN += 1;
+    }
+  }
+  return `<div class="code diff"><table>${rows.join("")}</table></div>`;
+};
+
+const docBody = (path, text) =>
+  /^(md|markdown|txt)$/.test(ext(path)) || !ext(path)
+    ? `<article class="paper"><div class="txt doctxt">${markdown(text, { ...mdCtx(), doc: true })}</div></article>`
+    : codeTable(text);
+
+const docEmptyHtml = () => `<div class="table-empty">
+    <h2>Канонічний файл</h2>
+    <p>Кімната може писати один спільний текст — рішення, есе, специфікацію. Agoryx не каже, що в ньому має бути: лише пам'ятає кожну версію з автором і показує кожному агенту, що змінили інші.</p>
+    <form class="form docset" data-form="doc-set">
+      <label>Шлях у робочій теці<input type="text" name="doc" value="README.md" spellcheck="false"></label>
+      <div class="row" style="justify-content:flex-start"><button class="primary" type="submit">Призначити</button></div>
+    </form>
+  </div>`;
+
+const docConflictHtml = () => {
+  const edit = S.docEdit;
+  if (!edit?.conflict) {
+    return edit?.stale
+      ? `<div class="docnote">Тим часом файл змінено (${esc(nameOf(edit.stale))}). Збереження нічого не перезапише мовчки — спершу покажемо конфлікт.</div>`
+      : "";
+  }
+  return `<div class="err-box docnote">Поки ви редагували, файл змінився. Ваш текст нікуди не дівся.
+    <div class="row"><button class="ghost" data-act="doc-theirs">Відкинути мою й відкрити нову</button><button class="ghost warn" data-act="doc-force">Зберегти мою поверх</button></div></div>`;
+};
+
+const renderDoc = () => {
+  const st = state();
+  if (!st || S.tab !== "doc") return;
+  const path = st.settings.doc;
+  if (!path) {
+    els.dview.innerHTML = `<div class="tbl"><div class="canvas">${docEmptyHtml()}</div></div>`;
+    return;
+  }
+  const revs = docRevisions();
+  let shell = els.dview.querySelector(".docgrid");
+  if (!shell || shell.dataset.path !== path) {
+    els.dview.innerHTML = `<div class="tbl docgrid" data-path="${esc(path)}"><div class="canvas docmain" id="docMain"></div><aside class="rail" id="docRail"></aside></div>`;
+    shell = els.dview.querySelector(".docgrid");
+  }
+  const main = shell.querySelector("#docMain");
+  shell.querySelector("#docRail").innerHTML = docRailHtml(revs);
+
+  // Editing: never re-render the textarea under the cursor; only the note above it.
+  if (S.docEdit) {
+    const area = main.querySelector("textarea.doced");
+    if (area) {
+      main.querySelector("#docNote").innerHTML = docConflictHtml();
+      return;
+    }
+    main.innerHTML = `<div class="docbar"><span class="path">${ICON.file} ${esc(path)}</span><span class="meta">редагування</span><span class="grow"></span></div>
+      <form class="docedit" data-form="doc">
+        <div id="docNote">${docConflictHtml()}</div>
+        <textarea class="doced" name="text" spellcheck="true" aria-label="${esc(path)}">${esc(S.docEdit.text)}</textarea>
+        <div class="row"><span class="faint hint">Правка не будить агентів — вони побачать диф у наступному ході.</span><span class="grow"></span><button type="button" class="ghost" data-act="doc-cancel">Скасувати</button><button class="primary" type="submit">Зберегти</button></div>
+      </form>`;
+    const ta = main.querySelector("textarea.doced");
+    ta.addEventListener("input", () => {
+      if (S.docEdit) S.docEdit.text = ta.value;
+    });
+    ta.focus();
+    return;
+  }
+
+  const scroll = els.dview.scrollTop;
+  if (S.docSel != null) {
+    const r = revs.find((entry) => entry.seq === S.docSel);
+    const rev = S.docRevs.get(S.docSel);
+    if (!rev) loadRevision(S.docSel);
+    let body = '<div class="faint">Завантажую…</div>';
+    if (rev?.error) body = `<div class="err-box">${esc(rev.error)}</div>`;
+    else if (rev && !rev.loading) {
+      if (rev.truncated) body = '<p class="faint">Ця версія завелика (понад 256 КБ), тому Agoryx зберіг лише її відбиток і статистику.</p>';
+      else if (rev.previous == null && rev.text != null) body = docBody(path, rev.text);
+      else if (rev.text === null) body = '<p class="faint">У цій версії файл видалено.</p>';
+      else body = rev.diff?.some((item) => item.t === "+" || item.t === "-") ? diffHtml(rev.diff) : '<p class="faint">Текст не змінився.</p>';
+    }
+    main.innerHTML = `<div class="docbar">
+        <button class="ghost" data-act="doc-current">← Поточна версія</button>
+        ${r ? `<span class="who">${avatar(r.by, 22)}<b>${esc(revAuthor(r))}</b></span><span class="meta"><time title="${esc(fullDate(r.ts))}">${esc(fullDate(r.ts))}</time> · ${esc(revWhere(r))}${r.by === "agoryx" ? "" : ` · ${revStats(r)}`}</span>` : ""}
+        <span class="grow"></span>
+        ${r?.turnId ? `<button class="linkbtn" data-act="doc-turn" data-turn="${esc(r.turnId)}">Хід у розмові</button>` : ""}
+      </div>${body}`;
+    els.dview.scrollTop = scroll;
+    return;
+  }
+
+  const doc = S.doc;
+  if (!doc || doc.path !== path) {
+    if (!doc?.error) loadDoc();
+    main.innerHTML = doc?.error ? `<div class="err-box">${esc(doc.error)}</div>` : '<div class="faint">Завантажую…</div>';
+    return;
+  }
+  const last = revs.at(-1);
+  const meta = last
+    ? `${esc(plural(revs.length, "версія", "версії", "версій"))} · остання — ${esc(revAuthor(last))}, ${esc(ago(last.ts))}`
+    : "версій ще немає";
+  const canEdit = S.snap.driven;
+  const bar = `<div class="docbar">
+      <span class="path" title="Канонічний файл кімнати">${ICON.file} ${esc(path)}</span>
+      <span class="meta">${meta}</span>
+      <span class="grow"></span>
+      ${doc.exists ? `<button class="linkbtn" data-act="file" data-path="${esc(path)}">Сирий файл</button>` : ""}
+      ${canEdit ? `<button class="ghost" data-act="doc-edit">${doc.exists ? "Редагувати" : "Почати"}</button>` : ""}
+    </div>`;
+  const body = doc.exists
+    ? doc.text.trim()
+      ? docBody(path, doc.text)
+      : '<article class="paper"><p class="faint">Файл порожній.</p></article>'
+    : `<article class="paper"><p class="faint">Файлу <code>${esc(path)}</code> ще немає. Агенти створять його, коли буде що записати, — або почніть ви.</p></article>`;
+  main.innerHTML = bar + body;
+  els.dview.scrollTop = scroll;
+};
+
+const saveDoc = async (force = false) => {
+  const edit = S.docEdit;
+  if (!edit) return;
+  const base = force && edit.conflict ? edit.conflict.hash : edit.base;
+  try {
+    const saved = await api("POST", roomPath("/doc"), { text: edit.text, base });
+    S.docEdit = null;
+    S.doc = { path: saved.path, text: saved.text, hash: saved.hash, exists: saved.exists };
+    S.docSel = null;
+    toast(saved.revision ? "Збережено — агенти побачать диф" : "Без змін");
+  } catch (error) {
+    if (error.status === 409) {
+      edit.conflict = error.body?.current ?? null;
+    } else if (!(error instanceof Unauthorized)) toast(error.message, true);
+  }
+  invalidate("doc");
+};
+
 // ---------------------------------------------------------------------------
 // Sheets
 // ---------------------------------------------------------------------------
@@ -997,6 +1264,7 @@ const showSettings = () => {
       <label>Доступ агентів<select name="access"><option value="workspace"${s.access === "workspace" ? " selected" : ""}>Читання і запис у робочій теці</option><option value="readonly"${s.access === "readonly" ? " selected" : ""}>Лише читання</option></select><small>Агенти завжди працюють у пісочниці; поза робочою текою писати не можуть.</small></label>
       <label class="check"><input type="checkbox" name="network"${s.network ? " checked" : ""}> Мережа для команд агентів</label>
       <label class="check"><input type="checkbox" name="autoCommit"${s.autoCommit ? " checked" : ""}> Контрольна точка (git commit) після кожного раунду</label>
+      <label>Канонічний файл<input type="text" name="doc" value="${esc(s.doc ?? "")}" placeholder="README.md" spellcheck="false"><small>Один текст, який кімната пише разом (шлях у робочій теці). Agoryx пам'ятає кожну його версію з автором і показує агентам, що змінили інші. Порожньо — без нього.</small></label>
       <div class="row"><button type="button" class="ghost" data-act="close-sheet">Скасувати</button><button class="primary" type="submit">Зберегти</button></div>
     </form>`,
   );
@@ -1010,6 +1278,7 @@ const showNewRoom = () => {
       <label>Назва<input type="text" name="name" required placeholder="напр. Редизайн онбордингу" autofocus></label>
       <label>Робоча тека <small>Необов'язково. Порожньо — Agoryx створить нову git-теку для кімнати. Можна вказати наявний проєкт.</small><input type="text" name="dir" placeholder="~/projects/my-app"></label>
       <label>Бюджет ходів на раунд<input type="number" name="budget" min="1" max="100" value="8"></label>
+      <label>Канонічний файл <small>Один текст, який кімната пише разом. Порожньо — README.md у новій теці.</small><input type="text" name="doc" placeholder="README.md" spellcheck="false"></label>
       <label>Перше повідомлення <small>Необов'язково — агенти почнуть одразу.</small><textarea name="text" placeholder="Що треба зробити чи обговорити?"></textarea></label>
       <div class="row"><button type="button" class="ghost" data-act="close-sheet">Скасувати</button><button class="primary" type="submit">Створити</button></div>
     </form>`,
@@ -1078,15 +1347,24 @@ document.addEventListener("submit", async (event) => {
         access: data.access,
         network: form.elements.network.checked,
         autoCommit: form.elements.autoCommit.checked,
+        doc: data.doc?.trim() || null,
       });
       closeSheet();
       toast("Збережено");
+    } else if (form.dataset.form === "doc") {
+      if (S.docEdit) S.docEdit.text = form.elements.text.value;
+      await saveDoc();
+      if (submit) submit.disabled = false;
+    } else if (form.dataset.form === "doc-set") {
+      await api("POST", roomPath("/settings"), { doc: data.doc?.trim() || null });
+      toast("Канонічний файл призначено");
     } else if (form.dataset.form === "new-room") {
       const budget = Number.parseInt(data.budget, 10);
       const { room } = await api("POST", "/api/rooms", {
         name: data.name,
         ...(data.dir?.trim() ? { dir: data.dir.trim() } : {}),
         ...(Number.isFinite(budget) ? { budget } : {}),
+        ...(data.doc?.trim() ? { doc: data.doc.trim() } : {}),
         ...(data.text?.trim() ? { text: data.text.trim() } : {}),
       });
       closeSheet();
@@ -1137,10 +1415,12 @@ const setTab = (tab) => {
   S.tab = tab;
   els.conv.hidden = tab !== "conv";
   els.tview.hidden = tab !== "table";
+  els.dview.hidden = tab !== "doc";
   try {
     localStorage.setItem("agoryx.tab", tab);
   } catch {}
-  invalidate("header", tab === "table" ? "table" : "feed");
+  if (tab === "doc") loadDoc();
+  invalidate("header", tab === "table" ? "table" : tab === "doc" ? "doc" : "feed");
 };
 
 const onClick = async (event) => {
@@ -1223,6 +1503,51 @@ const onClick = async (event) => {
       target.disabled = true;
       api("POST", roomPath("/table"), { op: "done", target: target.dataset.id }).catch((error) => toast(error.message, true));
       break;
+    case "doc-open":
+      S.docSel = Number(target.dataset.seq);
+      S.docEdit = null;
+      setTab("doc");
+      break;
+    case "doc-rev": {
+      const seq = Number(target.dataset.seq);
+      S.docSel = S.docSel === seq ? null : seq;
+      invalidate("doc");
+      els.dview.scrollTop = 0;
+      break;
+    }
+    case "doc-current":
+      S.docSel = null;
+      loadDoc();
+      break;
+    case "doc-edit":
+      S.docSel = null;
+      S.docEdit = { base: S.doc?.hash ?? "", text: S.doc?.text ?? "" };
+      invalidate("doc");
+      break;
+    case "doc-cancel":
+      S.docEdit = null;
+      loadDoc();
+      break;
+    case "doc-theirs":
+      S.docEdit = null;
+      loadDoc();
+      break;
+    case "doc-force":
+      saveDoc(true);
+      break;
+    case "doc-turn": {
+      const id = target.dataset.turn;
+      const message = state().messages.find((m) => m.turnId === id);
+      setTab("conv");
+      if (message) {
+        requestAnimationFrame(() => {
+          const node = document.getElementById(`m-${message.id}`);
+          node?.scrollIntoView({ behavior: "smooth", block: "center" });
+          node?.animate?.([{ boxShadow: "0 0 0 3px var(--sage)" }, { boxShadow: "0 0 0 0 transparent" }], { duration: 1400 });
+        });
+      }
+      break;
+    }
     case "copy": {
       const text = target.dataset.text;
       try {
@@ -1263,6 +1588,7 @@ const applyPatch = (event, patch) => {
   if (patch.table) st.table = patch.table;
   if (patch.settings) st.settings = patch.settings;
   if (patch.commits) st.commits = patch.commits;
+  if (patch.docRevisions) st.docRevisions = patch.docRevisions;
   if (patch.activity) {
     const turn = st.turns.find((t) => t.id === patch.activity.turnId);
     if (turn) upsert(turn.activity, patch.activity.activity);
@@ -1283,6 +1609,16 @@ const applyPatch = (event, patch) => {
   }
   const parts = ["feed", "runbar", "header"];
   if (event.type === "table.op" || event.type === "message.posted") parts.push("table");
+  if (event.type === "doc.revised" || event.type === "settings.changed") {
+    parts.push("doc");
+    if (event.type === "settings.changed" && "doc" in (event.patch ?? {})) {
+      S.doc = null;
+      S.docSel = null;
+      S.docEdit = null;
+    }
+    if (S.docEdit && event.type === "doc.revised" && event.hash !== S.docEdit.base) S.docEdit.stale = event.by;
+    else if (S.tab === "doc" && !S.docEdit) loadDoc();
+  }
   invalidate(...parts);
   if (event.type === "run.started" || event.type === "run.ended" || event.type === "message.posted") {
     const room = S.rooms.find((r) => r.id === S.roomId);
@@ -1349,6 +1685,10 @@ const openRoom = async (id, { quiet = false } = {}) => {
     S.firstPaint = true;
     S.seenMessages.clear();
     S.openTraces.clear();
+    S.doc = null;
+    S.docSel = null;
+    S.docEdit = null;
+    S.docRevs.clear();
   }
   try {
     const snap = await api("GET", `/api/rooms/${encodeURIComponent(id)}`);
@@ -1360,6 +1700,8 @@ const openRoom = async (id, { quiet = false } = {}) => {
     els.noroom.hidden = true;
     els.conv.hidden = S.tab !== "conv";
     els.tview.hidden = S.tab !== "table";
+    els.dview.hidden = S.tab !== "doc";
+    if (S.tab === "doc" && !S.docEdit) loadDoc();
     if (!quiet) {
       let draft = "";
       try {
@@ -1368,7 +1710,7 @@ const openRoom = async (id, { quiet = false } = {}) => {
       els.ctext.value = draft;
       autosize();
     }
-    invalidate("side", "header", "feed", "runbar", "table");
+    invalidate("side", "header", "feed", "runbar", "table", "doc");
     connect();
     if (!quiet && S.snap.driven && matchMedia("(min-width: 761px)").matches) setTimeout(() => els.ctext.focus(), 50);
   } catch (error) {
@@ -1381,6 +1723,7 @@ const openRoom = async (id, { quiet = false } = {}) => {
 const showNoRoom = () => {
   els.conv.hidden = true;
   els.tview.hidden = true;
+  els.dview.hidden = true;
   els.noroom.hidden = false;
   els.mh.innerHTML = `<button class="iconbtn menu" data-act="nav" aria-label="Кімнати">${ICON.menu}</button><div class="title"><b>Agoryx</b></div>`;
   els.noroom.innerHTML = `<div class="gate"><div class="box">
@@ -1430,7 +1773,7 @@ const toast = (text, error = false) => {
 const boot = async () => {
   try {
     const saved = localStorage.getItem("agoryx.tab");
-    if (saved === "table" || saved === "conv") S.tab = saved;
+    if (saved === "table" || saved === "conv" || saved === "doc") S.tab = saved;
   } catch {}
   buildShell();
   let rooms;

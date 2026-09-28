@@ -56,6 +56,8 @@ export const eventPatch = (state: RoomState, event: RoomEvent): Record<string, u
       return { ...base, settings: state.settings };
     case "commit.created":
       return { ...base, commits: state.commits };
+    case "doc.revised":
+      return { ...base, docRevisions: state.docRevisions };
     default:
       return base;
   }

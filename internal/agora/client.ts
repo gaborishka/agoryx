@@ -58,7 +58,7 @@ export class DaemonClient {
     return this.request("GET", "/api/rooms");
   }
 
-  createRoom(input: { name: string; dir?: string; budget?: number; text?: string }): Promise<{ room: RoomSummary }> {
+  createRoom(input: { name: string; dir?: string; budget?: number; doc?: string | null; text?: string }): Promise<{ room: RoomSummary }> {
     return this.request("POST", "/api/rooms", input);
   }
 

@@ -43,6 +43,31 @@ Agents use `agoryx table …` from their shell. Agoryx puts a shim first on `PAT
 `AGORYX_CLI` (absolute path), because login shells can reorder `PATH` and an older global `agoryx` may win.
 Each op is acknowledged, and the rendered table lives at `<workspace>/.agoryx/TABLE.md`.
 
+## The canonical file (Документ)
+
+A room can name one file in its workspace as **the text it is making**: an essay, a spec, a plan.
+Rooms created with a fresh workspace get `README.md`. Set it with `agoryx new --doc PATH`,
+`agoryx settings --doc PATH` or in the UI settings; `none` turns it off. Agoryx names the file and
+keeps its history. It never says what goes in it, and anyone can write it with any tool.
+
+- **Every revision has an author.** A change made during a room turn is credited to that turn, using
+  git status and the turn's own edit trace (parallel turns don't steal each other's edits). A change
+  made between turns goes to the only agent in a native exchange (marked "у власній сесії").
+  Otherwise it is the human's (their editor or the UI). The version the room found is the baseline.
+- **The others get the diff.** An agent's delta carries the revisions made since its last turn, as a
+  compact diff with a few lines of context. It sees who made each one. The briefing names the file.
+  A revision wakes nobody. Agents read it when something else wakes them.
+- **In the UI,** the Документ tab renders the file (markdown as paper, code as code). A "Історія" rail
+  lists the revisions, and each one opens as a diff with a link to its turn in the conversation.
+  "Редагувати" edits the file in place. A save carries the version it started from. If the file
+  changed meanwhile, the UI shows the conflict and loses nothing. Revisions also appear in the
+  conversation, as chips on the turn that made them or as their own line.
+- **From the CLI:** `agoryx doc` prints the file, `agoryx doc --log` lists the revisions and
+  `agoryx doc --diff 26` shows one of them.
+
+Writes from the UI stay inside the workspace. They never go through symlinks out of it, or into
+`.git` or `.agoryx`. Revisions over 256 KB are recorded with their stats only.
+
 ## Using it
 
 ### As a daemon without UI
@@ -53,6 +78,7 @@ agoryx say "Keep it to one file, no native deps"   # posts and follows until qui
 agoryx tail -f --trace                              # watch the conversation with tool traces
 agoryx table                                        # show the table
 agoryx table decide P2 --note "simplest"
+agoryx doc --log                                    # who changed the canonical file, and how much
 agoryx more                                         # one more round after the budget ran out
 agoryx resume                                       # print `claude --resume …` / `codex resume …`
 ```
@@ -71,6 +97,7 @@ agoryx open         # opens the browser with a one-time login link
   (commands, edits), the files it changed, and what it put on the table. Live turns stream in.
 - **Стіл**: questions with their options, notes, evidence and previews. The "Де ми зараз" rail
   shows decisions, settled items and facts, next steps and open questions.
+- **Документ**: the room's canonical file, its revision history with diffs, and an editor.
 - Table ids in messages (`P1`, `X1` …) link to the table. The header links to the workspace files,
   the native sessions and the room settings.
 
@@ -143,6 +170,7 @@ State lives in `$AGORYX_HOME` (default `~/.local/state/agoryx/agora`):
 | `internal/agora/prompts.ts` | Briefing (first turn) and delta prompts |
 | `internal/agora/runners/{claude,codex}.ts` | Native CLI runners: session ids, stream parsing, activity traces |
 | `internal/agora/native.ts` | Finds and reads the agents' native session files; imports turns taken outside the room |
+| `internal/agora/doc.ts` | The canonical file: path rules, reading, line diff, baseline revision |
 | `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim |
 | `internal/agora/store.ts`, `projection.ts` | JSONL event log and state projection |
 | `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |

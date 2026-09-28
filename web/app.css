@@ -343,6 +343,53 @@ details summary{font-size:13px;margin-bottom:8px}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--bg);border-radius:10px;padding:9px 14px;font-size:13.5px;z-index:60;box-shadow:var(--shadow);max-width:calc(100vw - 32px)}
 .toast.err{background:var(--warn);color:#fff}
 
+/* ---------- document (the room's canonical file) ---------- */
+.dview{height:100%;overflow:auto}
+.plus,.minus{font-family:var(--mono);font-size:.92em;font-variant-numeric:tabular-nums}
+.plus{color:var(--add-ink)}.minus{color:var(--del-ink)}
+.pill.doc{background:var(--paper2);border:1px solid var(--rule);font-family:var(--mono);font-size:11.5px}
+.pill.doc:hover{border-color:var(--fact);color:var(--ink)}
+.docl .tag{color:var(--fact);background:color-mix(in srgb,var(--fact) 13%,transparent)}
+.linkish{font-family:var(--mono);font-size:12.5px;color:var(--ink);text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px}
+.linkish:hover{color:var(--sage);text-decoration-color:var(--sage)}
+.docmain{gap:18px}
+.docbar,.paper,.docedit,.docmain>.code,.docmain>p,.docmain>.err-box{max-width:780px;width:100%;margin:0 auto}
+.docbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px;color:var(--soft)}
+.docbar .path{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12.5px;color:var(--ink);background:var(--paper);border:1px solid var(--rule);border-radius:8px;padding:3px 9px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.docbar .who{display:inline-flex;align-items:center;gap:7px;color:var(--ink)}
+.docbar .grow,.docedit .grow{flex:1}
+.paper{background:var(--paper);border:1px solid var(--rule);border-radius:14px;box-shadow:var(--shadow);padding:40px 52px 48px}
+.paper>p{margin:0}
+.doctxt{font-family:var(--serif);font-size:16.5px;line-height:1.72;margin:0}
+.doctxt h1,.doctxt h2,.doctxt h3,.doctxt h4{font-family:var(--serif);text-wrap:balance;line-height:1.25;margin:1.3em 0 .45em}
+.doctxt h1{font-size:30px;font-weight:500;letter-spacing:-.015em}
+.doctxt h2{font-size:22px;font-weight:500}
+.doctxt h3{font-size:18px;font-weight:600}
+.doctxt h4{font-size:16px;font-weight:600}
+.doctxt>*:first-child{margin-top:0}
+.doctxt p,.doctxt li,.doctxt blockquote{max-width:68ch}
+.doctxt hr{border:0;border-top:1px solid var(--rule);margin:1.6em 0}
+.doctxt code{font-size:.8em}
+.code.diff td{white-space:pre-wrap;overflow-wrap:anywhere}
+.code.diff td.ln{white-space:pre;overflow-wrap:normal}
+.docedit{display:flex;flex-direction:column;gap:12px}
+.doced{width:100%;min-height:62vh;resize:vertical;border:1px solid var(--rule);border-radius:12px;background:var(--paper);padding:18px 20px;font-family:var(--mono);font-size:13.5px;line-height:1.6;color:var(--ink);box-shadow:var(--shadow)}
+.doced:focus{outline:2px solid var(--sage);outline-offset:1px}
+.docedit .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.docedit .hint{font-size:12.5px}
+#docNote:empty{display:none}
+.docnote{font-size:13px;color:var(--note-ink);background:var(--note);border-radius:10px;padding:9px 12px}
+.docnote.err-box{color:var(--warn);background:var(--warn-bg)}
+.docnote .row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.rail .revs{gap:2px}
+.rail .revs li{display:block}
+.rev{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:9px;align-items:start;width:100%;text-align:left;padding:7px 8px;border-radius:9px;font-size:13.5px}
+.rev:hover{background:var(--hover)}
+.rev.on{background:var(--sel)}
+.rev .rw{min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:0 6px}
+.rev .rw small{flex-basis:100%;margin-top:1px}
+.rev .rs{font-size:12px;white-space:nowrap;padding-top:2px}
+
 .scrimnav{display:none}
 @media (max-width:1200px){
   .tbl{grid-template-columns:minmax(0,1fr)}
@@ -367,5 +414,8 @@ details summary{font-size:13px;margin-bottom:8px}
   .ctools .hint{display:none}
   .sh-b{padding:16px}
   .tool .tl{display:none}
+  .paper{padding:22px 18px 28px}
+  .doctxt{font-size:15.5px}
+  .doctxt h1{font-size:25px}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

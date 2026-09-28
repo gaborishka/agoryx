@@ -73,6 +73,14 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
     "- Each run has a turn budget; the prompt says how many turns remain. Converge or leave a clear state before it runs out.",
     "- Reply in the language the human writes in.",
     "",
+    ...(state.settings.doc
+      ? [
+          `The room's canonical file: ${state.settings.doc} (in the workspace)`,
+          "  The one text this room is making. Anyone edits it, with their own tools, when the conversation changes what it should say — there is no owner and no turn order for it.",
+          "  Keep it the current version, not a log: the conversation and git hold the history. When others change it, your next turn shows you the diff.",
+          "",
+        ]
+      : []),
     "The table — shared structure for decisions with real alternatives (use it when it helps; plain conversation is fine otherwise):",
     `  ${agentCli} table ask "question"`,
     `  ${agentCli} table propose "short title" --body "what and why" [--file path/in/workspace] [--q Q1]`,
@@ -101,10 +109,12 @@ interface DeltaOptions {
    * what was said in its previous native session, since this session has none of it.
    */
   replayOwn?: boolean;
+  /** What changed in the canonical file since this agent last looked (built by the engine). */
+  doc?: string | null;
 }
 
 /** Everything others did since this agent's last turn, rendered as a thin transcript. */
-export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false }: DeltaOptions): string => {
+export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false, doc = null }: DeltaOptions): string => {
   const blocks: string[] = [];
   const opsByTurn = new Map<string, TableOp[]>();
   const filesByTurn = new Map<string, string[]>();
@@ -181,6 +191,8 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false 
   if (body.length > MAX_DELTA_CHARS) {
     body = `[… earlier part of the conversation omitted — ${body.length - MAX_DELTA_CHARS} chars]\n${body.slice(-MAX_DELTA_CHARS)}`;
   }
+  // The file's current state, not a moment in the transcript: it goes last.
+  if (doc) body = body ? `${body}\n\n${doc}` : doc;
 
   const footer: string[] = [];
   const table = summarizeTable(state.table);
@@ -205,7 +217,7 @@ const nativeWhere = (state: RoomState, source: string, author: string, reader: R
 };
 
 export const buildTurnPrompt = (
-  input: BriefingInput & { events: RoomEvent[]; turnsLeft: number; fresh: boolean; rejoin: boolean },
+  input: BriefingInput & { events: RoomEvent[]; turnsLeft: number; fresh: boolean; rejoin: boolean; doc?: string | null },
 ): string => {
   const delta = buildDelta({
     state: input.state,
@@ -213,6 +225,7 @@ export const buildTurnPrompt = (
     agent: input.agent,
     turnsLeft: input.turnsLeft,
     replayOwn: input.rejoin,
+    doc: input.doc ?? null,
   });
   if (!input.fresh) return delta;
   const intro = input.rejoin

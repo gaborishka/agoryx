@@ -231,6 +231,44 @@ test("settings are validated; an unknown action is 404", async () => {
   assert.equal((await call("GET", "/api/rooms/no-such-room")).status, 404);
 });
 
+test("the canonical file: read it, edit it against a base, see each revision's diff", async () => {
+  const room = await newRoom("Daemon doc");
+  const first = await call("GET", `/api/rooms/${room.id}/doc`);
+  assert.equal(first.status, 200, first.body);
+  const doc = first.json<{ path: string; text: string; hash: string; exists: boolean }>();
+  assert.deepEqual([doc.path, doc.text, doc.exists], ["README.md", "# Daemon doc\n", true]);
+
+  const saved = await call("POST", `/api/rooms/${room.id}/doc`, { body: { text: "# Daemon doc\n\nA line.\n", base: doc.hash } });
+  assert.equal(saved.status, 200, saved.body);
+  const { revision } = saved.json<{ revision: { seq: number; by: string; added: number } }>();
+  assert.deepEqual([revision.by, revision.added], ["Ivan", 2]);
+
+  const stale = await call("POST", `/api/rooms/${room.id}/doc`, { body: { text: "overwrite", base: doc.hash } });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.json<{ current: { text: string } }>().current.text, "# Daemon doc\n\nA line.\n");
+  assert.equal((await call("POST", `/api/rooms/${room.id}/doc`, { body: { text: 1 } })).status, 400);
+
+  const rev = (await call("GET", `/api/rooms/${room.id}/doc?rev=${revision.seq}`)).json<any>();
+  assert.equal(rev.text, "# Daemon doc\n\nA line.\n");
+  assert.deepEqual(
+    rev.diff.filter((item: any) => item.t && item.t !== " "),
+    [
+      { t: "+", s: "" },
+      { t: "+", s: "A line." },
+    ],
+  );
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+  assert.deepEqual(
+    snap.state.docRevisions.map((entry: any) => entry.by),
+    ["agoryx", "Ivan"],
+  );
+  assert.equal(snap.state.runs.length, 0, "an edit wakes nobody");
+
+  const bare = await newRoom("Daemon no doc", { doc: "" });
+  assert.equal((await call("GET", `/api/rooms/${bare.id}/doc`)).status, 404);
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "Bad doc", doc: "../up.md" } })).status, 400);
+});
+
 test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .git and symlink escapes", async () => {
   const room = await newRoom("Daemon raw");
   const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();

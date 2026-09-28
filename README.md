@@ -237,7 +237,7 @@ Create a config file to customize defaults:
 ```bash
 npm run typecheck    # Type check
 npm test             # Run all tests
-npm run build        # Production build
+npm run build        # Production build: CLI and the web UI
 npm run verify       # Release gate: typecheck + build + test
 ```
 

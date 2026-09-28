@@ -2,13 +2,14 @@ import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { baselineRevision, docWritable, normalizeDocPath } from "./doc.js";
+import { createRoomWorktree, removeRoomWorktree } from "./folders.js";
 import { RoomEngine } from "./engine.js";
 import { defaultWorkspaceRoot, roomsDir, shimDir } from "./paths.js";
 import { createClaudeRunner } from "./runners/claude.js";
 import { createCodexRunner } from "./runners/codex.js";
 import type { AgentRunner } from "./runners/types.js";
 import { newRoomId, RoomStore, slugify } from "./store.js";
-import { DEFAULT_SETTINGS, type AgentKind, type RoomAgent, type RoomSettings } from "./types.js";
+import { DEFAULT_SETTINGS, type AgentKind, type RoomAgent, type RoomSettings, type RoomWorktree } from "./types.js";
 import { ensureAgentShim, prepareWorkspace } from "./workspace.js";
 
 export const DEFAULT_DOC = "README.md";
@@ -37,6 +38,10 @@ export const defaultHumanName = (env: NodeJS.ProcessEnv = process.env): string =
 export interface CreateRoomOptions {
   name: string;
   dir?: string;
+  /** Work in a new git worktree of `dir` (its own branch), shared by every agent in the room. */
+  worktree?: boolean;
+  /** Branch or commit the worktree starts from. Default: the branch checked out in `dir`. */
+  base?: string;
   human?: string;
   agents?: RoomAgent[];
   budget?: number;
@@ -74,6 +79,7 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
   // True only when Agoryx picked the directory. One the human names stays theirs even if it is empty:
   // no git init, no default document, no automatic commits unless asked.
   let createdWorkspace: boolean;
+  if (options.worktree && !options.dir) throw new Error("a worktree needs a folder in a git repository");
   if (options.dir) {
     workspace = resolve(options.dir);
     createdWorkspace = false;
@@ -119,6 +125,46 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     autoCommit: options.autoCommit ?? createdWorkspace,
     doc,
   };
+  // Last, after everything that can refuse the room: a refused room leaves no branch behind.
+  let worktree: RoomWorktree | undefined;
+  if (options.worktree) {
+    const made = createRoomWorktree(workspace, { name, id, ...(options.base ? { base: options.base } : {}), env });
+    workspace = made.workspace;
+    worktree = made.worktree;
+    // The branch is the room's own: checkpoints there touch nothing the human is working on.
+    if (options.autoCommit === undefined) settings.autoCommit = true;
+  }
+  try {
+    return finishRoom({ id, name, workspace, createdWorkspace, worktree, human, agents, settings, doc, env });
+  } catch (error) {
+    if (worktree) removeRoomWorktree(worktree);
+    throw error;
+  }
+};
+
+const finishRoom = ({
+  id,
+  name,
+  workspace,
+  createdWorkspace,
+  worktree,
+  human,
+  agents,
+  settings,
+  doc,
+  env,
+}: {
+  id: string;
+  name: string;
+  workspace: string;
+  createdWorkspace: boolean;
+  worktree: RoomWorktree | undefined;
+  human: string;
+  agents: RoomAgent[];
+  settings: RoomSettings;
+  doc: string | null;
+  env: NodeJS.ProcessEnv;
+}): RoomStore => {
   prepareWorkspace(workspace, { initGit: createdWorkspace });
   if (doc && !lstatSync(join(workspace, doc), { throwIfNoEntry: false })) {
     // Never through a symlinked folder that leads out of the workspace.
@@ -132,6 +178,7 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     name,
     workspace,
     createdWorkspace,
+    ...(worktree ? { worktree } : {}),
     human,
     agents,
     settings,

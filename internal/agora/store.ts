@@ -21,6 +21,7 @@ import type {
   RoomEventBody,
   RoomSettings,
   RoomState,
+  RoomWorktree,
 } from "./types.js";
 
 export type StoreListener = (event: RoomEvent | EphemeralEvent) => void;
@@ -29,6 +30,7 @@ export interface CreateRoomInput {
   name: string;
   workspace: string;
   createdWorkspace: boolean;
+  worktree?: RoomWorktree;
   human: string;
   agents: RoomAgent[];
   settings: RoomSettings;
@@ -44,6 +46,10 @@ export interface RoomSummary {
   messages: number;
   lastMessage?: { author: string; text: string };
   running: boolean;
+  /** The folder the human started the room in; absent when Agoryx made one. */
+  folder?: string;
+  /** The room's own branch, when it works in a worktree. */
+  branch?: string;
 }
 
 const EVENTS_FILE = "events.jsonl";
@@ -119,6 +125,7 @@ export class RoomStore {
       name: input.name,
       workspace: input.workspace,
       createdWorkspace: input.createdWorkspace,
+      ...(input.worktree ? { worktree: input.worktree } : {}),
       human: input.human,
       agents: input.agents,
       settings: input.settings,
@@ -212,6 +219,11 @@ export class RoomStore {
       messages: this.state.messages.filter((message) => message.kind !== "pass").length,
       ...(last ? { lastMessage: { author: last.author, text: last.text.slice(0, 200) } } : {}),
       running: this.state.turns.some((turn) => turn.status === "running"),
+      ...(this.state.worktree
+        ? { folder: this.state.worktree.source, branch: this.state.worktree.branch }
+        : this.state.createdWorkspace
+          ? {}
+          : { folder: this.state.workspace }),
     };
   }
 

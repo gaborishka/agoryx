@@ -56,19 +56,28 @@ const changedLine = (turnId: string, entry: TurnFiles): string => {
   return `   ↳ changed: ${shown.join(", ")}${more} — the exact diff: agoryx diff ${turnId}`;
 };
 
+/**
+ * The two lines that nudge agents to disagree rather than agree for politeness. On by default;
+ * AGORYX_PROMPT_NORMS=off drops them, for control runs that test whether agents object unprompted.
+ */
+export const promptNorms = (env: NodeJS.ProcessEnv = process.env): boolean => env.AGORYX_PROMPT_NORMS?.trim().toLowerCase() !== "off";
+
 export interface BriefingInput {
   state: RoomState;
   agent: RoomAgent;
   /** How agents invoke the room tools; `path` is the absolute fallback if PATH is reset. */
   agentCli: { command: string; path?: string };
+  /** The room's environment, for AGORYX_PROMPT_NORMS; the host's when not given. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
  * First-turn context. Deliberately no role: who is here, where the work lives,
  * how turns and passing work, and how to use the table.
  */
-export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): string => {
+export const buildBriefing = ({ state, agent, agentCli: cli, env }: BriefingInput): string => {
   const agentCli = cli.command;
+  const norms = promptNorms(env);
   const others = state.agents.filter((entry) => entry.id !== agent.id);
   const peers = others.map((entry) => `${entry.label} (@${entry.id})`).join(", ");
   const access =
@@ -89,10 +98,11 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
     "- Each turn you get only what is new since your last turn. Your final message is posted to the room; your tool calls show up to others as a short activity trace.",
     "- When the human writes, agents answer in parallel without seeing each other first — give your own independent view, not a guess at the consensus.",
     "- After that the agents take turns, one at a time: when you speak, you have seen everything said before you. It is one conversation — answer the latest state, not an old message.",
-    `- Nothing substantive to add? Reply exactly ${PASS_TOKEN} and nothing else. Silence is fine; agreeing for politeness is noise.`,
-    "- Disagree when you disagree, and say what would change your mind. An unresolved disagreement, stated clearly, is a valid outcome.",
+    `- Nothing substantive to add? Reply exactly ${PASS_TOKEN} and nothing else.${norms ? " Silence is fine; agreeing for politeness is noise." : ""}`,
+    `  A turn that would only thank, acknowledge, sum up what is already said, or tidy the table is a pass: make the table moves, then reply ${PASS_TOKEN}.`,
+    ...(norms ? ["- Disagree when you disagree, and say what would change your mind. An unresolved disagreement, stated clearly, is a valid outcome."] : []),
     `- Address someone with @name. ${state.human} is a participant, not a gatekeeper: you don't need permission to do the work being discussed.`,
-    "- Each run has a turn budget; the prompt says how many turns remain. Converge or leave a clear state before it runs out.",
+    "- Each run has a turn budget; the prompt says how many turns remain. Converge or leave a clear state before it runs out — once it is clear, pass: the room goes quiet when everyone passes, and unused turns are fine.",
     "- Reply in the language the human writes in.",
     "",
     ...(state.settings.doc
@@ -116,7 +126,9 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
     `  ${agentCli} table propose "short title" --body "what and why (markdown)" [--file path/in/workspace] [--q Q1]`,
     "    (a long body with a diagram: write it to a file and pass --body-file notes.md, or pipe it with --body -)",
     `  ${agentCli} table object P1 "reason"   |   support P1 "reason"   |   evidence P1 "finding" --source <url|path>`,
-    `  ${agentCli} table settle "what is now established"   |   fact "a checked fact"   |   next "concrete next step"   |   done X1`,
+    `  ${agentCli} table settle "what is now established" [--q Q1]   |   fact "a checked fact"   |   next "concrete next step"   |   done X1`,
+    "    (settle --q Q1 when the conclusion answers an open question: it closes Q1 with that answer)",
+    `  ${agentCli} table concede "what I no longer hold, and why" [--on P1]   (an argument changed your mind: record it, don't just agree in prose)`,
     `  ${agentCli} table decide P1 --note "why"   (when the room has actually converged, or the human asked you to decide)`,
     `  ${agentCli} table show`,
     "  One op per command, not chained with && or ; — each runs without an approval prompt that way.",
@@ -132,8 +144,12 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
     "- ```html fences render live in a sandbox: a whole self-contained page — inline CSS/JS, CDN scripts are fine — for",
     "  charts, interactive prototypes, visual comparisons. ```svg fences render as pictures.",
     "- Code fences with a language are highlighted. Tables in markdown render as tables.",
-    "- ![caption](path/in/workspace) embeds a workspace file: images show inline, .html/.svg/.pdf render live, anything",
-    "  else opens as a file. Make the artifact with your own tools (a script that plots a PNG, an HTML page) and embed it.",
+    "- ![caption](path/in/workspace) embeds a workspace file: images show inline, .html/.svg/.pdf render live, video and",
+    "  audio play, .csv/.tsv show as tables, anything else opens as a file. Make the artifact with your own tools (a script",
+    "  that plots a PNG, an HTML page, a CSV of results) and embed it. A file elsewhere (/tmp, a generated image) embeds by",
+    "  its absolute path and shows from there for as long as it exists; the other agents get only the path, so a file they",
+    "  should open too belongs in the workspace. Files your turn creates show up under your message too, but an embed puts",
+    "  the picture where your words point to it.",
     "- A proposal with --file gets the same live preview on the table — put the mockup or chart on the option it argues for.",
     "Use this when a picture carries the point better than a paragraph; plain text is still the default.",
   ].join("\n");
@@ -249,10 +265,10 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
   if (table) footer.push(`The table now (\`agoryx table show\` for bodies and notes):\n${table}`);
   footer.push(
     turnsLeft <= 0
-      ? "This is the last agent turn of this run — leave the room in a clear state."
+      ? `This is the last agent turn of this run. If the room is not in a clear state yet, leave it clear; if it already is, ${PASS_TOKEN}.`
       : `Turns left in this run after yours: ${turnsLeft}.`,
   );
-  footer.push(`Reply to the room, or ${PASS_TOKEN}.`);
+  footer.push(`Reply to the room, or ${PASS_TOKEN} if you would only acknowledge, thank or repeat.`);
 
   return [`[agoryx · ${state.name} · new since your last turn]`, "", body || "(nothing new — you were asked to continue)", "", footer.join("\n")].join("\n");
 };

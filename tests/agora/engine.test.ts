@@ -4,10 +4,12 @@ import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 
 import { join } from "node:path";
 import { test } from "node:test";
 import { RoomEngine, RoomLockedError } from "../../internal/agora/engine.js";
+import { promptNorms } from "../../internal/agora/prompts.js";
 import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { createCodexRunner } from "../../internal/agora/runners/codex.js";
 import { eventPatch } from "../../internal/agora/snapshot.js";
 import { RoomStore } from "../../internal/agora/store.js";
+import { openOnTable, renderTableMarkdown, summarizeTable } from "../../internal/agora/table.js";
 import { createTestRoom, tableOutputs, withTimeout } from "./helpers.js";
 
 const kinds = (room: ReturnType<typeof createTestRoom>) =>
@@ -72,6 +74,43 @@ test("blind first round, then each agent sees the other and passes → quiet", a
   }
 });
 
+test("media an agent made outside the workspace is shown from where it is, not copied", async () => {
+  const room = createTestRoom({
+    rules: [
+      { agent: "codex", match: "moon", image: "PNG-BYTES", reply: "🌕" },
+      { agent: "codex", match: "sun", image: "SUN", reply: "::pass::" },
+      { agent: "codex", match: "chart", reply: "Here: ![chart](/tmp/elsewhere/chart.png) and [data](file:///tmp/elsewhere/data.csv)." },
+    ],
+  });
+  const embeds = (text: string) => [...text.matchAll(/!\[\]\(([^)]+)\)/g)].map((match) => decodeURI(match[1]!));
+  const lastCodex = () => room.store.state.messages.filter((message) => message.author === "codex" && message.kind === "agent").at(-1)!;
+  try {
+    room.engine.postHuman("@codex draw the moon");
+    await withTimeout(room.engine.waitIdle());
+    const moon = lastCodex();
+    assert.match(moon.text, /^🌕\n\n!\[\]\(\/.+\/generated_images\/.+\.png\)$/);
+    const [moonPath] = embeds(moon.text);
+    assert.ok(moonPath!.startsWith(room.env.CODEX_HOME!), "embedded from Codex's own folder");
+    assert.equal(readFileSync(moonPath!, "utf8"), "PNG-BYTES");
+
+    // A reply that would be a pass still carries the image; an older image is not picked up again.
+    room.engine.postHuman("@codex now the sun");
+    await withTimeout(room.engine.waitIdle());
+    const sun = lastCodex();
+    assert.notEqual(sun.id, moon.id);
+    assert.equal(embeds(sun.text).length, 1);
+    assert.equal(readFileSync(embeds(sun.text)[0]!, "utf8"), "SUN");
+
+    // Links to files elsewhere stay as the agent wrote them; nothing is brought into the workspace.
+    room.engine.postHuman("@codex make the chart");
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(lastCodex().text, "Here: ![chart](/tmp/elsewhere/chart.png) and [data](file:///tmp/elsewhere/data.csv).");
+    assert.ok(!existsSync(join(room.store.state.workspace, ".agoryx", "media")));
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("turn budget ends a run that would otherwise never converge", async () => {
   const room = createTestRoom({
     settings: { budget: 5 },
@@ -85,10 +124,46 @@ test("turn budget ends a run that would otherwise never converge", async () => {
     assert.equal(state.runs.at(-1)?.endReason, "budget");
     const last = state.messages.at(-1)!;
     assert.equal(last.kind, "system");
-    assert.match(last.text, /Turn budget reached/);
+    assert.match(last.text, /Turn budget reached \(5 agent turns\)\. Nothing is left open on the table/);
     // Prompts count down the remaining budget.
     const prompts = [...room.invocations("claude"), ...room.invocations("codex")].map((entry) => entry.prompt!);
     assert.ok(prompts.some((prompt) => /Turns left in this run after yours: \d/.test(prompt)));
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a budget stop names what the table still holds open", async () => {
+  const room = createTestRoom({ settings: { budget: 3 }, rules: [{ reply: "I still disagree." }] });
+  try {
+    room.engine.tableOp({ op: "ask", text: "Name?" }, "claude");
+    room.engine.tableOp({ op: "propose", title: "Agora", q: "Q1" }, "codex");
+    await withTimeout(room.engine.waitIdle());
+    room.engine.postHuman("Argue forever");
+    await withTimeout(room.engine.waitIdle());
+    const last = room.store.state.messages.at(-1)!;
+    assert.match(last.text, /Still open on the table: 1 open question, 1 undecided proposal — write anything/);
+    // A turn that would only acknowledge is asked to be a pass, so a settled room goes quiet by itself.
+    const prompts = room.invocations("claude").map((entry) => entry.prompt!);
+    assert.ok(prompts.some((prompt) => prompt.includes("or tidy the table is a pass")));
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("the disagreement norms are on unless a control run switches them off", () => {
+  assert.deepEqual([promptNorms({}), promptNorms({ AGORYX_PROMPT_NORMS: "on" })], [true, true]);
+  assert.equal(promptNorms({ AGORYX_PROMPT_NORMS: "OFF" }), false);
+});
+
+test("a control run switches the norms off through the room's own environment", async () => {
+  const room = createTestRoom({ env: { AGORYX_PROMPT_NORMS: "off" } });
+  try {
+    room.engine.postHuman("Pick a name");
+    await withTimeout(room.engine.waitIdle());
+    const prompts = room.invocations("claude").map((entry) => entry.prompt!);
+    assert.ok(prompts.length > 0);
+    assert.ok(prompts.every((prompt) => !prompt.includes("agreeing for politeness") && !prompt.includes("Disagree when you disagree")));
   } finally {
     await room.cleanup();
   }
@@ -234,6 +309,41 @@ test("reopening the chosen option reopens its question, so it can be decided aga
     room.engine.tableOp({ op: "decide", target: "P1", note: "again" });
     await withTimeout(room.engine.waitIdle());
     assert.equal(room.store.state.table.questions[0]?.status, "decided");
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a settled conclusion can answer a question, and a concession is kept on the table", async () => {
+  const room = createTestRoom({ rules: [{ reply: "::pass::" }] });
+  try {
+    room.engine.tableOp({ op: "ask", text: "Is time frozen in the Wheeler–DeWitt picture?" }, "claude");
+    room.engine.tableOp({ op: "propose", title: "Time is an illusion", q: "Q1" }, "claude");
+    room.engine.tableOp({ op: "object", target: "P1", text: "HΨ=0 is a constraint, not a frozen world" }, "codex");
+    room.engine.tableOp({ op: "concede", text: "I overstated it: the constraint does not freeze anything", target: "P1" }, "claude");
+    room.engine.tableOp({ op: "settle", text: "Time is relational, not absent", q: "q1" }, "codex");
+    await withTimeout(room.engine.waitIdle());
+    const table = room.store.state.table;
+    assert.equal(table.questions[0]?.status, "answered");
+    assert.equal(table.questions[0]?.answer, "S1");
+    assert.equal(table.settled[0]?.q, "Q1");
+    assert.deepEqual(
+      table.shifts.map((shift) => [shift.id, shift.by, shift.target]),
+      [["C1", "claude", "P1"]],
+    );
+    assert.deepEqual(openOnTable(table), { questions: 0, options: 0, steps: 0 });
+    assert.match(summarizeTable(table)!, /changed minds: C1 claude on P1/);
+    assert.match(renderTableMarkdown(table, "time"), /answered → S1/);
+    assert.match(renderTableMarkdown(table, "time"), /## Changed minds/);
+
+    assert.throws(() => room.engine.tableOp({ op: "settle", text: "again", q: "Q1" }), /Q1 is already answered/);
+    assert.throws(() => room.engine.tableOp({ op: "decide", target: "P1" }), /Q1 is already answered/);
+    assert.throws(() => room.engine.tableOp({ op: "concede", text: "nothing", target: "P9" }), /no P9/);
+
+    room.engine.tableOp({ op: "reopen", target: "Q1" });
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(room.store.state.table.questions[0]?.status, "open");
+    assert.equal(room.store.state.table.questions[0]?.answer, undefined);
   } finally {
     await room.cleanup();
   }

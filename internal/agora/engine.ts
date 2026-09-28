@@ -1,12 +1,13 @@
 import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
+import { embed } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
 import { truncate, type AgentRunner, type TurnResult } from "./runners/types.js";
 import type { RoomStore } from "./store.js";
-import { describeTableOp, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
+import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
 import type {
   Activity,
   AgentKind,
@@ -589,8 +590,17 @@ export class RoomEngine {
       turns: run.used,
     });
     if (blockedByBudget) {
+      const open = openOnTable(this.state.table);
+      const count = (n: number, one: string, many: string) => (n ? [`${n} ${n === 1 ? one : many}`] : []);
+      const left = [
+        ...count(open.questions, "open question", "open questions"),
+        ...count(open.options, "undecided proposal", "undecided proposals"),
+        ...count(open.steps, "step to do", "steps to do"),
+      ];
       this.postSystem(
-        `Turn budget reached (${run.used} agent turns). The run paused with things still open — write anything, or ask for another round, to continue.`,
+        left.length
+          ? `Turn budget reached (${run.used} agent turns). Still open on the table: ${left.join(", ")} — write anything, or ask for another round, to continue.`
+          : `Turn budget reached (${run.used} agent turns). Nothing is left open on the table — write anything to continue.`,
         false,
       );
     }
@@ -680,6 +690,7 @@ export class RoomEngine {
         state: this.state,
         agent,
         agentCli: this.agentCliHint(),
+        env: this.env,
         events: this.store.since(rejoin ? 0 : fromSeq).filter((event) => event.seq <= cursor),
         turnsLeft,
         fresh,
@@ -786,7 +797,12 @@ export class RoomEngine {
     let messageId: string | undefined;
     let status: "ok" | "pass" | "error" | "interrupted" = result.status;
     if (result.status === "ok") {
-      const note = passNote(result.text);
+      // Images Codex's image_gen made stay where Codex saved them; the message embeds them from there.
+      const images = result.images ?? [];
+      const pass = passNote(result.text);
+      // An agent that only made an image still said something: show it, with the pass note (if any) as the caption.
+      const note = images.length ? null : pass;
+      const said = images.length && pass !== null ? pass : result.text.trim();
       if (note !== null) {
         status = "pass";
         messageId = this.postMessage({ author: agent.id, kind: "pass", text: note, mentions: [], wakes: false, turnId, runId }).id;
@@ -795,8 +811,8 @@ export class RoomEngine {
         messageId = this.postMessage({
           author: agent.id,
           kind: "agent",
-          text: result.text.trim(),
-          mentions: parseMentions(result.text, handles),
+          text: [said, ...images.filter((path) => !said.includes(path) && !said.includes(encodeURI(path))).map(embed)].filter(Boolean).join("\n\n"),
+          mentions: parseMentions(said, handles),
           wakes: true,
           turnId,
           runId,

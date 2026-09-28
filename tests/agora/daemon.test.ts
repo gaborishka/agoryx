@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +25,7 @@ let port: number;
 const call = (
   method: string,
   path: string,
-  options: { token?: string | null; host?: string; origin?: string; body?: unknown } = {},
+  options: { token?: string | null; host?: string; origin?: string; body?: unknown; headers?: Record<string, string> } = {},
 ): Promise<Reply> =>
   new Promise((resolve, reject) => {
     const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
@@ -40,6 +41,7 @@ const call = (
           ...(token ? { "x-agoryx-token": token } : {}),
           ...(options.origin ? { origin: options.origin } : {}),
           ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
+          ...options.headers,
         },
       },
       (res) => {
@@ -365,6 +367,20 @@ test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .gi
     assert.equal((await call("GET", `${snap.rawBase}..%2F..%2Fetc%2Fpasswd`, { token: null })).status, 404);
     assert.equal((await call("POST", `${snap.rawBase}site/index.html`, { token: null, body: {} })).status, 405);
 
+    // Media seeks by range (Safari will not play video without it).
+    writeFileSync(join(room.workspace, "clip.mp4"), "0123456789");
+    const whole = await call("GET", `${snap.rawBase}clip.mp4`, { token: null });
+    assert.equal(whole.status, 200);
+    assert.equal(whole.body, "0123456789");
+    assert.equal(whole.headers["accept-ranges"], "bytes");
+    assert.equal(whole.headers["content-type"], "video/mp4");
+    const part = await call("GET", `${snap.rawBase}clip.mp4`, { token: null, headers: { range: "bytes=2-5" } });
+    assert.equal(part.status, 206);
+    assert.equal(part.body, "2345");
+    assert.equal(part.headers["content-range"], "bytes 2-5/10");
+    assert.equal((await call("GET", `${snap.rawBase}clip.mp4`, { token: null, headers: { range: "bytes=-3" } })).body, "789");
+    assert.equal((await call("GET", `${snap.rawBase}clip.mp4`, { token: null, headers: { range: "bytes=20-" } })).status, 416);
+
     const file = await call("GET", `/api/rooms/${room.id}/file?path=escape/secret.txt`);
     assert.equal(file.status, 404);
 
@@ -375,6 +391,38 @@ test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .gi
     assert.equal((await call("GET", `${snap.rawBase}site%2F..%2F.git%2Fconfig`, { token: null })).status, 404);
     assert.equal((await call("GET", `/api/rooms/${room.id}/file?path=gitlink/config`)).status, 404);
     assert.equal((await call("GET", `/api/rooms/${room.id}/file?path=.git/config`)).status, 404);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("media outside the workspace is served only while a message in the room links it", async () => {
+  const room = await newRoom("Daemon outside media");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();
+  const outside = mkdtempSync(join(tmpdir(), "agora-media-"));
+  writeFileSync(join(outside, "moon pic.png"), "PNG");
+  writeFileSync(join(outside, "other.png"), "OTHER");
+  writeFileSync(join(outside, "notes.txt"), "private");
+  symlinkSync(join(outside, "notes.txt"), join(outside, "sneaky.png"));
+  const abs = (name: string) => `${snap.rawBase}~abs${encodeURI(join(outside, name))}`;
+  try {
+    assert.equal((await call("GET", abs("moon pic.png"), { token: null })).status, 404, "not linked yet");
+    const text = `Look: ![moon](${encodeURI(join(outside, "moon pic.png"))}) [notes](${join(outside, "notes.txt")}) ![x](${join(outside, "sneaky.png")})`;
+    assert.equal((await call("POST", `/api/rooms/${room.id}/messages`, { body: { text } })).status, 201);
+
+    const moon = await call("GET", abs("moon pic.png"), { token: null });
+    assert.equal(moon.status, 200);
+    assert.equal(moon.body, "PNG");
+    assert.equal(moon.headers["content-type"], "image/png");
+    assert.equal((await call("GET", abs("other.png"), { token: null })).status, 404, "a file no message links");
+    assert.equal((await call("GET", abs("notes.txt"), { token: null })).status, 404, "linked, but not media");
+    assert.equal((await call("GET", abs("sneaky.png"), { token: null })).status, 404, "a media name over some other file");
+    const wrongKey = snap.rawBase.replace(/[0-9a-f]{32}/, "0".repeat(32));
+    assert.equal((await call("GET", `${wrongKey}~abs${encodeURI(join(outside, "moon pic.png"))}`, { token: null })).status, 404);
+
+    // Gone from disk is gone from the room: nothing was copied.
+    rmSync(join(outside, "moon pic.png"));
+    assert.equal((await call("GET", abs("moon pic.png"), { token: null })).status, 404);
   } finally {
     rmSync(outside, { recursive: true, force: true });
   }
@@ -421,9 +469,93 @@ test("static UI is served with a CSP; unknown paths fall back to the app shell",
   const index = await call("GET", "/", { token: null });
   assert.equal(index.status, 200);
   assert.match(String(index.headers["content-security-policy"]), /frame-ancestors 'none'/);
-  assert.equal((await call("GET", "/app.js", { token: null })).status, 200);
+  // Whichever page is served (ui/dist or web/), the script it references must load.
+  const script = /<script[^>]*\ssrc="(\/[^"]+\.js)"/.exec(String(index.body))?.[1];
+  assert.ok(script, "index.html references a script");
+  assert.equal((await call("GET", script, { token: null })).status, 200);
   assert.equal((await call("GET", "/../package.json", { token: null })).status, 404);
   const route = await call("GET", "/rooms/whatever", { token: null });
   assert.equal(route.status, 200);
   assert.equal(route.body, index.body);
+});
+
+const gitIn = (cwd: string, ...args: string[]) =>
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
+
+const makeRepo = (name: string) => {
+  const repo = join(home, name);
+  mkdirSync(join(repo, "src"), { recursive: true });
+  gitIn(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "src", "a.txt"), "main\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "commit", "-q", "-m", "first");
+  gitIn(repo, "branch", "feature");
+  gitIn(repo, "checkout", "-q", "feature");
+  writeFileSync(join(repo, "src", "a.txt"), "feature\n");
+  gitIn(repo, "commit", "-q", "-am", "on feature");
+  gitIn(repo, "checkout", "-q", "main");
+  return repo;
+};
+
+test("a room can work in its own git worktree, shared by both agents", async () => {
+  const repo = makeRepo("wt-repo");
+  const reply = await call("POST", "/api/rooms", { body: { name: "Worktree room", dir: repo, worktree: true, base: "feature" } });
+  assert.equal(reply.status, 201, reply.body);
+  const { room } = reply.json<{ room: { id: string; workspace: string; folder?: string; branch?: string } }>();
+  assert.equal(room.folder, repo);
+  assert.equal(room.branch, "agoryx/worktree-room");
+  assert.ok(room.workspace.includes(join("agora", "worktrees")), room.workspace);
+  // Started from the chosen base, on its own branch; the human's checkout did not move.
+  assert.equal(gitIn(room.workspace, "rev-parse", "--abbrev-ref", "HEAD"), "agoryx/worktree-room");
+  assert.equal(gitIn(room.workspace, "show", "HEAD:src/a.txt"), "feature");
+  assert.equal(gitIn(repo, "rev-parse", "--abbrev-ref", "HEAD"), "main");
+  const git = (await call("GET", `/api/rooms/${room.id}/git`)).json<{ git: { branch: string; linked: boolean }; worktree: { base: string } }>();
+  assert.equal(git.git.branch, "agoryx/worktree-room");
+  assert.equal(git.git.linked, true);
+  assert.equal(git.worktree.base, "feature");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ state: { settings: { autoCommit: boolean } } }>();
+  assert.equal(snap.state.settings.autoCommit, true);
+  const folders = (await call("GET", "/api/folders")).json<{ recent: Array<{ path: string; git: boolean }> }>();
+  assert.ok(folders.recent.some((f) => f.path === repo && f.git));
+});
+
+test("a worktree in a subfolder works in the same subfolder; refused worktrees leave nothing", async () => {
+  const repo = makeRepo("wt-sub");
+  const { room } = (await call("POST", "/api/rooms", { body: { name: "Sub", dir: join(repo, "src"), worktree: true } })).json<{ room: { workspace: string } }>();
+  assert.ok(room.workspace.endsWith(`${join("", "src")}`), room.workspace);
+  assert.ok(existsSync(join(room.workspace, "a.txt")));
+  const before = gitIn(repo, "branch", "--list", "agoryx/*");
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "Bad base", dir: repo, worktree: true, base: "nope" } })).status, 400);
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "No git", dir: home, worktree: true } })).status, 400);
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "Relative", dir: "src" } })).status, 400);
+  assert.equal(gitIn(repo, "branch", "--list", "agoryx/*"), before);
+});
+
+test("a worktree whose setup fails after git made it is rolled back", async () => {
+  const repo = makeRepo("wt-rollback");
+  // On this base `src` is a file, so the picked src/ folder cannot be made in the worktree.
+  gitIn(repo, "checkout", "-q", "-b", "flat");
+  gitIn(repo, "rm", "-q", "-r", "src");
+  writeFileSync(join(repo, "src"), "a file now\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "commit", "-q", "-m", "src is a file");
+  gitIn(repo, "checkout", "-q", "main");
+  const worktrees = gitIn(repo, "worktree", "list");
+  const reply = await call("POST", "/api/rooms", { body: { name: "Flat", dir: join(repo, "src"), worktree: true, base: "flat" } });
+  assert.ok(reply.status >= 400, reply.body);
+  assert.equal(gitIn(repo, "branch", "--list", "agoryx/*"), "");
+  assert.equal(gitIn(repo, "worktree", "list"), worktrees);
+});
+
+test("the folder picker lists subfolders and says which are git repositories", async () => {
+  makeRepo("wt-list");
+  const reply = await call("GET", `/api/fs?path=${encodeURIComponent(home)}`);
+  assert.equal(reply.status, 200, reply.body);
+  const fs = reply.json<{ path: string; parent: string | null; dirs: Array<{ name: string; git: boolean }> }>();
+  assert.ok(fs.dirs.some((d) => d.name === "wt-list" && d.git));
+  assert.ok(fs.parent);
+  const inside = (await call("GET", `/api/fs?path=${encodeURIComponent(join(home, "wt-list"))}`)).json<{ git: { branch: string; branches: string[] } }>();
+  assert.equal(inside.git.branch, "main");
+  assert.deepEqual([...inside.git.branches].sort(), ["feature", "main"]);
+  assert.equal((await call("GET", `/api/fs?path=${encodeURIComponent(join(home, "missing"))}`)).status, 404);
 });

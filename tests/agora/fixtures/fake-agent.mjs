@@ -174,6 +174,12 @@ const main = async () => {
       out({ type: "item.completed", item: { id: `edit_${editIndex}`, type: "file_change", changes: [{ path: full, kind: "update" }], status: "completed" } });
     }
   }
+  // Codex's built-in image_gen: saved under CODEX_HOME, not reported in the --json stream.
+  if (rule?.image && kind === "codex" && process.env.CODEX_HOME) {
+    const dir = join(process.env.CODEX_HOME, "generated_images", sessionId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `ig_${turn}.png`), rule.image);
+  }
   for (const argv of rule?.git ?? []) {
     execFileSync("git", ["-c", "user.name=fake", "-c", "user.email=fake@example.com", ...argv], { stdio: "ignore" });
   }

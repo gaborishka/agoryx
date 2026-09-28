@@ -15,6 +15,7 @@ export const emptyTable = (): TableState => ({
   settled: [],
   next: [],
   decisions: [],
+  shifts: [],
 });
 
 const TABLE_OPS: ReadonlySet<TableOpName> = new Set([
@@ -30,6 +31,7 @@ const TABLE_OPS: ReadonlySet<TableOpName> = new Set([
   "withdraw",
   "decide",
   "reopen",
+  "concede",
 ]);
 
 const MAX_TEXT = 4000;
@@ -59,6 +61,12 @@ const latestOpenQuestion = (table: TableState): string | null => {
   }
   return null;
 };
+
+/** Any item on the table with this id. */
+const refOnTable = (table: TableState, ref: string): boolean =>
+  [table.questions, table.options, table.notes, table.facts, table.settled, table.next, table.decisions, table.shifts].some((list) =>
+    list.some((entry) => entry.id === ref),
+  );
 
 /**
  * Validate a table op against the current table and assign the id of the
@@ -126,8 +134,24 @@ export const prepareTableOp = (
     }
     case "fact":
       return { ...base, op, text: cleanText(input.text, "fact")!, id: `F${table.facts.length + 1}` };
-    case "settle":
-      return { ...base, op, text: cleanText(input.text, "text")!, id: `S${table.settled.length + 1}` };
+    case "settle": {
+      let q: string | undefined;
+      if (input.q !== undefined && input.q !== null && input.q !== "") {
+        q = normalizeRef(input.q);
+        const question = table.questions.find((item) => item.id === q);
+        if (!question) throw new TableOpError(`no question ${q}`);
+        if (question.status !== "open") throw new TableOpError(`${q} is already ${question.status}; reopen it first`);
+      }
+      return { ...base, op, text: cleanText(input.text, "text")!, ...(q ? { q } : {}), id: `S${table.settled.length + 1}` };
+    }
+    case "concede": {
+      let target: string | undefined;
+      if (input.target !== undefined && input.target !== null && input.target !== "") {
+        target = normalizeRef(input.target);
+        if (!refOnTable(table, target)) throw new TableOpError(`no ${target} on the table`);
+      }
+      return { ...base, op, text: cleanText(input.text, "text")!, ...(target ? { target } : {}), id: `C${table.shifts.length + 1}` };
+    }
     case "next":
       return { ...base, op, text: cleanText(input.text, "text")!, id: `X${table.next.length + 1}` };
     case "done": {
@@ -149,8 +173,8 @@ export const prepareTableOp = (
       if (found.status === "chosen") throw new TableOpError(`${target} is already chosen`);
       if (found.q) {
         const question = table.questions.find((item) => item.id === found.q);
-        if (question?.status === "decided") {
-          throw new TableOpError(`${found.q} is already decided (${question.decision}); reopen it first`);
+        if (question && question.status !== "open") {
+          throw new TableOpError(`${found.q} is already ${question.status} (${question.decision ?? question.answer}); reopen it first`);
         }
       }
       const note = cleanText(input.note, "note", false);
@@ -208,8 +232,17 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
     case "fact":
       table.facts.push(item(op.text));
       return;
-    case "settle":
-      table.settled.push(item(op.text));
+    case "settle": {
+      table.settled.push({ ...item(op.text), ...(op.q ? { q: op.q } : {}) });
+      const question = op.q ? table.questions.find((entry) => entry.id === op.q) : undefined;
+      if (question && question.status === "open") {
+        question.status = "answered";
+        question.answer = op.id!;
+      }
+      return;
+    }
+    case "concede":
+      table.shifts.push({ ...item(op.text), ...(op.target ? { target: op.target } : {}) });
       return;
     case "next":
       table.next.push(item(op.text));
@@ -252,6 +285,7 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
         if (question) {
           question.status = "open";
           delete question.decision;
+          delete question.answer;
         }
         for (const option of table.options) {
           if (option.q === op.target && option.status === "chosen") option.status = "open";
@@ -299,7 +333,9 @@ export const describeTableOp = (op: TableOp, table?: TableState): string => {
     case "fact":
       return `noted fact ${op.id}: ${quote(op.text)}`;
     case "settle":
-      return `marked settled: ${quote(op.text)}`;
+      return op.q ? `answered ${op.q} (${op.id}): ${quote(op.text)}` : `marked settled: ${quote(op.text)}`;
+    case "concede":
+      return `conceded${op.target ? ` on ${op.target}` : ""} (${op.id}): ${quote(op.text)}`;
     case "next":
       return `added next step ${op.id}: ${quote(op.text)}`;
     case "done":
@@ -321,6 +357,7 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
     table.options.length === 0 &&
     table.facts.length === 0 &&
     table.settled.length === 0 &&
+    table.shifts.length === 0 &&
     table.next.length === 0;
   if (isEmpty) {
     lines.push("The table is empty. `agoryx table ask \"...\"` opens a question.");
@@ -340,7 +377,12 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
   };
 
   for (const question of table.questions) {
-    const status = question.status === "decided" ? `decided → ${question.decision}` : "open";
+    const status =
+      question.status === "decided"
+        ? `decided → ${question.decision}`
+        : question.status === "answered"
+          ? `answered → ${question.answer}`
+          : "open";
     lines.push(`## ${question.id} · ${question.text}`, `_asked by ${question.by} · ${status}_`, "");
     const options = table.options.filter((entry) => entry.q === question.id);
     if (options.length === 0) lines.push("- (no options yet)");
@@ -364,14 +406,31 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
   const section = (title: string, items: TableItem[]) => {
     if (items.length === 0) return;
     lines.push(`## ${title}`);
-    for (const entry of items) lines.push(`- ${entry.done ? "~~" : ""}${entry.id}: ${entry.text}${entry.done ? "~~" : ""} (${entry.by})`);
+    for (const entry of items) {
+      const about = entry.q ? ` [answers ${entry.q}]` : entry.target ? ` [on ${entry.target}]` : "";
+      lines.push(`- ${entry.done ? "~~" : ""}${entry.id}: ${entry.text}${entry.done ? "~~" : ""}${about} (${entry.by})`);
+    }
     lines.push("");
   };
   section("Facts", table.facts);
   section("Settled", table.settled);
+  section("Changed minds", table.shifts);
   section("Next", table.next);
   return `${lines.join("\n")}\n`;
 };
+
+/** Options still waiting for a decision: open, and not under a question that is already closed. */
+const liveOptionsOf = (table: TableState) => {
+  const closed = new Set(table.questions.filter((question) => question.status !== "open").map((question) => question.id));
+  return table.options.filter((option) => option.status === "open" && !(option.q && closed.has(option.q)));
+};
+
+/** What the table still holds open: questions without an answer, undecided options, steps not done. */
+export const openOnTable = (table: TableState): { questions: number; options: number; steps: number } => ({
+  questions: table.questions.filter((question) => question.status === "open").length,
+  options: liveOptionsOf(table).length,
+  steps: table.next.filter((step) => !step.done).length,
+});
 
 /**
  * The table's current state for the end of a delta: what is still open, where
@@ -380,9 +439,11 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
  */
 export const summarizeTable = (table: TableState): string | null => {
   const openQuestions = table.questions.filter((question) => question.status === "open");
-  const liveOptions = table.options.filter((option) => option.status === "open");
+  const liveOptions = liveOptionsOf(table);
   const pending = table.next.filter((step) => !step.done);
-  const empty = [openQuestions, liveOptions, pending, table.decisions, table.facts, table.settled].every((list) => list.length === 0);
+  const empty = [openQuestions, liveOptions, pending, table.decisions, table.facts, table.settled, table.shifts].every(
+    (list) => list.length === 0,
+  );
   if (empty) return null;
 
   const standing = (option: TableState["options"][number]): string => {
@@ -410,7 +471,14 @@ export const summarizeTable = (table: TableState): string | null => {
     lines.push(`  decided: ${decision.option}${option ? ` ${quote(option.title, 70)}` : ""}${decision.q ? ` for ${decision.q}` : ""}`);
   }
   if (table.facts.length > 0) lines.push(`  facts: ${table.facts.slice(-4).map((item) => `${item.id} ${quote(item.text, 70)}`).join("; ")}`);
-  if (table.settled.length > 0) lines.push(`  settled: ${table.settled.slice(-4).map((item) => `${item.id} ${quote(item.text, 70)}`).join("; ")}`);
+  if (table.settled.length > 0) {
+    const settled = table.settled.slice(-4).map((item) => `${item.id}${item.q ? ` (answers ${item.q})` : ""} ${quote(item.text, 70)}`);
+    lines.push(`  settled: ${settled.join("; ")}`);
+  }
+  if (table.shifts.length > 0) {
+    const shifts = table.shifts.slice(-3).map((item) => `${item.id} ${item.by}${item.target ? ` on ${item.target}` : ""} ${quote(item.text, 70)}`);
+    lines.push(`  changed minds: ${shifts.join("; ")}`);
+  }
   if (pending.length > 0) lines.push(`  to do: ${pending.map((step) => `${step.id} ${quote(step.text, 70)}`).join("; ")}`);
   return lines.join("\n");
 };

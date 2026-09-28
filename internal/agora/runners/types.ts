@@ -26,6 +26,8 @@ export interface TurnResult {
   sessionId: string | null;
   usage?: TurnUsage;
   error?: TurnError;
+  /** Images the agent generated this turn, as absolute paths outside the workspace (Codex image_gen). */
+  images?: string[];
 }
 
 export interface AgentRunner {

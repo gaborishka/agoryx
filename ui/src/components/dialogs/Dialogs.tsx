@@ -523,7 +523,7 @@ const FORMS: Record<TableFormOp, { title: string; fields: Field[] }> = {
     ],
   },
   decide: { title: "Обрати", fields: [{ name: "note", label: "Чому саме цей варіант (необов'язково)", area: true }] },
-  settle: { title: "Узгоджено", fields: [{ name: "text", label: "Що тепер вважаємо встановленим", area: true, required: true }] },
+  settle: { title: "Висновок", fields: [{ name: "text", label: "Що тепер вважаємо встановленим", area: true, required: true }] },
   next: { title: "Наступний крок", fields: [{ name: "text", label: "Конкретна дія", area: true, required: true }] },
 };
 
@@ -544,6 +544,7 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
     if (op === "propose") body = { op, title: v.title, ...(v.body ? { body: v.body } : {}), ...(v.file ? { file: v.file } : {}), ...(v.q ? { q: v.q } : {}) };
     else if (op === "decide") body = { op, target, ...(v.note ? { note: v.note } : {}) };
     else if (op === "object" || op === "support" || op === "evidence") body = { op, target, text: v.text, ...(v.source ? { source: v.source } : {}) };
+    else if (op === "settle") body = { op, text: v.text, ...(v.q ? { q: v.q } : {}) };
     else body = { op, text: v.text };
     setBusy(true);
     try {
@@ -596,15 +597,15 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
             )}
           </div>
         ))}
-        {op === "propose" && open.length ? (
+        {(op === "propose" || op === "settle") && open.length ? (
           <div className="flex flex-col gap-1.5">
-            <Label>До питання</Label>
+            <Label>{op === "settle" ? "Відповідає на питання (і закриває його)" : "До питання"}</Label>
             <Select value={values.q || "none"} onValueChange={(v) => set("q", v === "none" ? "" : v)}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="none">— без питання —</SelectItem>
+                <SelectItem value="none">{op === "settle" ? "— просто узгоджено —" : "— без питання —"}</SelectItem>
                 {open.map((x) => (
                   <SelectItem key={x.id} value={x.id}>
                     {x.id} · {x.text.slice(0, 70)}

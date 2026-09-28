@@ -44,6 +44,10 @@ test("parseTableCommand maps the agent CLI onto table ops", () => {
   });
   assert.deepEqual(parseTableCommand("decide", ["P2", "--note", "simplest"]), { op: "decide", target: "P2", note: "simplest" });
   assert.deepEqual(parseTableCommand("done", ["X1"]), { op: "done", target: "X1" });
+  assert.deepEqual(parseTableCommand("settle", ["relational", "time", "--q", "Q2"]), { op: "settle", text: "relational time", q: "Q2" });
+  assert.deepEqual(parseTableCommand("settle", ["done"]), { op: "settle", text: "done" });
+  assert.deepEqual(parseTableCommand("concede", ["I", "overstated", "it", "--on", "P1"]), { op: "concede", text: "I overstated it", target: "P1" });
+  assert.throws(() => parseTableCommand("concede", ["--on", "P1"]), TableCommandError);
   assert.throws(() => parseTableCommand("support", ["P1"]), TableCommandError);
   assert.throws(() => parseTableCommand("ask", []), TableCommandError);
   assert.throws(() => parseTableCommand("vote", ["P1"]), TableCommandError);

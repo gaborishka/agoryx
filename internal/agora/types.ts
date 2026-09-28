@@ -123,7 +123,8 @@ export type TableOpInput =
   | { op: "propose"; title: string; body?: string; q?: string; file?: string }
   | { op: "object" | "support" | "evidence"; target: string; text: string; source?: string }
   | { op: "fact"; text: string }
-  | { op: "settle"; text: string }
+  | { op: "settle"; text: string; q?: string }
+  | { op: "concede"; text: string; target?: string }
   | { op: "next"; text: string }
   | { op: "done"; target: string }
   | { op: "withdraw"; target: string }
@@ -135,7 +136,7 @@ export type TableOpName = TableOpInput["op"];
 /** A table op as stored: input plus who made it and the id it created (if any). */
 export type TableOp = TableOpInput & {
   by: string;
-  /** Id assigned to the created entity (Q3, P2, N7, F1, S2, X4, D1). */
+  /** Id assigned to the created entity (Q3, P2, N7, F1, S2, X4, D1, C1). */
   id?: string;
   turnId?: string;
   /** Client nonce, echoed back so the agent-side CLI can learn the assigned id. */
@@ -147,8 +148,11 @@ export interface TableQuestion {
   text: string;
   by: string;
   seq: number;
-  status: "open" | "decided";
+  /** decided: an option was chosen; answered: a settled conclusion closed it. */
+  status: "open" | "decided" | "answered";
   decision?: string;
+  /** The settled item (S3) that answers the question. */
+  answer?: string;
 }
 
 export interface TableOption {
@@ -178,6 +182,10 @@ export interface TableItem {
   by: string;
   seq: number;
   done?: boolean;
+  /** A settled item that answers a question: the question's id. */
+  q?: string;
+  /** A concession about a specific table item (P2, S1, Q1). */
+  target?: string;
 }
 
 export interface TableDecision {
@@ -198,6 +206,8 @@ export interface TableState {
   settled: TableItem[];
   next: TableItem[];
   decisions: TableDecision[];
+  /** Concessions: what someone no longer holds, and why (C1, C2…). */
+  shifts: TableItem[];
 }
 
 // ---------------------------------------------------------------------------

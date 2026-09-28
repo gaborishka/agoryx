@@ -153,10 +153,11 @@ export const refExists = (st: RoomState, ref: string) => {
   if (k === "Q") return t.questions.some((x) => x.id === ref);
   if (k === "P") return t.options.some((x) => x.id === ref);
   if (k === "D") return t.decisions.some((x) => x.id === ref);
-  if (k === "N") return t.next.some((x) => x.id === ref);
+  if (k === "N") return t.notes.some((x) => x.id === ref);
   if (k === "F") return t.facts.some((x) => x.id === ref);
   if (k === "S") return t.settled.some((x) => x.id === ref);
-  if (k === "X") return t.notes.some((x) => x.id === ref);
+  if (k === "X") return t.next.some((x) => x.id === ref);
+  if (k === "C") return (t.shifts ?? []).some((x) => x.id === ref);
   return false;
 };
 
@@ -164,7 +165,7 @@ export const refExists = (st: RoomState, ref: string) => {
 export const refAnchor = (st: RoomState, ref: string) => {
   if (ref.startsWith("Q")) return `q-${ref}`;
   if (ref.startsWith("P")) return `opt-${ref}`;
-  if (ref.startsWith("X")) {
+  if (ref.startsWith("N")) {
     const note = st.table.notes.find((n) => n.id === ref);
     return note ? `opt-${note.target}` : null;
   }

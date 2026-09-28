@@ -11,7 +11,9 @@ export const TABLE_USAGE = [
   'agoryx table propose "short title" [--body "what and why" | --body-file notes.md] [--file path] [--q Q1]',
   'agoryx table object|support P1 "reason"',
   'agoryx table evidence P1 "finding" [--source url-or-path]',
-  'agoryx table fact|settle|next "text"',
+  'agoryx table fact|next "text"',
+  'agoryx table settle "what is now established" [--q Q1]',
+  'agoryx table concede "what I no longer hold, and why" [--on P1]',
   "agoryx table done X1 | withdraw P1 | reopen Q1|P1",
   'agoryx table decide P1 [--note "why"]',
 ];
@@ -25,6 +27,8 @@ export const TABLE_FLAGS: Record<string, string[]> = {
   object: ["source"],
   support: ["source"],
   decide: ["note"],
+  settle: ["q"],
+  concede: ["on"],
 };
 
 export const parseTableCommand = (verb: string, argv: string[]): Record<string, unknown> => {
@@ -56,10 +60,15 @@ export const parseTableCommand = (verb: string, argv: string[]): Record<string, 
   switch (verb) {
     case "ask":
     case "fact":
-    case "settle":
     case "next":
       if (!rest) throw new TableCommandError(`'${verb}' needs text`);
       return { op: verb, text: rest };
+    case "settle":
+      if (!rest) throw new TableCommandError("'settle' needs text");
+      return clean({ op: "settle", text: rest, q: flags.q });
+    case "concede":
+      if (!rest) throw new TableCommandError("'concede' needs text: what you no longer hold, and why");
+      return clean({ op: "concede", text: rest, target: flags.on });
     case "propose":
       if (!positional[0]) throw new TableCommandError("'propose' needs a title");
       return clean({

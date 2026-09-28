@@ -54,6 +54,8 @@ interface Store {
   /** Revision to open in the doc panel (from a chip in the feed). */
   docFocus: number | null;
   flash: { ref: string; at: number } | null;
+  /** Text put into the composer from elsewhere (a nudge on the table); `at` makes a repeat count. */
+  compose: { text: string; at: number } | null;
   paletteOpen: boolean;
 
   loadRooms: () => Promise<void>;
@@ -66,6 +68,8 @@ interface Store {
   setNavOpen: (open: boolean) => void;
   openDialog: (dialog: DialogState | null) => void;
   goToRef: (ref: string) => void;
+  /** Put a draft into the composer for the human to edit and send; nothing is sent. */
+  composeDraft: (text: string) => void;
   openDocRevision: (seq: number) => void;
   setPaletteOpen: (open: boolean) => void;
   post: (suffix: string, body?: unknown) => Promise<Record<string, unknown>>;
@@ -98,6 +102,7 @@ export const useStore = create<Store>((set, get) => ({
   lastDocRevision: null,
   docFocus: null,
   flash: null,
+  compose: null,
   paletteOpen: false,
 
   async loadRooms() {
@@ -180,6 +185,9 @@ export const useStore = create<Store>((set, get) => ({
   goToRef(ref) {
     get().setView(/^m-/.test(ref) ? "chat" : "table");
     set({ flash: { ref, at: Date.now() } });
+  },
+  composeDraft(text) {
+    set({ compose: { text, at: Date.now() } });
   },
   openDocRevision(seq) {
     get().setPanel("doc");
@@ -323,12 +331,12 @@ function applyRoute(route: Route) {
   if (route.kind === "room") {
     if (prev.kind !== "room" || prev.id !== route.id || !useStore.getState().snap) {
       closeStream();
-      useStore.setState({ snap: null });
+      useStore.setState({ snap: null, compose: null });
       void useStore.getState().openRoom(route.id);
     }
   } else {
     closeStream();
-    useStore.setState({ snap: null });
+    useStore.setState({ snap: null, compose: null });
     document.title = "Agoryx";
   }
 }

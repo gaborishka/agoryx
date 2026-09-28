@@ -104,6 +104,19 @@ export function Composer() {
     if (window.matchMedia("(pointer: fine)").matches) setTimeout(() => ta.current?.focus(), 30);
   }, [roomId]);
   useLayoutEffect(() => autosize(ta.current), [text]);
+  const compose = useStore((s) => s.compose);
+  useEffect(() => {
+    if (!compose || !roomId) return;
+    setText(compose.text);
+    local.set(`draft.${roomId}`, compose.text);
+    setTimeout(() => {
+      const el = ta.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }, 30);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compose]);
 
   if (!room) return null;
   const change = (value: string) => {

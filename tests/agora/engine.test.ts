@@ -9,6 +9,7 @@ import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { createCodexRunner } from "../../internal/agora/runners/codex.js";
 import { eventPatch } from "../../internal/agora/snapshot.js";
 import { RoomStore } from "../../internal/agora/store.js";
+import { openOnTable, renderTableMarkdown, summarizeTable } from "../../internal/agora/table.js";
 import { createTestRoom, tableOutputs, withTimeout } from "./helpers.js";
 
 const kinds = (room: ReturnType<typeof createTestRoom>) =>
@@ -258,6 +259,41 @@ test("reopening the chosen option reopens its question, so it can be decided aga
     room.engine.tableOp({ op: "decide", target: "P1", note: "again" });
     await withTimeout(room.engine.waitIdle());
     assert.equal(room.store.state.table.questions[0]?.status, "decided");
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a settled conclusion can answer a question, and a concession is kept on the table", async () => {
+  const room = createTestRoom({ rules: [{ reply: "::pass::" }] });
+  try {
+    room.engine.tableOp({ op: "ask", text: "Is time frozen in the Wheeler–DeWitt picture?" }, "claude");
+    room.engine.tableOp({ op: "propose", title: "Time is an illusion", q: "Q1" }, "claude");
+    room.engine.tableOp({ op: "object", target: "P1", text: "HΨ=0 is a constraint, not a frozen world" }, "codex");
+    room.engine.tableOp({ op: "concede", text: "I overstated it: the constraint does not freeze anything", target: "P1" }, "claude");
+    room.engine.tableOp({ op: "settle", text: "Time is relational, not absent", q: "q1" }, "codex");
+    await withTimeout(room.engine.waitIdle());
+    const table = room.store.state.table;
+    assert.equal(table.questions[0]?.status, "answered");
+    assert.equal(table.questions[0]?.answer, "S1");
+    assert.equal(table.settled[0]?.q, "Q1");
+    assert.deepEqual(
+      table.shifts.map((shift) => [shift.id, shift.by, shift.target]),
+      [["C1", "claude", "P1"]],
+    );
+    assert.deepEqual(openOnTable(table), { questions: 0, options: 0, steps: 0 });
+    assert.match(summarizeTable(table)!, /changed minds: C1 claude on P1/);
+    assert.match(renderTableMarkdown(table, "time"), /answered → S1/);
+    assert.match(renderTableMarkdown(table, "time"), /## Changed minds/);
+
+    assert.throws(() => room.engine.tableOp({ op: "settle", text: "again", q: "Q1" }), /Q1 is already answered/);
+    assert.throws(() => room.engine.tableOp({ op: "decide", target: "P1" }), /Q1 is already answered/);
+    assert.throws(() => room.engine.tableOp({ op: "concede", text: "nothing", target: "P9" }), /no P9/);
+
+    room.engine.tableOp({ op: "reopen", target: "Q1" });
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(room.store.state.table.questions[0]?.status, "open");
+    assert.equal(room.store.state.table.questions[0]?.answer, undefined);
   } finally {
     await room.cleanup();
   }

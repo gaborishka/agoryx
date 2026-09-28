@@ -20,7 +20,9 @@ const USAGE = `agoryx — room tools for agents
   agoryx table support P1 "reason"
   agoryx table evidence P1 "finding" [--source url-or-path]
   agoryx table fact "a fact everyone should rely on"
-  agoryx table settle "what is now established"
+  agoryx table settle "what is now established" [--q Q1]   (--q: this answers Q1 and closes it)
+  agoryx table concede "what I no longer hold, and why" [--on P1]
+                   an argument changed your mind: say so on the table
   agoryx table next "concrete next step"
   agoryx table done X1
   agoryx table withdraw P1
@@ -91,22 +93,29 @@ const TABLE_FLAGS = {
   object: ["source"],
   support: ["source"],
   decide: ["note"],
+  settle: ["q"],
+  concede: ["on"],
 };
 
 const buildOp = (verb, positional, flags) => {
   const allowed = TABLE_FLAGS[verb] ?? [];
   const unknown = Object.keys(flags).filter((flag) => !allowed.includes(flag));
-  if (unknown.length > 0 && ["ask", "fact", "settle", "next", "propose", "object", "support", "evidence", "done", "withdraw", "reopen", "decide"].includes(verb)) {
+  if (unknown.length > 0 && ["ask", "fact", "settle", "concede", "next", "propose", "object", "support", "evidence", "done", "withdraw", "reopen", "decide"].includes(verb)) {
     fail(`'${verb}' does not take ${unknown.map((flag) => `--${flag}`).join(", ")}${allowed.length ? ` (it takes ${allowed.map((flag) => `--${flag}`).join(", ")})` : ""}`);
   }
   const rest = positional.join(" ").trim();
   switch (verb) {
     case "ask":
     case "fact":
-    case "settle":
     case "next":
       if (!rest) fail(`'${verb}' needs text`);
       return { op: verb, text: rest };
+    case "settle":
+      if (!rest) fail("'settle' needs text");
+      return { op: "settle", text: rest, q: flags.q };
+    case "concede":
+      if (!rest) fail("'concede' needs text: what you no longer hold, and why");
+      return { op: "concede", text: rest, target: flags.on };
     case "propose":
       if (!positional[0]) fail("'propose' needs a title");
       return {

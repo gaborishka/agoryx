@@ -51,6 +51,8 @@
   --fact: #9b4a7c;
   --amber: #b9851f;
   --amber-soft: #fbf3df;
+  --shift: #6b54a8;
+  --shift-soft: #f1edf9;
   --add: #e3f1e6;
   --add-ink: #1f5b33;
   --del: #f8e6e1;
@@ -94,6 +96,8 @@
   --fact: #db7aae;
   --amber: #e0ae4e;
   --amber-soft: #2a2415;
+  --shift: #b3a0ea;
+  --shift-soft: #221d31;
   --add: #16301f;
   --add-ink: #9bd8ae;
   --del: #351c16;
@@ -143,6 +147,8 @@
   --color-fact: var(--fact);
   --color-amber: var(--amber);
   --color-amber-soft: var(--amber-soft);
+  --color-shift: var(--shift);
+  --color-shift-soft: var(--shift-soft);
   --color-add: var(--add);
   --color-add-ink: var(--add-ink);
   --color-del: var(--del);

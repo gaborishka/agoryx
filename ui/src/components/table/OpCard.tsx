@@ -8,6 +8,7 @@ import {
   LightbulbIcon,
   type LucideIcon,
   MicroscopeIcon,
+  RefreshCcwIcon,
   RotateCcwIcon,
   ShieldAlertIcon,
   SignpostIcon,
@@ -35,6 +36,7 @@ export const TC_KIND: Record<TableOp["op"], string> = {
   withdraw: "Відкликано",
   decide: "Рішення",
   reopen: "Відкрито знову",
+  concede: "Змінює думку",
 };
 
 export const KIND_ICON: Record<TableOp["op"], LucideIcon> = {
@@ -50,6 +52,7 @@ export const KIND_ICON: Record<TableOp["op"], LucideIcon> = {
   withdraw: UndoIcon,
   decide: GavelIcon,
   reopen: RotateCcwIcon,
+  concede: RefreshCcwIcon,
 };
 
 export const KIND_TONE: Record<TableOp["op"], string> = {
@@ -65,6 +68,7 @@ export const KIND_TONE: Record<TableOp["op"], string> = {
   withdraw: "text-muted-foreground",
   decide: "text-primary",
   reopen: "text-amber",
+  concede: "text-shift",
 };
 
 export function Kind({ op }: { op: TableOp["op"] }) {
@@ -108,7 +112,7 @@ export function Standing({ table, o }: { table: TableState; o: TableOption }) {
   if (o.status === "chosen") return <span className={cn(pill, "bg-primary text-primary-foreground")}>Обрано</span>;
   if (o.status === "withdrawn") return <span className={cn(pill, "bg-muted text-muted-foreground")}>Відкликано</span>;
   const q = o.q ? table.questions.find((x) => x.id === o.q) : null;
-  if (q?.status === "decided") return <span className={cn(pill, "bg-muted text-muted-foreground")}>Не обрано</span>;
+  if (q && q.status !== "open") return <span className={cn(pill, "bg-muted text-muted-foreground")}>{q.status === "decided" ? "Не обрано" : "Питання закрито"}</span>;
   const { sup, obj, ev } = noteCounts(table, o.id);
   if (!sup && !obj && !ev) return <span className="text-[11px] text-faint">відкрито</span>;
   return (
@@ -225,7 +229,7 @@ export function OpCard({ o }: { o: TableOp }) {
     case "propose": {
       const opt: TableOption = table.options.find((x) => x.id === o.id) ?? { id: o.id ?? "?", q: o.q ?? null, title: o.title, body: o.body, file: o.file, by: o.by, seq: 0, status: "open" };
       const q = opt.q ? table.questions.find((x) => x.id === opt.q) : null;
-      const open = opt.status === "open" && q?.status !== "decided";
+      const open = opt.status === "open" && (!q || q.status === "open");
       const long = (opt.body?.length ?? 0) > 600 || /```|!\[/.test(opt.body ?? "");
       return (
         <div className={cn(card, "border-l-[3px] border-l-primary/60", opt.status === "withdrawn" && "opacity-60")}>
@@ -256,13 +260,18 @@ export function OpCard({ o }: { o: TableOp }) {
       const q = table.questions.find((x) => x.id === o.id) ?? { id: o.id ?? "?", text: o.text, status: "open" as const };
       const options = table.options.filter((x) => x.q === q.id);
       const decision = q.status === "decided" ? table.decisions.filter((d) => d.q === q.id).pop() : null;
+      const answer = q.status === "answered" && "answer" in q ? q.answer : undefined;
       return (
         <div className={cn(card, "border-l-[3px] border-l-amber/70")}>
           <div className="flex flex-wrap items-center gap-2">
             <Kind op="ask" />
             <RefChip id={q.id} />
             <span className="ml-auto text-[11.5px] text-muted-foreground">
-              {decision ? <span className="font-medium text-primary">Вирішено: {decision.option}</span> : options.length ? plural(options.length, "варіант", "варіанти", "варіантів") : "чекає варіантів"}
+              {decision ? (
+                <span className="font-medium text-primary">Вирішено: {decision.option}</span>
+              ) : answer ? (
+                <span className="font-medium text-primary">Є висновок: {answer}</span>
+              ) : options.length ? plural(options.length, "варіант", "варіанти", "варіантів") : "чекає варіантів"}
             </span>
           </div>
           <div className="mt-1.5 font-semibold text-pretty">{q.text}</div>
@@ -297,19 +306,38 @@ export function OpCard({ o }: { o: TableOp }) {
         </div>
       );
     }
-    case "fact":
-    case "settle":
-    case "next": {
-      const list = o.op === "fact" ? table.facts : o.op === "settle" ? table.settled : table.next;
-      const done = o.op === "next" && list.find((x) => x.id === o.id)?.done;
+    case "concede":
       return (
-        <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
-          <Kind op={o.op} />
-          <span className={cn("min-w-0 flex-1 text-[14px]", done && "text-muted-foreground line-through")}>{o.text}</span>
-          {done ? <span className="text-[11px] font-medium text-add-ink">виконано</span> : null}
+        <div className={cn(card, "border-l-[3px] border-l-shift/70 bg-shift-soft/40")}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Kind op="concede" />
+            {o.target ? (
+              <span className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+                щодо <RefChip id={o.target} /> <span className="truncate">{optionTitle(table, o.target)}</span>
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-1.5 text-[14px] text-pretty">{o.text}</div>
         </div>
       );
-    }
+    case "settle":
+      if (o.q) {
+        return (
+          <div className={cn(card, "border-l-[3px] border-l-primary/60")}>
+            <div className="flex flex-wrap items-center gap-2">
+              <Kind op="settle" />
+              <span className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+                відповідь на <RefChip id={o.q} /> <span className="truncate">{table.questions.find((x) => x.id === o.q)?.text}</span>
+              </span>
+            </div>
+            <div className="mt-1.5 text-[14px] font-medium text-pretty">{o.text}</div>
+          </div>
+        );
+      }
+      return <ItemCard o={o} table={table} />;
+    case "fact":
+    case "next":
+      return <ItemCard o={o} table={table} />;
     case "decide":
       return (
         <div className={cn(card, "flex items-baseline gap-2.5 border-primary/30 bg-secondary/60 py-2")}>
@@ -337,6 +365,18 @@ export function OpCard({ o }: { o: TableOp }) {
   }
 }
 
+function ItemCard({ o, table }: { o: Extract<TableOp, { op: "fact" | "settle" | "next" }>; table: TableState }) {
+  const list = o.op === "fact" ? table.facts : o.op === "settle" ? table.settled : table.next;
+  const done = o.op === "next" && list.find((x) => x.id === o.id)?.done;
+  return (
+    <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
+      <Kind op={o.op} />
+      <span className={cn("min-w-0 flex-1 text-[14px]", done && "text-muted-foreground line-through")}>{o.text}</span>
+      {done ? <span className="text-[11px] font-medium text-add-ink">виконано</span> : null}
+    </div>
+  );
+}
+
 function OptionChip({ o }: { o: TableOption }) {
   const goToRef = useStore((s) => s.goToRef);
   return (
@@ -356,7 +396,7 @@ function OptionChip({ o }: { o: TableOption }) {
 }
 
 // A turn that makes many moves keeps the ones a reader must see and folds the rest into one line.
-const KEY_OPS = new Set<TableOp["op"]>(["ask", "propose", "object", "decide"]);
+const KEY_OPS = new Set<TableOp["op"]>(["ask", "propose", "object", "decide", "concede"]);
 const FOLD_AFTER = 4;
 const TC_MANY: Record<TableOp["op"], [string, string, string]> = {
   ask: ["питання", "питання", "питань"],
@@ -371,6 +411,7 @@ const TC_MANY: Record<TableOp["op"], [string, string, string]> = {
   done: ["виконано", "виконано", "виконано"],
   withdraw: ["відкликано", "відкликано", "відкликано"],
   reopen: ["відкрито знову", "відкрито знову", "відкрито знову"],
+  concede: ["зміна думки", "зміни думки", "змін думки"],
 };
 
 /** A turn's table moves in one line: what kinds, how many, and a way to open them. */

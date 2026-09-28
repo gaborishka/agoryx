@@ -694,7 +694,14 @@ const renderFeed = () => {
         j += 1;
       }
       if (group.length > 1 && group.some((g) => g.m.kind === "agent")) {
-        html.push(`<section class="round"><div class="round-h">одночасно · наосліп</div><div class="round-b">${group
+        // Only the round right after the human's message is blind on purpose; later
+        // parallel turns answered what came before, just not each other.
+        const prev = st.messages.filter((m) => m.seq < item.m.seq && m.kind !== "system").at(-1);
+        const blind = prev?.kind === "human";
+        const head = blind
+          ? `<div class="round-h" title="Перша відповідь на твоє повідомлення: агенти писали паралельно й не бачили відповідей одне одного — щоб думки були незалежні.">одночасно · наосліп</div>`
+          : `<div class="round-h" title="Ці відповіді писалися одночасно: кожен відповідав на попередні репліки, але ще не бачив цієї відповіді іншого.">одночасно</div>`;
+        html.push(`<section class="round">${head}<div class="round-b">${group
           .map((g) => messageHtml(g.m, ctx, { round: true }))
           .join("")}</div></section>`);
         i = j - 1;

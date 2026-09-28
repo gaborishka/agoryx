@@ -371,3 +371,59 @@ test("the event log replays into the same state", async () => {
     await room.cleanup();
   }
 });
+
+test("one conversation: blind in parallel after the human, then one agent at a time", async () => {
+  const room = createTestRoom({
+    rules: [
+      { agent: "codex", match: "Hello both", sleepMs: 300, reply: "codex here", once: true },
+      { agent: "codex", match: "claude here", reply: "Codex answers Claude.", once: true },
+      { agent: "claude", match: "Codex answers Claude.", reply: "Claude agrees.", once: true },
+    ],
+  });
+  try {
+    room.engine.postHuman("Hello both");
+    await withTimeout(room.engine.waitIdle());
+    const events = room.store.events;
+    const started = (turnId: string) => events.find((event) => event.type === "turn.started" && event.turnId === turnId)!.seq;
+    const ended = (turnId: string) => events.find((event) => event.type === "turn.ended" && event.turnId === turnId)!.seq;
+    const turns = room.store.state.turns;
+    assert.ok(turns.length >= 4, `expected a conversation, got ${turns.length} turns`);
+    const [first, second, ...rest] = turns;
+    assert.ok(started(second!.id) < ended(first!.id), "the blind round runs in parallel");
+    for (let i = 1; i < rest.length; i += 1) {
+      assert.ok(started(rest[i]!.id) > ended(rest[i - 1]!.id), `${rest[i]!.id} waited for ${rest[i - 1]!.id}`);
+    }
+    assert.ok(started(rest[0]!.id) > Math.max(ended(first!.id), ended(second!.id)));
+    // Codex had waited longest (Claude's blind reply came first), so it speaks first…
+    assert.equal(rest[0]!.agent, "codex");
+    // …and Claude answers having seen it: one thread, not two crossing ones.
+    const claudePrompt = room.invocations("claude").find((entry) => entry.prompt!.includes("Codex answers Claude."));
+    assert.ok(claudePrompt, "Claude saw Codex's reply before speaking again");
+    assert.ok(room.store.state.messages.some((message) => message.text === "Claude agrees."));
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("the human can still reach an agent while the other one holds the floor", async () => {
+  const room = createTestRoom({
+    rules: [
+      { agent: "claude", match: "slow task", sleepMs: 1500, reply: "Done with the slow task.", once: true },
+      { agent: "codex", match: "quick question", reply: "Quick answer.", once: true },
+    ],
+  });
+  try {
+    room.engine.postHuman("@claude slow task");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    room.engine.postHuman("@codex quick question");
+    await withTimeout(room.engine.waitIdle());
+    const events = room.store.events;
+    const codexTurn = room.store.state.turns.find((turn) => turn.agent === "codex")!;
+    const claudeTurn = room.store.state.turns.find((turn) => turn.agent === "claude")!;
+    const codexStart = events.find((event) => event.type === "turn.started" && event.turnId === codexTurn.id)!.seq;
+    const claudeEnd = events.find((event) => event.type === "turn.ended" && event.turnId === claudeTurn.id)!.seq;
+    assert.ok(codexStart < claudeEnd, "a message from the human does not wait for the floor");
+  } finally {
+    await room.cleanup();
+  }
+});

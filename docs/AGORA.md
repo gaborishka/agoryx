@@ -14,8 +14,11 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
 
 - **No orchestrator.** Every new message wakes the agents that have not seen it yet. Each gets only the
   **delta** since its last turn — its native session already holds the rest.
-- **Blind first round.** On a human message both agents answer in parallel without seeing each other,
-  so the first opinions are independent. After that they see each other's replies.
+- **Blind first round, then one at a time.** On a human message both agents answer in parallel
+  without seeing each other, so the first opinions are independent. After that they take the floor one
+  at a time (whoever has waited longest goes first), so each reply answers the latest state — one
+  conversation, not two crossing ones. A new message from the human still reaches an idle agent at
+  once, even while the other one is working.
 - **Silence is an answer.** An agent that has nothing to add replies `::pass::` (optionally with a short
   reason). A run ends when the room goes **quiet** (everyone passed) or the **turn budget** runs out.
 - **The human is a participant,** not a dispatcher. Write any time — your message reaches both agents in

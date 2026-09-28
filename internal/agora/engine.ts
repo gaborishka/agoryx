@@ -395,8 +395,21 @@ export class RoomEngine {
   }
 
   private pending(agent: RoomAgent): boolean {
+    return this.firstWake(agent) !== null;
+  }
+
+  /** The oldest unseen event that wakes this agent, or null. */
+  private firstWake(agent: RoomAgent): RoomEvent | null {
     const cursor = this.state.cursors[agent.id] ?? 0;
-    return this.store.since(cursor).some((event) => this.wakes(event, agent));
+    return this.store.since(cursor).find((event) => this.wakes(event, agent)) ?? null;
+  }
+
+  /** Whether the human said something this agent has not answered yet. */
+  private humanWaiting(agent: RoomAgent): boolean {
+    const cursor = this.state.cursors[agent.id] ?? 0;
+    return this.store
+      .since(cursor)
+      .some((event) => this.wakes(event, agent) && (event.type === "table.op" || (event.type === "message.posted" && event.message.author === this.state.human)));
   }
 
   requestSchedule(): void {
@@ -419,10 +432,16 @@ export class RoomEngine {
     }
     let blockedByBudget = false;
     let waitingOnNative = false;
-    for (const agent of this.state.agents) {
-      if (this.running.has(agent.id) || this.benched.has(agent.id)) continue;
-      if (!this.runners[agent.kind]) continue;
-      if (!this.pending(agent)) continue;
+    // One conversation, not two: the human's message is answered by everyone at once
+    // (blind, so the views stay independent); after that the agents take the floor one
+    // at a time, and each sees what the other just said. Whoever has waited longest goes first.
+    const candidates = this.state.agents
+      .filter((agent) => !this.running.has(agent.id) && !this.benched.has(agent.id) && this.runners[agent.kind])
+      .map((agent) => ({ agent, wake: this.firstWake(agent) }))
+      .filter((entry): entry is { agent: RoomAgent; wake: RoomEvent } => entry.wake !== null)
+      .sort((a, b) => a.wake.seq - b.wake.seq);
+    for (const { agent } of candidates) {
+      if (this.running.size > 0 && !this.humanWaiting(agent)) continue;
       if (run.used >= run.budget) {
         blockedByBudget = true;
         continue;

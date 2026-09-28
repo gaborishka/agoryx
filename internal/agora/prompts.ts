@@ -88,6 +88,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
     "How the room works:",
     "- Each turn you get only what is new since your last turn. Your final message is posted to the room; your tool calls show up to others as a short activity trace.",
     "- When the human writes, agents answer in parallel without seeing each other first — give your own independent view, not a guess at the consensus.",
+    "- After that the agents take turns, one at a time: when you speak, you have seen everything said before you. It is one conversation — answer the latest state, not an old message.",
     `- Nothing substantive to add? Reply exactly ${PASS_TOKEN} and nothing else. Silence is fine; agreeing for politeness is noise.`,
     "- Disagree when you disagree, and say what would change your mind. An unresolved disagreement, stated clearly, is a valid outcome.",
     `- Address someone with @name. ${state.human} is a participant, not a gatekeeper: you don't need permission to do the work being discussed.`,

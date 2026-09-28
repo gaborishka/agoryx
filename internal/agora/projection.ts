@@ -85,6 +85,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         agent: event.agent,
         runId: event.runId,
         cursor: event.cursor,
+        cursorBefore: state.cursors[event.agent] ?? 0,
         seq: event.seq,
         startedAt: event.ts,
         status: "running",
@@ -117,6 +118,12 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       if (event.error) turn.error = event.error;
       if (event.files) turn.files = event.files;
       if (event.changes) turn.changes = event.changes;
+      // A turn that failed, or died with the process, never answered what it was shown: show it again
+      // next time, unless a later turn of the same agent already moved the cursor on. (A turn the human
+      // stopped keeps it: they stopped that work.)
+      if ((event.status === "error" || event.unseen) && state.cursors[turn.agent] === turn.cursor) {
+        state.cursors[turn.agent] = turn.cursorBefore;
+      }
       for (const entry of turn.activity) {
         if (entry.status === "running") entry.status = event.status === "ok" || event.status === "pass" ? "ok" : "fail";
       }

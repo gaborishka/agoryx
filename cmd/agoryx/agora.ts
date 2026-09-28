@@ -857,6 +857,7 @@ const runDoc = async (argv: string[]): Promise<number> => {
     return 0;
   }
   process.stdout.write(now.text.endsWith("\n") ? now.text : `${now.text}\n`);
+  if (now.truncated) console.error(pc.dim(`… only the first ${now.text.length} characters of ${now.size} bytes shown; read ${join(state.workspace, path)} for the rest`));
   return 0;
 };
 

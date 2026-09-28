@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { baselineRevision, normalizeDocPath } from "./doc.js";
+import { baselineRevision, docWritable, normalizeDocPath } from "./doc.js";
 import { RoomEngine } from "./engine.js";
 import { defaultWorkspaceRoot, roomsDir, shimDir } from "./paths.js";
 import { createClaudeRunner } from "./runners/claude.js";
@@ -65,8 +65,6 @@ export const roomNameFrom = (text: string): string => {
   return `${(space > 30 ? cut.slice(0, space) : cut).replace(/[\s,.;:!?—–-]+$/, "")}…`;
 };
 
-const isEmptyDir = (dir: string): boolean => !existsSync(dir) || readdirSync(dir).length === 0;
-
 export const createRoom = (options: CreateRoomOptions): RoomStore => {
   const env = options.env ?? process.env;
   const name = options.name.trim();
@@ -81,8 +79,16 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     createdWorkspace = false;
   } else {
     const root = defaultWorkspaceRoot(env);
+    // Claim the readable name atomically: two rooms started at once with the same name must not share it.
     const bySlug = join(root, slugify(name));
-    workspace = isEmptyDir(bySlug) ? bySlug : join(root, id);
+    mkdirSync(root, { recursive: true });
+    try {
+      mkdirSync(bySlug);
+      workspace = bySlug;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      workspace = join(root, id);
+    }
     createdWorkspace = true;
   }
   let doc: string | null = null;
@@ -114,7 +120,9 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     doc,
   };
   prepareWorkspace(workspace, { initGit: createdWorkspace });
-  if (doc && !existsSync(join(workspace, doc))) {
+  if (doc && !lstatSync(join(workspace, doc), { throwIfNoEntry: false })) {
+    // Never through a symlinked folder that leads out of the workspace.
+    if (!docWritable(workspace, doc)) throw new Error(`the canonical file must stay inside the workspace: ${doc}`);
     // Only the title: what the file says is up to the room.
     mkdirSync(dirname(join(workspace, doc)), { recursive: true });
     writeFileSync(join(workspace, doc), `# ${name}\n`);

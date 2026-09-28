@@ -91,7 +91,7 @@ export const runJsonlProcess = (options: JsonlProcessOptions): Promise<JsonlProc
       timeoutTimer = setTimeout(() => {
         timedOut = true;
         terminate();
-      }, options.timeoutMs);
+      }, Math.min(options.timeoutMs, 2 ** 31 - 1));
       timeoutTimer.unref();
     }
 

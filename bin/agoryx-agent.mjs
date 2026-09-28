@@ -84,7 +84,21 @@ const signer = (flags) => {
   return "unknown";
 };
 
+/** The flags each verb takes (same as internal/agora/table-cli.ts); anything else is a typo, not something to drop. */
+const TABLE_FLAGS = {
+  propose: ["body", "file", "q"],
+  evidence: ["source"],
+  object: ["source"],
+  support: ["source"],
+  decide: ["note"],
+};
+
 const buildOp = (verb, positional, flags) => {
+  const allowed = TABLE_FLAGS[verb] ?? [];
+  const unknown = Object.keys(flags).filter((flag) => !allowed.includes(flag));
+  if (unknown.length > 0 && ["ask", "fact", "settle", "next", "propose", "object", "support", "evidence", "done", "withdraw", "reopen", "decide"].includes(verb)) {
+    fail(`'${verb}' does not take ${unknown.map((flag) => `--${flag}`).join(", ")}${allowed.length ? ` (it takes ${allowed.map((flag) => `--${flag}`).join(", ")})` : ""}`);
+  }
   const rest = positional.join(" ").trim();
   switch (verb) {
     case "ask":

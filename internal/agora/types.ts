@@ -248,6 +248,8 @@ export type RoomEventBody =
       changes?: FileChange[];
       /** Those two trees; `git diff before after` shows the whole workspace change. */
       trees?: { before: string; after: string };
+      /** The agent never got to answer what this turn showed it (the process died): show it again. */
+      unseen?: boolean;
     }
   | { type: "session.bound"; agent: string; sessionId: string }
   | { type: "table.op"; op: TableOp }
@@ -306,6 +308,8 @@ export interface TurnState {
   agent: string;
   runId: string;
   cursor: number;
+  /** The agent's cursor before this turn: restored if the turn never finished. */
+  cursorBefore: number;
   seq: number;
   startedAt: string;
   endedAt?: string;

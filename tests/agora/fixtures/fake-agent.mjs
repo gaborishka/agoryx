@@ -3,7 +3,7 @@
 //
 // Behaviour comes from $FAKE_RULES (JSON array). The first rule whose `agent`
 // (optional) and `match` (substring of the prompt, optional) fit is used:
-//   { agent, match, reply, table: [[...argv]], write: {path, content} (or a list),
+//   { agent, match, reply, table: [[...argv]], write: {path, content, via?: "shell"} (or a list),
 //     command: "shown as the tool call; {cwd} and {cli} expand", sleepMs,
 //     streamSleepMs (claude: pause after streaming the reply, before finishing),
 //     error: "text", exitCode, once: true }
@@ -158,9 +158,21 @@ const main = async () => {
   }
   if (tableOutputs.length) appendFileSync(process.env.FAKE_LOG, `${JSON.stringify({ kind, turn, tableOutputs })}\n`);
 
+  // Written with the agent's own edit tool (reported, as the real CLIs do), unless `via: "shell"`.
+  let editIndex = 0;
   for (const write of [rule?.write ?? []].flat()) {
-    mkdirSync(dirname(join(process.cwd(), write.path)), { recursive: true });
-    writeFileSync(join(process.cwd(), write.path), write.content);
+    const full = join(process.cwd(), write.path);
+    mkdirSync(dirname(full), { recursive: true });
+    writeFileSync(full, write.content);
+    if (write.via === "shell") continue;
+    editIndex += 1;
+    if (kind === "claude") {
+      const id = `tw${turn}-${editIndex}`;
+      out({ type: "assistant", session_id: sessionId, message: { content: [{ type: "tool_use", id, name: "Write", input: { file_path: full, content: "" } }] } });
+      out({ type: "user", session_id: sessionId, message: { content: [{ type: "tool_result", tool_use_id: id, content: "ok", is_error: false }] } });
+    } else {
+      out({ type: "item.completed", item: { id: `edit_${editIndex}`, type: "file_change", changes: [{ path: full, kind: "update" }], status: "completed" } });
+    }
   }
   for (const argv of rule?.git ?? []) {
     execFileSync("git", ["-c", "user.name=fake", "-c", "user.email=fake@example.com", ...argv], { stdio: "ignore" });

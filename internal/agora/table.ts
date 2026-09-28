@@ -33,8 +33,10 @@ const TABLE_OPS: ReadonlySet<TableOpName> = new Set([
 ]);
 
 const MAX_TEXT = 4000;
+/** A proposal body can carry a diagram or a whole html page. */
+const MAX_BODY = 24_000;
 
-const cleanText = (value: unknown, field: string, required = true): string | undefined => {
+const cleanText = (value: unknown, field: string, required = true, max = MAX_TEXT): string | undefined => {
   if (value === undefined || value === null || value === "") {
     if (required) throw new TableOpError(`missing ${field}`);
     return undefined;
@@ -42,7 +44,7 @@ const cleanText = (value: unknown, field: string, required = true): string | und
   if (typeof value !== "string") throw new TableOpError(`${field} must be a string`);
   const text = value.trim();
   if (!text && required) throw new TableOpError(`missing ${field}`);
-  return text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}…` : text;
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 };
 
 const normalizeRef = (value: unknown): string => {
@@ -86,8 +88,9 @@ export const prepareTableOp = (
     case "ask":
       return { ...base, op, text: cleanText(input.text, "question text")!, id: `Q${table.questions.length + 1}` };
     case "propose": {
-      const title = cleanText(input.title, "title")!;
-      const body = cleanText(input.body, "body", false);
+      // Agents often guess the next id into the title ("P9: …"); the table assigns ids itself.
+      const title = cleanText(input.title, "title")!.replace(/^P\d+\s*[:.—–-]\s*/i, "") || cleanText(input.title, "title")!;
+      const body = cleanText(input.body, "body", false, MAX_BODY);
       const file = cleanText(input.file, "file", false);
       let q: string | undefined;
       if (input.q !== undefined && input.q !== null && input.q !== "") {
@@ -361,15 +364,44 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
   return `${lines.join("\n")}\n`;
 };
 
-/** Compact one-line status used at the end of delta prompts. */
+/**
+ * The table's current state for the end of a delta: what is still open, where
+ * each live option stands, what is settled and what someone still has to do.
+ * The state, not the moves — the moves are in the transcript above it.
+ */
 export const summarizeTable = (table: TableState): string | null => {
-  const open = table.questions.filter((question) => question.status === "open");
+  const openQuestions = table.questions.filter((question) => question.status === "open");
   const liveOptions = table.options.filter((option) => option.status === "open");
-  if (open.length === 0 && liveOptions.length === 0 && table.next.every((step) => step.done)) return null;
-  const parts: string[] = [];
-  if (open.length > 0) parts.push(`open: ${open.map((question) => question.id).join(", ")}`);
-  if (liveOptions.length > 0) parts.push(`options: ${liveOptions.map((option) => `${option.id}(${option.by})`).join(", ")}`);
   const pending = table.next.filter((step) => !step.done);
-  if (pending.length > 0) parts.push(`next: ${pending.map((step) => step.id).join(", ")}`);
-  return parts.join(" · ");
+  const empty = [openQuestions, liveOptions, pending, table.decisions, table.facts, table.settled].every((list) => list.length === 0);
+  if (empty) return null;
+
+  const standing = (option: TableState["options"][number]): string => {
+    const notes = table.notes.filter((note) => note.target === option.id);
+    const count = (kind: string) => notes.filter((note) => note.kind === kind).length;
+    const bits = [option.by];
+    if (count("support")) bits.push(`${count("support")} support`);
+    if (count("object")) bits.push(`${count("object")} objection${count("object") > 1 ? "s" : ""}`);
+    if (count("evidence")) bits.push(`${count("evidence")} evidence`);
+    if (option.file) bits.push(`preview ${option.file}`);
+    return `${option.id} ${quote(option.title, 70)} (${bits.join(", ")})`;
+  };
+
+  const lines: string[] = [];
+  for (const question of openQuestions) {
+    const options = liveOptions.filter((option) => option.q === question.id);
+    lines.push(`  ${question.id} open ${quote(question.text, 100)}${options.length ? "" : " — no options yet"}`);
+    for (const option of options) lines.push(`    ${standing(option)}`);
+  }
+  for (const option of liveOptions.filter((entry) => !entry.q || !openQuestions.some((question) => question.id === entry.q))) {
+    lines.push(`  ${standing(option)}`);
+  }
+  for (const decision of table.decisions.slice(-3)) {
+    const option = table.options.find((entry) => entry.id === decision.option);
+    lines.push(`  decided: ${decision.option}${option ? ` ${quote(option.title, 70)}` : ""}${decision.q ? ` for ${decision.q}` : ""}`);
+  }
+  if (table.facts.length > 0) lines.push(`  facts: ${table.facts.slice(-4).map((item) => `${item.id} ${quote(item.text, 70)}`).join("; ")}`);
+  if (table.settled.length > 0) lines.push(`  settled: ${table.settled.slice(-4).map((item) => `${item.id} ${quote(item.text, 70)}`).join("; ")}`);
+  if (pending.length > 0) lines.push(`  to do: ${pending.map((step) => `${step.id} ${quote(step.text, 70)}`).join("; ")}`);
+  return lines.join("\n");
 };

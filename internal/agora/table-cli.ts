@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 /**
  * Parse `table <verb> …` arguments into a raw table op. Mirrors the
  * zero-dependency agent CLI (bin/agoryx-agent.mjs) so humans and agents use
@@ -6,7 +8,7 @@
 export const TABLE_USAGE = [
   "agoryx table [show]",
   'agoryx table ask "question"',
-  'agoryx table propose "short title" [--body "what and why"] [--file path] [--q Q1]',
+  'agoryx table propose "short title" [--body "what and why" | --body-file notes.md] [--file path] [--q Q1]',
   'agoryx table object|support P1 "reason"',
   'agoryx table evidence P1 "finding" [--source url-or-path]',
   'agoryx table fact|settle|next "text"',
@@ -47,7 +49,7 @@ export const parseTableCommand = (verb: string, argv: string[]): Record<string, 
       return clean({
         op: "propose",
         title: positional[0],
-        body: flags.body ?? (positional.slice(1).join(" ") || undefined),
+        body: (flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : flags.body) ?? (positional.slice(1).join(" ") || undefined),
         file: flags.file,
         q: flags.q,
       });

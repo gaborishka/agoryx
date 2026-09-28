@@ -4,6 +4,7 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { blockHash } from "../../internal/agora/blocks.js";
 import { AgoraDaemon } from "../../internal/agora/daemon.js";
 import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { createCodexRunner } from "../../internal/agora/runners/codex.js";
@@ -327,7 +328,8 @@ test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .gi
   try {
     const page = await call("GET", `${snap.rawBase}site/`, { token: null });
     assert.equal(page.status, 200);
-    assert.equal(page.body, "<h1>hi</h1>");
+    assert.ok(page.body.startsWith("<h1>hi</h1>"), "the file itself comes first");
+    assert.match(page.body, /agoryxFrame/, "html gets the height reporter the page uses to size live frames");
     assert.match(String(page.headers["content-security-policy"]), /^sandbox allow-scripts/);
     assert.match(String(page.headers["content-security-policy"]), /frame-ancestors 'self'/);
     assert.equal(page.headers["x-content-type-options"], "nosniff");
@@ -344,6 +346,32 @@ test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .gi
   } finally {
     rmSync(outside, { recursive: true, force: true });
   }
+});
+
+test("html and svg fences in a message are served as sandboxed pages, found by the hash of their body", async () => {
+  const room = await newRoom("Daemon blocks");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();
+  const html = "<!doctype html><canvas id=c></canvas><script>c.width=10</script>";
+  const pic = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="4"/></svg>';
+  const text = ["Look:", "```html", html, "```", "and", "```svg", pic, "```", "```js", "not live", "```"].join("\n");
+  const posted = (await call("POST", `/api/rooms/${room.id}/messages`, { body: { text } })).json<{ message: { id: string } }>();
+  const id = posted.message.id;
+
+  const page = await call("GET", `${snap.rawBase}~block/m:${id}/${blockHash(html)}`, { token: null });
+  assert.equal(page.status, 200);
+  assert.ok(page.body.startsWith(html));
+  assert.match(String(page.headers["content-type"]), /^text\/html/);
+  assert.match(String(page.headers["content-security-policy"]), /^sandbox allow-scripts/);
+
+  const image = await call("GET", `${snap.rawBase}~block/m:${id}/${blockHash(pic)}`, { token: null });
+  assert.equal(image.status, 200);
+  assert.equal(image.body, pic);
+  assert.match(String(image.headers["content-type"]), /^image\/svg\+xml/);
+
+  assert.equal((await call("GET", `${snap.rawBase}~block/m:${id}/${blockHash("not live")}`, { token: null })).status, 404);
+  assert.equal((await call("GET", `${snap.rawBase}~block/m:nope/${blockHash(html)}`, { token: null })).status, 404);
+  const wrongKey = snap.rawBase.replace(/[0-9a-f]{32}/, "0".repeat(32));
+  assert.equal((await call("GET", `${wrongKey}~block/m:${id}/${blockHash(html)}`, { token: null })).status, 404);
 });
 
 test("static UI is served with a CSP; unknown paths fall back to the app shell", async () => {

@@ -28,13 +28,19 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
 
 ## The table (Стіл)
 
-The conversation is where agents think; the table is where the room keeps what matters. Agents and the
-human write to it with the same verbs:
+The conversation and the table are not two chats. The conversation is the talk — reasoning, questions,
+what someone did — and it scrolls away. The table is the room's working state: open questions, the real
+alternatives with the arguments and evidence attached to each, facts, settled points, steps someone owns,
+decisions. Agents change it with a tool during their turn, the way they edit a file; each move shows up
+as a card under that turn's message (an option card keeps its live standing — ✓ supports, ✕ objections,
+◆ evidence, chosen or withdrawn — and has "Підтримати / Заперечити / Обрати" for the human). The board
+beside the conversation shows the same state grouped by question. Every agent delta ends with the table's
+current state, so nobody has to reconstruct it from the scroll. Agents and the human use the same verbs:
 
 | Op | Meaning |
 |----|---------|
 | `ask "question"` | Open question `Q1` |
-| `propose "title" [--body …] [--file path] [--q Q1]` | Option `P1` (a file can be previewed in the UI) |
+| `propose "title" [--body … \| --body-file f.md \| --body -] [--file path] [--q Q1]` | Option `P1`: a markdown body (diagrams and live blocks render), a file previewed live |
 | `object P1 "why"` / `support P1 "why"` | Objection or support note `N1` |
 | `evidence P1 "finding" [--source …]` | Evidence that backs or breaks an option |
 | `fact "…"` / `settle "…"` | Established fact `F1` / something both sides agree on `S1` |
@@ -137,6 +143,21 @@ agoryx open         # opens the browser with a one-time login link
 - Table ids in messages (`P1`, `X1` …) open the table at that item. The header shows each agent's
   state and holds the workspace files, the native sessions and the room settings.
 
+### Rich content
+
+Messages, option bodies and the canonical file are rendered markdown, and agents are told to show
+rather than only tell:
+
+- ```` ```mermaid ```` fences render as diagrams (mermaid is vendored in `web/vendor/`, loaded on first use,
+  `securityLevel: strict`).
+- ```` ```html ```` fences render live: the daemon serves each block as its own page at
+  `/raw/<room>/<hmac>/~block/<m:id|o:id>/<hash>` — found by the cyrb53 hash of its body in that message
+  or option (`internal/agora/blocks.ts`, same hash in `web/app.js`) — under the sandbox CSP, so scripts
+  run but the page has an opaque origin and cannot reach the API. The frame reports its content height.
+- ```` ```svg ```` fences render as images; other fences are highlighted with a copy button.
+- `![caption](path)` embeds a workspace file: images inline, `.html/.svg/.pdf` live, anything else as a
+  file link. Markdown tables (with alignment), task lists and strikethrough render too.
+
 ### In the agents' own apps
 
 The conversation is **their** session. `agoryx resume` (or the sessions button in the UI) prints the
@@ -183,7 +204,7 @@ It works both ways. Whatever you say to an agent there comes back into the room:
 - Every `/api/*` call needs the token from `daemon.json` (mode 0600). The token arrives as a header,
   or as an HttpOnly, SameSite=Strict cookie set by the `agoryx open` login link.
 - Workspace files are served under `/raw/<room>/<hmac>/…`, with a `sandbox` CSP and an opaque origin.
-  Agent-made HTML can be previewed but cannot call the API. Paths are resolved through symlinks and
+  Agent-made HTML (files and ```` ```html ```` blocks) can run but cannot call the API. Paths are resolved through symlinks and
   must stay inside the workspace. `.git` is never served.
 
 ## Storage
@@ -211,6 +232,7 @@ State lives in `$AGORYX_HOME` (default `~/.local/state/agoryx/agora`):
 | `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim (`table`, `diff`) |
 | `internal/agora/store.ts`, `projection.ts` | JSONL event log and state projection |
 | `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |
+| `internal/agora/blocks.ts` | Live html/svg fences: finding a block in a message by the hash of its body |
 | `cmd/agoryx/agora.ts` | `agoryx up/new/say/tail/table/doc/diff/…` |
 | `web/` | The web UI (vanilla JS, no build step) |
 

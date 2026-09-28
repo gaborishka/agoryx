@@ -14,7 +14,8 @@ const USAGE = `agoryx — room tools for agents
 
   agoryx table show
   agoryx table ask "question"
-  agoryx table propose "short title" [--body "what and why"] [--file path] [--q Q1]
+  agoryx table propose "short title" [--body "what and why" | --body-file notes.md | --body -] [--file path] [--q Q1]
+                   the body is markdown: mermaid/html/svg fences and ![](path) embeds render for everyone
   agoryx table object  P1 "reason"
   agoryx table support P1 "reason"
   agoryx table evidence P1 "finding" [--source url-or-path]
@@ -191,6 +192,17 @@ const main = async () => {
   const { positional, flags } = parseArgs(args);
   const agent = signer(flags);
   delete flags.as;
+  // A long markdown body (diagrams, html) is easier to pass as a file or on stdin than as one shell argument.
+  if (flags["body-file"]) {
+    try {
+      flags.body = readFileSync(resolve(flags["body-file"]), "utf8");
+    } catch (error) {
+      fail(`cannot read --body-file: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    delete flags["body-file"];
+  } else if (flags.body === "-") {
+    flags.body = readFileSync(0, "utf8");
+  }
   const op = buildOp(verb, positional, flags);
   for (const key of Object.keys(op)) if (op[key] === undefined) delete op[key];
   const nonce = randomBytes(6).toString("hex");

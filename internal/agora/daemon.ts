@@ -3,6 +3,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, extname, join, resolve, sep } from "node:path";
+import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
@@ -77,6 +78,16 @@ const MAX_RAW = 25 * 1024 * 1024;
  * to the daemon API with the human's cookie.
  */
 const RAW_CSP = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads; frame-ancestors 'self'";
+
+/**
+ * Appended to html the page embeds: reports the document's height to the page
+ * so a live block is as tall as its content. The frame stays sandboxed; this
+ * only sends a number up.
+ */
+const FRAME_REPORTER = Buffer.from(
+  // The content's own height, not the viewport's: scrollHeight never drops below the frame, so a frame could only grow.
+  '\n<script>(()=>{let last=0;const size=()=>{const d=document.documentElement,b=document.body;if(!b)return d.scrollHeight;const m=parseFloat(getComputedStyle(b).marginBottom)||0;let h=b.getBoundingClientRect().bottom+m;for(const el of b.children){const r=el.getBoundingClientRect();if(r.bottom>h)h=r.bottom}return h};const post=()=>{const h=Math.ceil(size()+scrollY);if(Math.abs(h-last)>2){last=h;parent.postMessage({agoryxFrame:1,h},"*")}};addEventListener("load",post);try{const o=new ResizeObserver(post);o.observe(document.documentElement);document.body&&o.observe(document.body)}catch{}setTimeout(post,400);setTimeout(post,1500)})()</script>\n',
+);
 
 const MAX_BODY = 1024 * 1024;
 const MAX_FILE_PREVIEW = 2 * 1024 * 1024;
@@ -439,16 +450,22 @@ export class AgoraDaemon {
     } catch {
       throw new HttpError(400, "bad path");
     }
+    const handle = this.room(roomId);
+    if (relPath.startsWith("~block/")) {
+      this.serveBlock(req, res, handle, relPath.slice("~block/".length));
+      return;
+    }
     if (!relPath || relPath.endsWith("/")) relPath += "index.html";
     if (relPath === ".git" || relPath.startsWith(".git/")) throw new HttpError(404, "not found");
-    const handle = this.room(roomId);
     const full = resolveInside(handle.store.state.workspace, relPath);
     if (!full || !existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
     const size = statSync(full).size;
     if (size > MAX_RAW) throw new HttpError(413, "file too large to preview");
+    const type = MIME[extname(full).toLowerCase()] ?? "text/plain; charset=utf-8";
+    const html = type.startsWith("text/html");
     res.writeHead(200, {
-      "content-type": MIME[extname(full).toLowerCase()] ?? "text/plain; charset=utf-8",
-      "content-length": size,
+      "content-type": type,
+      "content-length": size + (html ? FRAME_REPORTER.length : 0),
       "cache-control": "no-cache",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
@@ -459,7 +476,31 @@ export class AgoraDaemon {
       res.end();
       return;
     }
-    res.end(readFileSync(full));
+    res.end(html ? Buffer.concat([readFileSync(full), FRAME_REPORTER]) : readFileSync(full));
+  }
+
+  /** An ```html / ```svg fence from a message (m:<id>) or a proposal body (o:<id>), as its own sandboxed page. */
+  private serveBlock(req: IncomingMessage, res: ServerResponse, handle: RoomHandle, spec: string): void {
+    const [source = "", hash = ""] = spec.split("/");
+    const colon = source.indexOf(":");
+    const kind = source.slice(0, colon);
+    const id = source.slice(colon + 1);
+    const state = handle.store.state;
+    const text =
+      kind === "m" ? state.messages.find((m) => m.id === id)?.text : kind === "o" ? state.table.options.find((o) => o.id === id)?.body : undefined;
+    const block = text ? findLiveBlock(text, hash) : undefined;
+    if (!block) throw new HttpError(404, "no such block");
+    const body = block.lang === "svg" ? Buffer.from(block.body, "utf8") : Buffer.concat([Buffer.from(block.body, "utf8"), FRAME_REPORTER]);
+    res.writeHead(200, {
+      "content-type": LIVE_LANGS[block.lang]!,
+      "content-length": body.length,
+      "cache-control": "no-cache",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "cross-origin-resource-policy": "same-origin",
+      "content-security-policy": RAW_CSP,
+    });
+    res.end(req.method === "HEAD" ? undefined : body);
   }
 
   private serveStatic(res: ServerResponse, path: string): void {
@@ -483,7 +524,7 @@ export class AgoraDaemon {
       ...(relative === "index.html"
         ? {
             "content-security-policy":
-              "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+              "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
           }
         : {}),
     });

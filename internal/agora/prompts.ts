@@ -103,20 +103,39 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
           "",
         ]
       : []),
-    "The table — shared structure for decisions with real alternatives (use it when it helps; plain conversation is fine otherwise):",
+    "The room has two surfaces, and they are not two chats:",
+    "- The conversation is the talk: reasoning, questions to each other, what you did and found. It scrolls away.",
+    "- The table is the room's working state — what the room currently holds: open questions, the real alternatives with the",
+    "  arguments and evidence attached to each, what is settled, what someone still has to do, what was decided. It does not",
+    "  scroll away: every turn ends with its current state, and the human sees it as a board beside the conversation.",
+    "  You change it with a tool, during your turn, the way you would edit a file. Each move appears as a card under your",
+    "  message, so don't repeat the card in prose — refer to it by id (P2, Q1) and spend your words on the reasoning.",
+    "  Use it when there are real alternatives, when a claim needs its evidence next to it, or when something must outlive",
+    "  the scroll (a finding, a settled point, a step someone owns). Don't mirror small talk into it.",
     `  ${agentCli} table ask "question"`,
-    `  ${agentCli} table propose "short title" --body "what and why" [--file path/in/workspace] [--q Q1]`,
+    `  ${agentCli} table propose "short title" --body "what and why (markdown)" [--file path/in/workspace] [--q Q1]`,
+    "    (a long body with a diagram: write it to a file and pass --body-file notes.md, or pipe it with --body -)",
     `  ${agentCli} table object P1 "reason"   |   support P1 "reason"   |   evidence P1 "finding" --source <url|path>`,
-    `  ${agentCli} table settle "what is now established"   |   next "concrete next step"   |   done X1`,
+    `  ${agentCli} table settle "what is now established"   |   fact "a checked fact"   |   next "concrete next step"   |   done X1`,
     `  ${agentCli} table decide P1 --note "why"   (when the room has actually converged, or the human asked you to decide)`,
     `  ${agentCli} table show`,
-    "  Proposals with --file get a live preview (html, svg, images, markdown, code).",
+    "  One op per command, not chained with && or ; — each runs without an approval prompt that way.",
     ...(cli.path
       ? [
-          `  If \`${agentCli}\` is missing or says "Unknown command 'table'" (another install earlier on PATH), use "$AGORYX_CLI" table … — it always points at ${cli.path}`,
+          `  If \`${agentCli}\` is missing or says "Unknown command 'table'" (another install earlier on PATH), use "${cli.path}" table … instead`,
           `  Outside a room turn — when someone talks to you directly in this session — the table still works: run "${cli.path}" table … --as ${agent.id} from the workspace.`,
         ]
       : []),
+    "",
+    "Show, don't only tell. Everyone reads the room rendered, so your messages (and table --body) can carry more than text:",
+    "- ```mermaid fences render as diagrams (flowchart, sequence, class, state, gantt, pie, …).",
+    "- ```html fences render live in a sandbox: a whole self-contained page — inline CSS/JS, CDN scripts are fine — for",
+    "  charts, interactive prototypes, visual comparisons. ```svg fences render as pictures.",
+    "- Code fences with a language are highlighted. Tables in markdown render as tables.",
+    "- ![caption](path/in/workspace) embeds a workspace file: images show inline, .html/.svg/.pdf render live, anything",
+    "  else opens as a file. Make the artifact with your own tools (a script that plots a PNG, an HTML page) and embed it.",
+    "- A proposal with --file gets the same live preview on the table — put the mockup or chart on the option it argues for.",
+    "Use this when a picture carries the point better than a paragraph; plain text is still the default.",
   ].join("\n");
 };
 
@@ -227,7 +246,7 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
 
   const footer: string[] = [];
   const table = summarizeTable(state.table);
-  if (table) footer.push(`Table — ${table} (\`agoryx table show\` for details)`);
+  if (table) footer.push(`The table now (\`agoryx table show\` for bodies and notes):\n${table}`);
   footer.push(
     turnsLeft <= 0
       ? "This is the last agent turn of this run — leave the room in a clear state."

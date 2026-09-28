@@ -89,29 +89,246 @@ const ICON = {
 };
 
 // ---------------------------------------------------------------------------
-// Markdown (escape first, then a small safe subset)
+// Rich content: what agents show, not only say. Code is highlighted, ```mermaid
+// becomes a diagram, ```html / ```svg and embedded workspace files render live
+// in a sandbox (served by the daemon on an opaque origin — see blocks.ts).
+// ---------------------------------------------------------------------------
+
+/** cyrb53 — must match blockHash in internal/agora/blocks.ts. */
+const hashBlock = (text) => {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+};
+
+const rawUrl = (path) => `${S.snap?.rawBase ?? ""}${String(path).split("/").map(encodeURIComponent).join("/")}`;
+
+/** A path an agent wrote (relative, ./relative, or absolute inside the workspace) → workspace-relative, or null. */
+const workspaceRel = (path) => {
+  const st = state();
+  if (!st || !path || /^[a-z]+:/i.test(path) || path.startsWith("#")) return null;
+  let rel = path;
+  if (rel.startsWith("/")) {
+    if (!rel.startsWith(`${st.workspace}/`)) return null;
+    rel = rel.slice(st.workspace.length + 1);
+  }
+  rel = rel.replace(/^\.\//, "").split(/[?#]/)[0];
+  if (!rel || rel.split("/").includes("..")) return null;
+  try {
+    return decodeURIComponent(rel);
+  } catch {
+    return rel;
+  }
+};
+
+// --- syntax highlighting (a small tokenizer, not a parser) ------------------
+
+const KEYWORDS = new Set(
+  (
+    "abstract and as assert async await break case catch class const continue def default del delete do elif else enum except export extends " +
+    "false final finally fn for from func function go if impl implements import in instanceof interface is lambda let loop match mod module " +
+    "mut new nil none not null of or package pass private protected pub public raise return self select static struct super switch " +
+    "this throw throws trait true try type typeof undefined union unless use val var void when where while with yield " +
+    "None True False echo then fi done esac local readonly"
+  ).split(" "),
+);
+const SQL_KEYWORDS = new Set(
+  "select from where join left right inner outer on group by order having limit offset insert into values update set delete create table index alter drop and or not null as distinct union all case when then else end primary key references default".split(" "),
+);
+const HASH_COMMENT = new Set(["py", "python", "sh", "bash", "zsh", "shell", "rb", "ruby", "yaml", "yml", "toml", "r", "perl", "make", "makefile", "dockerfile", "conf", "ini", "nix"]);
+const DASH_COMMENT = new Set(["sql", "lua", "haskell", "hs"]);
+const NO_HIGHLIGHT = new Set(["", "text", "txt", "plain", "plaintext", "output", "log", "console"]);
+
+const highlight = (src, lang) => {
+  if (NO_HIGHLIGHT.has(lang)) return esc(src);
+  if (lang === "diff" || lang === "patch") {
+    return src
+      .split("\n")
+      .map((l) => {
+        const cls = /^\+(?!\+\+)/.test(l) ? "tk-add" : /^-(?!--)/.test(l) ? "tk-del" : /^@@/.test(l) ? "tk-hunk" : "";
+        return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l);
+      })
+      .join("\n");
+  }
+  if (lang === "json" || lang === "jsonc") {
+    return esc(src).replace(/(&quot;(?:[^&]|&(?!quot;))*?&quot;)(\s*:)?|\b(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)\b|\b(true|false|null)\b/gi, (m, str, colon, num, lit) => {
+      if (str) return `<span class="${colon ? "tk-a" : "tk-s"}">${str}</span>${colon ?? ""}`;
+      if (num) return `<span class="tk-n">${num}</span>`;
+      return `<span class="tk-k">${lit}</span>`;
+    });
+  }
+  if (lang === "html" || lang === "xml" || lang === "svg" || lang === "htm" || lang === "vue") {
+    return esc(src)
+      .replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span class="tk-c">$1</span>')
+      .replace(/(&lt;\/?)([\w:-]+)/g, '$1<span class="tk-t">$2</span>')
+      .replace(/([\w:-]+)(=)(&quot;[^&]*?&quot;|&#39;[^&]*?&#39;)/g, '<span class="tk-a">$1</span>$2<span class="tk-s">$3</span>');
+  }
+  const comment = HASH_COMMENT.has(lang) ? "#[^\\n]*" : DASH_COMMENT.has(lang) ? "--[^\\n]*" : "\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/";
+  const words = lang === "sql" ? SQL_KEYWORDS : KEYWORDS;
+  const token = new RegExp(
+    `(${comment})|("(?:[^"\\\\\\n]|\\\\.)*"|'(?:[^'\\\\\\n]|\\\\.)*'|\`(?:[^\`\\\\]|\\\\.)*\`)|\\b(\\d[\\d_]*(?:\\.\\d+)?(?:e[+-]?\\d+)?|0x[\\da-f]+)\\b|\\b([A-Za-z_$][\\w$]*)\\b(?=\\s*\\()|\\b([A-Za-z_$][\\w$]*)\\b`,
+    "gi",
+  );
+  let out = "";
+  let last = 0;
+  for (const m of src.matchAll(token)) {
+    out += esc(src.slice(last, m.index));
+    last = m.index + m[0].length;
+    const [text, com, str, num, fn, word] = m;
+    if (com) out += `<span class="tk-c">${esc(text)}</span>`;
+    else if (str) out += `<span class="tk-s">${esc(text)}</span>`;
+    else if (num) out += `<span class="tk-n">${esc(text)}</span>`;
+    else if (fn) out += words.has(lang === "sql" ? fn.toLowerCase() : fn) ? `<span class="tk-k">${esc(text)}</span>` : `<span class="tk-f">${esc(text)}</span>`;
+    else if (word && words.has(lang === "sql" ? word.toLowerCase() : word)) out += `<span class="tk-k">${esc(text)}</span>`;
+    else if (word && /^[A-Z][a-z0-9]+[A-Z]?\w*$/.test(word)) out += `<span class="tk-t">${esc(text)}</span>`;
+    else out += esc(text);
+  }
+  return out + esc(src.slice(last));
+};
+
+const LANG_LABEL = { js: "JavaScript", ts: "TypeScript", tsx: "TSX", jsx: "JSX", py: "Python", python: "Python", sh: "Shell", bash: "Shell", html: "HTML", css: "CSS", json: "JSON", sql: "SQL", go: "Go", rs: "Rust", rust: "Rust", diff: "Diff", yaml: "YAML", md: "Markdown", mermaid: "Mermaid", svg: "SVG" };
+
+const codeBlock = (lang, src) =>
+  `<div class="codeblk"><div class="cbar"><span>${esc(LANG_LABEL[lang] ?? (lang || "код"))}</span><button class="cbtn" data-act="copy" data-text="${esc(src)}">Копіювати</button></div><pre><code>${highlight(src, lang)}</code></pre></div>`;
+
+// --- mermaid: loaded on first use, rendered once per source and theme ------
+
+const MMD = { lib: null, loading: null, cache: new Map(), pending: new Map(), seq: 0 };
+
+const darkTheme = () => {
+  const forced = document.documentElement.dataset.theme;
+  return forced ? forced === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+};
+const mmdKey = (src) => `${darkTheme() ? "d" : "l"}:${hashBlock(src)}`;
+
+const diagramHtml = (src) => {
+  const key = mmdKey(src);
+  const done = MMD.cache.get(key);
+  if (!done) MMD.pending.set(key, src);
+  return `<figure class="viz mmd" data-mmd="${esc(key)}">${done ?? '<div class="viz-wait">Малюю діаграму…</div>'}<details class="vsrc"><summary>Код діаграми</summary>${codeBlock("mermaid", src)}</details></figure>`;
+};
+
+const loadMermaid = () => {
+  if (MMD.lib) return Promise.resolve(MMD.lib);
+  MMD.loading ??= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "/vendor/mermaid.min.js";
+    script.onload = () => resolve((MMD.lib = window.mermaid));
+    script.onerror = () => reject(new Error("mermaid не завантажився"));
+    document.head.append(script);
+  });
+  return MMD.loading;
+};
+
+/** Render every diagram still waiting on the page, then put each where it belongs. */
+const hydrateDiagrams = async () => {
+  if (!MMD.pending.size) return;
+  const jobs = [...MMD.pending];
+  MMD.pending.clear();
+  let lib;
+  try {
+    lib = await loadMermaid();
+  } catch (error) {
+    for (const [key] of jobs) MMD.cache.set(key, `<div class="viz-err">${esc(error.message)}</div>`);
+    return;
+  }
+  for (const [key, src] of jobs) {
+    if (MMD.cache.has(key)) continue;
+    const dark = key.startsWith("d:");
+    lib.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: dark ? "dark" : "neutral",
+      fontFamily: "Onest, system-ui, sans-serif",
+      themeVariables: { fontSize: "14px" },
+    });
+    try {
+      const { svg: out } = await lib.render(`mmd-${(MMD.seq += 1)}`, src);
+      MMD.cache.set(key, `<div class="mmd-svg">${out}</div>`);
+    } catch (error) {
+      MMD.cache.set(key, `<div class="viz-err">Діаграма не малюється: ${esc(String(error?.message ?? error).split("\n")[0].slice(0, 200))}</div>`);
+      document.querySelectorAll(`[id^="dmmd-"]`).forEach((n) => n.remove());
+    }
+    const pinned = els.feed && distanceFromBottom() < 200;
+    for (const node of document.querySelectorAll(`[data-mmd="${CSS.escape(key)}"]`)) {
+      const wait = node.querySelector(".viz-wait, .mmd-svg, .viz-err");
+      const holder = document.createElement("div");
+      holder.innerHTML = MMD.cache.get(key);
+      if (wait) wait.replaceWith(holder.firstElementChild);
+      const owner = node.closest("[data-key]");
+      if (owner) owner.__html = null; // re-render next time instead of keeping the placeholder
+    }
+    if (pinned) els.feed.scrollTop = els.feed.scrollHeight;
+  }
+};
+
+// --- live frames -----------------------------------------------------------
+
+const frameHtml = ({ url, label, path, kind = "html" }) =>
+  `<figure class="viz vlive" data-kind="${esc(kind)}">
+    <div class="vbar"><span class="vk">${esc(label)}</span>${path ? `<span class="mono ell vpath">${esc(path)}</span>` : ""}<span class="grow"></span><a class="cbtn" href="${esc(url)}" target="_blank" rel="noopener">На весь екран</a></div>
+    <iframe src="${esc(url)}" sandbox="allow-scripts allow-forms allow-modals allow-popups" loading="lazy" title="${esc(path ?? label)}"></iframe>
+  </figure>`;
+
+/** An ```html / ```svg fence: live when the room serves it (it has a source), highlighted code otherwise. */
+const liveBlock = (lang, src, ctx) => {
+  if (!ctx?.source || !S.snap?.rawBase) return codeBlock(lang, src);
+  const url = `${S.snap.rawBase}~block/${encodeURIComponent(ctx.source)}/${hashBlock(src)}`;
+  if (lang === "svg") {
+    return `<figure class="viz pic"><img src="${esc(url)}" alt="SVG" loading="lazy"><details class="vsrc"><summary>Код</summary>${codeBlock(lang, src)}</details></figure>`;
+  }
+  return frameHtml({ url, label: "HTML" }).replace("</figure>", `<details class="vsrc"><summary>Код</summary>${codeBlock(lang, src)}</details></figure>`);
+};
+
+/** ![caption](src): an image, a live page, or a file card. */
+const embedHtml = (src, alt) => {
+  if (/^https?:\/\//i.test(src) || /^data:image\//i.test(src)) {
+    return `<span class="embed pic"><img src="${esc(src)}" alt="${esc(alt)}" loading="lazy">${alt ? `<span class="cap">${esc(alt)}</span>` : ""}</span>`;
+  }
+  const rel = workspaceRel(src);
+  if (!rel || !S.snap?.rawBase) return `<code>${esc(alt || src)}</code>`;
+  const kind = ext(rel);
+  if (IMAGE_EXT.has(kind)) {
+    return `<span class="embed pic"><button class="pic-btn" data-act="file" data-path="${esc(rel)}" title="${esc(rel)}"><img src="${esc(rawUrl(rel))}" alt="${esc(alt || rel)}" loading="lazy"></button>${alt ? `<span class="cap">${esc(alt)}</span>` : ""}</span>`;
+  }
+  if (FRAME_EXT.has(kind)) {
+    return `<span class="embed">${frameHtml({ url: rawUrl(rel), label: alt || (kind === "pdf" ? "PDF" : "HTML"), path: rel, kind })}</span>`;
+  }
+  return `<button class="fileline" data-act="file" data-path="${esc(rel)}">${ICON.file}<span class="mono ell">${esc(alt || rel)}</span><span class="go">відкрити</span></button>`;
+};
+
+// ---------------------------------------------------------------------------
+// Markdown (escape first, then a safe subset plus the rich blocks above)
 // ---------------------------------------------------------------------------
 
 const inline = (raw, ctx) => {
   const slots = [];
   const keep = (html) => `\u0000${slots.push(html) - 1}\u0000`;
   let s = String(raw).replace(/`([^`\n]+)`/g, (_, code) => keep(`<code>${esc(code)}</code>`));
+  s = s.replace(/!\[([^\]\n]*)\]\(<?([^\s)>]+)>?(?:\s+"[^"\n]*")?\)/g, (_, alt, src) => keep(embedHtml(src, alt)));
   s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, text, url) =>
     keep(`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>`),
   );
-  // Local links an agent writes to a workspace file: open the file here.
-  s = s.replace(/\[([^\]\n]+)\]\((\/[^\s)]+)\)/g, (_, text, path) => {
-    const st = state();
-    const rel = st && path.startsWith(`${st.workspace}/`) ? path.slice(st.workspace.length + 1) : null;
+  // Links an agent writes to a workspace file (absolute or relative): open the file here.
+  s = s.replace(/\[([^\]\n]+)\]\(<?([^\s)>]+)>?\)/g, (m, text, path) => {
+    const rel = workspaceRel(path);
     return keep(rel ? `<button class="flink" data-act="file" data-path="${esc(rel)}">${esc(text)}</button>` : `<code>${esc(text)}</code>`);
   });
-  s = s.replace(/\bhttps?:\/\/[^\s<>()"']+[^\s<>()"'.,;:!?]/g, (url) =>
+  s = s.replace(/\bhttps?:\/\/[^\s<>()"'\u0000]+[^\s<>()"'.,;:!?\u0000]/g, (url) =>
     keep(`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`),
   );
   s = esc(s);
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/g, "$1<em>$2</em>");
   s = s.replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g, "$1<em>$2</em>");
+  s = s.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
   s = s.replace(/(^|[^\w@])@([a-z][\w-]*)/gi, (m, pre, name) => {
     const who = ctx?.participant?.(name.toLowerCase());
     if (!who) return m;
@@ -129,14 +346,18 @@ const markdown = (raw, ctx) => {
   const isList = (line) => /^\s*([-*+]|\d+[.)])\s+/.test(line);
   while (i < lines.length) {
     const line = lines[i];
-    const fence = /^\s*(```+|~~~+)\s*([\w+-]*)\s*$/.exec(line);
+    const fence = /^\s*(`{3,}|~{3,})\s*([\w+-]*)\s*$/.exec(line);
     if (fence) {
       const body = [];
       const close = new RegExp(`^\\s*${fence[1]}\\s*$`);
       i += 1;
       while (i < lines.length && !close.test(lines[i])) body.push(lines[i++]);
       i += 1;
-      out.push(`<pre><code>${esc(body.join("\n"))}</code></pre>`);
+      const lang = fence[2].toLowerCase();
+      const src = body.join("\n");
+      if (lang === "mermaid") out.push(diagramHtml(src));
+      else if (lang === "html" || lang === "htm" || lang === "svg") out.push(liveBlock(lang, src, ctx));
+      else out.push(codeBlock(lang, src));
       continue;
     }
     if (!line.trim()) {
@@ -165,12 +386,14 @@ const markdown = (raw, ctx) => {
     if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
       const row = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
       const head = row(line);
+      const align = row(lines[i + 1]).map((c) => (/^:-+:$/.test(c) ? "center" : /-+:$/.test(c) ? "right" : ""));
+      const cell = (tag, c, n) => `<${tag}${align[n] ? ` style="text-align:${align[n]}"` : ""}>${inline(c, ctx)}</${tag}>`;
       i += 2;
       const rows = [];
       while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) rows.push(row(lines[i++]));
       out.push(
-        `<div class="tscroll"><table><thead><tr>${head.map((c) => `<th>${inline(c, ctx)}</th>`).join("")}</tr></thead><tbody>${rows
-          .map((r) => `<tr>${r.map((c) => `<td>${inline(c, ctx)}</td>`).join("")}</tr>`)
+        `<div class="tscroll"><table><thead><tr>${head.map((c, n) => cell("th", c, n)).join("")}</tr></thead><tbody>${rows
+          .map((r) => `<tr>${r.map((c, n) => cell("td", c, n)).join("")}</tr>`)
           .join("")}</tbody></table></div>`,
       );
       continue;
@@ -184,14 +407,21 @@ const markdown = (raw, ctx) => {
         i += 1;
       }
       const tag = ordered ? "ol" : "ul";
-      out.push(`<${tag}>${items.map((item) => `<li>${inline(item, ctx).replace(/\n/g, "<br>")}</li>`).join("")}</${tag}>`);
+      const item = (raw) => {
+        const task = /^\[([ xX])\]\s+/.exec(raw);
+        const body = inline(task ? raw.slice(task[0].length) : raw, ctx).replace(/\n/g, "<br>");
+        return task ? `<li class="task${task[1] === " " ? "" : " on"}"><span class="box" aria-hidden="true"></span>${body}</li>` : `<li>${body}</li>`;
+      };
+      out.push(`<${tag}>${items.map(item).join("")}</${tag}>`);
       continue;
     }
     const para = [];
     while (i < lines.length && lines[i].trim() && !/^\s*(```|~~~)/.test(lines[i]) && !/^#{1,4}\s/.test(lines[i]) && !isList(lines[i]) && !/^\s*>/.test(lines[i])) {
       para.push(lines[i++]);
     }
-    out.push(`<p>${para.map((l) => inline(l, ctx)).join("<br>")}</p>`);
+    // A paragraph that is only an embed is a figure, not a line of text.
+    const only = para.length === 1 && /^\s*!\[[^\]\n]*\]\([^)]+\)\s*$/.test(para[0]);
+    out.push(only ? `<div class="fig">${inline(para[0], ctx)}</div>` : `<p>${para.map((l) => inline(l, ctx)).join("<br>")}</p>`);
   }
   return out.join("");
 };
@@ -294,9 +524,10 @@ const mdCtx = () => {
   return { participant, refs };
 };
 
-const avatar = (handle, size = 28) => {
+/** `live` shows the agent's presence ring; avatars inside messages stay still so their html does not change. */
+const avatar = (handle, size = 28, live = false) => {
   const who = participant(handle) ?? { label: handle || "?", cls: "hu", agent: false };
-  const now = who.agent ? S.snap?.presence?.[who.id] : undefined;
+  const now = who.agent && live ? S.snap?.presence?.[who.id] : undefined;
   const working = now === "working" ? " working" : now === "native" ? " native" : "";
   if (who.agent) {
     return `<span class="av ag ${who.cls}${working}" style="--s:${size}px" aria-hidden="true">${who.kind === "codex" ? ICON.codex : ICON.claude}</span>`;
@@ -459,7 +690,7 @@ const renderSide = () => {
   const list = S.rooms
     .map((room) => {
       const on = S.view === "room" && room.id === S.roomId ? " on" : "";
-      const tail = room.running ? '<span class="live" title="Агенти працюють"></span>' : `<span class="rt">${esc(ago(room.updatedAt))}</span>`;
+      const tail = room.running ? '<span class="livedot" title="Агенти працюють"></span>' : `<span class="rt">${esc(ago(room.updatedAt))}</span>`;
       return `<button class="room${on}" data-act="room" data-id="${esc(room.id)}" title="${esc(room.workspace)}">
         <span class="rn">${esc(room.name)}</span>${tail}
         <span class="rp">${esc(previewOf(room))}</span>
@@ -594,12 +825,6 @@ const OP_WORD = {
 
 const opRef = (o) => (o.op === "ask" || o.op === "propose" ? o.id : o.target);
 
-const opChip = (o) => {
-  const word = (OP_WORD[o.op] ?? (() => o.op))(o);
-  const ref = opRef(o);
-  return `<button class="chip op${o.op === "object" ? " obj" : ""}" data-act="ref" data-ref="${esc(ref ?? "")}" title="${esc(o.text ?? o.body ?? o.title ?? "")}">${ICON.table}<span class="ell">${esc(word)}</span></button>`;
-};
-
 const opSentence = (o) => {
   const who = nameOf(o.by);
   switch (o.op) {
@@ -629,6 +854,125 @@ const opSentence = (o) => {
       return `${who}: ${o.op} ${o.target ?? ""}`;
   }
 };
+
+// --- table moves as cards in the conversation --------------------------------
+// The table is a tool the agents use while they talk: each move shows up under
+// the message that made it, as a card with the item's live state — the same
+// item the panel shows on the board.
+
+const noteCounts = (table, id) => {
+  const notes = table.notes.filter((n) => n.target === id);
+  return { sup: notes.filter((n) => n.kind === "support").length, obj: notes.filter((n) => n.kind === "object").length, ev: notes.filter((n) => n.kind === "evidence").length };
+};
+
+const standingHtml = (table, o) => {
+  if (o.status === "chosen") return '<span class="tc-st chosen">Обрано</span>';
+  if (o.status === "withdrawn") return '<span class="tc-st gone">Відкликано</span>';
+  const q = o.q ? table.questions.find((x) => x.id === o.q) : null;
+  if (q?.status === "decided") return '<span class="tc-st gone">Не обрано</span>';
+  const { sup, obj, ev } = noteCounts(table, o.id);
+  const bits = [];
+  if (sup) bits.push(`<span class="plus" title="${esc(plural(sup, "підтримка", "підтримки", "підтримок"))}">✓ ${sup}</span>`);
+  if (obj) bits.push(`<span class="minus" title="${esc(plural(obj, "заперечення", "заперечення", "заперечень"))}">✕ ${obj}</span>`);
+  if (ev) bits.push(`<span class="ev" title="${esc(plural(ev, "доказ", "докази", "доказів"))}">◆ ${ev}</span>`);
+  return `<span class="tc-st">${bits.length ? bits.join("") : "відкрито"}</span>`;
+};
+
+const refBtn = (id) => `<button class="tc-id" data-act="ref" data-ref="${esc(id)}" title="Показати на столі">${esc(id)}</button>`;
+
+const optionTitle = (table, id) => {
+  const o = table.options.find((x) => x.id === id);
+  return o ? `«${esc(o.title)}»` : "";
+};
+
+const TC_KIND = {
+  ask: "Питання",
+  propose: "Пропозиція",
+  object: "Заперечення",
+  support: "Підтримка",
+  evidence: "Доказ",
+  fact: "Факт",
+  settle: "Узгоджено",
+  next: "Наступний крок",
+  done: "Виконано",
+  withdraw: "Відкликано",
+  decide: "Рішення",
+  reopen: "Відкрито знову",
+};
+
+const opCard = (o) => {
+  const table = state().table;
+  const kind = `<span class="tc-kind">${ICON.table}${TC_KIND[o.op] ?? o.op}</span>`;
+  switch (o.op) {
+    case "propose": {
+      const opt = table.options.find((x) => x.id === o.id) ?? { ...o, status: "open", q: o.q ?? null };
+      const q = opt.q ? table.questions.find((x) => x.id === opt.q) : null;
+      const open = opt.status === "open" && q?.status !== "decided";
+      const body = opt.body ? markdown(opt.body, { ...mdCtx(), source: `o:${opt.id}` }) : "";
+      const long = (opt.body?.length ?? 0) > 600 || /```|!\[/.test(opt.body ?? "");
+      return `<div class="tcard prop ${agentCls(opt.by)} ${opt.status}" data-card="${esc(opt.id)}">
+        <div class="tc-head">${kind}${refBtn(opt.id)}${q ? `<span class="tc-for">до ${refBtn(q.id)}</span>` : ""}<span class="grow"></span>${standingHtml(table, opt)}</div>
+        <div class="tc-title">${inline(opt.title, mdCtx())}</div>
+        ${body ? `<div class="tc-body txt${long ? " clamp" : ""}">${body}${long ? '<button class="tc-more" data-act="card-more">Показати повністю</button>' : ""}</div>` : ""}
+        ${opt.file ? previewHtml(opt.file) : ""}
+        ${
+          open
+            ? `<div class="tc-acts"><button class="cbtn" data-act="table-form" data-kind="support" data-id="${esc(opt.id)}">Підтримати</button><button class="cbtn" data-act="table-form" data-kind="object" data-id="${esc(opt.id)}">Заперечити</button><button class="cbtn strong" data-act="table-form" data-kind="decide" data-id="${esc(opt.id)}">Обрати</button></div>`
+            : ""
+        }
+      </div>`;
+    }
+    case "ask": {
+      const q = table.questions.find((x) => x.id === o.id) ?? { ...o, status: "open" };
+      const options = table.options.filter((x) => x.q === q.id);
+      const decision = q.status === "decided" ? table.decisions.filter((d) => d.q === q.id).pop() : null;
+      const st = decision
+        ? `<span class="tc-st chosen">Вирішено: ${esc(decision.option)}</span>`
+        : `<span class="tc-st">${options.length ? esc(plural(options.length, "варіант", "варіанти", "варіантів")) : "чекає варіантів"}</span>`;
+      return `<div class="tcard ask" data-card="${esc(q.id)}">
+        <div class="tc-head">${kind}${refBtn(q.id)}<span class="grow"></span>${st}</div>
+        <div class="tc-title">${inline(q.text, mdCtx())}</div>
+        ${options.length ? `<div class="tc-opts">${options.map((x) => `<button class="tc-opt ${x.status}" data-act="ref" data-ref="${esc(x.id)}"><b>${esc(x.id)}</b> ${esc(x.title)}</button>`).join("")}</div>` : ""}
+      </div>`;
+    }
+    case "object":
+    case "support":
+    case "evidence": {
+      let source = "";
+      if (o.source) {
+        const rel = workspaceRel(o.source);
+        source = /^https?:\/\//.test(o.source)
+          ? `<a class="src" href="${esc(o.source)}" target="_blank" rel="noopener noreferrer">${esc(o.source.replace(/^https?:\/\//, ""))}</a>`
+          : rel
+            ? IMAGE_EXT.has(ext(rel))
+              ? embedHtml(rel, "")
+              : `<button class="src" data-act="file" data-path="${esc(rel)}">${esc(rel)}</button>`
+            : `<span class="src">${esc(o.source)}</span>`;
+      }
+      return `<div class="tcard nt ${o.op}" data-card="${esc(o.id ?? "")}">
+        <div class="tc-head">${kind}<span class="tc-for">до ${refBtn(o.target)} <span class="tc-ot">${optionTitle(table, o.target)}</span></span></div>
+        <div class="tc-text">${inline(o.text, mdCtx())}</div>
+        ${source ? `<div class="tc-src">${source}</div>` : ""}
+      </div>`;
+    }
+    case "fact":
+    case "settle":
+    case "next": {
+      const list = o.op === "fact" ? table.facts : o.op === "settle" ? table.settled : table.next;
+      const item = list.find((x) => x.id === o.id);
+      const done = o.op === "next" && item?.done;
+      return `<div class="tcard line ${o.op}${done ? " done" : ""}" data-card="${esc(o.id ?? "")}">${kind}<span class="tc-text">${inline(o.text, mdCtx())}</span>${done ? '<span class="tc-st chosen">виконано</span>' : ""}</div>`;
+    }
+    case "decide":
+      return `<div class="tcard line decide">${kind}<span class="tc-text">${refBtn(o.target)} ${optionTitle(table, o.target)}${o.note ? ` — ${inline(o.note, mdCtx())}` : ""}</span></div>`;
+    default: {
+      const text = o.op === "done" ? table.next.find((x) => x.id === o.target)?.text : table.options.find((x) => x.id === o.target)?.title ?? table.questions.find((x) => x.id === o.target)?.text;
+      return `<div class="tcard line ${o.op}">${kind}<span class="tc-text">${refBtn(o.target)} ${text ? esc(text) : ""}</span></div>`;
+    }
+  }
+};
+
+const opCards = (ops) => (ops?.length ? `<div class="tcards">${ops.map(opCard).join("")}</div>` : "");
 
 const revStats = (r) =>
   r.deleted ? '<span class="minus">видалено</span>' : `<span class="plus">+${r.added}</span> <span class="minus">−${r.removed}</span>`;
@@ -665,7 +1009,6 @@ const turnBar = (turn, ops, docs) => {
       if (!docPaths.has(file)) bits.push(`<button class="chip file" data-act="file" data-path="${esc(file)}" title="${esc(file)}">${ICON.file}<span class="ell">${esc(fileName(file))}</span></button>`);
     }
   }
-  for (const o of ops ?? []) bits.push(opChip(o));
   if (!bits.length) return "";
   const trace = turn && S.openTraces.has(turn.id) && turn.activity.length ? `<div class="trace">${turn.activity.map(activityHtml).join("")}</div>` : "";
   return `<div class="chips">${bits.join("")}</div>${trace}`;
@@ -711,17 +1054,19 @@ const sysText = (text) => {
   return text;
 };
 
+// The "fresh" arrival animation is added by the feed when a node is new, so a message's html stays stable.
 const messageHtml = (m, ctx) => {
-  const fresh = !S.firstPaint && !S.seenMessages.has(m.id) ? " fresh" : "";
-  S.seenMessages.add(m.id);
+  const fresh = "";
   const turn = m.turnId ? ctx.turns.get(m.turnId) : undefined;
   const ops = m.turnId ? ctx.opsByTurn.get(m.turnId) : undefined;
   const docs = m.turnId ? ctx.docByTurn.get(m.turnId) : undefined;
   const id = `m-${esc(m.id)}`;
   if (m.kind === "pass") {
     const note = m.text && m.text.trim() && !/^::pass::$/i.test(m.text.trim()) ? ` — ${esc(m.text.replace(/^[`"'*_\s]*::pass::[`"'*_\s.:—–-]*/i, ""))}` : "";
-    const chips = ops?.length || docs?.length || turn?.files?.length ? turnBar(turn, ops, docs) : "";
-    return `<div class="passl${fresh}" id="${id}">${avatar(m.author, 18)}<span><b>${esc(nameOf(m.author))}</b> пропускає хід${note || " — нема що додати"}</span>${chips}</div>`;
+    const chips = docs?.length || turn?.files?.length ? turnBar(turn, ops, docs) : "";
+    // A turn with no words can still have moved the table or the files — then it is not a pass.
+    const silent = ops?.length ? `без слів — ${ops.length === 1 ? "хід" : "ходи"} на столі` : turn?.files?.length || docs?.length ? "без слів — лише зміни" : `пропускає хід${note || " — нема що додати"}`;
+    return `<div class="passl${fresh}" id="${id}"><div class="pl">${avatar(m.author, 18)}<span><b>${esc(nameOf(m.author))}</b> ${silent}</span></div>${chips}${opCards(ops)}</div>`;
   }
   if (m.kind === "system") {
     const err = /error|failed|could not finish|timed out|rate limit/i.test(m.text) ? " err" : "";
@@ -732,7 +1077,7 @@ const messageHtml = (m, ctx) => {
   }
   if (m.kind === "human") {
     return `<div class="hmsg${fresh}" id="${id}">
-      <div class="bubble"><div class="txt">${markdown(m.text, mdCtx())}</div></div>
+      <div class="bubble"><div class="txt">${markdown(m.text, { ...mdCtx(), source: `m:${m.id}` })}</div></div>
       <div class="hmeta">${nativeTag(m)}<time datetime="${esc(m.ts)}" title="${esc(fullDate(m.ts))}">${clock(m.ts)}</time></div>
     </div>`;
   }
@@ -740,7 +1085,8 @@ const messageHtml = (m, ctx) => {
   return `<article class="amsg${fresh}" id="${id}">
     <div class="ahead">${avatar(m.author, 26)}<b class="an ${cls}">${esc(nameOf(m.author))}</b>${nativeTag(m)}<time datetime="${esc(m.ts)}" title="${esc(fullDate(m.ts))}">${clock(m.ts)}</time>${turnMeta(turn)}</div>
     <div class="abody">
-      <div class="txt">${markdown(m.text, mdCtx())}</div>
+      <div class="txt">${markdown(m.text, { ...mdCtx(), source: `m:${m.id}` })}</div>
+      ${opCards(ops)}
       ${turnBar(turn, ops, docs)}
     </div>
   </article>`;
@@ -752,18 +1098,18 @@ const liveHtml = (turn, ops) => {
   const elapsed = Date.now() - new Date(turn.startedAt).getTime();
   const cls = agentCls(turn.agent);
   return `<article class="amsg live" data-live="${esc(turn.id)}">
-    <div class="ahead">${avatar(turn.agent, 26)}<b class="an ${cls}">${esc(nameOf(turn.agent))}</b><span class="kind"><span class="dots ${cls}"><i></i><i></i><i></i></span> працює · <span data-elapsed="${esc(turn.startedAt)}">${secs(elapsed)}</span></span></div>
+    <div class="ahead">${avatar(turn.agent, 26, true)}<b class="an ${cls}">${esc(nameOf(turn.agent))}</b><span class="kind"><span class="dots ${cls}"><i></i><i></i><i></i></span> працює · <span data-elapsed="${esc(turn.startedAt)}">${secs(elapsed)}</span></span></div>
     <div class="abody">
       <div class="stream txt" data-stream="${esc(turn.id)}">${esc(stream.slice(-2400))}</div>
       <div class="trace live-trace" data-trace="${esc(turn.id)}"${last.length ? "" : " hidden"}>${last.map(activityHtml).join("")}</div>
-      ${ops?.length ? `<div class="chips">${ops.map(opChip).join("")}</div>` : ""}
+      ${opCards(ops)}
     </div>
   </article>`;
 };
 
 const helloHtml = (st) => `
   <div class="hello">
-    <div class="hello-av">${st.agents.map((a) => avatar(a.id, 40)).join("")}</div>
+    <div class="hello-av">${st.agents.map((a) => avatar(a.id, 40, true)).join("")}</div>
     <h2>Кімната готова</h2>
     <p>Напишіть, що треба зробити чи обговорити. ${esc(st.agents.map((a) => a.label).join(" і "))} спершу відповідять одночасно й незалежно, а далі говоритимуть по черзі — кожен бачитиме все, що сказали до нього.</p>
   </div>`;
@@ -809,14 +1155,54 @@ const replyTurn = (item, ctx) => {
   return ctx.turns.get(item.m.turnId) ?? null;
 };
 
+/**
+ * Put keyed html parts into a host, touching only the nodes whose html changed:
+ * a live page or diagram inside an unchanged message is never rebuilt (an
+ * iframe that is re-created or moved reloads).
+ */
+const reconcile = (host, parts, { onNew } = {}) => {
+  const byKey = new Map();
+  for (const node of host.children) if (node.dataset.key) byKey.set(node.dataset.key, node);
+  let i = 0;
+  for (const [key, html] of parts) {
+    const at = host.children[i];
+    const old = byKey.get(key);
+    if (old && old.__html === html) {
+      if (old !== at) host.insertBefore(old, at ?? null);
+    } else {
+      const tpl = document.createElement("template");
+      tpl.innerHTML = html.trim();
+      const node = tpl.content.firstElementChild ?? document.createElement("div");
+      node.dataset.key = key;
+      node.__html = html;
+      if (!old) onNew?.(node, key);
+      if (old) old.replaceWith(node);
+      if (host.children[i] !== node) host.insertBefore(node, host.children[i] ?? null);
+    }
+    byKey.delete(key);
+    i += 1;
+  }
+  for (const node of byKey.values()) node.remove();
+  while (host.children.length > parts.length) host.lastElementChild.remove();
+};
+
+const standaloneOpHtml = (o) => {
+  const who = participant(o.by);
+  const outside = who?.agent && !o.turnId ? `<span class="nat ${who.cls}" title="${esc(`Зроблено з рідної сесії ${who.label}, поза ходом у кімнаті.`)}">у своїй сесії</span>` : "";
+  return `<div class="oprow">
+    <div class="ophead">${avatar(o.by, 18)}<b>${esc(nameOf(o.by))}</b><span class="faint">на столі</span>${outside}</div>
+    ${opCard(o)}
+  </div>`;
+};
+
 const renderFeed = () => {
   const st = state();
   const feed = els.feed;
   const pinned = S.firstPaint || distanceFromBottom() < 120;
   const before = feed.scrollTop;
   const ctx = buildFeedModel();
-  const html = [];
-  if (!st.messages.length && !st.turns.length) html.push(helloHtml(st));
+  const parts = [];
+  if (!st.messages.length && !st.turns.length) parts.push(["hello", helloHtml(st)]);
   const { items } = ctx;
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i];
@@ -835,41 +1221,49 @@ const renderFeed = () => {
         const prev = st.messages.filter((m) => m.seq < item.m.seq && m.kind !== "system").at(-1);
         const blind = prev?.kind === "human";
         const names = group.map((g) => nameOf(g.m.author)).join(" і ");
-        html.push(
+        parts.push([
+          `div-${item.m.id}`,
           blind
             ? `<div class="divider" title="Перша відповідь на ваше повідомлення: агенти писали одночасно й не бачили відповідей одне одного — щоб думки були незалежні."><span>${esc(names)} відповіли незалежно — не бачачи одне одного</span></div>`
             : `<div class="divider" title="Ці відповіді писалися одночасно: кожен бачив попередні репліки, але не цю відповідь іншого."><span>${esc(names)} писали одночасно</span></div>`,
-        );
-        for (const g of group) html.push(messageHtml(g.m, ctx));
+        ]);
+        for (const g of group) parts.push([`m-${g.m.id}`, messageHtml(g.m, ctx)]);
         i = j - 1;
         continue;
       }
     }
-    if (item.type === "msg") html.push(messageHtml(item.m, ctx));
+    if (item.type === "msg") parts.push([`m-${item.m.id}`, messageHtml(item.m, ctx)]);
     else if (item.type === "commit")
-      html.push(
+      parts.push([
+        `c-${item.c.sha}`,
         `<div class="evt"><span class="tag ok">git</span><span>Контрольна точка <button class="linkish" data-act="commit" data-sha="${esc(item.c.sha)}">${esc(item.c.sha.slice(0, 7))}</button> · ${esc(plural(item.c.files, "файл", "файли", "файлів"))}</span></div>`,
-      );
-    else if (item.type === "op") {
-      const who = participant(item.op.by);
-      const outside = who?.agent && !item.op.turnId ? `<span class="nat ${who.cls}" title="${esc(`Зроблено з рідної сесії ${who.label}, поза ходом у кімнаті.`)}">у своїй сесії</span>` : "";
-      html.push(`<div class="evt"><button class="tag" data-act="panel" data-panel="table">Стіл</button><span>${inline(opSentence(item.op), mdCtx())}</span>${outside}</div>`);
-    } else if (item.type === "doc") {
+      ]);
+    else if (item.type === "op") parts.push([`o-${item.seq}`, standaloneOpHtml(item.op)]);
+    else if (item.type === "doc") {
       const r = item.r;
       const who = participant(r.by);
       const outside = r.native && who?.agent ? `<span class="nat ${who.cls}" title="${esc(`Змінено в рідній сесії ${who.label}, поза ходом у кімнаті.`)}">у своїй сесії</span>` : "";
-      html.push(
+      parts.push([
+        `d-${r.seq}`,
         `<div class="evt"><span class="tag doc">Документ</span><span><b>${esc(nameOf(r.by))}</b> змінює <button class="linkish" data-act="doc-open" data-seq="${r.seq}">${esc(r.path)}</button> ${revStats(r)}</span>${outside}</div>`,
-      );
+      ]);
     }
   }
   const live = st.turns.filter((turn) => turn.status === "running");
   if (live.length > 1) {
     const prev = st.messages.filter((m) => m.kind !== "system").at(-1);
-    if (prev?.kind === "human") html.push(`<div class="divider"><span>${esc(live.map((t) => nameOf(t.agent)).join(" і "))} відповідають незалежно — не бачачи одне одного</span></div>`);
+    if (prev?.kind === "human") parts.push(["live-div", `<div class="divider"><span>${esc(live.map((t) => nameOf(t.agent)).join(" і "))} відповідають незалежно — не бачачи одне одного</span></div>`]);
   }
-  for (const turn of live) html.push(liveHtml(turn, ctx.opsByTurn.get(turn.id)));
-  els.feedIn.innerHTML = html.join("");
+  for (const turn of live) parts.push([`live-${turn.id}`, liveHtml(turn, ctx.opsByTurn.get(turn.id))]);
+  reconcile(els.feedIn, parts, {
+    onNew: (node, key) => {
+      if (!key.startsWith("m-")) return;
+      const id = key.slice(2);
+      if (!S.firstPaint && !S.seenMessages.has(id)) node.classList.add("fresh");
+      S.seenMessages.add(id);
+    },
+  });
+  hydrateDiagrams();
   if (pinned) feed.scrollTop = feed.scrollHeight;
   else feed.scrollTop = before;
   els.jump.hidden = distanceFromBottom() < 240;
@@ -1031,7 +1425,10 @@ const renderPanel = () => {
   const key = S.panel === "table" ? "table" : `doc:${S.docEdit ? "edit" : S.docSel ?? (S.docHistory ? "history" : "now")}`;
   const keep = key === S.panelKey ? shell.scrollTop : 0;
   if (S.panel === "table") renderTable(shell);
-  else renderDoc(shell);
+  else {
+    renderDoc(shell);
+    hydrateDiagrams();
+  }
   shell.scrollTop = keep;
   S.panelKey = key;
 };
@@ -1083,7 +1480,7 @@ const optionHtml = (o, table, decidedQ) => {
   return `<article class="opt ${agentCls(o.by)} ${o.status}${lost}" id="opt-${esc(o.id)}">
     <div class="ohead"><span class="oid">${esc(o.id)}</span><b>${inline(o.title, mdCtx())}</b></div>
     <div class="oby">${avatar(o.by, 16)} ${esc(nameOf(o.by))}${counts.length ? ` · ${esc(counts.join(", "))}` : ""}</div>
-    ${o.body ? `<div class="obody txt">${markdown(o.body, mdCtx())}</div>` : ""}
+    ${o.body ? `<div class="obody txt">${markdown(o.body, { ...mdCtx(), source: `o:${o.id}` })}</div>` : ""}
     ${o.file ? previewHtml(o.file) : ""}
     ${notes.length ? `<div class="notes">${notes.map(noteHtml).join("")}</div>` : ""}
     ${acts ? `<div class="oacts">${acts}</div>` : ""}
@@ -1148,9 +1545,19 @@ const renderTable = (host) => {
   }
   const questions = [...table.questions].sort((a, b) => (a.status === b.status ? a.seq - b.seq : a.status === "open" ? -1 : 1));
   const loose = table.options.filter((o) => !o.q);
-  host.innerHTML = `${tableToolbar()}${whereHtml(table)}${questions.map((q) => questionHtml(q, table)).join("")}${
-    loose.length ? `<section class="qcard loose"><div class="qhead"><span class="faint">Пропозиції без окремого питання</span></div><div class="opts-list">${loose.map((o) => optionHtml(o, table, false)).join("")}</div></section>` : ""
-  }`;
+  // Keyed, so a live preview on one option does not reload when another part of the table changes.
+  const parts = [["tools", tableToolbar()]];
+  const where = whereHtml(table);
+  if (where) parts.push(["where", where]);
+  for (const q of questions) parts.push([`q-${q.id}`, questionHtml(q, table)]);
+  if (loose.length) {
+    parts.push([
+      "loose",
+      `<section class="qcard loose"><div class="qhead"><span class="faint">Пропозиції без окремого питання</span></div><div class="opts-list">${loose.map((o) => optionHtml(o, table, false)).join("")}</div></section>`,
+    ]);
+  }
+  reconcile(host, parts);
+  hydrateDiagrams();
 };
 
 // --- the canonical file ----------------------------------------------------
@@ -1390,7 +1797,9 @@ const closeDialog = () => {
 };
 
 const setDialogBody = (html) => {
-  if (S.dialog) els.dlgBody.innerHTML = html;
+  if (!S.dialog) return;
+  els.dlgBody.innerHTML = html;
+  hydrateDiagrams();
 };
 
 const showFile = async (path) => {
@@ -1705,6 +2114,7 @@ const onClick = async (event) => {
       const now = THEMES.indexOf(store.get("theme"));
       store.set("theme", THEMES[(now + 1) % THEMES.length]);
       applyTheme();
+      invalidate("feed", "panel"); // diagrams are drawn per theme
       break;
     }
     case "menu":
@@ -1835,13 +2245,21 @@ const onClick = async (event) => {
       if (message) flash(document.getElementById(`m-${message.id}`));
       break;
     }
+    case "card-more": {
+      const body = target.closest(".tc-body");
+      body?.classList.remove("clamp");
+      target.remove();
+      const owner = body?.closest("[data-key]");
+      if (owner) owner.__html = null;
+      break;
+    }
     case "copy": {
       const text = target.dataset.text;
       try {
         await navigator.clipboard.writeText(text);
         toast("Скопійовано");
       } catch {
-        const code = target.parentElement.querySelector("code");
+        const code = (target.closest(".codeblk") ?? target.parentElement).querySelector("code");
         if (code) getSelection().selectAllChildren(code);
         toast("Виділено — натисніть ⌘C");
       }
@@ -1865,7 +2283,7 @@ const upsert = (list, item) => {
 const applyPatch = (event, patch) => {
   const st = state();
   if (!st || event.seq <= st.seq) return;
-  st.seq = patch.seq ?? event.seq;
+  st.seq = event.seq;
   if (patch.runs) st.runs = patch.runs;
   if (patch.presence) S.snap.presence = patch.presence;
   if (patch.message) upsert(st.messages, patch.message);
@@ -2076,7 +2494,20 @@ const toast = (text, error = false) => {
 // Boot
 // ---------------------------------------------------------------------------
 
+/** Live blocks report their height (see FRAME_REPORTER in daemon.ts); nothing else is read from them. */
+const onFrameMessage = (event) => {
+  const h = event.data && event.data.agoryxFrame === 1 ? Number(event.data.h) : 0;
+  if (!h || !Number.isFinite(h)) return;
+  for (const frame of document.querySelectorAll("figure.viz.vlive iframe")) {
+    if (frame.contentWindow !== event.source) continue;
+    const max = frame.closest(".dlg") ? 2000 : 720;
+    frame.style.height = `${Math.min(Math.max(Math.ceil(h), 80), max)}px`;
+  }
+};
+
 const boot = async () => {
+  addEventListener("message", onFrameMessage);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => invalidate("feed", "panel"));
   const panel = store.get("panel");
   if (panel === "table" || panel === "doc") S.panel = panel;
   S.wide = store.get("wide") === "1";

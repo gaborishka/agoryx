@@ -158,7 +158,7 @@ export function DocPanel() {
     try {
       const saved = await api<DocNow & { revision?: number | null }>("POST", roomPath(room.id, "/doc"), { text: edit.text, base });
       setEdit(null);
-      setDoc({ path: saved.path, text: saved.text, hash: saved.hash, exists: saved.exists });
+      setDoc({ path: saved.path, text: saved.text, hash: saved.hash, exists: saved.exists, truncated: saved.truncated });
       setView("now");
       toast.success(saved.revision ? "Збережено — агенти побачать диф" : "Без змін");
     } catch (error) {
@@ -365,7 +365,7 @@ export function DocPanel() {
               Історія · {list.length}
             </Button>
           ) : null}
-          {driven ? (
+          {driven && !doc.truncated ? (
             <Button size="sm" variant="outline" className="h-7" onClick={() => setEdit({ base: doc.hash, text: doc.text, startTick: docTick })}>
               <PencilIcon className="size-3.5" />
               {doc.exists ? "Редагувати" : "Почати"}
@@ -373,6 +373,9 @@ export function DocPanel() {
           ) : null}
         </span>
       </Bar>
+      {doc.truncated ? (
+        <Muted>Файл завеликий, щоб редагувати його тут: нижче лише його початок. Повністю — у робочій теці.</Muted>
+      ) : null}
       {doc.exists ? (
         doc.text.trim() ? (
           <DocBody path={path} text={doc.text} />

@@ -43,6 +43,8 @@ export interface DocNow {
   text: string;
   hash: string;
   exists: boolean;
+  /** Too big to edit here: `text` is only the start of the file. */
+  truncated?: boolean;
 }
 
 export interface DocRevisionView {

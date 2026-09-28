@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { baselineRevision, diffLines, diffStats, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
+import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
@@ -78,6 +78,16 @@ export class DocConflictError extends Error {
   constructor(readonly current: { text: string; hash: string } | null) {
     super("the canonical file changed since you opened it");
     this.name = "DocConflictError";
+  }
+}
+
+/** The longest delay a Node timer can hold. */
+export const MAX_TURN_TIMEOUT_MS = 2 ** 31 - 1;
+
+export class DocTooLargeError extends Error {
+  constructor() {
+    super(`the canonical file is bigger than ${MAX_DOC_TEXT / 1024} KB; edit it in the workspace, not here`);
+    this.name = "DocTooLargeError";
   }
 }
 
@@ -305,6 +315,7 @@ export class RoomEngine {
         status: "interrupted",
         sessionId: turn.sessionId,
         durationMs: Date.now() - Date.parse(turn.startedAt),
+        unseen: true,
       });
     }
     // Never resume spending turns on our own after a restart: the human decides.
@@ -417,7 +428,14 @@ export class RoomEngine {
     if (typeof patch.network === "boolean") clean.network = patch.network;
     if (typeof patch.autoCommit === "boolean") clean.autoCommit = patch.autoCommit;
     if (patch.access === "workspace" || patch.access === "readonly") clean.access = patch.access;
-    if (typeof patch.turnTimeoutMs === "number" && patch.turnTimeoutMs >= 30_000) clean.turnTimeoutMs = patch.turnTimeoutMs;
+    if (patch.turnTimeoutMs !== undefined) {
+      const ms = patch.turnTimeoutMs;
+      // Node timers overflow past 2^31-1 ms and fire at once: a "longer" limit would kill every turn immediately.
+      if (typeof ms !== "number" || !Number.isInteger(ms) || ms < 30_000 || ms > MAX_TURN_TIMEOUT_MS) {
+        throw new Error(`the turn limit must be a whole number of ms from 30000 to ${MAX_TURN_TIMEOUT_MS} (about 24 days)`);
+      }
+      clean.turnTimeoutMs = ms;
+    }
     if (patch.doc !== undefined) {
       const doc = patch.doc === null || patch.doc === "" ? null : normalizeDocPath(patch.doc);
       if (doc === null && patch.doc) throw new Error("the canonical file must be a path inside the workspace (not in .git or .agoryx)");
@@ -862,7 +880,13 @@ export class RoomEngine {
       (entry) => entry.id !== turnId && (entry.status === "running" || (entry.endedAt !== undefined && entry.endedAt >= turn.startedAt)),
     );
     if (overlapping.length === 0) return files;
-    return files.filter((file) => claims(turn, file) || !overlapping.some((entry) => claims(entry, file)));
+    // Another turn ran at the same time in the same workspace: a file only this turn's own edit tool
+    // touched is its (both, if both edited it). One changed only by a shell command could be either's,
+    // so it is credited to nobody.
+    const mine = files.filter((file) => claims(turn, file));
+    const unclaimed = files.filter((file) => !mine.includes(file));
+    if (unclaimed.length > 0) this.log(`${turnId}: not credited (parallel turns): ${unclaimed.join(", ")}`);
+    return mine;
   }
 
   // -------------------------------------------------------------------------
@@ -898,7 +922,7 @@ export class RoomEngine {
       return true;
     }
     if (last && !last.deleted && last.hash === now.hash) return false;
-    const truncated = now.text.length > MAX_DOC_TEXT;
+    const truncated = Boolean(now.truncated);
     const before = last && !last.deleted ? (this.revisionText(last.seq) ?? "") : "";
     const stats = truncated ? { added: now.text.split("\n").length, removed: 0 } : diffStats(diffLines(before, now.text));
     this.store.append({
@@ -945,11 +969,11 @@ export class RoomEngine {
   }
 
   /** The canonical file now, for readers (UI, CLI). */
-  readDocument(): { path: string; text: string; hash: string; exists: boolean } | null {
+  readDocument(): { path: string; text: string; hash: string; exists: boolean; truncated: boolean } | null {
     const path = this.state.settings.doc;
     if (!path) return null;
     const now = readDoc(this.state.workspace, path);
-    return { path, text: now?.text ?? "", hash: now?.hash ?? docHash(""), exists: Boolean(now) };
+    return { path, text: now?.text ?? "", hash: now?.hash ?? docHash(""), exists: Boolean(now), truncated: Boolean(now?.truncated) };
   }
 
   /**
@@ -962,6 +986,8 @@ export class RoomEngine {
     if (!path) throw new Error("this room has no canonical file");
     const current = readDoc(this.state.workspace, path);
     if ((current?.hash ?? docHash("")) !== base) throw new DocConflictError(current ? { text: current.text, hash: current.hash } : { text: "", hash: docHash("") });
+    // Only a preview of a file this big was ever shown; saving it would cut the file.
+    if (current?.truncated) throw new DocTooLargeError();
     // Something changed on disk before this edit and was never recorded: credit it first.
     if (current && this.docRevisions(path).at(-1)?.hash !== current.hash) {
       const outside = this.outsideAuthor();
@@ -969,16 +995,7 @@ export class RoomEngine {
     }
     // No writing through a symlink, or creating folders, anywhere outside the workspace.
     const full = join(this.state.workspace, path);
-    const root = realpathSync(this.state.workspace);
-    const inside = (target: string) => {
-      const real = realpathSync(target);
-      return real === root || real.startsWith(`${root}/`);
-    };
-    let ancestor = dirname(full);
-    while (!existsSync(ancestor)) ancestor = dirname(ancestor);
-    const link = lstatSync(full, { throwIfNoEntry: false });
-    const escapes = link?.isSymbolicLink() ? !(existsSync(full) && inside(full)) : Boolean(link) && !inside(full);
-    if (!inside(ancestor) || escapes) throw new Error("the canonical file must stay inside the workspace");
+    if (!docWritable(this.state.workspace, path)) throw new Error("the canonical file must stay inside the workspace");
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, text);
     // Turns running now will see this file changed; it must not be credited to them.
@@ -1107,29 +1124,39 @@ export class RoomEngine {
   }
 
   private importNative(agent: RoomAgent, exchange: NativeExchange): void {
+    // Each half of an exchange is its own message and deduped on its own: a crash between the two
+    // appends must not leave the reply behind for good.
+    const half = (kind: MessageKind) => (kind === "human" ? "prompt" : "reply");
     this.nativeKeys ??= new Set(
-      this.state.messages.filter((message) => message.native).map((message) => `${message.native!.agent}:${message.native!.key}`),
+      this.state.messages.filter((message) => message.native).map((message) => `${message.native!.agent}:${message.native!.key}:${half(message.kind)}`),
     );
-    const dedupe = `${agent.id}:${exchange.key}`;
-    if (this.nativeKeys.has(dedupe)) return;
-    this.nativeKeys.add(dedupe);
     const native = { agent: agent.id, key: exchange.key, ...(exchange.at ? { at: exchange.at } : {}) };
     const handles = [...this.state.agents.map((entry) => entry.id), this.state.human.toLowerCase()];
     const addressesOthers = (mentions: string[]) =>
       mentions.some((handle) => handle === "all" || (handle !== agent.id && this.state.agents.some((entry) => entry.id === handle)));
+    const fresh = (kind: MessageKind): boolean => {
+      const key = `${agent.id}:${exchange.key}:${half(kind)}`;
+      if (this.nativeKeys!.has(key)) return false;
+      this.nativeKeys!.add(key);
+      return true;
+    };
     let trigger: string | null = null;
-    if (exchange.prompt) {
+    let imported = false;
+    if (exchange.prompt && fresh("human")) {
       const mentions = parseMentions(exchange.prompt, handles);
       const wakes = addressesOthers(mentions);
       const message = this.postMessage({ author: this.state.human, kind: "human", text: exchange.prompt, mentions, wakes, native });
       if (wakes) trigger ??= message.id;
+      imported = true;
     }
-    if (exchange.reply && passNote(exchange.reply) === null) {
+    if (exchange.reply && passNote(exchange.reply) === null && fresh("agent")) {
       const mentions = parseMentions(exchange.reply, handles);
       const wakes = addressesOthers(mentions);
       const message = this.postMessage({ author: agent.id, kind: "agent", text: exchange.reply.trim(), mentions, wakes, native });
       if (wakes) trigger ??= message.id;
+      imported = true;
     }
+    if (!imported) return;
     this.log(`imported ${agent.id} native exchange ${exchange.key}`);
     if (trigger) {
       this.benched.clear();
@@ -1209,6 +1236,15 @@ export class RoomEngine {
     return candidates.length === 1 ? candidates[0] : undefined;
   }
 
+  /** The table op already in the log under this client nonce, if any. */
+  private appliedOp(nonce: string): TableOp | undefined {
+    for (let index = this.store.events.length - 1; index >= 0; index -= 1) {
+      const event = this.store.events[index]!;
+      if (event.type === "table.op" && event.op.nonce === nonce) return event.op;
+    }
+    return undefined;
+  }
+
   /** Pull table ops agents wrote via the `agoryx table` shim and ack them. */
   ingestOps(): void {
     drainOpsInbox(this.ws, ({ agent, raw }) => {
@@ -1222,6 +1258,13 @@ export class RoomEngine {
       }
       const by = member.id;
       const turnId = this.running.get(member.id)?.turnId;
+      // An inbox file recovered after a crash may hold ops already applied: the nonce in the log says so.
+      const applied = nonce ? this.appliedOp(nonce) : undefined;
+      if (applied) {
+        writeAck(this.ws, nonce!, { ok: true, id: applied.id ?? applied.op, text: `${applied.id ? `${applied.id} · ` : ""}${describeTableOp(applied, this.state.table)}` });
+        this.log(`skipped table op ${nonce} from ${agent}: already applied`);
+        return;
+      }
       try {
         const op = this.applyTableOp(raw, by, false, turnId);
         if (nonce) writeAck(this.ws, nonce, { ok: true, id: op.id ?? op.op, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, this.state.table)}` });

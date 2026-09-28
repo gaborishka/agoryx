@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { DocRevisedEvent } from "./types.js";
 import { AGORYX_DIR, resolveInside } from "./workspace.js";
 
@@ -26,26 +26,86 @@ export const normalizeDocPath = (raw: string): string | null => {
 export const docHash = (text: string): string => createHash("sha1").update(text).digest("hex").slice(0, 12);
 
 export interface DocFile {
+  /** The whole file, or only its first MAX_DOC_TEXT bytes when `truncated`. */
   text: string;
+  /** Always over the whole file. */
   hash: string;
   size: number;
   mtimeMs: number;
+  /** Bigger than MAX_DOC_TEXT: `text` is a preview and must never be written back. */
+  truncated?: boolean;
 }
 
-/** The file as it is now; null when it does not exist (yet), is not a file, or leads out of the workspace. */
+const CHUNK = 64 * 1024;
+
+/**
+ * The file as it is now; null when it does not exist (yet), is not a file, or leads out of the workspace.
+ * Reads are bounded: past MAX_DOC_TEXT the hash is streamed and only a preview is kept in memory.
+ */
 export const readDoc = (workspace: string, rel: string): DocFile | null => {
   const full = join(workspace, rel);
   if (!existsSync(full)) return null;
   const real = resolveInside(workspace, rel);
   if (!real) return null;
+  let fd: number | undefined;
   try {
-    const stats = statSync(real);
+    fd = openSync(real, "r");
+    const stats = fstatSync(fd);
     if (!stats.isFile()) return null;
-    const text = readFileSync(real, "utf8");
-    return { text, hash: docHash(text), size: stats.size, mtimeMs: stats.mtimeMs };
+    const head = Buffer.alloc(Math.min(stats.size, MAX_DOC_TEXT) + 1);
+    let got = 0;
+    while (got < head.length) {
+      const n = readSync(fd, head, got, head.length - got, got);
+      if (n === 0) break;
+      got += n;
+    }
+    if (got <= MAX_DOC_TEXT) {
+      const text = head.subarray(0, got).toString("utf8");
+      return { text, hash: docHash(text), size: got, mtimeMs: stats.mtimeMs };
+    }
+    const hash = createHash("sha1").update(head.subarray(0, got));
+    const chunk = Buffer.alloc(CHUNK);
+    let size = got;
+    for (;;) {
+      const n = readSync(fd, chunk, 0, CHUNK, size);
+      if (n === 0) break;
+      hash.update(chunk.subarray(0, n));
+      size += n;
+    }
+    const text = head.subarray(0, MAX_DOC_TEXT).toString("utf8");
+    return { text, hash: hash.digest("hex").slice(0, 12), size, mtimeMs: stats.mtimeMs, truncated: true };
   } catch {
     return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
+};
+
+/**
+ * May Agoryx write `rel` (creating its folders)? Not when the file is a symlink leading out of the workspace
+ * (or dangling), nor when its nearest existing folder resolves outside it.
+ */
+export const docWritable = (workspace: string, rel: string): boolean => {
+  const full = join(workspace, rel);
+  let root: string;
+  try {
+    root = realpathSync(workspace);
+  } catch {
+    return false;
+  }
+  const inside = (target: string): boolean => {
+    try {
+      const real = realpathSync(target);
+      return real === root || real.startsWith(`${root}/`);
+    } catch {
+      return false;
+    }
+  };
+  let ancestor = dirname(full);
+  while (!existsSync(ancestor)) ancestor = dirname(ancestor);
+  if (!inside(ancestor)) return false;
+  const link = lstatSync(full, { throwIfNoEntry: false });
+  return !link || inside(full);
 };
 
 export const statDoc = (workspace: string, rel: string): { size: number; mtimeMs: number } | null => {
@@ -220,7 +280,7 @@ export const renderDiff = (before: string, after: string, maxLines = 80): string
 export const baselineRevision = (workspace: string, path: string): DocRevisedEvent | null => {
   const now = readDoc(workspace, path);
   if (!now) return null;
-  const truncated = now.text.length > MAX_DOC_TEXT;
+  const truncated = Boolean(now.truncated);
   return {
     type: "doc.revised",
     path,

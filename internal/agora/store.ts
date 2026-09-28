@@ -183,8 +183,16 @@ export class RoomStore {
       throw new Error(`no room matches '${ref}'`);
     }
     const here = resolve(cwd);
-    const byWorkspace = rooms.find((room) => here === room.workspace || here.startsWith(`${room.workspace}${sep}`));
-    if (byWorkspace) return byWorkspace.id;
+    // The deepest workspace holding cwd wins (a room in repo/sub beats one in repo); a tie is ambiguous.
+    const holding = rooms.filter((room) => here === room.workspace || here.startsWith(`${room.workspace}${sep}`));
+    if (holding.length > 0) {
+      const depth = Math.max(...holding.map((room) => room.workspace.length));
+      const deepest = holding.filter((room) => room.workspace.length === depth);
+      if (deepest.length > 1) {
+        throw new Error(`${deepest.length} rooms work in ${deepest[0]!.workspace}: ${deepest.map((room) => room.id).join(", ")}; name one with --room`);
+      }
+      return deepest[0]!.id;
+    }
     return rooms[0]!.id;
   }
 

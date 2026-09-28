@@ -18,6 +18,15 @@ export const TABLE_USAGE = [
 
 export class TableCommandError extends Error {}
 
+/** The flags each verb takes; anything else is a typo that would otherwise be dropped silently. */
+export const TABLE_FLAGS: Record<string, string[]> = {
+  propose: ["body", "body-file", "file", "q"],
+  evidence: ["source"],
+  object: ["source"],
+  support: ["source"],
+  decide: ["note"],
+};
+
 export const parseTableCommand = (verb: string, argv: string[]): Record<string, unknown> => {
   const positional: string[] = [];
   const flags: Record<string, string> = {};
@@ -31,6 +40,13 @@ export const parseTableCommand = (verb: string, argv: string[]): Record<string, 
     } else {
       positional.push(arg);
     }
+  }
+  const allowed = TABLE_FLAGS[verb] ?? [];
+  const unknown = Object.keys(flags).filter((flag) => !allowed.includes(flag));
+  if (unknown.length > 0) {
+    throw new TableCommandError(
+      `'${verb}' does not take ${unknown.map((flag) => `--${flag}`).join(", ")}${allowed.length ? ` (it takes ${allowed.map((flag) => `--${flag}`).join(", ")})` : ""}`,
+    );
   }
   const rest = positional.join(" ").trim();
   const clean = (op: Record<string, unknown>) => {

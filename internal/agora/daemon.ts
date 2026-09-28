@@ -4,7 +4,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, re
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
-import { DocConflictError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
+import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
@@ -733,6 +733,7 @@ export class AgoraDaemon {
             sendJson(res, 409, { error: error.message, current: error.current });
             return;
           }
+          if (error instanceof DocTooLargeError) throw new HttpError(413, error.message);
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
         }
         return;
@@ -763,7 +764,7 @@ export class AgoraDaemon {
     const path = state.settings.doc;
     if (!path) throw new HttpError(404, "this room has no canonical file");
     const now = readDoc(state.workspace, path);
-    return { path, text: now?.text ?? "", hash: now?.hash ?? docHash(""), exists: Boolean(now) };
+    return { path, text: now?.text ?? "", hash: now?.hash ?? docHash(""), exists: Boolean(now), truncated: Boolean(now?.truncated) };
   }
 
   /** One recorded revision, with its diff against the one before it. */

@@ -240,7 +240,8 @@ const mdCtx = () => {
 
 const avatar = (handle, size = 30) => {
   const who = participant(handle) ?? { label: handle || "?", cls: "hu", agent: false };
-  const working = who.agent && S.snap?.presence?.[who.id] === "working" ? " working" : "";
+  const now = who.agent ? S.snap?.presence?.[who.id] : undefined;
+  const working = now === "working" ? " working" : now === "native" ? " native" : "";
   const s = `s${size}`;
   if (who.agent) {
     return `<span class="av ag ${who.cls} ${s}${working}" style="--s:${size}px" title="${esc(who.label)}" aria-hidden="true">${who.kind === "codex" ? ICON.codex : ICON.claude}</span>`;
@@ -407,8 +408,9 @@ const renderHeader = () => {
   const count = tableCount(st.table);
   const people = [...st.agents.map((a) => a.id), st.human]
     .map((handle) => {
-      const working = S.snap.presence?.[handle] === "working";
-      return `<span title="${esc(nameOf(handle))}${working ? " — працює" : ""}">${avatar(handle, 26)}</span>`;
+      const now = S.snap.presence?.[handle];
+      const note = now === "working" ? " — працює" : now === "native" ? " — розмова у власній сесії" : "";
+      return `<span title="${esc(nameOf(handle))}${note}">${avatar(handle, 26)}</span>`;
     })
     .join("");
   els.mh.innerHTML = `
@@ -677,6 +679,14 @@ const renderRunbar = () => {
   const st = state();
   const run = st.runs[st.runs.length - 1];
   const working = st.agents.filter((a) => S.snap.presence?.[a.id] === "working").map((a) => a.label);
+  // Someone is talking to an agent in its own app; its room turn waits for that exchange.
+  const native = st.agents
+    .filter((a) => S.snap.presence?.[a.id] === "native")
+    .map(
+      (a) =>
+        `<span class="st nat ${a.kind === "codex" ? "cx" : "cl"}" title="Розмова напряму у власному застосунку агента. Кімната не відкриває цю сесію паралельно: хід тут почнеться, коли обмін завершиться.">У сесії ${esc(a.label)} розмова напряму</span>`,
+    )
+    .join("");
   let left = "";
   let action = "";
   if (!S.snap.driven) {
@@ -695,7 +705,7 @@ const renderRunbar = () => {
   } else {
     left = '<span class="st">Тиша</span>';
   }
-  els.runbar.innerHTML = `${left}<span class="grow"></span>${action}<button class="linkbtn" data-act="settings" title="Налаштування">${esc(plural(st.settings.budget, "хід", "ходи", "ходів"))} на раунд</button>`;
+  els.runbar.innerHTML = `${left}${native}<span class="grow"></span>${action}<button class="linkbtn" data-act="settings" title="Налаштування">${esc(plural(st.settings.budget, "хід", "ходи", "ходів"))} на раунд</button>`;
   els.ctools.innerHTML = `${st.agents
     .map((a) => `<button type="button" class="mention ${a.kind === "codex" ? "cx" : "cl"}" data-act="mention" data-who="${esc(a.id)}">@${esc(a.id)}</button>`)
     .join("")}<span class="hint">Enter — надіслати · Shift+Enter — новий рядок</span>`;
@@ -1317,6 +1327,11 @@ const connect = () => {
   es.addEventListener("stream", (message) => {
     if (S.roomId !== id) return;
     applyStream(JSON.parse(message.data));
+  });
+  es.addEventListener("presence", (message) => {
+    if (S.roomId !== id || !S.snap) return;
+    S.snap.presence = JSON.parse(message.data).agents;
+    invalidate("header", "runbar", "feed");
   });
   es.onerror = () => {
     es.close();

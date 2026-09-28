@@ -5,12 +5,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { RoomEngine, RoomLockedError } from "./engine.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
-import { runningTurnsPresence, roomSnapshot, eventPatch, type StreamBuffer } from "./snapshot.js";
+import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
 import { createRoom, defaultRunners, openEngine, resumeCommands } from "./service.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
-import type { AgentKind, EphemeralEvent, RoomEvent, RoomSettings } from "./types.js";
+import type { AgentKind, AgentPresence, EphemeralEvent, RoomEvent, RoomSettings } from "./types.js";
 import { listWorkspaceFiles, repoRoot, resolveInside } from "./workspace.js";
 
 export interface DaemonInfo {
@@ -620,12 +620,21 @@ export class AgoraDaemon {
       .flatMap((event) => (event.type === "table.op" ? [{ seq: event.seq, ts: event.ts, op: event.op }] : []));
     return {
       ...roomSnapshot(handle.store.state, handle.streams),
+      presence: this.presence(handle),
       ops,
       rawBase: this.rawBase(handle.store.id),
       resume: resumeCommands(handle.store, this.runners),
       driven: Boolean(handle.engine),
       ...(handle.lockedBy ? { lockedBy: handle.lockedBy } : {}),
     };
+  }
+
+  /** The event log knows who runs a room turn; only the driving engine knows who is busy in its own session. */
+  private presence(handle: RoomHandle): Record<string, AgentPresence> {
+    const logged = presenceOf(handle.store.state);
+    const live = handle.engine?.presence();
+    if (!live) return logged;
+    return Object.fromEntries(Object.entries(logged).map(([id, value]) => [id, value === "working" ? value : (live[id] ?? value)]));
   }
 
   private readWorkspaceFile(handle: RoomHandle, relPath: string) {
@@ -659,12 +668,18 @@ export class AgoraDaemon {
         res.write(`event: stream\ndata: ${JSON.stringify(event)}\n\n`);
         return;
       }
-      if (event.type === "presence") return;
+      if (event.type === "presence") {
+        res.write(`event: presence\ndata: ${JSON.stringify({ agents: this.presence(handle) })}\n\n`);
+        return;
+      }
       const state = handle.store.state;
-      res.write(`id: ${event.seq}\nevent: room\ndata: ${JSON.stringify({ event, patch: eventPatch(state, event) })}\n\n`);
+      const patch = { ...eventPatch(state, event), presence: this.presence(handle) };
+      res.write(`id: ${event.seq}\nevent: room\ndata: ${JSON.stringify({ event, patch })}\n\n`);
     };
     const start = Number.isFinite(after) ? after : handle.store.state.seq;
     for (const event of handle.store.since(start)) send(event);
+    // Who is busy right now, including in their own sessions (not in the log, so not replayed above).
+    res.write(`event: presence\ndata: ${JSON.stringify({ agents: this.presence(handle) })}\n\n`);
     const unsubscribe = handle.store.subscribe(send);
     this.sseClients.add(res);
     handle.followers += 1;

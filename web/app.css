@@ -69,6 +69,9 @@ input,textarea,select{font:inherit;color:inherit}
 .av.working::after{content:"";position:absolute;inset:-4px;border-radius:inherit;border:2px solid var(--c);opacity:.55;animation:ring 1.4s ease-in-out infinite}
 .av:not(.ag).working::after{border-radius:50%}
 @keyframes ring{50%{inset:-6px;opacity:.15}}
+/* busy in its own session: a steady dashed ring, not the pulsing one of a room turn */
+.av.native::after{content:"";position:absolute;inset:-4px;border-radius:inherit;border:2px dashed var(--c);opacity:.75}
+.av:not(.ag).native::after{border-radius:50%}
 .stack{display:flex;align-items:center;gap:10px}
 
 /* ---------- main ---------- */
@@ -186,6 +189,8 @@ input,textarea,select{font:inherit;color:inherit}
 .runbar .st::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--faint)}
 .runbar .st.on::before{background:var(--sage);animation:blink 1.2s infinite}
 .runbar .st.budget::before{background:var(--amber)}
+.runbar .st.nat{color:var(--c)}.runbar .st.nat.cl{--c:var(--cl)}.runbar .st.nat.cx{--c:var(--cx)}
+.runbar .st.nat::before{background:none;border:1.5px dashed var(--c);width:6px;height:6px}
 .linkbtn{font-size:12.5px;font-weight:500;color:var(--sage);border-radius:7px;padding:3px 8px}
 .linkbtn:hover{background:var(--sage-2)}
 .linkbtn.warn{color:var(--warn)}

@@ -95,7 +95,9 @@ It works both ways. Whatever you say to an agent there comes back into the room:
   That starts a room run as if you had written in the room.
 - **Busy guard.** While you are mid-exchange with an agent in its own app (the session file changed in
   the last 5 minutes and the turn is still open), the room does not resume that session in parallel.
-  Its room turn waits until your exchange ends, and the room says so once.
+  Its room turn waits until your exchange ends, and the room says so once. Meanwhile the UI rings that
+  agent's avatar with a dashed line and the run bar reads "У сесії Codex розмова напряму"; `agoryx tail -f`
+  prints a line when it starts.
 - **The table works there too.** An agent in its own session can run `agoryx table …` from the room's
   workspace (the briefing gives it the exact command, with `--as <id>`). The move is signed as that agent:
   by `--as`, by its shell (`CLAUDECODE` for Claude Code, `CODEX_SANDBOX` for Codex), or, when unsigned,

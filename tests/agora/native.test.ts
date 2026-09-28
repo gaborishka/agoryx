@@ -311,6 +311,33 @@ test("while someone is mid-exchange with an agent in its own app, its room turn 
   }
 });
 
+test("the room shows who is busy in its own session, and when that ends", async () => {
+  const room = createTestRoom();
+  const seen: Array<Record<string, string>> = [];
+  const unsubscribe = room.store.subscribe((event) => {
+    if (event.type === "presence") seen.push(event.agents);
+  });
+  try {
+    room.engine.postHuman("Hello both");
+    await withTimeout(room.engine.waitIdle());
+    assert.ok(seen.some((agents) => agents.claude === "working" && agents.codex === "working"));
+    assert.deepEqual(seen.at(-1), { claude: "idle", codex: "idle" });
+
+    const file = locateNativeSession("codex", room.store.state.sessions.codex!.sessionId, room.store.state.workspace, room.env)!;
+    appendFileSync(file, jsonl(xTurn("native-1", "Refactor the store", null, null)));
+    await waitUntil(() => room.engine.presence().codex === "native");
+    assert.deepEqual(seen.at(-1), { claude: "idle", codex: "native" });
+
+    appendFileSync(file, jsonl([xEvent({ type: "task_complete", turn_id: "native-1", last_agent_message: "Store refactored." })]));
+    await waitUntil(() => room.engine.presence().codex === "idle");
+    assert.deepEqual(seen.at(-1), { claude: "idle", codex: "idle" });
+    assert.equal(seen.filter((agents) => agents.codex === "native").length, 1, "one change, one event");
+  } finally {
+    unsubscribe();
+    await room.cleanup();
+  }
+});
+
 /** Run the agent tool the way an agent's own session would: in the workspace, with no room-turn env. */
 const agentTool = (room: TestRoom, args: string[], env: Record<string, string> = {}) =>
   new Promise<{ code: number; out: string; err: string }>((resolve) => {

@@ -16,7 +16,8 @@ export interface RoomSnapshot {
 
 export type DaemonStreamItem =
   | { kind: "room"; event: RoomEvent; patch: Record<string, unknown> }
-  | { kind: "stream"; event: Extract<EphemeralEvent, { type: "turn.stream" }> };
+  | { kind: "stream"; event: Extract<EphemeralEvent, { type: "turn.stream" }> }
+  | { kind: "presence"; agents: Record<string, AgentPresence> };
 
 export class DaemonRequestError extends Error {
   constructor(
@@ -114,7 +115,8 @@ export class DaemonClient {
           if (data.length === 0) continue;
           const payload = JSON.parse(data.join("\n")) as Record<string, unknown>;
           if (name === "room") yield { kind: "room", event: payload.event as RoomEvent, patch: payload.patch as Record<string, unknown> };
-          else if (name === "stream") yield { kind: "stream", event: payload as DaemonStreamItem["event"] & { type: "turn.stream" } };
+          else if (name === "stream") yield { kind: "stream", event: payload as Extract<EphemeralEvent, { type: "turn.stream" }> };
+          else if (name === "presence") yield { kind: "presence", agents: payload.agents as Record<string, AgentPresence> };
         }
       }
     } catch (error) {

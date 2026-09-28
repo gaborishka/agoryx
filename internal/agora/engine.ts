@@ -9,6 +9,7 @@ import { describeTableOp, prepareTableOp, renderTableMarkdown, TableOpError } fr
 import type {
   Activity,
   AgentKind,
+  AgentPresence,
   MessageEntry,
   MessageKind,
   RoomAgent,
@@ -105,6 +106,7 @@ export class RoomEngine {
   private readonly native = new Map<string, NativeTracker>();
   private nativeKeys?: Set<string>;
   private nativeTimer: NodeJS.Timeout | undefined;
+  private lastPresence = "";
   private retryTimer: NodeJS.Timeout | undefined;
   /** Agents already announced as busy in their own session (cleared when they are free). */
   private readonly nativeBusyNoted = new Set<string>();
@@ -210,8 +212,23 @@ export class RoomEngine {
     return this.running.size === 0 && !activeRun(this.state);
   }
 
-  presence(): Record<string, "idle" | "working"> {
-    return Object.fromEntries(this.state.agents.map((agent) => [agent.id, this.running.has(agent.id) ? "working" : "idle"]));
+  presence(): Record<string, AgentPresence> {
+    return Object.fromEntries(
+      this.state.agents.map((agent) => [
+        agent.id,
+        this.running.has(agent.id) ? "working" : this.nativeOpen(agent) ? "native" : "idle",
+      ]),
+    );
+  }
+
+  /** Tell listeners when who-is-busy changes; "native" is not in the event log, so it travels as an ephemeral. */
+  private notePresence(): void {
+    if (this.closed) return;
+    const agents = this.presence();
+    const key = JSON.stringify(agents);
+    if (key === this.lastPresence) return;
+    this.lastPresence = key;
+    this.store.emit({ type: "presence", agents });
   }
 
   // -------------------------------------------------------------------------
@@ -534,6 +551,7 @@ export class RoomEngine {
       .then((result) => this.finishTurn(agent, turnId, run.id, result, snapshot, startedAt));
 
     this.running.set(agent.id, { turnId, agent, controller, snapshot, startedAt, done });
+    this.notePresence();
     this.ensureOpsPolling();
     this.log(`${agent.id} ${turnId} started (${sessionId ? "resume" : "fresh"}, ${prompt.length} chars)`);
   }
@@ -549,6 +567,7 @@ export class RoomEngine {
     // Sweep the inbox while this turn still counts as running, so its ops are attributed to it.
     this.ingestOps();
     this.running.delete(agent.id);
+    this.notePresence();
     const files = this.attributeFiles(turnId, diffSnapshots(snapshot, snapshotChanges(this.state.workspace)));
 
     let messageId: string | undefined;
@@ -672,9 +691,10 @@ export class RoomEngine {
         this.log(`could not read ${agent.id}'s native session: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    // An exchange that started, finished or went stale changes who looks busy.
+    this.notePresence();
   }
 
-  /** Someone is mid-conversation with this agent in its own app: don't resume the same session under them. */
   /** Someone is mid-exchange with this agent in its own session. */
   private nativeOpen(agent: RoomAgent): boolean {
     const tracker = this.native.get(agent.id);

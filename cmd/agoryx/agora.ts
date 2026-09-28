@@ -12,7 +12,7 @@ import { createRoom, openEngine, resumeCommands } from "../../internal/agora/ser
 import { RoomStore } from "../../internal/agora/store.js";
 import { parseTableCommand, TABLE_USAGE } from "../../internal/agora/table-cli.js";
 import { describeTableOp, renderTableMarkdown } from "../../internal/agora/table.js";
-import type { EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
+import type { AgentPresence, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
 import { CliUsageError, parseCliArgsOrThrow, type OptionSpec, type OutputWriter } from "./cli-args.js";
 
 export const AGORA_COMMANDS = new Set([
@@ -82,6 +82,7 @@ const oneLine = (text: string, max: number): string => {
 export class TranscriptPrinter {
   private readonly seenActivities = new Set<string>();
   private readonly announced = new Set<string>();
+  private readonly directNow = new Set<string>();
 
   constructor(
     private readonly agents: RoomAgent[],
@@ -102,6 +103,19 @@ export class TranscriptPrinter {
 
   private plainName(author: string): string {
     return this.agents.find((entry) => entry.id === author)?.label ?? author;
+  }
+
+  /** Someone started talking to an agent in its own app: say so once, since its room turn now waits. */
+  presence(agents: Record<string, AgentPresence>): void {
+    for (const [id, now] of Object.entries(agents)) {
+      if (now !== "native") {
+        this.directNow.delete(id);
+        continue;
+      }
+      if (this.directNow.has(id)) continue;
+      this.directNow.add(id);
+      this.out(pc.dim(`  · ${this.plainName(id)} is in a direct exchange in its own session — its turn here waits for it\n`));
+    }
   }
 
   event(event: RoomEvent): void {
@@ -219,6 +233,7 @@ const daemonConn = async (info: DaemonInfo, ref: string | undefined): Promise<Co
       process.once("SIGINT", onSigint);
       try {
         for await (const item of client.events(roomId, after, controller.signal)) {
+          if (item.kind === "presence") printer.presence(item.agents);
           if (item.kind !== "room") continue;
           printer.event(item.event);
           if (!options.forever && item.event.type === "run.ended") {
@@ -285,6 +300,7 @@ const localConn = (ref: string | undefined): Conn => {
         // Follow a room another process drives by tailing its event log.
         const unsubscribe = store.subscribe((event) => {
           if ("seq" in event) printer.event(event as RoomEvent);
+          else if (event.type === "presence") printer.presence(event.agents);
         });
         await new Promise<void>((resolveFollow) => {
           const timer = setInterval(() => store.refresh(), 400);
@@ -300,6 +316,7 @@ const localConn = (ref: string | undefined): Conn => {
       const live = engine;
       const unsubscribe = store.subscribe((event: RoomEvent | EphemeralEvent) => {
         if ("seq" in event) printer.event(event as RoomEvent);
+        else if (event.type === "presence") printer.presence(event.agents);
       });
       let interrupted = false;
       const onSigint = () => {

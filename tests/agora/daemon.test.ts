@@ -191,6 +191,9 @@ test("a message wakes both agents; SSE carries patches; the snapshot has the con
   assert.ok(types.includes("turn.started"));
   const message = frames.find((f) => f.event === "room" && f.data.event.type === "message.posted");
   assert.ok(message!.data.patch.message, "message.posted carries a message patch");
+  const presence = frames.filter((f) => f.event === "presence").map((f) => f.data.agents);
+  assert.deepEqual(presence[0], { claude: "idle", codex: "idle" }, "the stream opens with who is busy now");
+  assert.ok(presence.some((agents) => agents.claude === "working"), "turn starts reach the stream as presence");
 
   const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
   const texts = snap.state.messages.map((m: any) => `${m.author}:${m.kind}:${m.text}`);

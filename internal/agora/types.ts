@@ -251,7 +251,8 @@ export type EphemeralEvent =
   | { type: "turn.stream"; turnId: string; agent: string; text: string; reset?: boolean }
   | { type: "presence"; agents: Record<string, AgentPresence> };
 
-export type AgentPresence = "idle" | "working" | "queued";
+/** "native": someone is mid-exchange with the agent in its own session, outside the room. */
+export type AgentPresence = "idle" | "working" | "queued" | "native";
 
 // ---------------------------------------------------------------------------
 // Projection

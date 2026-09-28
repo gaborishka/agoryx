@@ -36,7 +36,9 @@ const findTurn = (state: RoomState, turnId: string): TurnState | undefined => {
  * whole; messages and turns are upserted by id; activities are merged by id.
  */
 export const eventPatch = (state: RoomState, event: RoomEvent): Record<string, unknown> => {
-  const base = { seq: state.seq, runs: state.runs, presence: presenceOf(state) };
+  // The event's own seq, not the state's: a client catching up replays several events against today's
+  // state, and a newer seq on the first patch would make it drop the rest as already seen.
+  const base = { seq: event.seq, runs: state.runs, presence: presenceOf(state) };
   switch (event.type) {
     case "message.posted": {
       const message = state.messages.find((entry) => entry.id === event.message.id);

@@ -8,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  statSync,
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join, resolve, sep } from "node:path";
@@ -98,6 +99,7 @@ export class RoomStore {
   readonly events: RoomEvent[] = [];
   state!: RoomState;
   private offset = 0;
+  private tailChecked = false;
   private readonly listeners = new Set<StoreListener>();
 
   private constructor(dir: string) {
@@ -206,7 +208,17 @@ export class RoomStore {
   }
 
   append(body: RoomEventBody): RoomEvent {
-    const line = `${JSON.stringify({ ...body, seq: this.state.seq + 1, ts: new Date().toISOString() })}\n`;
+    let line = `${JSON.stringify({ ...body, seq: this.state.seq + 1, ts: new Date().toISOString() })}\n`;
+    if (!this.tailChecked) {
+      // A crash mid-write can leave a partial last line. Appending straight after it would glue the new
+      // event onto the fragment and lose it on the next replay; start on a fresh line instead.
+      this.tailChecked = true;
+      const size = statSync(this.file).size;
+      if (size > this.offset) {
+        line = `\n${line}`;
+        this.offset = size;
+      }
+    }
     // Apply the serialized form so the live state is exactly what a replay produces.
     const event = JSON.parse(line) as RoomEvent;
     appendFileSync(this.file, line);
@@ -227,8 +239,10 @@ export class RoomStore {
   }
 
   since(seq: number): RoomEvent[] {
-    // events are dense by seq (1..n), so index = seq.
-    return this.events.slice(Math.max(0, seq));
+    // Usually dense by seq (index = seq), but a corrupt line skipped on replay leaves a gap.
+    const at = Math.max(0, seq);
+    const start = this.events[at - 1]?.seq === at ? at : 0;
+    return this.events.slice(start).filter((event) => event.seq > at);
   }
 
   /** Pick up events appended by another process (read-only followers). */

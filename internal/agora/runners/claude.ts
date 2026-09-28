@@ -21,15 +21,30 @@ const str = (value: unknown): string | undefined => (typeof value === "string" ?
  * Claude Code runs sandboxed: file edits inside the workspace are accepted,
  * Bash runs inside Claude Code's own sandbox (auto-allowed there), and the
  * web tools stay available. No permission bypass.
+ *
+ * Two narrow additions keep the room's own tools working in -p mode, where
+ * nobody can answer an approval prompt: the table/diff shim is allowed by
+ * name (Claude Code otherwise refuses commands it cannot statically analyse,
+ * e.g. an evidence note quoting `===`), and when the room has network on,
+ * sandboxed Bash gets it too — the same as Codex's network_access.
  */
-export const buildClaudeSettings = (request: Pick<TurnRequest, "settings">): Json => ({
-  sandbox: {
-    enabled: true,
-    autoAllowBashIfSandboxed: true,
-    allowUnsandboxedCommands: false,
-  },
-  ...(request.settings.access === "readonly" ? { permissions: { deny: ["Edit", "Write", "MultiEdit", "NotebookEdit"] } } : {}),
-});
+export const buildClaudeSettings = (request: Pick<TurnRequest, "settings"> & { env?: NodeJS.ProcessEnv }): Json => {
+  const readonly = request.settings.access === "readonly";
+  const shim = request.env?.AGORYX_CLI;
+  const tools = ["agoryx", ...(shim ? [shim] : [])].flatMap((cli) => [`Bash(${cli} table *)`, `Bash(${cli} diff *)`]);
+  return {
+    sandbox: {
+      enabled: true,
+      autoAllowBashIfSandboxed: true,
+      allowUnsandboxedCommands: false,
+      ...(request.settings.network ? { network: { allowedDomains: ["*"] } } : {}),
+    },
+    permissions: {
+      allow: tools,
+      ...(readonly ? { deny: ["Edit", "Write", "MultiEdit", "NotebookEdit"] } : {}),
+    },
+  };
+};
 
 export const buildClaudeArgs = (request: TurnRequest, sessionId: string, fresh: boolean): string[] => {
   const args = [

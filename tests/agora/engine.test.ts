@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { RoomEngine, RoomLockedError } from "../../internal/agora/engine.js";
 import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { createCodexRunner } from "../../internal/agora/runners/codex.js";
+import { eventPatch } from "../../internal/agora/snapshot.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { createTestRoom, tableOutputs, withTimeout } from "./helpers.js";
 
@@ -352,6 +353,40 @@ test("a second engine cannot drive the same room; restart closes stale turns", a
     assert.match(reopened.state.messages.at(-1)!.text, /restarted/);
     await engine.close();
     assert.ok(!existsSync(join(reopened.dir, "engine.lock")));
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("an append after a crash mid-write starts on a fresh line and survives the next replay", async () => {
+  const room = createTestRoom();
+  try {
+    await room.engine.close();
+    appendFileSync(room.store.file, '{"type":"message.posted","mess');
+    const reopened = RoomStore.open(room.roomsRoot, room.store.id);
+    const event = reopened.append({ type: "room.renamed", name: "after the crash" });
+    const replayed = RoomStore.open(room.roomsRoot, room.store.id);
+    assert.equal(replayed.state.name, "after the crash");
+    assert.equal(replayed.state.seq, event.seq);
+    // A corrupt line that had used up a seq leaves a gap; catching up after it still finds what follows.
+    appendFileSync(room.store.file, `{"seq":${event.seq + 1},"broken\n${JSON.stringify({ type: "room.renamed", name: "past the gap", seq: event.seq + 2, ts: new Date().toISOString() })}\n`);
+    const gapped = RoomStore.open(room.roomsRoot, room.store.id);
+    assert.deepEqual(gapped.since(event.seq).map((entry) => entry.seq), [event.seq + 2]);
+    assert.deepEqual(gapped.since(event.seq - 1).map((entry) => entry.seq), [event.seq, event.seq + 2]);
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("each replayed patch carries its own event's seq, so a catching-up client applies every event", async () => {
+  const room = createTestRoom({ rules: [{ sleepMs: 30_000 }] });
+  try {
+    await room.engine.close();
+    const store = RoomStore.open(room.roomsRoot, room.store.id);
+    const from = store.state.seq;
+    store.append({ type: "room.renamed", name: "one" });
+    store.append({ type: "room.renamed", name: "two" });
+    for (const event of store.since(from)) assert.equal(eventPatch(store.state, event).seq, event.seq);
   } finally {
     await room.cleanup();
   }

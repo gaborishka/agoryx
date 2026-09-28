@@ -172,6 +172,32 @@ test("in a blind round the canonical file is credited only to the turn that wrot
   }
 });
 
+test("a human save while a turn runs is the human's revision, not part of the turn's changes", async () => {
+  const room = createTestRoom({
+    settings: { doc: "README.md" },
+    rules: [
+      { agent: "claude", match: "think", sleepMs: 900, reply: "Thought about it.", once: true },
+      { agent: "codex", match: "think", sleepMs: 900, reply: "Me too.", once: true },
+    ],
+  });
+  try {
+    room.engine.postHuman("think about it");
+    await waitUntil(() => room.store.state.turns.some((turn) => turn.status === "running"));
+    const current = room.engine.readDocument()!;
+    room.engine.writeDocument("# Mine\n\nThe human wrote this.\n", current.hash);
+    await withTimeout(room.engine.waitIdle());
+    const revision = room.store.state.docRevisions.at(-1)!;
+    assert.equal(revision.by, "Ivan");
+    assert.equal(revision.turnId, undefined);
+    for (const turn of room.store.state.turns) {
+      assert.equal(turn.files?.includes("README.md") ?? false, false, `${turn.agent} did not write it`);
+      assert.equal(turn.changes?.some((change) => change.path === "README.md") ?? false, false);
+    }
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("the human's edit never writes through a symlink out of the workspace", async () => {
   const outside = mkdtempSync(join(tmpdir(), "agora-outside-"));
   const room = createTestRoom({ settings: { doc: "notes/doc.md" } });

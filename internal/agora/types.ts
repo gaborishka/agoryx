@@ -204,12 +204,27 @@ export interface TableState {
 // Events
 // ---------------------------------------------------------------------------
 
+/** A git worktree Agoryx made for a room: its own branch and folder, shared by every agent in it. */
+export interface RoomWorktree {
+  /** The folder the human picked. */
+  source: string;
+  /** The top of the repository it belongs to. */
+  repo: string;
+  /** The worktree's own folder. */
+  path: string;
+  /** The branch made for the room. */
+  branch: string;
+  /** What it branched from. */
+  base: string;
+}
+
 export interface RoomCreatedEvent {
   type: "room.created";
   id: string;
   name: string;
   workspace: string;
   createdWorkspace: boolean;
+  worktree?: RoomWorktree;
   human: string;
   agents: RoomAgent[];
   settings: RoomSettings;
@@ -356,6 +371,7 @@ export interface RoomState {
   name: string;
   workspace: string;
   createdWorkspace: boolean;
+  worktree?: RoomWorktree;
   human: string;
   agents: RoomAgent[];
   settings: RoomSettings;

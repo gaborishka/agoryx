@@ -1,10 +1,15 @@
 import { ArrowUpIcon, ChevronRightIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { FolderBar, useFolderGit } from "@/components/FolderPicker";
 import { autosize } from "@/components/room/Composer";
 import { NavButton } from "@/components/room/RoomHeader";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, local, Unauthorized } from "@/lib/api";
@@ -16,7 +21,13 @@ const EXAMPLES = [
   "Зробіть інтерактивний прототип сторінки тарифів і покажіть його тут",
 ];
 
-const Glyph = ({ tone, children }: { tone: "claude" | "codex"; children: React.ReactNode }) => (
+const Glyph = ({
+  tone,
+  children,
+}: {
+  tone: "claude" | "codex";
+  children: React.ReactNode;
+}) => (
   <span
     className={
       tone === "claude"
@@ -28,7 +39,17 @@ const Glyph = ({ tone, children }: { tone: "claude" | "codex"; children: React.R
   </span>
 );
 
-function Field({ id, label, hint, children }: { id: string; label: string; hint?: string; children: React.ReactNode }) {
+function Field({
+  id,
+  label,
+  hint,
+  children,
+}: {
+  id: string;
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={id} className="text-[13px]">
@@ -46,7 +67,22 @@ export function StartScreen() {
   const go = useStore((s) => s.go);
   const ta = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState(() => local.get("draft.new") ?? "");
-  const [dir, setDir] = useState("");
+  const [folder, setFolder] = useState<string | null>(() =>
+    local.get("folder"),
+  );
+  const [worktree, setWorktree] = useState(() => local.get("worktree") === "1");
+  const [base, setBase] = useState<string | null>(null);
+  const pickFolder = (path: string | null) => {
+    setFolder(path);
+    setBase(null);
+    local.set("folder", path);
+  };
+  const git = useFolderGit(folder, () => pickFolder(null));
+  const toggleWorktree = (on: boolean) => {
+    setWorktree(on);
+    local.set("worktree", on ? "1" : null);
+  };
+  const inWorktree = Boolean(folder && git?.head && worktree);
   const [doc, setDoc] = useState("");
   const [budget, setBudget] = useState("8");
   const [busy, setBusy] = useState(false);
@@ -66,17 +102,23 @@ export function StartScreen() {
     setBusy(true);
     try {
       const n = Number.parseInt(budget, 10);
-      const { room } = await api<{ room: { id: string } }>("POST", "/api/rooms", {
-        text: body,
-        ...(dir.trim() ? { dir: dir.trim() } : {}),
-        ...(Number.isFinite(n) && n !== 8 ? { budget: n } : {}),
-        ...(doc.trim() ? { doc: doc.trim() } : {}),
-      });
+      const { room } = await api<{ room: { id: string } }>(
+        "POST",
+        "/api/rooms",
+        {
+          text: body,
+          ...(folder ? { dir: folder } : {}),
+          ...(inWorktree ? { worktree: true, ...(base ? { base } : {}) } : {}),
+          ...(Number.isFinite(n) && n !== 8 ? { budget: n } : {}),
+          ...(doc.trim() ? { doc: doc.trim() } : {}),
+        },
+      );
       local.set("draft.new", null);
       await loadRooms();
       go({ kind: "room", id: room.id });
     } catch (error) {
-      if (!(error instanceof Unauthorized)) toast.error(error instanceof Error ? error.message : String(error));
+      if (!(error instanceof Unauthorized))
+        toast.error(error instanceof Error ? error.message : String(error));
       setBusy(false);
     }
   };
@@ -91,48 +133,93 @@ export function StartScreen() {
           <div className="flex flex-col items-center gap-5 text-center">
             <div className="flex items-center gap-3">
               <Glyph tone="claude">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" className="size-6">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.3"
+                  strokeLinecap="round"
+                  className="size-6"
+                >
                   <path d="M12 3v5.2M12 15.8V21M3 12h5.2M15.8 12H21M5.6 5.6l3.7 3.7M14.7 14.7l3.7 3.7M18.4 5.6l-3.7 3.7M9.3 14.7l-3.7 3.7" />
                 </svg>
               </Glyph>
               <span className="h-px w-8 bg-gradient-to-r from-claude/50 to-codex/50" />
               <Glyph tone="codex">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" className="size-6">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="size-6"
+                >
                   <path d="M5 7l5 5-5 5M12.5 17H19" />
                 </svg>
               </Glyph>
             </div>
             <h1 className="font-serif text-[clamp(26px,4vw,36px)] leading-tight font-semibold tracking-tight text-balance">
-              {first ? "Спільна кімната для вас, Claude і Codex" : "Про що поговоримо?"}
+              {first
+                ? "Спільна кімната для вас, Claude і Codex"
+                : "Про що поговоримо?"}
             </h1>
             <p className="max-w-[54ch] text-[15px] leading-relaxed text-pretty text-muted-foreground">
-              Напишіть задачу чи питання. Claude і Codex спершу відповідять незалежно, а далі працюватимуть разом по черзі — кожен у власній рідній сесії, з усіма
-              своїми інструментами.
+              Напишіть задачу чи питання. Claude і Codex спершу відповідять
+              незалежно, а далі працюватимуть разом по черзі — кожен у власній
+              рідній сесії, з усіма своїми інструментами.
             </p>
           </div>
-          <form onSubmit={submit} className="rounded-[22px] border border-input bg-card shadow-lift transition focus-within:border-ring/60">
-            <textarea
-              ref={ta}
-              rows={3}
-              value={text}
-              onChange={(event) => change(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  void submit();
-                }
-              }}
-              placeholder={EXAMPLES[0]}
-              aria-label="Перше повідомлення"
-              className="scroll-thin block min-h-[96px] w-full resize-none bg-transparent px-5 pt-4 text-[16px] leading-relaxed outline-none placeholder:text-faint"
+          <div className="flex flex-col gap-2.5">
+            <FolderBar
+              folder={folder}
+              onFolder={pickFolder}
+              git={git}
+              worktree={worktree}
+              onWorktree={toggleWorktree}
+              base={base}
+              onBase={setBase}
             />
-            <div className="flex items-center gap-2 px-3 pb-3">
-              <span className="pl-2 text-xs text-faint">Назва кімнати — з першого рядка; змінити можна будь-коли</span>
-              <Button type="submit" size="icon" className="ml-auto size-9 rounded-full" disabled={busy || !text.trim()} aria-label="Почати" title="Почати (Enter)">
-                <ArrowUpIcon className="size-4.5" />
-              </Button>
-            </div>
-          </form>
+            <form
+              onSubmit={submit}
+              className="rounded-[22px] border border-input bg-card shadow-lift transition focus-within:border-ring/60"
+            >
+              <textarea
+                ref={ta}
+                rows={3}
+                value={text}
+                onChange={(event) => change(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing
+                  ) {
+                    event.preventDefault();
+                    void submit();
+                  }
+                }}
+                placeholder={EXAMPLES[0]}
+                aria-label="Перше повідомлення"
+                className="scroll-thin block min-h-[96px] w-full resize-none bg-transparent px-5 pt-4 text-[16px] leading-relaxed outline-none placeholder:text-faint"
+              />
+              <div className="flex items-center gap-2 px-3 pb-3">
+                <span className="pl-2 text-xs text-faint">
+                  Назва кімнати — з першого рядка; змінити можна будь-коли
+                </span>
+                <Button
+                  type="submit"
+                  size="icon"
+                  className="ml-auto size-9 rounded-full"
+                  disabled={busy || !text.trim()}
+                  aria-label="Почати"
+                  title="Почати (Enter)"
+                >
+                  <ArrowUpIcon className="size-4.5" />
+                </Button>
+              </div>
+            </form>
+          </div>
           <div className="flex flex-wrap justify-center gap-2">
             {EXAMPLES.slice(1).map((example) => (
               <button
@@ -154,14 +241,30 @@ export function StartScreen() {
               Параметри
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-3 flex flex-col gap-4 rounded-2xl border border-border bg-card/60 p-4">
-              <Field id="dir" label="Робоча тека" hint="Можна вказати наявний проєкт — агенти працюватимуть у ньому (у пісочниці).">
-                <Input id="dir" value={dir} onChange={(e) => setDir(e.target.value)} placeholder="Порожньо — нова git-тека в ~/agoryx" spellCheck={false} className="font-mono text-[13px]" />
-              </Field>
-              <Field id="doc" label="Спільний документ" hint="Файл, який кімната пише разом; кожна версія зберігається з автором.">
-                <Input id="doc" value={doc} onChange={(e) => setDoc(e.target.value)} placeholder="README.md" spellCheck={false} className="font-mono text-[13px]" />
+              <Field
+                id="doc"
+                label="Спільний документ"
+                hint="Файл, який кімната пише разом; кожна версія зберігається з автором."
+              >
+                <Input
+                  id="doc"
+                  value={doc}
+                  onChange={(e) => setDoc(e.target.value)}
+                  placeholder="README.md"
+                  spellCheck={false}
+                  className="font-mono text-[13px]"
+                />
               </Field>
               <Field id="budget" label="Ходів агентів на ваше повідомлення">
-                <Input id="budget" type="number" min={1} max={100} value={budget} onChange={(e) => setBudget(e.target.value)} className="w-28" />
+                <Input
+                  id="budget"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={budget}
+                  onChange={(e) => setBudget(e.target.value)}
+                  className="w-28"
+                />
               </Field>
             </CollapsibleContent>
           </Collapsible>

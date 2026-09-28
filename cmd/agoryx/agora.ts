@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import pc from "picocolors";
 import { DaemonClient, type DaemonStreamItem } from "../../internal/agora/client.js";
@@ -43,7 +43,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx up [--port N] [-d]          Start the daemon (web UI + API). -d runs it in the background",
       "  agoryx down                        Stop the background daemon",
       "  agoryx open [room]                 Open the web UI (starts the daemon if needed)",
-      '  agoryx new ["name"] [--dir D] [--budget N] [--doc PATH|none] [-m "first message"]   (no name: the message names it)',
+      '  agoryx new ["name"] [--dir D [--worktree [--base BRANCH]]] [--budget N] [--doc PATH|none] [-m "first message"]   (no name: the message names it)',
       "  agoryx rooms                       List rooms",
       '  agoryx say [-r room] "text"        Post to the room and follow the run until it goes quiet',
       "  agoryx tail [-r room] [-f] [-n N] [--trace]   Print the conversation (and follow it)",
@@ -498,6 +498,8 @@ const runOpen = async (argv: string[]): Promise<number> => {
 const runNew = async (argv: string[]): Promise<number> => {
   const parsed = parse(argv, [
     { long: "dir", takesValue: true },
+    { long: "worktree", takesValue: false },
+    { long: "base", takesValue: true },
     { long: "budget", takesValue: true },
     { long: "doc", takesValue: true },
     { long: "message", short: "m", takesValue: true },
@@ -512,7 +514,9 @@ const runNew = async (argv: string[]): Promise<number> => {
   const doc = docOption(parsed.options.doc);
   const input = {
     name,
-    ...(parsed.options.dir ? { dir: parsed.options.dir } : {}),
+    ...(parsed.options.dir ? { dir: resolve(parsed.options.dir) } : {}),
+    ...(parsed.options.worktree ? { worktree: true } : {}),
+    ...(parsed.options.base ? { base: parsed.options.base } : {}),
     ...(budget ? { budget } : {}),
     ...(doc !== undefined ? { doc } : {}),
   };
@@ -527,6 +531,7 @@ const runNew = async (argv: string[]): Promise<number> => {
   const store = RoomStore.open(roomsDir(), roomId);
   console.log(`${pc.bold(store.state.name)} ${pc.dim(`(${roomId})`)}`);
   console.log(`  workspace  ${store.state.workspace}${store.state.createdWorkspace ? pc.dim(" (new git repo)") : ""}`);
+  if (store.state.worktree) console.log(`  worktree   ${store.state.worktree.branch} ${pc.dim(`from ${store.state.worktree.base}, in ${store.state.worktree.repo}`)}`);
   console.log(`  here       ${store.state.agents.map((agent) => agent.label).join(", ")} and ${store.state.human}`);
   console.log(`  budget     ${store.state.settings.budget} agent turns per run`);
   if (store.state.settings.doc) console.log(`  doc        ${store.state.settings.doc} ${pc.dim("(the room's canonical file)")}`);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -429,4 +430,69 @@ test("static UI is served with a CSP; unknown paths fall back to the app shell",
   const route = await call("GET", "/rooms/whatever", { token: null });
   assert.equal(route.status, 200);
   assert.equal(route.body, index.body);
+});
+
+const gitIn = (cwd: string, ...args: string[]) =>
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
+
+const makeRepo = (name: string) => {
+  const repo = join(home, name);
+  mkdirSync(join(repo, "src"), { recursive: true });
+  gitIn(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "src", "a.txt"), "main\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "commit", "-q", "-m", "first");
+  gitIn(repo, "branch", "feature");
+  gitIn(repo, "checkout", "-q", "feature");
+  writeFileSync(join(repo, "src", "a.txt"), "feature\n");
+  gitIn(repo, "commit", "-q", "-am", "on feature");
+  gitIn(repo, "checkout", "-q", "main");
+  return repo;
+};
+
+test("a room can work in its own git worktree, shared by both agents", async () => {
+  const repo = makeRepo("wt-repo");
+  const reply = await call("POST", "/api/rooms", { body: { name: "Worktree room", dir: repo, worktree: true, base: "feature" } });
+  assert.equal(reply.status, 201, reply.body);
+  const { room } = reply.json<{ room: { id: string; workspace: string; folder?: string; branch?: string } }>();
+  assert.equal(room.folder, repo);
+  assert.equal(room.branch, "agoryx/worktree-room");
+  assert.ok(room.workspace.includes(join("agora", "worktrees")), room.workspace);
+  // Started from the chosen base, on its own branch; the human's checkout did not move.
+  assert.equal(gitIn(room.workspace, "rev-parse", "--abbrev-ref", "HEAD"), "agoryx/worktree-room");
+  assert.equal(gitIn(room.workspace, "show", "HEAD:src/a.txt"), "feature");
+  assert.equal(gitIn(repo, "rev-parse", "--abbrev-ref", "HEAD"), "main");
+  const git = (await call("GET", `/api/rooms/${room.id}/git`)).json<{ git: { branch: string; linked: boolean }; worktree: { base: string } }>();
+  assert.equal(git.git.branch, "agoryx/worktree-room");
+  assert.equal(git.git.linked, true);
+  assert.equal(git.worktree.base, "feature");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ state: { settings: { autoCommit: boolean } } }>();
+  assert.equal(snap.state.settings.autoCommit, true);
+  const folders = (await call("GET", "/api/folders")).json<{ recent: Array<{ path: string; git: boolean }> }>();
+  assert.ok(folders.recent.some((f) => f.path === repo && f.git));
+});
+
+test("a worktree in a subfolder works in the same subfolder; refused worktrees leave nothing", async () => {
+  const repo = makeRepo("wt-sub");
+  const { room } = (await call("POST", "/api/rooms", { body: { name: "Sub", dir: join(repo, "src"), worktree: true } })).json<{ room: { workspace: string } }>();
+  assert.ok(room.workspace.endsWith(`${join("", "src")}`), room.workspace);
+  assert.ok(existsSync(join(room.workspace, "a.txt")));
+  const before = gitIn(repo, "branch", "--list", "agoryx/*");
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "Bad base", dir: repo, worktree: true, base: "nope" } })).status, 400);
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "No git", dir: home, worktree: true } })).status, 400);
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "Relative", dir: "src" } })).status, 400);
+  assert.equal(gitIn(repo, "branch", "--list", "agoryx/*"), before);
+});
+
+test("the folder picker lists subfolders and says which are git repositories", async () => {
+  makeRepo("wt-list");
+  const reply = await call("GET", `/api/fs?path=${encodeURIComponent(home)}`);
+  assert.equal(reply.status, 200, reply.body);
+  const fs = reply.json<{ path: string; parent: string | null; dirs: Array<{ name: string; git: boolean }> }>();
+  assert.ok(fs.dirs.some((d) => d.name === "wt-list" && d.git));
+  assert.ok(fs.parent);
+  const inside = (await call("GET", `/api/fs?path=${encodeURIComponent(join(home, "wt-list"))}`)).json<{ git: { branch: string; branches: string[] } }>();
+  assert.equal(inside.git.branch, "main");
+  assert.deepEqual([...inside.git.branches].sort(), ["feature", "main"]);
+  assert.equal((await call("GET", `/api/fs?path=${encodeURIComponent(join(home, "missing"))}`)).status, 404);
 });

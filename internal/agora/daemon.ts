@@ -2,12 +2,13 @@ import { execFileSync } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { dirname, extname, join, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
+import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js";
 import { createRoom, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
@@ -577,6 +578,39 @@ export class AgoraDaemon {
       return;
     }
 
+    // Picking the folder a room works in: its subfolders, and what git says about it.
+    if (parts[0] === "fs" && parts.length === 1 && method === "GET") {
+      const asked = url.searchParams.get("path")?.trim();
+      let path: string;
+      try {
+        path = resolveFolder(asked || "~", this.env);
+      } catch (error) {
+        throw new HttpError(404, error instanceof Error ? error.message : String(error));
+      }
+      let dirs;
+      try {
+        dirs = listFolder(path);
+      } catch {
+        throw new HttpError(403, `cannot read ${path}`);
+      }
+      sendJson(res, 200, { path, parent: parentFolder(path), home: resolveFolder("~", this.env), git: folderGit(path), dirs });
+      return;
+    }
+
+    if (parts[0] === "folders" && parts.length === 1 && method === "GET") {
+      const seen = new Set<string>();
+      const recent = [];
+      for (const room of RoomStore.list(roomsDir(this.env))) {
+        if (!room.folder || seen.has(room.folder)) continue;
+        seen.add(room.folder);
+        if (!existsSync(room.folder)) continue;
+        recent.push({ path: room.folder, name: basename(room.folder) || room.folder, git: folderGit(room.folder, { branches: false }) !== null });
+        if (recent.length >= 8) break;
+      }
+      sendJson(res, 200, { recent });
+      return;
+    }
+
     if (parts[0] !== "rooms") throw new HttpError(404, "unknown endpoint");
 
     if (parts.length === 1) {
@@ -601,7 +635,9 @@ export class AgoraDaemon {
         try {
           store = createRoom({
             name,
-            ...(typeof body.dir === "string" && body.dir.trim() ? { dir: body.dir.trim() } : {}),
+            ...(typeof body.dir === "string" && body.dir.trim() ? { dir: resolveFolder(body.dir, this.env) } : {}),
+            ...(body.worktree === true ? { worktree: true } : {}),
+            ...(typeof body.base === "string" && body.base.trim() ? { base: body.base.trim() } : {}),
             ...(typeof body.budget === "number" ? { budget: body.budget } : {}),
             ...(typeof body.human === "string" ? { human: body.human } : {}),
             // `agoryx new --doc none` sends null: no canonical file.
@@ -624,6 +660,12 @@ export class AgoraDaemon {
 
     if (!action && method === "GET") {
       sendJson(res, 200, this.snapshot(handle));
+      return;
+    }
+
+    if (action === "git" && method === "GET") {
+      // Live: the agents may switch branches or commit while the room runs.
+      sendJson(res, 200, { git: folderGit(handle.store.state.workspace, { branches: false }), worktree: handle.store.state.worktree ?? null });
       return;
     }
 

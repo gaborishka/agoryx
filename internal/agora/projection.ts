@@ -6,6 +6,7 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   name: event.name,
   workspace: event.workspace,
   createdWorkspace: event.createdWorkspace,
+  ...(event.worktree ? { worktree: event.worktree } : {}),
   human: event.human,
   agents: event.agents,
   settings: { ...event.settings },

@@ -396,6 +396,38 @@ test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .gi
   }
 });
 
+test("media outside the workspace is served only while a message in the room links it", async () => {
+  const room = await newRoom("Daemon outside media");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();
+  const outside = mkdtempSync(join(tmpdir(), "agora-media-"));
+  writeFileSync(join(outside, "moon pic.png"), "PNG");
+  writeFileSync(join(outside, "other.png"), "OTHER");
+  writeFileSync(join(outside, "notes.txt"), "private");
+  symlinkSync(join(outside, "notes.txt"), join(outside, "sneaky.png"));
+  const abs = (name: string) => `${snap.rawBase}~abs${encodeURI(join(outside, name))}`;
+  try {
+    assert.equal((await call("GET", abs("moon pic.png"), { token: null })).status, 404, "not linked yet");
+    const text = `Look: ![moon](${encodeURI(join(outside, "moon pic.png"))}) [notes](${join(outside, "notes.txt")}) ![x](${join(outside, "sneaky.png")})`;
+    assert.equal((await call("POST", `/api/rooms/${room.id}/messages`, { body: { text } })).status, 201);
+
+    const moon = await call("GET", abs("moon pic.png"), { token: null });
+    assert.equal(moon.status, 200);
+    assert.equal(moon.body, "PNG");
+    assert.equal(moon.headers["content-type"], "image/png");
+    assert.equal((await call("GET", abs("other.png"), { token: null })).status, 404, "a file no message links");
+    assert.equal((await call("GET", abs("notes.txt"), { token: null })).status, 404, "linked, but not media");
+    assert.equal((await call("GET", abs("sneaky.png"), { token: null })).status, 404, "a media name over some other file");
+    const wrongKey = snap.rawBase.replace(/[0-9a-f]{32}/, "0".repeat(32));
+    assert.equal((await call("GET", `${wrongKey}~abs${encodeURI(join(outside, "moon pic.png"))}`, { token: null })).status, 404);
+
+    // Gone from disk is gone from the room: nothing was copied.
+    rmSync(join(outside, "moon pic.png"));
+    assert.equal((await call("GET", abs("moon pic.png"), { token: null })).status, 404);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test("a file preview reads only its first 2 MB", async () => {
   const room = await newRoom("Daemon big file");
   writeFileSync(join(room.workspace, "big.txt"), "x".repeat(3 * 1024 * 1024));

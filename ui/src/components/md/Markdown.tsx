@@ -1,10 +1,10 @@
 import { liveBlocks } from "@agora/blocks";
 import { createCodePlugin } from "@streamdown/code";
 import type { DiagramPlugin, MermaidConfig } from "@streamdown/mermaid";
-import { Code2Icon, ExternalLinkIcon, FileIcon, Maximize2Icon } from "lucide-react";
-import { type ComponentProps, memo, type ReactNode, useMemo } from "react";
+import { Code2Icon, ExternalLinkIcon, FileIcon, FileXIcon, Maximize2Icon } from "lucide-react";
+import { type ComponentProps, memo, type ReactNode, useMemo, useState } from "react";
 import { type Components, type CustomRendererProps, defaultRemarkPlugins, Streamdown, type StreamdownTranslations } from "streamdown";
-import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, hashBlock, IMAGE_EXT, TABLE_EXT, VIDEO_EXT, workspaceRel } from "@/lib/format";
+import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, hashBlock, IMAGE_EXT, TABLE_EXT, VIDEO_EXT, VISUAL_EXT, workspaceRel } from "@/lib/format";
 import { participant, refExists, toneText } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
@@ -75,6 +75,21 @@ const translations: Partial<StreamdownTranslations> = {
 const defaultRemark = Object.values(defaultRemarkPlugins);
 
 export const rawUrl = (rawBase: string, path: string) => rawBase + path.split("/").map(encodeURIComponent).join("/");
+
+/** A media file outside the workspace, served from where it is while a message links it. */
+const outsideUrl = (rawBase: string, path: string) => rawUrl(rawBase, `~abs/${path.replace(/^\//, "")}`);
+const isAbsPath = (path: string) => path.startsWith("/") || path.startsWith("~/");
+
+/** The file an embed pointed at is no longer where it was; the room kept no copy. */
+function Gone({ path }: { path: string }) {
+  return (
+    <span title={path} className="my-1 inline-flex max-w-full items-center gap-2 rounded-lg border border-dashed border-border px-2.5 py-1.5 align-top text-[13px] text-muted-foreground">
+      <FileXIcon className="size-4 shrink-0" />
+      <span className="shrink-0">файлу вже немає</span>
+      <span className="truncate font-mono text-[12px]">{path}</span>
+    </span>
+  );
+}
 
 /** Where a fence lives, so the daemon can serve it as its own page: m:<message id> or o:<option id>. */
 type Source = string | undefined;
@@ -168,12 +183,14 @@ function FileLink({ path, children }: { path: string; children: ReactNode }) {
 
 function Link({ href, children }: ComponentProps<"a">) {
   const workspace = useStore((s) => s.snap?.state.workspace);
+  const rawBase = useStore((s) => s.snap?.rawBase);
   if (href?.startsWith("#@")) return <Mention handle={href.slice(2)}>{children}</Mention>;
   if (href?.startsWith("#~")) return <Ref id={href.slice(2)} />;
   const local = localPath(href);
   const rel = workspaceRel(local ?? href, workspace);
   if (rel) return <FileLink path={rel}>{children}</FileLink>;
-  if (local !== null) return <span title={local}>{children}</span>;
+  if (local !== null && !(rawBase && isAbsPath(local) && VISUAL_EXT.has(ext(local)))) return <span title={local}>{children}</span>;
+  if (local !== null) href = outsideUrl(rawBase!, local);
   return (
     <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary underline decoration-primary/35 underline-offset-[3px] hover:decoration-current">
       {children}
@@ -185,6 +202,7 @@ function Embed({ src, alt }: ComponentProps<"img">) {
   const workspace = useStore((s) => s.snap?.state.workspace);
   const rawBase = useStore((s) => s.snap?.rawBase);
   const openDialog = useStore((s) => s.openDialog);
+  const [gone, setGone] = useState(false);
   const url = typeof src === "string" ? (localPath(src) ?? src) : "";
   if (/^https?:|^data:image\//i.test(url)) {
     return (
@@ -195,13 +213,20 @@ function Embed({ src, alt }: ComponentProps<"img">) {
     );
   }
   const rel = workspaceRel(url, workspace);
-  if (!rel || !rawBase) return <span className="text-muted-foreground">[{alt || url}]</span>;
-  const e = ext(rel);
+  // Outside the workspace only media shows, straight from where the agent saved it.
+  const abs = !rel && isAbsPath(url) && VISUAL_EXT.has(ext(url)) ? url : null;
+  const path = rel ?? abs;
+  if (!path || !rawBase) return <span className="text-muted-foreground">[{alt || url}]</span>;
+  if (gone) return <Gone path={path} />;
+  const file = rel ? rawUrl(rawBase, rel) : outsideUrl(rawBase, path);
+  const open = () => (rel ? openDialog({ kind: "file", path: rel }) : window.open(file, "_blank", "noopener"));
+  const caption = alt || baseName(path);
+  const e = ext(path);
   if (IMAGE_EXT.has(e)) {
     return (
-      <button type="button" onClick={() => openDialog({ kind: "file", path: rel })} className="group my-2 inline-flex max-w-full flex-col gap-1 text-left align-top" title={rel}>
-        <img src={rawUrl(rawBase, rel)} alt={alt ?? rel} loading="lazy" className="max-h-[520px] max-w-full rounded-lg border border-border bg-paper object-contain transition group-hover:shadow-soft" />
-        <span className="text-xs text-muted-foreground">{alt || baseName(rel)}</span>
+      <button type="button" onClick={open} className="group my-2 inline-flex max-w-full flex-col gap-1 text-left align-top" title={path}>
+        <img src={file} alt={caption} loading="lazy" onError={() => setGone(true)} className="max-h-[520px] max-w-full rounded-lg border border-border bg-paper object-contain transition group-hover:shadow-soft" />
+        <span className="text-xs text-muted-foreground">{caption}</span>
       </button>
     );
   }
@@ -210,38 +235,38 @@ function Embed({ src, alt }: ComponentProps<"img">) {
       <span className="my-3 block overflow-hidden rounded-xl border border-border bg-paper shadow-soft">
         <span className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
           <span className="font-semibold tracking-wider">{e.toUpperCase()}</span>
-          <span className="truncate font-mono">{rel}</span>
-          <a href={rawUrl(rawBase, rel)} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-foreground">
+          <span className="truncate font-mono" title={path}>{rel ?? caption}</span>
+          <a href={file} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-foreground">
             <ExternalLinkIcon className="size-3.5" /> Відкрити
           </a>
         </span>
-        <LiveFrame src={rawUrl(rawBase, rel)} title={rel} initial={e === "pdf" ? 560 : 360} />
+        <LiveFrame src={file} title={path} initial={e === "pdf" ? 560 : 360} />
       </span>
     );
   }
   if (VIDEO_EXT.has(e) || AUDIO_EXT.has(e)) {
     return (
       <span className="my-2 inline-flex max-w-full flex-col gap-1 align-top">
-        <Player url={rawUrl(rawBase, rel)} kind={VIDEO_EXT.has(e) ? "video" : "audio"} title={alt || rel} />
-        <span className="text-xs text-muted-foreground">{alt || baseName(rel)}</span>
+        <Player url={file} kind={VIDEO_EXT.has(e) ? "video" : "audio"} title={path} onError={() => setGone(true)} />
+        <span className="text-xs text-muted-foreground">{caption}</span>
       </span>
     );
   }
   if (TABLE_EXT.has(e) || DIAGRAM_EXT.has(e)) {
     return (
       <span className="my-3 block">
-        <button type="button" onClick={() => openDialog({ kind: "file", path: rel })} className="mb-1.5 inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" title={rel}>
+        <button type="button" onClick={open} className="mb-1.5 inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" title={path}>
           <span className="font-semibold tracking-wider">{e.toUpperCase()}</span>
-          <span className="truncate font-mono">{alt || rel}</span>
+          <span className="truncate font-mono">{alt || rel || caption}</span>
         </button>
-        {TABLE_EXT.has(e) ? <CsvFile url={rawUrl(rawBase, rel)} name={rel} /> : <MermaidFile url={rawUrl(rawBase, rel)} />}
+        {TABLE_EXT.has(e) ? <CsvFile url={file} name={path} /> : <MermaidFile url={file} />}
       </span>
     );
   }
   return (
-    <button type="button" onClick={() => openDialog({ kind: "file", path: rel })} className="my-1 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-sm hover:bg-accent">
+    <button type="button" onClick={open} className="my-1 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-sm hover:bg-accent">
       <FileIcon className="size-4 text-muted-foreground" />
-      <span className="font-mono text-[13px]">{baseName(rel)}</span>
+      <span className="font-mono text-[13px]">{baseName(path)}</span>
       <span className="text-xs text-muted-foreground">відкрити</span>
     </button>
   );

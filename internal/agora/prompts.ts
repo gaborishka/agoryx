@@ -144,9 +144,10 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
     "- Code fences with a language are highlighted. Tables in markdown render as tables.",
     "- ![caption](path/in/workspace) embeds a workspace file: images show inline, .html/.svg/.pdf render live, video and",
     "  audio play, .csv/.tsv show as tables, anything else opens as a file. Make the artifact with your own tools (a script",
-    "  that plots a PNG, an HTML page, a CSV of results) and embed it. Save it in the workspace; if it ended up elsewhere",
-    "  (/tmp, a generated image), embed its absolute path and the room copies it in. Files your turn creates show up under",
-    "  your message too, but an embed puts the picture where your words point to it.",
+    "  that plots a PNG, an HTML page, a CSV of results) and embed it. A file elsewhere (/tmp, a generated image) embeds by",
+    "  its absolute path and shows from there for as long as it exists; the other agents get only the path, so a file they",
+    "  should open too belongs in the workspace. Files your turn creates show up under your message too, but an embed puts",
+    "  the picture where your words point to it.",
     "- A proposal with --file gets the same live preview on the table — put the mockup or chart on the option it argues for.",
     "Use this when a picture carries the point better than a paragraph; plain text is still the default.",
   ].join("\n");

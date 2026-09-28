@@ -1,95 +1,62 @@
 /**
- * Media an agent made outside the room's workspace: Codex's image_gen output in
- * $CODEX_HOME, a chart plotted to /tmp, a video rendered elsewhere. The UI can only
- * show workspace files, so these are copied into .agoryx/media/ and the agent's
- * message points at the copy. Only media types are taken, never arbitrary files.
+ * Media an agent points at outside the room's workspace: Codex's image_gen output in
+ * $CODEX_HOME, a chart plotted to /tmp. The room does not copy or keep these — the file
+ * stays where the agent put it, and lives or goes with it. The UI may show such a file
+ * only while a message in the room links or embeds it, and only if it is a media type.
  */
-import { copyFileSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, extname, isAbsolute, join, sep } from "node:path";
-import { AGORYX_DIR } from "./workspace.js";
+import { extname, isAbsolute, join, normalize } from "node:path";
+import type { MessageEntry } from "./types.js";
 
 export const MEDIA_EXTS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
   ".pdf", ".html", ".htm",
   ".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg", ".m4a",
-  ".csv", ".tsv",
+  ".csv", ".tsv", ".mmd",
 ]);
 
-export const MAX_MEDIA_BYTES = 256 * 1024 * 1024;
-export const MEDIA_DIR = `${AGORYX_DIR}/media`;
+// ![alt](path "title") and [text](path) with an absolute, ~/ or file:// path: the path is group 1.
+const LINK = /!?\[[^\]\n]*\]\(<?((?:file:\/\/|~\/|\/)[^)\s>]+)>?(?:\s+"[^"\n]*")?\)/g;
 
-// ![alt](path "title") and [text](path): the path is group 2.
-const LINK = /(!?\[[^\]\n]*\]\()<?((?:file:\/\/|~\/|\/)[^)\s>]+)>?((?:\s+"[^"\n]*")?\))/g;
-
-const expand = (ref: string): string => {
+/** A link target as a filesystem path: file:// stripped, %-escapes decoded, ~/ expanded. */
+export const expandPath = (ref: string): string => {
   let path = ref.startsWith("file://") ? ref.slice("file://".length) : ref;
   try {
     path = decodeURIComponent(path);
   } catch {
     // Keep it as written.
   }
-  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+  return normalize(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
 };
 
-const inside = (root: string, path: string): boolean => path === root || path.startsWith(`${root}${sep}`);
-
-/** A media file outside the workspace, small enough to copy; its real path, or null. */
-const outsideMedia = (workspace: string, path: string): string | null => {
-  if (!isAbsolute(path) || !MEDIA_EXTS.has(extname(path).toLowerCase())) return null;
-  try {
-    const real = realpathSync(path);
-    if (inside(realpathSync(workspace), real)) return null;
-    const stat = statSync(real);
-    return stat.isFile() && stat.size <= MAX_MEDIA_BYTES ? real : null;
-  } catch {
-    return null;
-  }
-};
-
-/** Absolute media paths a message links or embeds that live outside the workspace, in order. */
-export const outsideMediaRefs = (text: string, workspace: string): string[] => {
+/** Absolute media paths a message links or embeds, in order. */
+export const mediaRefs = (text: string): string[] => {
   const found: string[] = [];
   for (const match of text.matchAll(LINK)) {
-    const real = outsideMedia(workspace, expand(match[2]!));
-    if (real && !found.includes(real)) found.push(real);
+    const path = expandPath(match[1]!);
+    if (isAbsolute(path) && MEDIA_EXTS.has(extname(path).toLowerCase()) && !found.includes(path)) found.push(path);
   }
   return found;
 };
 
-/**
- * Copies media into .agoryx/media/<turn>-<name> and returns source → workspace-relative
- * path. Sources that cannot be copied are left out (the message keeps pointing at them).
- */
-export const bringMedia = (workspace: string, turnId: string, sources: string[], log?: (line: string) => void): Map<string, string> => {
-  const kept = new Map<string, string>();
-  const used = new Set<string>();
-  for (const source of sources) {
-    if (kept.has(source)) continue;
-    const real = outsideMedia(workspace, source);
-    if (!real) continue;
-    const ext = extname(real).toLowerCase();
-    const stem = basename(real, extname(real)).replace(/[^\w.-]+/g, "_").slice(0, 60) || "media";
-    let name = `${turnId}-${stem}${ext}`;
-    for (let n = 2; used.has(name); n += 1) name = `${turnId}-${stem}-${n}${ext}`;
-    try {
-      mkdirSync(join(workspace, MEDIA_DIR), { recursive: true });
-      copyFileSync(real, join(workspace, MEDIA_DIR, name));
-      used.add(name);
-      kept.set(source, `${MEDIA_DIR}/${name}`);
-    } catch (error) {
-      log?.(`could not bring ${source} into the room: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  return kept;
-};
+/** An embed for a file wherever it is: spaces and non-ASCII escaped so the markdown link holds. */
+export const embed = (path: string): string => `![](${encodeURI(path)})`;
 
-/** Points links and embeds at the copies. */
-export const rewriteMediaRefs = (text: string, workspace: string, copies: Map<string, string>): string =>
-  copies.size
-    ? text.replace(LINK, (whole, open: string, ref: string, close: string) => {
-        const real = outsideMedia(workspace, expand(ref));
-        const copy = real ? copies.get(real) : undefined;
-        return copy ? `${open}${copy}${close}` : whole;
-      })
-    : text;
+/**
+ * The real path of `ref` if a message in the room links it and it is a media file that
+ * still exists; null otherwise. The room's messages are the whole allowlist.
+ */
+export const linkedMedia = (messages: MessageEntry[], ref: string): string | null => {
+  const path = expandPath(ref);
+  if (!isAbsolute(path) || !MEDIA_EXTS.has(extname(path).toLowerCase())) return null;
+  if (!messages.some((message) => message.text.includes("](") && mediaRefs(message.text).includes(path))) return null;
+  try {
+    const real = realpathSync(path);
+    // A symlink may not turn a linked picture into some other kind of file.
+    if (!MEDIA_EXTS.has(extname(real).toLowerCase()) || !statSync(real).isFile()) return null;
+    return real;
+  } catch {
+    return null;
+  }
+};

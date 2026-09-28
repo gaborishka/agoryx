@@ -1,8 +1,8 @@
 // Turns "@claude" and table refs ("P3", "Q1") in plain text into links the
 // renderer recognises (#@claude, #~P3). The renderer decides whether they are
 // real — an unknown handle or a ref not on the table falls back to plain text.
-// It also marks links and embeds to local paths ("chart.svg", ".agoryx/media/x.png",
-// "/abs/path"): the sanitizer drops bare relative URLs, so they travel as /@ws/<path>
+// It also marks links and embeds to local paths ("chart.svg", "out/plot.png",
+// "/abs/path", "file:///abs/path"): the sanitizer drops bare relative URLs, so they travel as /@ws/<path>
 // and the renderer turns them back into workspace files.
 
 type Node = { type: string; value?: string; url?: string; children?: Node[] };
@@ -47,6 +47,7 @@ const split = (value: string): Node[] | null => {
 };
 
 const walk = (node: Node) => {
+  if (LINKED.has(node.type) && node.url?.startsWith("file://")) node.url = node.url.slice("file://".length);
   if (LINKED.has(node.type) && node.url && isLocal(node.url)) node.url = `${LOCAL}${node.url}`;
   if (!node.children || SKIP.has(node.type)) return;
   const next: Node[] = [];

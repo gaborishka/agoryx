@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
+import { linkedMedia } from "./media.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
@@ -513,10 +514,18 @@ export class AgoraDaemon {
       this.serveBlock(req, res, handle, relPath.slice("~block/".length));
       return;
     }
-    if (!relPath || relPath.endsWith("/")) relPath += "index.html";
-    const full = resolveInside(handle.store.state.workspace, relPath);
-    if (!full || inGitDir(handle.store.state.workspace, full)) throw new HttpError(404, "no such file in the workspace");
-    if (!existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
+    let full: string | null;
+    if (relPath.startsWith("~abs/")) {
+      // A media file outside the workspace, served only while a message in the room links it.
+      const ref = relPath.slice("~abs/".length);
+      full = linkedMedia(handle.store.state.messages, ref.startsWith("~/") ? ref : `/${ref}`);
+      if (!full) throw new HttpError(404, "no such file, or no message in the room links it");
+    } else {
+      if (!relPath || relPath.endsWith("/")) relPath += "index.html";
+      full = resolveInside(handle.store.state.workspace, relPath);
+      if (!full || inGitDir(handle.store.state.workspace, full)) throw new HttpError(404, "no such file in the workspace");
+      if (!existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
+    }
     const size = statSync(full).size;
     const type = MIME[extname(full).toLowerCase()] ?? "text/plain; charset=utf-8";
     const html = type.startsWith("text/html");

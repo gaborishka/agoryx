@@ -14,7 +14,7 @@ export function useRawText(url: string | null) {
     setState({ url });
     fetch(url)
       .then(async (res) => {
-        if (!res.ok) throw new Error(res.status === 413 ? "файл завеликий для перегляду" : `не вдалося відкрити (${res.status})`);
+        if (!res.ok) throw new Error(res.status === 413 ? "файл завеликий для перегляду" : res.status === 404 ? "файлу вже немає" : `не вдалося відкрити (${res.status})`);
         const text = await res.text();
         const cut = text.length > MAX_TEXT;
         if (live) setState({ url, text: cut ? text.slice(0, text.lastIndexOf("\n", MAX_TEXT)) : text, cut });
@@ -120,10 +120,10 @@ export function CsvFile({ url, name, className }: { url: string; name: string; c
   return <DataTable text={file.text} sep={name.toLowerCase().endsWith(".tsv") ? "\t" : ","} cut={file.cut} className={className} />;
 }
 
-export function Player({ url, kind, title, className }: { url: string; kind: "video" | "audio"; title: string; className?: string }) {
+export function Player({ url, kind, title, className, onError }: { url: string; kind: "video" | "audio"; title: string; className?: string; onError?: () => void }) {
   return kind === "video" ? (
-    <video src={url} controls preload="metadata" playsInline title={title} className={cn("max-h-[520px] max-w-full rounded-lg border border-border bg-black", className)} />
+    <video src={url} controls preload="metadata" playsInline title={title} onError={onError} className={cn("max-h-[520px] max-w-full rounded-lg border border-border bg-black", className)} />
   ) : (
-    <audio src={url} controls preload="metadata" title={title} className={cn("w-full max-w-[520px]", className)} />
+    <audio src={url} controls preload="metadata" title={title} onError={onError} className={cn("w-full max-w-[520px]", className)} />
   );
 }

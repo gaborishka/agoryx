@@ -1,7 +1,7 @@
 import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
-import { bringMedia, outsideMediaRefs, rewriteMediaRefs } from "./media.js";
+import { embed } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
@@ -796,15 +796,12 @@ export class RoomEngine {
     let messageId: string | undefined;
     let status: "ok" | "pass" | "error" | "interrupted" = result.status;
     if (result.status === "ok") {
-      // Media made outside the workspace (Codex image_gen, a chart in /tmp) is copied in so everyone can see it.
-      const workspace = this.state.workspace;
-      const linked = outsideMediaRefs(result.text, workspace);
-      const copies = bringMedia(workspace, turnId, [...linked, ...(result.images ?? [])], (line) => this.log(line));
-      const images = (result.images ?? []).flatMap((source) => copies.get(source) ?? []);
+      // Images Codex's image_gen made stay where Codex saved them; the message embeds them from there.
+      const images = result.images ?? [];
       const pass = passNote(result.text);
       // An agent that only made an image still said something: show it, with the pass note (if any) as the caption.
       const note = images.length ? null : pass;
-      const said = rewriteMediaRefs(images.length && pass !== null ? pass : result.text.trim(), workspace, copies);
+      const said = images.length && pass !== null ? pass : result.text.trim();
       if (note !== null) {
         status = "pass";
         messageId = this.postMessage({ author: agent.id, kind: "pass", text: note, mentions: [], wakes: false, turnId, runId }).id;
@@ -813,7 +810,7 @@ export class RoomEngine {
         messageId = this.postMessage({
           author: agent.id,
           kind: "agent",
-          text: [said, ...images.filter((path) => !said.includes(path)).map((path) => `![](${path})`)].filter(Boolean).join("\n\n"),
+          text: [said, ...images.filter((path) => !said.includes(path) && !said.includes(encodeURI(path))).map(embed)].filter(Boolean).join("\n\n"),
           mentions: parseMentions(said, handles),
           wakes: true,
           turnId,

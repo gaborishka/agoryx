@@ -73,10 +73,12 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
   if (!name) throw new Error("a room needs a name");
   const id = newRoomId(name);
   let workspace: string;
+  // True only when Agoryx picked the directory. One the human names stays theirs even if it is empty:
+  // no git init, no default document, no automatic commits unless asked.
   let createdWorkspace: boolean;
   if (options.dir) {
     workspace = resolve(options.dir);
-    createdWorkspace = isEmptyDir(workspace);
+    createdWorkspace = false;
   } else {
     const root = defaultWorkspaceRoot(env);
     const bySlug = join(root, slugify(name));

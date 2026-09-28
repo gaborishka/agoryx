@@ -362,36 +362,65 @@ export interface InboxOp {
   raw: Record<string, unknown>;
 }
 
+const TAKING = /^(.+)\.jsonl\.(\d+)\.\d+\.taking$/;
+
+const processAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
 /**
- * Atomically take every ops file (one per agent) out of the inbox and parse
- * it. Agents keep appending to a fresh file after the rename.
+ * Take every ops file (one per agent) out of the inbox and hand each op to `apply`.
+ * A file is renamed aside first (atomic; agents keep appending to a fresh file)
+ * and deleted only after all its ops were applied. A taken file left behind by a
+ * process that died mid-way (or by this one, if `apply` threw) is picked up again.
  */
-export const drainOpsInbox = (paths: WorkspacePaths): InboxOp[] => {
-  if (!existsSync(paths.opsDir)) return [];
-  const ops: InboxOp[] = [];
-  for (const name of readdirSync(paths.opsDir).sort()) {
+export const drainOpsInbox = (paths: WorkspacePaths, apply: (op: InboxOp) => void): void => {
+  if (!existsSync(paths.opsDir)) return;
+  const names = readdirSync(paths.opsDir).sort();
+  const taken: Array<{ agent: string; file: string }> = [];
+  for (const name of names) {
+    const orphan = TAKING.exec(name);
+    if (!orphan) continue;
+    const owner = Number(orphan[2]);
+    // Draining is synchronous, so a file of this process found here is one it failed to finish.
+    if (owner !== process.pid && processAlive(owner)) continue;
+    taken.push({ agent: orphan[1]!, file: join(paths.opsDir, name) });
+  }
+  for (const name of names) {
     if (!name.endsWith(".jsonl")) continue;
-    const agent = name.slice(0, -".jsonl".length);
     const source = join(paths.opsDir, name);
-    const taken = `${source}.${process.pid}.${Date.now()}.taking`;
+    const file = `${source}.${process.pid}.${Date.now()}.taking`;
     try {
-      renameSync(source, taken);
+      renameSync(source, file);
     } catch {
       continue;
     }
-    const text = readFileSync(taken, "utf8");
-    rmSync(taken, { force: true });
+    taken.push({ agent: name.slice(0, -".jsonl".length), file });
+  }
+  for (const { agent, file } of taken) {
+    let text: string;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
+      let raw: Record<string, unknown>;
       try {
-        const raw = JSON.parse(line) as Record<string, unknown>;
-        if (raw && typeof raw === "object") ops.push({ agent, raw });
+        raw = JSON.parse(line) as Record<string, unknown>;
       } catch {
-        // ignore malformed lines
+        continue; // ignore malformed lines
       }
+      if (raw && typeof raw === "object") apply({ agent, raw });
     }
+    rmSync(file, { force: true });
   }
-  return ops;
 };
 
 export const writeAck = (paths: WorkspacePaths, nonce: string, ack: Record<string, unknown>): void => {

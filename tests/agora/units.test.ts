@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { passNote } from "../../internal/agora/prompts.js";
 import { unwrapShellCommand } from "../../internal/agora/runners/codex.js";
 import { parseTableCommand, TableCommandError } from "../../internal/agora/table-cli.js";
-import { resolveInside } from "../../internal/agora/workspace.js";
+import { createRoom } from "../../internal/agora/service.js";
+import { drainOpsInbox, resolveInside, workspacePaths, type InboxOp } from "../../internal/agora/workspace.js";
 
 test("passNote: the pass token, with or without a short reason, is silence", () => {
   assert.equal(passNote("::pass::"), "");
@@ -66,5 +68,50 @@ test("resolveInside keeps paths in the workspace, through symlinks too", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("table ops taken by a process that died before applying them are picked up again", () => {
+  const root = mkdtempSync(join(tmpdir(), "agora-ops-"));
+  try {
+    const paths = workspacePaths(root);
+    mkdirSync(paths.opsDir, { recursive: true });
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+    writeFileSync(join(paths.opsDir, `codex.jsonl.${dead}.1.taking`), `${JSON.stringify({ op: "ask", text: "orphaned" })}\n`);
+    // Another live process is still working on this one: left alone.
+    writeFileSync(join(paths.opsDir, `claude.jsonl.${process.ppid}.1.taking`), `${JSON.stringify({ op: "ask", text: "busy" })}\n`);
+    writeFileSync(join(paths.opsDir, "claude.jsonl"), `${JSON.stringify({ op: "ask", text: "fresh" })}\n`);
+    const seen: InboxOp[] = [];
+    drainOpsInbox(paths, (op) => seen.push(op));
+    assert.deepEqual(
+      seen.map((op) => `${op.agent}:${op.raw.text}`),
+      ["codex:orphaned", "claude:fresh"],
+    );
+    assert.deepEqual(readdirSync(paths.opsDir), [`claude.jsonl.${process.ppid}.1.taking`]);
+
+    // A file whose ops could not all be applied stays, and is applied on the next drain.
+    writeFileSync(join(paths.opsDir, "codex.jsonl"), `${JSON.stringify({ op: "ask", text: "retry" })}\n`);
+    assert.throws(() => drainOpsInbox(paths, () => { throw new Error("crash"); }));
+    const again: InboxOp[] = [];
+    drainOpsInbox(paths, (op) => again.push(op));
+    assert.deepEqual(again.map((op) => op.raw.text), ["retry"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an empty directory the human names stays theirs: no git init, no default document, no auto-commit", () => {
+  const home = mkdtempSync(join(tmpdir(), "agora-home-"));
+  try {
+    const dir = join(home, "mine");
+    mkdirSync(dir);
+    const store = createRoom({ name: "Mine", dir, env: { ...process.env, AGORYX_HOME: home } });
+    assert.equal(store.state.createdWorkspace, false);
+    assert.equal(store.state.settings.autoCommit, false);
+    assert.equal(store.state.settings.doc, null);
+    assert.equal(existsSync(join(dir, ".git")), false);
+    assert.equal(existsSync(join(dir, "README.md")), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

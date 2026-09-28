@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -445,27 +445,21 @@ const runUp = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
-/** The command line of a process, or "" if it cannot be read. */
-const processCommand = (pid: number): string => {
-  try {
-    return execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 }).trim();
-  } catch {
-    return "";
-  }
-};
-
 const runDown = async (): Promise<number> => {
   const info = readDaemonInfo();
   if (!info) {
     console.log("no agoryx daemon is running");
     return 0;
   }
-  // daemon.json can outlive a crashed daemon and its pid be reused: signal only a process that is
-  // provably the daemon — it answers /api/health with that pid, or at least runs agoryx.
-  const verified = (await findDaemon()) !== null || /agoryx/i.test(processCommand(info.pid));
-  if (!verified) {
+  // daemon.json can outlive a crashed daemon and its pid be reused: signal only a process that
+  // proves it is the daemon by answering /api/health with that pid. A command-line match is not
+  // proof (any `vim …/agoryx/…` would pass), so an unverified pid is never signalled.
+  if (!(await findDaemon())) {
     rmSync(daemonInfoPath(), { force: true });
-    console.log(`no agoryx daemon is running (removed a stale record for pid ${info.pid}, which is now another process)`);
+    console.log(
+      `no agoryx daemon answers at ${info.url}; removed the record for pid ${info.pid}. ` +
+        `If that pid is a hung agoryx daemon, stop it yourself (kill ${info.pid}).`,
+    );
     return 0;
   }
   process.kill(info.pid, "SIGTERM");
@@ -559,7 +553,17 @@ const runRooms = async (): Promise<number> => {
 };
 
 const say = async (ref: string | undefined, text: string, options: { trace: boolean; noWait?: boolean }): Promise<number> => {
-  const conn = await connect(ref);
+  // Without waiting, only a daemon can carry the run on: a room engine in this process would stop
+  // with it. So --no-wait starts the daemon when none is running.
+  let conn: Conn;
+  if (options.noWait) {
+    const running = await findDaemon();
+    const info = running ?? (await startDaemonDetached());
+    if (!running) console.error(pc.dim(`started the agoryx daemon at ${info.url} to carry the run`));
+    conn = await daemonConn(info, ref);
+  } else {
+    conn = await connect(ref);
+  }
   try {
     const after = await conn.say(text);
     if (options.noWait) return 0;
@@ -595,9 +599,14 @@ const runTail = async (argv: string[]): Promise<number> => {
   const roomId = resolveRoom(ref);
   const store = RoomStore.open(roomsDir(), roomId);
   const printer = new TranscriptPrinter(store.state.agents, store.state.human, { trace: Boolean(parsed.options.trace) });
-  const limit = parsed.options.lines ? Number.parseInt(parsed.options.lines, 10) : 30;
+  const limit = parsed.options.lines === undefined ? 30 : Number(parsed.options.lines);
+  if (!Number.isInteger(limit) || limit < 0) {
+    console.error(`agoryx tail: -n takes a number of messages, 0 or more (got ${parsed.options.lines})`);
+    return 2;
+  }
   const visible = store.state.messages.filter((message) => message.kind !== "pass");
-  const from = visible.length > limit ? visible[visible.length - limit]!.seq - 1 : 0;
+  // -n 0 prints no history (with -f: only what comes next).
+  const from = limit === 0 ? store.state.seq : visible.length > limit ? visible[visible.length - limit]!.seq - 1 : 0;
   console.log(pc.dim(`${store.state.name} · ${store.state.workspace}`));
   for (const event of store.since(from)) printer.event(event);
   if (!parsed.options.follow) return 0;

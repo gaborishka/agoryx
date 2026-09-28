@@ -1,4 +1,4 @@
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { baselineRevision, diffLines, diffStats, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
@@ -94,9 +94,34 @@ interface RunningTurn {
   tree: string | null;
   startedAt: number;
   done: Promise<void>;
+  /** Hash of the canonical file as the human last saved it while this turn ran (not the turn's work). */
+  outsideDoc?: string;
 }
 
 const LOCK_FILE = "engine.lock";
+
+interface LockSnapshot {
+  ino: number;
+  text: string;
+  pid: number;
+}
+
+/** The lock file's identity and content, or null if it is gone. */
+const readLock = (path: string): LockSnapshot | null => {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    const text = readFileSync(fd, "utf8");
+    return { ino: fstatSync(fd).ino, text, pid: Number.parseInt(text, 10) };
+  } finally {
+    closeSync(fd);
+  }
+};
 
 const pidAlive = (pid: number): boolean => {
   try {
@@ -180,6 +205,8 @@ export class RoomEngine {
       this.writeTableFile();
       this.recover();
       this.recordDocBaseline();
+      // Table ops written while no engine ran, or taken by one that died before applying them.
+      this.ingestOps();
     } catch (error) {
       // A room that fails to open must not stay locked until the process exits.
       this.releaseLock();
@@ -219,15 +246,45 @@ export class RoomEngine {
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt > 0) throw error;
-        const pid = Number.parseInt(readFileSync(lock, "utf8"), 10);
-        if (Number.isFinite(pid) && pid !== process.pid && pidAlive(pid)) {
-          throw new RoomLockedError(`room ${this.store.id} is already running in process ${pid}`);
+        const seen = readLock(lock);
+        if (seen && Number.isFinite(seen.pid) && seen.pid !== process.pid && pidAlive(seen.pid)) {
+          throw new RoomLockedError(`room ${this.store.id} is already running in process ${seen.pid}`);
         }
-        rmSync(lock, { force: true });
+        if (seen) this.discardStaleLock(lock, seen);
       }
     }
     lockedHere.add(this.store.dir);
     this.lockHeld = true;
+  }
+
+  /**
+   * Removes the stale lock `seen` — and only it. Another process may have recovered the same stale
+   * lock a moment earlier and written its own; a plain unlink would delete that fresh lock and let two
+   * engines run the room. So the lock is first renamed aside (atomic), and the renamed file is deleted
+   * only if it is still the stale one (same inode and content); otherwise it is put back.
+   */
+  private discardStaleLock(lock: string, seen: LockSnapshot): void {
+    const aside = `${lock}.stale-${process.pid}-${Date.now()}`;
+    try {
+      renameSync(lock, aside);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return; // someone else removed it
+      throw error;
+    }
+    const moved = readLock(aside);
+    if (moved && moved.ino === seen.ino && moved.text === seen.text) {
+      rmSync(aside, { force: true });
+      return;
+    }
+    // Not the stale lock we judged: a fresh one another process just wrote. Restore it (link fails if
+    // yet another lock appeared meanwhile, which then stands) and report the room as taken.
+    try {
+      linkSync(aside, lock);
+    } catch {
+      // the lock that is there now wins
+    }
+    rmSync(aside, { force: true });
+    throw new RoomLockedError(`room ${this.store.id} is already running in process ${moved?.pid ?? "?"}`);
   }
 
   private releaseLock(): void {
@@ -689,18 +746,22 @@ export class RoomEngine {
   ): void {
     // Sweep the inbox while this turn still counts as running, so its ops are attributed to it.
     this.ingestOps();
+    const outsideDoc = this.running.get(agent.id)?.outsideDoc;
     this.running.delete(agent.id);
     this.notePresence();
     const dirty = snapshotChanges(this.state.workspace);
     const after = tree && !(dirty && dirty.size > MAX_TREE_SNAPSHOT_DIRTY) ? snapshotTree(this.state.workspace) : null;
     // Work the agent committed during the turn is gone from `git status`, but not from the trees.
     const committed = tree && after ? (treeChangedPaths(this.state.workspace, tree, after) ?? []) : [];
-    const seen = [...new Set([...diffSnapshots(snapshot, dirty), ...committed])].sort();
+    const doc = this.state.settings.doc;
+    // The human saved the canonical file during this turn and it is still exactly that save: the
+    // change is theirs (already recorded as their revision), not the agent's.
+    const humanDoc = Boolean(doc && outsideDoc && readDoc(this.state.workspace, doc)?.hash === outsideDoc);
+    const seen = [...new Set([...diffSnapshots(snapshot, dirty), ...committed])].filter((file) => !(humanDoc && file === doc)).sort();
     let files = this.attributeFiles(turnId, seen);
     const changed = this.turnChanges(agent, turnId, tree, after, files);
     // A file only touched (same content) is not a change.
     if (changed) files = files.filter((file) => changed.changes.some((change) => change.path === file));
-    const doc = this.state.settings.doc;
     // Credited by git status, or — without git to tell — changed while this was the only turn.
     if (doc && (files.includes(doc) || (!snapshot && this.running.size === 0))) this.recordDoc(agent.id, { turnId });
 
@@ -920,6 +981,9 @@ export class RoomEngine {
     if (!inside(ancestor) || escapes) throw new Error("the canonical file must stay inside the workspace");
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, text);
+    // Turns running now will see this file changed; it must not be credited to them.
+    const saved = readDoc(this.state.workspace, path)?.hash;
+    for (const turn of this.running.values()) turn.outsideDoc = saved;
     return this.recordDoc(author) ? (this.docRevisions(path).at(-1) ?? null) : null;
   }
 
@@ -1147,14 +1211,14 @@ export class RoomEngine {
 
   /** Pull table ops agents wrote via the `agoryx table` shim and ack them. */
   ingestOps(): void {
-    for (const { agent, raw } of drainOpsInbox(this.ws)) {
+    drainOpsInbox(this.ws, ({ agent, raw }) => {
       const member = this.opAuthor(agent);
       const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
       if (!member) {
         const ids = this.state.agents.map((entry) => entry.id).join(" or --as ");
         if (nonce) writeAck(this.ws, nonce, { ok: false, error: `can't tell which agent wrote this — add --as ${ids}` });
         this.log(`rejected unsigned table op (${agent})`);
-        continue;
+        return;
       }
       const by = member.id;
       const turnId = this.running.get(member.id)?.turnId;
@@ -1166,7 +1230,7 @@ export class RoomEngine {
         if (nonce) writeAck(this.ws, nonce, { ok: false, error: message });
         this.log(`rejected table op from ${agent}: ${message}`);
       }
-    }
+    });
   }
 
   private checkpoint(run: RunState): void {

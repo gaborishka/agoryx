@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -367,9 +367,28 @@ test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .gi
 
     const file = await call("GET", `/api/rooms/${room.id}/file?path=escape/secret.txt`);
     assert.equal(file.status, 404);
+
+    // The real .git is refused by any spelling that leads there, not only by its name.
+    assert.ok(existsSync(join(room.workspace, ".git", "config")), "the room workspace is a git repo");
+    symlinkSync(join(room.workspace, ".git"), join(room.workspace, "gitlink"));
+    assert.equal((await call("GET", `${snap.rawBase}gitlink/config`, { token: null })).status, 404);
+    assert.equal((await call("GET", `${snap.rawBase}site%2F..%2F.git%2Fconfig`, { token: null })).status, 404);
+    assert.equal((await call("GET", `/api/rooms/${room.id}/file?path=gitlink/config`)).status, 404);
+    assert.equal((await call("GET", `/api/rooms/${room.id}/file?path=.git/config`)).status, 404);
   } finally {
     rmSync(outside, { recursive: true, force: true });
   }
+});
+
+test("a file preview reads only its first 2 MB", async () => {
+  const room = await newRoom("Daemon big file");
+  writeFileSync(join(room.workspace, "big.txt"), "x".repeat(3 * 1024 * 1024));
+  const file = await call("GET", `/api/rooms/${room.id}/file?path=big.txt`);
+  assert.equal(file.status, 200);
+  const body = file.json<{ size: number; truncated: boolean; text: string }>();
+  assert.equal(body.size, 3 * 1024 * 1024);
+  assert.equal(body.truncated, true);
+  assert.equal(body.text.length, 2 * 1024 * 1024);
 });
 
 test("html and svg fences in a message are served as sandboxed pages, found by the hash of their body", async () => {

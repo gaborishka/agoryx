@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
@@ -91,6 +91,20 @@ const FRAME_REPORTER = Buffer.from(
 
 const MAX_BODY = 1024 * 1024;
 const MAX_FILE_PREVIEW = 2 * 1024 * 1024;
+
+/**
+ * Whether a resolved (real) path is the workspace's git directory or inside it — by real path, so a
+ * symlink or a differently spelled alias (`sub/../.git`, `link-to-git/config`) is caught as well.
+ */
+const inGitDir = (workspace: string, full: string): boolean => {
+  let gitDir: string;
+  try {
+    gitDir = realpathSync(join(workspace, ".git"));
+  } catch {
+    return false;
+  }
+  return full === gitDir || full.startsWith(`${gitDir}${sep}`);
+};
 
 const readBody = (req: IncomingMessage): Promise<unknown> =>
   new Promise((resolveBody, reject) => {
@@ -472,9 +486,9 @@ export class AgoraDaemon {
       return;
     }
     if (!relPath || relPath.endsWith("/")) relPath += "index.html";
-    if (relPath === ".git" || relPath.startsWith(".git/")) throw new HttpError(404, "not found");
     const full = resolveInside(handle.store.state.workspace, relPath);
-    if (!full || !existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
+    if (!full || inGitDir(handle.store.state.workspace, full)) throw new HttpError(404, "no such file in the workspace");
+    if (!existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
     const size = statSync(full).size;
     if (size > MAX_RAW) throw new HttpError(413, "file too large to preview");
     const type = MIME[extname(full).toLowerCase()] ?? "text/plain; charset=utf-8";
@@ -787,18 +801,31 @@ export class AgoraDaemon {
   private readWorkspaceFile(handle: RoomHandle, relPath: string) {
     const root = handle.store.state.workspace;
     const full = relPath === ".agoryx/TABLE.md" ? join(root, ".agoryx", "TABLE.md") : resolveInside(root, relPath);
-    if (!full || !existsSync(full)) throw new HttpError(404, "no such file in the workspace");
+    if (!full || inGitDir(root, full) || !existsSync(full)) throw new HttpError(404, "no such file in the workspace");
     const stats = statSync(full);
     if (!stats.isFile()) throw new HttpError(400, "not a file");
-    const buffer = readFileSync(full, { flag: "r" }).subarray(0, MAX_FILE_PREVIEW);
-    const binary = buffer.subarray(0, 8000).includes(0);
+    // Only the preview is read: a multi-gigabyte file must not be loaded to show its first 2 MB.
+    const buffer = Buffer.alloc(Math.min(stats.size, MAX_FILE_PREVIEW));
+    const fd = openSync(full, "r");
+    let length = 0;
+    try {
+      while (length < buffer.length) {
+        const read = readSync(fd, buffer, length, buffer.length - length, length);
+        if (read === 0) break;
+        length += read;
+      }
+    } finally {
+      closeSync(fd);
+    }
+    const preview = buffer.subarray(0, length);
+    const binary = preview.subarray(0, 8000).includes(0);
     return {
       path: relPath,
       size: stats.size,
       mtime: stats.mtime.toISOString(),
       binary,
-      truncated: stats.size > MAX_FILE_PREVIEW,
-      text: binary ? "" : buffer.toString("utf8"),
+      truncated: stats.size > length,
+      text: binary ? "" : preview.toString("utf8"),
     };
   }
 

@@ -64,6 +64,7 @@ export const runJsonlProcess = (options: JsonlProcessOptions): Promise<JsonlProc
 
     const terminate = () => {
       killTree("SIGTERM");
+      if (killTimer) clearTimeout(killTimer);
       killTimer = setTimeout(() => killTree("SIGKILL"), KILL_GRACE_MS);
       killTimer.unref();
     };
@@ -77,6 +78,8 @@ export const runJsonlProcess = (options: JsonlProcessOptions): Promise<JsonlProc
       if (settled) return;
       settled = true;
       if (timeoutTimer) clearTimeout(timeoutTimer);
+      // The process group is gone; a late SIGKILL could hit a new group that reused its id.
+      if (killTimer) clearTimeout(killTimer);
       options.signal?.removeEventListener("abort", onAbort);
       resolvePromise({ ...result, stderr, timedOut, aborted });
     };

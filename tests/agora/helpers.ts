@@ -72,6 +72,9 @@ export const createTestRoom = (options: {
     FAKE_STATE: join(home, "fake-state"),
     FAKE_RULES: rulesPath,
     CLAUDECODE: "1",
+    // Native session files (written by the fake CLIs) stay inside the test home.
+    CLAUDE_CONFIG_DIR: join(home, "claude-config"),
+    CODEX_HOME: join(home, "codex-home"),
   };
   const shimDir = join(home, "shim");
   ensureAgentShim(shimDir);
@@ -89,6 +92,7 @@ export const createTestRoom = (options: {
     shimDir,
     env,
     opsPollMs: 50,
+    nativePollMs: 50,
   });
   return {
     home,

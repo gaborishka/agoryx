@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
 import { truncate, type AgentRunner, type TurnResult } from "./runners/types.js";
@@ -39,8 +40,27 @@ export interface EngineOptions {
   agentCli?: string;
   env?: NodeJS.ProcessEnv;
   opsPollMs?: number;
+  /** How often to read the agents' native sessions for turns taken outside the room (0 = never). */
+  nativePollMs?: number;
   log?: (message: string) => void;
 }
+
+/** Where the engine is in an agent's native session file. */
+interface NativeTracker {
+  sessionId: string;
+  file: string | null;
+  offset: number;
+  lastAgoryx: boolean;
+  size: number;
+  mtimeMs: number;
+  /** A native exchange is in progress (someone is talking to the agent in its own app). */
+  openNative: boolean;
+  nextLocateAt: number;
+}
+
+/** A native exchange still being written this recently means the agent is busy there. */
+const NATIVE_BUSY_MS = 5 * 60 * 1000;
+const NATIVE_RELOCATE_MS = 30_000;
 
 interface RunningTurn {
   turnId: string;
@@ -81,6 +101,13 @@ export class RoomEngine {
   private readonly agentCli: string;
   private readonly env: NodeJS.ProcessEnv;
   private readonly opsPollMs: number;
+  private readonly nativePollMs: number;
+  private readonly native = new Map<string, NativeTracker>();
+  private nativeKeys?: Set<string>;
+  private nativeTimer: NodeJS.Timeout | undefined;
+  private retryTimer: NodeJS.Timeout | undefined;
+  /** Agents already announced as busy in their own session (cleared when they are free). */
+  private readonly nativeBusyNoted = new Set<string>();
   private readonly log: (message: string) => void;
   private readonly running = new Map<string, RunningTurn>();
   /** Agents that failed hard (spawn/auth) sit out until the next human message. */
@@ -99,12 +126,17 @@ export class RoomEngine {
     this.agentCli = options.agentCli ?? "agoryx";
     this.env = options.env ?? process.env;
     this.opsPollMs = options.opsPollMs ?? 250;
+    this.nativePollMs = options.nativePollMs ?? 2000;
     this.log = options.log ?? (() => {});
     this.acquireLock();
     this.ws = prepareWorkspace(this.state.workspace, { initGit: this.state.createdWorkspace });
     clearStaleAcks(this.ws);
     this.writeTableFile();
     this.recover();
+    if (this.nativePollMs > 0) {
+      this.nativeTimer = setInterval(() => this.syncNative(), this.nativePollMs);
+      this.nativeTimer.unref();
+    }
   }
 
   get state() {
@@ -157,6 +189,8 @@ export class RoomEngine {
     await this.stop("shutdown");
     this.closed = true;
     if (this.opsTimer) clearInterval(this.opsTimer);
+    if (this.nativeTimer) clearInterval(this.nativeTimer);
+    if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.lockHeld) {
       rmSync(join(this.store.dir, LOCK_FILE), { force: true });
       lockedHere.delete(this.store.dir);
@@ -273,6 +307,10 @@ export class RoomEngine {
     if (event.type === "message.posted") {
       const message = event.message;
       if (message.author === agent.id || !message.wakes) return false;
+      // Said in someone's own session: wakes only who it explicitly addresses, never that session's agent.
+      if (message.native) {
+        return message.native.agent !== agent.id && (message.mentions.includes("all") || message.mentions.includes(agent.id));
+      }
       if (message.kind === "human" && message.mentions.length > 0) {
         const agentMentions = message.mentions.filter((handle) => handle === "all" || this.state.agents.some((entry) => entry.id === handle));
         if (agentMentions.length > 0 && !agentMentions.includes("all") && !agentMentions.includes(agent.id)) return false;
@@ -301,12 +339,15 @@ export class RoomEngine {
 
   private schedule(): void {
     if (this.stopping || this.closed) return;
+    // Read what was said in the agents' own sessions first, so every delta is current.
+    this.syncNative();
     const run = activeRun(this.state);
     if (!run) {
       this.notifyIdle();
       return;
     }
     let blockedByBudget = false;
+    let waitingOnNative = false;
     for (const agent of this.state.agents) {
       if (this.running.has(agent.id) || this.benched.has(agent.id)) continue;
       if (!this.runners[agent.kind]) continue;
@@ -315,9 +356,17 @@ export class RoomEngine {
         blockedByBudget = true;
         continue;
       }
+      if (this.nativeBusy(agent)) {
+        waitingOnNative = true;
+        continue;
+      }
       this.startTurn(agent, run);
     }
     if (this.running.size > 0) return;
+    if (waitingOnNative) {
+      this.retrySoon();
+      return;
+    }
     // Quiescence: nothing running and nobody can act.
     this.store.append({
       type: "run.ended",
@@ -333,6 +382,15 @@ export class RoomEngine {
     }
     this.checkpoint(run);
     this.notifyIdle();
+  }
+
+  private retrySoon(): void {
+    if (this.retryTimer || this.closed) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      this.requestSchedule();
+    }, Math.max(250, Math.min(this.nativePollMs || 2000, 2000)));
+    this.retryTimer.unref();
   }
 
   private notifyIdle(): void {
@@ -560,6 +618,104 @@ export class RoomEngine {
     );
     if (overlapping.length === 0) return files;
     return files.filter((file) => claims(turn, file) || !overlapping.some((entry) => claims(entry, file)));
+  }
+
+  // -------------------------------------------------------------------------
+  // Native sessions: turns the human took in the agents' own apps
+  // -------------------------------------------------------------------------
+
+  /**
+   * Reads new exchanges from each idle agent's native session file and posts
+   * the ones that did not come from Agoryx. Cheap when nothing changed (a stat).
+   */
+  syncNative(): void {
+    if (this.closed) return;
+    for (const agent of this.state.agents) {
+      // A running Agoryx turn is writing this file right now; read it once the turn is over.
+      if (this.running.has(agent.id)) continue;
+      const session = this.state.sessions[agent.id];
+      if (!session) continue;
+      let tracker = this.native.get(agent.id);
+      if (!tracker || tracker.sessionId !== session.sessionId) {
+        tracker = { sessionId: session.sessionId, file: null, offset: 0, lastAgoryx: true, size: -1, mtimeMs: 0, openNative: false, nextLocateAt: 0 };
+        this.native.set(agent.id, tracker);
+      }
+      if (!tracker.file) {
+        if (Date.now() < tracker.nextLocateAt) continue;
+        tracker.file = locateNativeSession(agent.kind, session.sessionId, this.state.workspace, this.env);
+        if (!tracker.file) {
+          tracker.nextLocateAt = Date.now() + NATIVE_RELOCATE_MS;
+          continue;
+        }
+      }
+      let size: number;
+      let mtimeMs: number;
+      try {
+        ({ size, mtimeMs } = statSync(tracker.file));
+      } catch {
+        tracker.file = null;
+        continue;
+      }
+      if (size === tracker.size && mtimeMs === tracker.mtimeMs) continue;
+      try {
+        const scan = scanNativeSession(agent.kind, tracker.file, tracker.offset, tracker.lastAgoryx);
+        tracker.offset = scan.offset;
+        tracker.lastAgoryx = scan.lastAgoryx;
+        tracker.openNative = scan.openNative;
+        tracker.size = size;
+        tracker.mtimeMs = mtimeMs;
+        for (const exchange of scan.exchanges) this.importNative(agent, exchange);
+      } catch (error) {
+        this.log(`could not read ${agent.id}'s native session: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  /** Someone is mid-conversation with this agent in its own app: don't resume the same session under them. */
+  private nativeBusy(agent: RoomAgent): boolean {
+    const tracker = this.native.get(agent.id);
+    const busy = Boolean(tracker?.openNative && Date.now() - tracker.mtimeMs < NATIVE_BUSY_MS);
+    if (!busy) {
+      this.nativeBusyNoted.delete(agent.id);
+      return false;
+    }
+    if (!this.nativeBusyNoted.has(agent.id)) {
+      this.nativeBusyNoted.add(agent.id);
+      this.postSystem(`${agent.label} is busy in its own session (someone is talking to it there). Its turn here starts when that exchange ends.`, false);
+    }
+    return true;
+  }
+
+  private importNative(agent: RoomAgent, exchange: NativeExchange): void {
+    this.nativeKeys ??= new Set(
+      this.state.messages.filter((message) => message.native).map((message) => `${message.native!.agent}:${message.native!.key}`),
+    );
+    const dedupe = `${agent.id}:${exchange.key}`;
+    if (this.nativeKeys.has(dedupe)) return;
+    this.nativeKeys.add(dedupe);
+    const native = { agent: agent.id, key: exchange.key, ...(exchange.at ? { at: exchange.at } : {}) };
+    const handles = [...this.state.agents.map((entry) => entry.id), this.state.human.toLowerCase()];
+    const addressesOthers = (mentions: string[]) =>
+      mentions.some((handle) => handle === "all" || (handle !== agent.id && this.state.agents.some((entry) => entry.id === handle)));
+    let trigger: string | null = null;
+    if (exchange.prompt) {
+      const mentions = parseMentions(exchange.prompt, handles);
+      const wakes = addressesOthers(mentions);
+      const message = this.postMessage({ author: this.state.human, kind: "human", text: exchange.prompt, mentions, wakes, native });
+      if (wakes) trigger ??= message.id;
+    }
+    if (exchange.reply && passNote(exchange.reply) === null) {
+      const mentions = parseMentions(exchange.reply, handles);
+      const wakes = addressesOthers(mentions);
+      const message = this.postMessage({ author: agent.id, kind: "agent", text: exchange.reply.trim(), mentions, wakes, native });
+      if (wakes) trigger ??= message.id;
+    }
+    this.log(`imported ${agent.id} native exchange ${exchange.key}`);
+    if (trigger) {
+      this.benched.clear();
+      this.ensureRun(trigger);
+      this.requestSchedule();
+    }
   }
 
   // -------------------------------------------------------------------------

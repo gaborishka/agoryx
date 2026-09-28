@@ -524,6 +524,16 @@ const turnMeta = (turn) => {
   return bits.length ? `<span class="kind">${esc(bits.join(" · "))}</span>` : "";
 };
 
+// A message imported from an agent's own session (outside the room) says where it happened.
+const nativeTag = (m) => {
+  if (!m.native) return "";
+  const who = nameOf(m.native.agent);
+  const cls = participant(m.native.agent)?.cls === "cx" ? "cx" : "cl";
+  const label = m.author === m.native.agent ? "у власній сесії" : `напряму в сесії ${who}`;
+  const title = `Це було в рідній сесії ${who}, поза кімнатою. Agoryx підтягнув репліку сюди, щоб її бачили всі.`;
+  return `<span class="nat ${cls}" title="${esc(title)}">${esc(label)}</span>`;
+};
+
 const messageHtml = (m, ctx, { round = false } = {}) => {
   const fresh = !S.firstPaint && !S.seenMessages.has(m.id) ? " fresh" : "";
   S.seenMessages.add(m.id);
@@ -545,7 +555,7 @@ const messageHtml = (m, ctx, { round = false } = {}) => {
   return `<article class="msg${fresh}" id="m-${esc(m.id)}">
     ${avatar(m.author, size)}
     <div style="min-width:0">
-      <div class="meta"><b>${esc(nameOf(m.author))}</b><time datetime="${esc(m.ts)}" title="${esc(fullDate(m.ts))}">${clock(m.ts)}</time>${turnMeta(turn)}</div>
+      <div class="meta"><b>${esc(nameOf(m.author))}</b>${nativeTag(m)}<time datetime="${esc(m.ts)}" title="${esc(fullDate(m.ts))}">${clock(m.ts)}</time>${turnMeta(turn)}</div>
       <div class="txt">${markdown(m.text, mdCtx())}</div>
       ${turnBar(turn, ops)}
     </div>

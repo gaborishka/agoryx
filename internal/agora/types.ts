@@ -56,6 +56,21 @@ export interface RoomMessage {
   runId?: string;
   /** Table refs this message is about (P1, Q2, D1...). */
   refs?: string[];
+  /**
+   * Set when the message was said in an agent's own session (the human opened
+   * `claude --resume` / `codex resume` and talked there) and read back into the
+   * room. That agent already has it; everyone else gets it in their next turn.
+   */
+  native?: NativeOrigin;
+}
+
+export interface NativeOrigin {
+  /** The agent whose session this came from. */
+  agent: string;
+  /** Exchange id inside that session file (dedupe key). */
+  key: string;
+  /** When it was said, per the session file. */
+  at?: string;
 }
 
 export type ActivityKind =

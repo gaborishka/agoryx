@@ -8,6 +8,8 @@
 //     error: "text", exitCode, once: true }
 // Without a matching rule: first turn replies "<agent> here", later turns pass.
 // Every invocation is appended to $FAKE_LOG as one JSON line.
+// With CLAUDE_CONFIG_DIR / CODEX_HOME set, the turn is also written to a native
+// session file in the real CLI's format, like `claude -p` and `codex exec` do.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -28,6 +30,48 @@ const stateDir = process.env.FAKE_STATE;
 mkdirSync(join(stateDir, "sessions"), { recursive: true });
 const sessionFile = (id) => join(stateDir, "sessions", `${kind}-${id}`);
 const counterFile = join(stateDir, `${kind}-turns`);
+
+const pad = (n) => String(n).padStart(2, "0");
+/** Appends one turn to the native session file the real CLI would keep. */
+const writeNativeTurn = (sessionId, prompt, reply, resumed) => {
+  const now = new Date();
+  const ts = now.toISOString();
+  const lines = [];
+  let file;
+  if (kind === "claude") {
+    if (!process.env.CLAUDE_CONFIG_DIR) return;
+    const dir = join(process.env.CLAUDE_CONFIG_DIR, "projects", process.cwd().replace(/[^a-zA-Z0-9]/g, "-"));
+    mkdirSync(dir, { recursive: true });
+    file = join(dir, `${sessionId}.jsonl`);
+    const promptId = randomUUID();
+    lines.push(
+      { type: "queue-operation", operation: "enqueue", timestamp: ts, sessionId },
+      { type: "user", isSidechain: false, promptId, uuid: randomUUID(), timestamp: ts, sessionId, message: { role: "user", content: prompt } },
+      { type: "assistant", isSidechain: false, uuid: randomUUID(), timestamp: ts, message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu", name: "Bash", input: { command: "ls" } }] } },
+      { type: "user", isSidechain: false, promptId, uuid: randomUUID(), timestamp: ts, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu", content: "ok" }] } },
+      { type: "assistant", isSidechain: false, uuid: randomUUID(), timestamp: ts, message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: reply }] } },
+      { type: "last-prompt", lastPrompt: prompt.slice(0, 40), sessionId },
+    );
+  } else {
+    if (!process.env.CODEX_HOME) return;
+    const dir = join(process.env.CODEX_HOME, "sessions", String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate()));
+    mkdirSync(dir, { recursive: true });
+    const index = join(process.env.CODEX_HOME, `rollout-${sessionId}`);
+    file = existsSync(index) ? readFileSync(index, "utf8") : join(dir, `rollout-${ts.slice(0, 19).replace(/:/g, "-")}-${sessionId}.jsonl`);
+    writeFileSync(index, file);
+    const turnId = randomUUID();
+    if (!resumed) lines.push({ timestamp: ts, type: "session_meta", payload: { id: sessionId, cwd: process.cwd(), originator: "codex_exec" } });
+    lines.push(
+      { timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+      { timestamp: ts, type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>fake</environment_context>" }] } },
+      { timestamp: ts, type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] } },
+      { timestamp: ts, type: "event_msg", payload: { type: "item_completed", turn_id: turnId, item: { type: "UserMessage", id: randomUUID(), content: [{ type: "text", text: prompt }] } } },
+      { timestamp: ts, type: "event_msg", payload: { type: "item_completed", turn_id: turnId, item: { type: "AgentMessage", id: randomUUID(), phase: "final_answer", content: [{ type: "Text", text: reply }] } } },
+      { timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: turnId, last_agent_message: reply } },
+    );
+  }
+  appendFileSync(file, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+};
 
 const main = async () => {
   const prompt = await readStdin();
@@ -124,6 +168,8 @@ const main = async () => {
     else out({ type: "turn.failed", error: { message: rule.error } });
     process.exit(rule.exitCode ?? 1);
   }
+
+  writeNativeTurn(sessionId, prompt, reply, resumed);
 
   const command = (rule?.command ?? "ls -a").replaceAll("{cwd}", process.cwd()).replaceAll("{cli}", process.env.AGORYX_CLI ?? "agoryx");
   if (kind === "claude") {

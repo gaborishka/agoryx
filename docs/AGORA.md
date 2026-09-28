@@ -78,7 +78,24 @@ agoryx open         # opens the browser with a one-time login link
 
 The conversation is **their** session. `agoryx resume` (or the sessions button in the UI) prints the
 exact `claude --resume <id>` and `codex resume <id>` commands. Open them to see or continue the same
-thread natively.
+thread natively — in the terminal, in Claude Code or in Codex.
+
+It works both ways. Whatever you say to an agent there comes back into the room:
+
+- Agoryx watches both native session files (`~/.claude/projects/…/<id>.jsonl`,
+  `~/.codex/sessions/…/rollout-…-<id>.jsonl`; `CLAUDE_CONFIG_DIR` / `CODEX_HOME` are honoured) and
+  imports every finished exchange: your prompt and the agent's final answer. Tool calls, reminders,
+  harness wrappers and the room's own turns are skipped.
+- Imported messages are marked in the UI ("напряму в сесії Claude", "у власній сесії") and in
+  `agoryx tail`.
+- A side conversation **does not wake anyone.** The other agent reads it in its next delta as
+  "Ivan (human) → Claude, directly in Claude's own session". The agent you talked to does not get
+  it again: its session already holds it.
+- To bring the other agent in from there, `@mention` it (`@codex check the units`) or write `@all`.
+  That starts a room run as if you had written in the room.
+- **Busy guard.** While you are mid-exchange with an agent in its own app (the session file changed in
+  the last 5 minutes and the turn is still open), the room does not resume that session in parallel.
+  Its room turn waits until your exchange ends, and the room says so once.
 
 ## Safety
 
@@ -114,6 +131,7 @@ State lives in `$AGORYX_HOME` (default `~/.local/state/agoryx/agora`):
 | `internal/agora/engine.ts` | Room engine: wake rules, deltas, blind rounds, pass, budget, table inbox, attribution, checkpoints |
 | `internal/agora/prompts.ts` | Briefing (first turn) and delta prompts |
 | `internal/agora/runners/{claude,codex}.ts` | Native CLI runners: session ids, stream parsing, activity traces |
+| `internal/agora/native.ts` | Finds and reads the agents' native session files; imports turns taken outside the room |
 | `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim |
 | `internal/agora/store.ts`, `projection.ts` | JSONL event log and state projection |
 | `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |

@@ -95,10 +95,15 @@ interface DeltaOptions {
   agent: RoomAgent;
   /** Turns left in the current run after this one. */
   turnsLeft: number;
+  /**
+   * The agent's session is new (rejoin): replay its own messages too, including
+   * what was said in its previous native session, since this session has none of it.
+   */
+  replayOwn?: boolean;
 }
 
 /** Everything others did since this agent's last turn, rendered as a thin transcript. */
-export const buildDelta = ({ state, events, agent, turnsLeft }: DeltaOptions): string => {
+export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false }: DeltaOptions): string => {
   const blocks: string[] = [];
   const opsByTurn = new Map<string, TableOp[]>();
   const looseOps: TableOp[] = [];
@@ -123,17 +128,21 @@ export const buildDelta = ({ state, events, agent, turnsLeft }: DeltaOptions): s
   for (const event of events) {
     if (event.type === "message.posted") {
       const message = event.message;
-      if (message.author === agent.id) continue;
+      const own = message.author === agent.id || message.native?.agent === agent.id;
+      // The agent's own session already holds what it said and what was said to it there.
+      if (own && !replayOwn) continue;
       if (message.kind === "pass") {
-        passes.push(displayName(state, message.author));
+        if (message.author !== agent.id) passes.push(displayName(state, message.author));
         continue;
       }
+      const who = message.author === agent.id ? `You (${agent.label})` : displayName(state, message.author);
+      const where = message.native ? nativeWhere(state, message.native.agent, message.author, agent) : "";
       const header =
         message.kind === "system"
           ? `── Agoryx · ${clock(event.ts)}`
           : message.kind === "decision"
-            ? `── ${displayName(state, message.author)} · decision · ${clock(event.ts)}`
-            : `── ${displayName(state, message.author)} · ${clock(event.ts)}`;
+            ? `── ${who} · decision · ${clock(event.ts)}`
+            : `── ${who}${where} · ${clock(event.ts)}`;
       const lines = [header, clip(message.text.trim())];
       const ops = message.turnId ? opsByTurn.get(message.turnId) : undefined;
       if (ops) {
@@ -176,10 +185,25 @@ export const buildDelta = ({ state, events, agent, turnsLeft }: DeltaOptions): s
   return [`[agoryx · ${state.name} · new since your last turn]`, "", body || "(nothing new — you were asked to continue)", "", footer.join("\n")].join("\n");
 };
 
+/** " → Claude, in Claude's own session" for a human line; " (in its own session)" for the agent's reply. */
+const nativeWhere = (state: RoomState, source: string, author: string, reader: RoomAgent): string => {
+  const label = source === reader.id ? "you" : displayName(state, source);
+  if (author === source) return source === reader.id ? " (in your previous session, outside the room)" : " (in its own session, outside the room)";
+  return source === reader.id
+    ? " → you, in your previous session (outside the room)"
+    : ` → ${label}, directly in ${label}'s own session (outside the room)`;
+};
+
 export const buildTurnPrompt = (
   input: BriefingInput & { events: RoomEvent[]; turnsLeft: number; fresh: boolean; rejoin: boolean },
 ): string => {
-  const delta = buildDelta({ state: input.state, events: input.events, agent: input.agent, turnsLeft: input.turnsLeft });
+  const delta = buildDelta({
+    state: input.state,
+    events: input.events,
+    agent: input.agent,
+    turnsLeft: input.turnsLeft,
+    replayOwn: input.rejoin,
+  });
   if (!input.fresh) return delta;
   const intro = input.rejoin
     ? "Your previous session for this room could not be resumed, so here is the room context again, followed by the conversation so far."

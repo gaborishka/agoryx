@@ -116,7 +116,10 @@ export class TranscriptPrinter {
         } else if (message.kind === "decision") {
           this.out(pc.green(`  ◆ ${message.text}\n`));
         } else {
-          this.out(`\n${this.name(message.author)} ${pc.dim(clock(event.ts))}\n${message.text}\n`);
+          const where = message.native
+            ? pc.dim(message.author === message.native.agent ? " · in its own session" : ` · directly in ${this.plainName(message.native.agent)}'s session`)
+            : "";
+          this.out(`\n${this.name(message.author)}${where} ${pc.dim(clock(event.ts))}\n${message.text}\n`);
         }
         return;
       }

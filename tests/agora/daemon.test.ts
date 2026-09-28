@@ -120,6 +120,8 @@ before(async () => {
     FAKE_LOG: join(home, "fake.log"),
     FAKE_STATE: join(home, "fake-state"),
     FAKE_RULES: join(home, "rules.json"),
+    CLAUDE_CONFIG_DIR: join(home, "claude-config"),
+    CODEX_HOME: join(home, "codex-home"),
   };
   daemon = new AgoraDaemon({
     env,

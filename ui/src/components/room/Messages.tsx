@@ -80,7 +80,7 @@ export const AgentMessage = memo(function AgentMessage({
       </header>
       <div className={cn("relative mt-1.5", !card && "pl-[38px]")}>
         {!card ? <span className={cn("absolute top-1 bottom-1 left-[13px] w-[2px] rounded-full opacity-0 transition group-hover/msg:opacity-100", railTone[p.tone])} /> : null}
-        {clamp ? <Clamp max={clamp}>{text}</Clamp> : text}
+        {clamp ? <Clamp max={clamp} fade={card ? "from-card" : "from-background"}>{text}</Clamp> : text}
         <OpCards ops={ops} compact={Boolean(clamp)} />
         <TurnBar turn={turn} docs={docs} compact={Boolean(clamp)} />
       </div>

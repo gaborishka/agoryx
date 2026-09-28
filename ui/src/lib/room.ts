@@ -116,7 +116,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
                 type: "group",
                 items: group,
                 blind: true,
-                text: `${names} відповіли, не бачачи одне одного`,
+                text: `${names} не бачили відповідей одне одного`,
                 title: "Перша відповідь на ваше повідомлення: агенти писали одночасно й не бачили відповідей одне одного — щоб думки були незалежні.",
               }
             : {
@@ -124,7 +124,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
                 type: "group",
                 items: group,
                 blind: false,
-                text: `${names} писали одночасно`,
+                text: `${names} не бачили цих відповідей одне одного`,
                 title: "Ці відповіді писалися одночасно: кожен бачив попередні репліки, але не цю відповідь іншого.",
               },
         );

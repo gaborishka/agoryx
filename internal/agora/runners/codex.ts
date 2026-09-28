@@ -1,3 +1,6 @@
+import { readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { extname, join } from "node:path";
 import { classifyFailure, lastLines, runJsonlProcess } from "./process.js";
 import {
   shellQuote,
@@ -90,6 +93,39 @@ export const describeCodexItem = (item: Json): Omit<Activity, "id"> | null => {
   }
 };
 
+const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+
+/**
+ * Codex's built-in image_gen saves into $CODEX_HOME/generated_images/<thread>/ and
+ * `exec --json` does not report it: the final answer may be just "🌕". Listing the folder
+ * before and after a turn tells which images the turn made, so the room can show them.
+ */
+export const listGeneratedImages = (codexHome: string, threadId: string | null): Map<string, number> => {
+  const found = new Map<string, number>();
+  if (!threadId || !/^[\w-]+$/.test(threadId)) return found;
+  const dir = join(codexHome, "generated_images", threadId);
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return found;
+  }
+  for (const name of names) {
+    if (!IMAGE_EXTS.has(extname(name).toLowerCase())) continue;
+    try {
+      const stat = statSync(join(dir, name));
+      if (stat.isFile()) found.set(join(dir, name), stat.mtimeMs);
+    } catch {
+      // Gone between readdir and stat.
+    }
+  }
+  return found;
+};
+
+/** Images that are new, or rewritten, since `before`, oldest first. */
+export const newImages = (before: Map<string, number>, after: Map<string, number>): string[] =>
+  [...after].filter(([path, at]) => before.get(path) !== at).sort((a, b) => a[1] - b[1]).map(([path]) => path);
+
 export const createCodexRunner = (bin = process.env.AGORYX_CODEX_BIN || "codex"): AgentRunner => ({
   kind: "codex",
 
@@ -103,6 +139,8 @@ export const createCodexRunner = (bin = process.env.AGORYX_CODEX_BIN || "codex")
     let usage: TurnUsage | undefined;
     let failure: string | undefined;
     let completed = false;
+    const codexHome = request.env.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), ".codex");
+    const imagesBefore = listGeneratedImages(codexHome, request.sessionId);
 
     const outcome = await runJsonlProcess({
       bin,
@@ -183,7 +221,8 @@ export const createCodexRunner = (bin = process.env.AGORYX_CODEX_BIN || "codex")
       };
     }
     if (completed && !failure) {
-      return { status: "ok", text: lastMessage ?? "", sessionId: threadId, ...(usage ? { usage } : {}) };
+      const images = newImages(threadId === request.sessionId ? imagesBefore : new Map(), listGeneratedImages(codexHome, threadId));
+      return { status: "ok", text: lastMessage ?? "", sessionId: threadId, ...(usage ? { usage } : {}), ...(images.length ? { images } : {}) };
     }
     // Codex prints MCP/OAuth noise on stderr; only use it when nothing better exists.
     const detail = failure ?? (lastLines(outcome.stderr.split("\n").filter((line) => !/mcp|oauth|sentry|hyper3d/i.test(line)).join("\n")) || `exit ${outcome.code}`);

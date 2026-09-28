@@ -74,6 +74,32 @@ test("blind first round, then each agent sees the other and passes → quiet", a
   }
 });
 
+test("an image Codex generates outside the workspace is copied in and shown in its message", async () => {
+  const room = createTestRoom({
+    rules: [
+      { agent: "codex", match: "moon", image: "PNG-BYTES", reply: "🌕" },
+      { agent: "codex", match: "sun", image: "SUN", reply: "::pass::" },
+    ],
+  });
+  try {
+    room.engine.postHuman("@codex draw the moon");
+    await withTimeout(room.engine.waitIdle());
+    const moon = room.store.state.messages.find((message) => message.author === "codex" && message.kind === "agent")!;
+    assert.equal(moon.text, `🌕\n\n![](.agoryx/images/${moon.turnId}-1.png)`);
+    assert.equal(readFileSync(join(room.store.state.workspace, ".agoryx", "images", `${moon.turnId}-1.png`), "utf8"), "PNG-BYTES");
+
+    // A reply that would be a pass still carries the image; an older image is not picked up again.
+    room.engine.postHuman("@codex now the sun");
+    await withTimeout(room.engine.waitIdle());
+    const sun = room.store.state.messages.filter((message) => message.author === "codex" && message.kind === "agent").at(-1)!;
+    assert.notEqual(sun.id, moon.id);
+    assert.equal(sun.text, `![](.agoryx/images/${sun.turnId}-1.png)`);
+    assert.equal(readFileSync(join(room.store.state.workspace, ".agoryx", "images", `${sun.turnId}-1.png`), "utf8"), "SUN");
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("turn budget ends a run that would otherwise never converge", async () => {
   const room = createTestRoom({
     settings: { budget: 5 },

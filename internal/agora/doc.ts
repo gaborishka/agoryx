@@ -108,6 +108,53 @@ const lcsDiff = (a: string[], b: string[]): DiffLine[] => {
   return out;
 };
 
+// Past this many LCS cells (16 MB of table) the diff switches to Myers, whose memory grows with the
+// number of edits rather than the document's size.
+const LCS_MAX_CELLS = 4_000_000;
+// Myers keeps one diagonal row per edit (O(D²) memory); past this, the change is a rewrite anyway.
+const MYERS_MAX_EDITS = 1_000;
+
+/** Myers' O((N+M)·D) diff; null when the edit script would be longer than `maxEdits`. */
+const myersDiff = (a: string[], b: string[], maxEdits: number): DiffLine[] | null => {
+  const n = a.length;
+  const m = b.length;
+  // trace[d][k + d] = furthest x on diagonal k after d edits
+  const trace: Int32Array[] = [];
+  const down = (prev: Int32Array, d: number, k: number) =>
+    k === -d || (k !== d && prev[k + 1 + d - 1]! > prev[k - 1 + d - 1]!);
+  for (let d = 0; d <= Math.min(maxEdits, n + m); d += 1) {
+    const cur = new Int32Array(2 * d + 1);
+    const prev = trace[d - 1];
+    for (let k = -d; k <= d; k += 2) {
+      let x = !prev ? 0 : down(prev, d, k) ? prev[k + 1 + d - 1]! : prev[k - 1 + d - 1]! + 1;
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) {
+        x += 1;
+        y += 1;
+      }
+      cur[k + d] = x;
+      if (x < n || y < m) continue;
+      trace.push(cur);
+      const out: DiffLine[] = [];
+      for (let step = d; step > 0; step -= 1) {
+        const before = trace[step - 1]!;
+        const kk = x - y;
+        const fromK = down(before, step, kk) ? kk + 1 : kk - 1;
+        const fromX = before[fromK + step - 1]!;
+        const fromY = fromX - fromK;
+        while (x > fromX && y > fromY) out.push({ t: " ", s: a[(x -= 1, y -= 1, x)]! });
+        out.push(fromK === kk + 1 ? { t: "+", s: b[fromY]! } : { t: "-", s: a[fromX]! });
+        x = fromX;
+        y = fromY;
+      }
+      while (x > 0) out.push({ t: " ", s: a[(x -= 1)]! });
+      return out.reverse();
+    }
+    trace.push(cur);
+  }
+  return null;
+};
+
 /** Every line of `after`, plus the removed lines of `before`, in order. */
 export const diffLines = (before: string, after: string): DiffLine[] => {
   const a = splitLines(before);
@@ -123,9 +170,12 @@ export const diffLines = (before: string, after: string): DiffLine[] => {
   const midA = a.slice(start, endA);
   const midB = b.slice(start, endB);
   const middle =
-    midA.length * midB.length > 4_000_000
-      ? [...midA.map((s): DiffLine => ({ t: "-", s })), ...midB.map((s): DiffLine => ({ t: "+", s }))]
-      : lcsDiff(midA, midB);
+    midA.length * midB.length <= LCS_MAX_CELLS
+      ? lcsDiff(midA, midB)
+      : (myersDiff(midA, midB, MYERS_MAX_EDITS) ?? [
+          ...midA.map((s): DiffLine => ({ t: "-", s })),
+          ...midB.map((s): DiffLine => ({ t: "+", s })),
+        ]);
   return [
     ...a.slice(0, start).map((s): DiffLine => ({ t: " ", s })),
     ...middle,

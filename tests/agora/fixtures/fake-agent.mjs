@@ -162,6 +162,9 @@ const main = async () => {
     mkdirSync(dirname(join(process.cwd(), write.path)), { recursive: true });
     writeFileSync(join(process.cwd(), write.path), write.content);
   }
+  for (const argv of rule?.git ?? []) {
+    execFileSync("git", ["-c", "user.name=fake", "-c", "user.email=fake@example.com", ...argv], { stdio: "ignore" });
+  }
 
   if (rule?.error) {
     process.stderr.write(`${rule.error}\n`);

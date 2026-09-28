@@ -259,6 +259,10 @@ test("a room can start from its first message alone, and be renamed later", asyn
   assert.equal(room.name, "Порівняй SQLite і JSONL для журналу подій, будь ласка, з…");
   await waitFor(async () => (await call("GET", `/api/rooms/${room.id}`)).json<any>().state.runs.at(-1)?.status === "ended");
   assert.equal((await call("POST", "/api/rooms", { body: {} })).status, 400);
+  for (const bad of [{ budget: 0 }, { budget: 2.5 }, { budget: 1000 }, { human: "@Claude" }, { human: " @ " }]) {
+    const refused = await call("POST", "/api/rooms", { body: { name: "Refused", ...bad } });
+    assert.equal(refused.status, 400, JSON.stringify(bad));
+  }
 
   const renamed = await call("POST", `/api/rooms/${room.id}/rename`, { body: { name: "  Журнал подій  " } });
   assert.equal(renamed.status, 200, renamed.body);

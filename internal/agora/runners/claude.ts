@@ -138,7 +138,7 @@ export const createClaudeRunner = (bin = process.env.AGORYX_CLAUDE_BIN || "claud
   kind: "claude",
 
   resumeCommand(sessionId: string, cwd: string): string {
-    return `cd ${shellQuote(cwd)} && claude --resume ${sessionId}`;
+    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} --resume ${shellQuote(sessionId)}`;
   },
 
   async run(request: TurnRequest, callbacks: TurnCallbacks): Promise<TurnResult> {
@@ -151,8 +151,8 @@ export const createClaudeRunner = (bin = process.env.AGORYX_CLAUDE_BIN || "claud
       let confirmedSession: string | null = fresh ? null : sessionId;
       const pendingTools = new Map<string, Activity>();
 
-      if (fresh) callbacks.onSession(sessionId);
-
+      // A fresh session is bound only once Claude reports it (below): if the CLI never starts, the room
+      // must not keep an id that names no session.
       const outcome = await runJsonlProcess({
         bin,
         args: buildClaudeArgs(request, sessionId, fresh),

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { baselineRevision, diffLines, diffStats, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
@@ -33,6 +33,7 @@ import {
   readTurnPatch,
   snapshotChanges,
   snapshotTree,
+  treeChangedPaths,
   treeChanges,
   workspacePaths,
   writeAck,
@@ -159,6 +160,7 @@ export class RoomEngine {
   private opsTimer: NodeJS.Timeout | undefined;
   private scheduleQueued = false;
   private stopping = false;
+  private heldWork: { trigger: string | null; minTurns: number | undefined } | null = null;
   private closed = false;
   private lockHeld = false;
 
@@ -172,11 +174,17 @@ export class RoomEngine {
     this.nativePollMs = options.nativePollMs ?? 2000;
     this.log = options.log ?? (() => {});
     this.acquireLock();
-    this.ws = prepareWorkspace(this.state.workspace, { initGit: this.state.createdWorkspace });
-    clearStaleAcks(this.ws);
-    this.writeTableFile();
-    this.recover();
-    this.recordDocBaseline();
+    try {
+      this.ws = prepareWorkspace(this.state.workspace, { initGit: this.state.createdWorkspace });
+      clearStaleAcks(this.ws);
+      this.writeTableFile();
+      this.recover();
+      this.recordDocBaseline();
+    } catch (error) {
+      // A room that fails to open must not stay locked until the process exits.
+      this.releaseLock();
+      throw error;
+    }
     if (this.nativePollMs > 0) {
       this.nativeTimer = setInterval(() => this.syncNative(), this.nativePollMs);
       this.nativeTimer.unref();
@@ -198,15 +206,35 @@ export class RoomEngine {
     if (lockedHere.has(this.store.dir)) {
       throw new RoomLockedError(`room ${this.store.id} is already running in this process`);
     }
-    if (existsSync(lock)) {
-      const pid = Number.parseInt(readFileSync(lock, "utf8"), 10);
-      if (Number.isFinite(pid) && pid !== process.pid && pidAlive(pid)) {
-        throw new RoomLockedError(`room ${this.store.id} is already running in process ${pid}`);
+    // Created exclusively, so two processes opening the room at once cannot both win. A lock left by a
+    // dead process (or by this one, before a restart in place) is removed and the create retried once.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const fd = openSync(lock, "wx");
+        try {
+          writeSync(fd, String(process.pid));
+        } finally {
+          closeSync(fd);
+        }
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt > 0) throw error;
+        const pid = Number.parseInt(readFileSync(lock, "utf8"), 10);
+        if (Number.isFinite(pid) && pid !== process.pid && pidAlive(pid)) {
+          throw new RoomLockedError(`room ${this.store.id} is already running in process ${pid}`);
+        }
+        rmSync(lock, { force: true });
       }
     }
-    writeFileSync(lock, String(process.pid));
     lockedHere.add(this.store.dir);
     this.lockHeld = true;
+  }
+
+  private releaseLock(): void {
+    if (!this.lockHeld) return;
+    rmSync(join(this.store.dir, LOCK_FILE), { force: true });
+    lockedHere.delete(this.store.dir);
+    this.lockHeld = false;
   }
 
   /** Turns that were running when a previous process died are closed out. */
@@ -237,11 +265,7 @@ export class RoomEngine {
     if (this.opsTimer) clearInterval(this.opsTimer);
     if (this.nativeTimer) clearInterval(this.nativeTimer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
-    if (this.lockHeld) {
-      rmSync(join(this.store.dir, LOCK_FILE), { force: true });
-      lockedHere.delete(this.store.dir);
-      this.lockHeld = false;
-    }
+    this.releaseLock();
   }
 
   /** Resolves when no turn is running and no run is active. */
@@ -289,8 +313,7 @@ export class RoomEngine {
       mentions: parseMentions(body, handles),
       wakes: true,
     });
-    this.ensureRun(message.id);
-    this.requestSchedule();
+    this.startWork(message.id);
     return message;
   }
 
@@ -304,8 +327,7 @@ export class RoomEngine {
       mentions: [],
       wakes: true,
     });
-    this.ensureRun(message.id, this.state.agents.length);
-    this.requestSchedule();
+    this.startWork(message.id, this.state.agents.length);
   }
 
   tableOp(raw: unknown, by = this.state.human): TableOp {
@@ -313,10 +335,23 @@ export class RoomEngine {
     const op = this.applyTableOp(raw, by, isHuman, undefined);
     if (isHuman) {
       this.benched.clear();
-      this.ensureRun(null);
-      this.requestSchedule();
+      this.startWork(null);
     }
     return op;
+  }
+
+  /**
+   * Starts or extends the run for something the human did. While a stop is under way the run being
+   * stopped must not absorb it, so the work is held and started as a fresh run once the stop is done.
+   */
+  private startWork(trigger: string | null, minTurns?: number): void {
+    if (this.stopping) {
+      const held = this.heldWork;
+      this.heldWork = { trigger: held?.trigger ?? trigger, minTurns: Math.max(held?.minTurns ?? 0, minTurns ?? 0) || undefined };
+      return;
+    }
+    this.ensureRun(trigger, minTurns);
+    this.requestSchedule();
   }
 
   updateSettings(patch: Partial<RoomSettings>): void {
@@ -359,6 +394,12 @@ export class RoomEngine {
       this.checkpoint(run);
     }
     this.stopping = false;
+    const held = this.heldWork;
+    this.heldWork = null;
+    if (held && reason === "human" && !this.closed) {
+      this.startWork(held.trigger, held.minTurns);
+      return;
+    }
     this.notifyIdle();
   }
 
@@ -651,8 +692,12 @@ export class RoomEngine {
     this.running.delete(agent.id);
     this.notePresence();
     const dirty = snapshotChanges(this.state.workspace);
-    let files = this.attributeFiles(turnId, diffSnapshots(snapshot, dirty));
-    const changed = this.turnChanges(agent, turnId, tree, files, dirty);
+    const after = tree && !(dirty && dirty.size > MAX_TREE_SNAPSHOT_DIRTY) ? snapshotTree(this.state.workspace) : null;
+    // Work the agent committed during the turn is gone from `git status`, but not from the trees.
+    const committed = tree && after ? (treeChangedPaths(this.state.workspace, tree, after) ?? []) : [];
+    const seen = [...new Set([...diffSnapshots(snapshot, dirty), ...committed])].sort();
+    let files = this.attributeFiles(turnId, seen);
+    const changed = this.turnChanges(agent, turnId, tree, after, files);
     // A file only touched (same content) is not a change.
     if (changed) files = files.filter((file) => changed.changes.some((change) => change.path === file));
     const doc = this.state.settings.doc;
@@ -723,12 +768,10 @@ export class RoomEngine {
     agent: RoomAgent,
     turnId: string,
     before: string | null,
+    after: string | null,
     files: string[],
-    dirty: ChangeSnapshot | null,
   ): { changes: FileChange[]; trees: { before: string; after: string } } | null {
-    if (!before || files.length === 0 || (dirty && dirty.size > MAX_TREE_SNAPSHOT_DIRTY)) return null;
-    const after = snapshotTree(this.state.workspace);
-    if (!after) return null;
+    if (!before || !after || files.length === 0) return null;
     const diff = treeChanges(this.state.workspace, before, after, files);
     if (!diff) return null;
     if (diff.changes.length > 0) {

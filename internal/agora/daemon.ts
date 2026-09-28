@@ -179,7 +179,18 @@ interface RoomHandle {
   streams: Map<string, StreamBuffer>;
   followers: number;
   followTimer?: NodeJS.Timeout;
+  /** SSE senders. They listen to the handle, not to a store, so they survive a takeover (see relay). */
+  listeners: Set<(event: RoomEvent | EphemeralEvent) => void>;
+  relayOff?: () => void;
 }
+
+/** Forwards the handle's current store to every SSE listener. */
+const relay = (handle: RoomHandle): void => {
+  handle.relayOff?.();
+  handle.relayOff = handle.store.subscribe((event) => {
+    for (const listener of handle.listeners) listener(event);
+  });
+};
 
 /**
  * The Agoryx daemon: owns the room engines, exposes a small local HTTP API
@@ -327,7 +338,8 @@ export class AgoraDaemon {
       return existing;
     }
     const store = RoomStore.open(root, id);
-    const handle: RoomHandle = { store, streams: new Map(), followers: 0 };
+    const handle: RoomHandle = { store, streams: new Map(), followers: 0, listeners: new Set() };
+    relay(handle);
     this.rooms.set(id, handle);
     this.tryDrive(handle);
     return handle;
@@ -344,7 +356,11 @@ export class AgoraDaemon {
         log: (message) => this.log(`[${fresh.id}] ${message}`),
         ...(this.options.opsPollMs ? { opsPollMs: this.options.opsPollMs } : {}),
       });
+      // Deliver what the followed store has not read yet — including what the engine just appended on
+      // opening — then move the SSE listeners over to the store that now drives the room.
+      handle.store.refresh();
       handle.store = fresh;
+      relay(handle);
       handle.engine = engine;
       delete handle.lockedBy;
       if (handle.followTimer) {
@@ -565,15 +581,20 @@ export class AgoraDaemon {
         if (typeof body.doc === "string" && body.doc.trim() && !normalizeDocPath(body.doc)) {
           throw new HttpError(400, "the canonical file must be a path inside the workspace (not in .git or .agoryx)");
         }
-        const store = createRoom({
-          name,
-          ...(typeof body.dir === "string" && body.dir.trim() ? { dir: body.dir.trim() } : {}),
-          ...(typeof body.budget === "number" ? { budget: body.budget } : {}),
-          ...(typeof body.human === "string" ? { human: body.human } : {}),
-          // `agoryx new --doc none` sends null: no canonical file.
-          ...(typeof body.doc === "string" ? { doc: body.doc.trim() || null } : body.doc === null ? { doc: null } : {}),
-          env: this.env,
-        });
+        let store;
+        try {
+          store = createRoom({
+            name,
+            ...(typeof body.dir === "string" && body.dir.trim() ? { dir: body.dir.trim() } : {}),
+            ...(typeof body.budget === "number" ? { budget: body.budget } : {}),
+            ...(typeof body.human === "string" ? { human: body.human } : {}),
+            // `agoryx new --doc none` sends null: no canonical file.
+            ...(typeof body.doc === "string" ? { doc: body.doc.trim() || null } : body.doc === null ? { doc: null } : {}),
+            env: this.env,
+          });
+        } catch (error) {
+          throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
         const handle = this.room(store.id);
         if (text.trim()) this.engineFor(handle).postHuman(text);
         sendJson(res, 201, { room: handle.store.summary() });
@@ -808,7 +829,8 @@ export class AgoraDaemon {
     for (const [turnId, buffer] of handle.streams) send({ type: "turn.stream", turnId, agent: buffer.agent, text: buffer.text, reset: true });
     // Who is busy right now, including in their own sessions (not in the log, so not replayed above).
     res.write(`event: presence\ndata: ${JSON.stringify({ agents: this.presence(handle) })}\n\n`);
-    const unsubscribe = handle.store.subscribe(send);
+    handle.listeners.add(send);
+    const unsubscribe = () => handle.listeners.delete(send);
     this.sseClients.add(res);
     handle.followers += 1;
     if (!handle.engine && !handle.followTimer) {

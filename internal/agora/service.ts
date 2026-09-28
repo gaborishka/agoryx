@@ -93,6 +93,15 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
   const agents = (options.agents ?? DEFAULT_AGENTS).map((agent) =>
     options.models?.[agent.id] ? { ...agent, model: options.models[agent.id] } : agent,
   );
+  // Same bounds as a settings change: a run must be able to spend at least one turn, and not without limit.
+  if (options.budget !== undefined && !(Number.isInteger(options.budget) && options.budget >= 1 && options.budget <= 100)) {
+    throw new Error(`the turn budget must be a whole number from 1 to 100 (got ${options.budget})`);
+  }
+  // Messages are told apart by author: a human named like an agent would be taken for that agent.
+  const human = (options.human?.trim() || defaultHumanName(env)).replace(/^@+/, "");
+  if (!human || agents.some((agent) => agent.id.toLowerCase() === human.toLowerCase())) {
+    throw new Error(`"${human}" cannot be the human's name in this room: it is taken by an agent`);
+  }
   const settings: RoomSettings = {
     ...DEFAULT_SETTINGS,
     ...(options.budget !== undefined ? { budget: options.budget } : {}),
@@ -113,7 +122,7 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     name,
     workspace,
     createdWorkspace,
-    human: options.human?.trim() || defaultHumanName(env),
+    human,
     agents,
     settings,
   });

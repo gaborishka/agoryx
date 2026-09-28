@@ -38,6 +38,17 @@ const git = (cwd: string, args: string[], timeout = 15_000, env?: NodeJS.Process
 
 export const isGitRepo = (dir: string): boolean => git(dir, ["rev-parse", "--is-inside-work-tree"])?.trim() === "true";
 
+/**
+ * Where the workspace sits inside its repository ("" at the root, "sub/dir/" below it). A room given a
+ * subdirectory of a bigger repository sees, diffs and commits only that subdirectory; git reports paths
+ * from the repository root, so they are made workspace-relative with this.
+ */
+const repoPrefix = (root: string): string => git(root, ["rev-parse", "--show-prefix"])?.trim() ?? "";
+
+/** A repository-relative path as a workspace-relative one; null when it lies outside the workspace. */
+const underPrefix = (prefix: string, path: string): string | null =>
+  !prefix ? path : path.startsWith(prefix) ? path.slice(prefix.length) : null;
+
 export interface WorkspacePaths {
   root: string;
   agoryxDir: string;
@@ -87,17 +98,18 @@ export type ChangeSnapshot = Map<string, string>;
 
 /** Signature of every dirty/untracked file: git status code + mtime + size. */
 export const snapshotChanges = (root: string): ChangeSnapshot | null => {
-  const output = git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const output = git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
   if (output === null) return null;
+  const prefix = repoPrefix(root);
   const snapshot: ChangeSnapshot = new Map();
   const parts = output.split("\0");
   for (let i = 0; i < parts.length; i += 1) {
     const entry = parts[i]!;
     if (entry.length < 4) continue;
     const code = entry.slice(0, 2);
-    const path = entry.slice(3);
+    const path = underPrefix(prefix, entry.slice(3));
     if (code[0] === "R" || code[0] === "C") i += 1; // skip rename source
-    if (path.startsWith(`${AGORYX_DIR}/`)) continue;
+    if (path === null || path.startsWith(`${AGORYX_DIR}/`)) continue;
     let signature = code;
     try {
       const stats = statSync(join(root, path));
@@ -135,7 +147,7 @@ export const snapshotTree = (root: string): string | null => {
   try {
     if (existsSync(index)) copyFileSync(index, scratch);
     const env = { ...process.env, GIT_INDEX_FILE: scratch };
-    if (git(root, ["add", "-A", "--", ":/"], 30_000, env) === null) return null;
+    if (git(root, ["add", "-A", "--", "."], 30_000, env) === null) return null;
     return git(root, ["write-tree"], 15_000, env)?.trim() || null;
   } catch {
     return null;
@@ -163,8 +175,10 @@ export const treeChanges = (
   if (files.length === 0 || before === after) return { changes: [], patch: "", truncated: false };
   // A turn that rewrote hundreds of files keeps its file list, without counts.
   if (files.length > MAX_PATHSPECS) return null;
-  const specs = files.map((file) => `:(top,literal)${file}`);
-  const base = ["-c", "core.quotepath=off", "diff", "--no-renames", "--no-ext-diff", "--no-color", before, after];
+  const prefix = repoPrefix(root);
+  const specs = files.map((file) => `:(top,literal)${prefix}${file}`);
+  // --relative: paths in the counts and the patch are the workspace's, like everywhere else in the room.
+  const base = ["-c", "core.quotepath=off", "diff", "--no-renames", "--no-ext-diff", "--no-color", "--relative", before, after];
   const numstat = git(root, [...base, "--numstat", "-z", "--", ...specs]);
   const names = git(root, [...base, "--name-status", "-z", "--", ...specs]);
   if (numstat === null || names === null) return null;
@@ -187,6 +201,17 @@ export const treeChanges = (
   const truncated = patch.length > MAX_TURN_PATCH;
   if (truncated) patch = `${patch.slice(0, MAX_TURN_PATCH)}\n${CUT_MARK} (${patch.length - MAX_TURN_PATCH} more chars): git diff ${before.slice(0, 12)} ${after.slice(0, 12)}\n`;
   return { changes, patch, truncated };
+};
+
+/**
+ * Every workspace path whose content differs between two snapshots. A turn that commits its work
+ * leaves `git status` as clean as it found it; the trees still tell what changed.
+ */
+export const treeChangedPaths = (root: string, before: string, after: string): string[] | null => {
+  if (before === after) return [];
+  const output = git(root, ["-c", "core.quotepath=off", "diff", "--no-renames", "--relative", "--name-only", "-z", before, after, "--", "."]);
+  if (output === null) return null;
+  return output.split("\0").filter((path) => path && !path.startsWith(`${AGORYX_DIR}/`));
 };
 
 // ---------------------------------------------------------------------------
@@ -259,10 +284,11 @@ export const patchSection = (patch: string, path: string): string | null => {
 
 export const checkpointCommit = (root: string, subject: string, body: string): { sha: string; files: number } | null => {
   if (!isGitRepo(root)) return null;
-  const status = git(root, ["status", "--porcelain"]);
+  // Only the workspace: a room in a subdirectory never stages or commits the rest of the repository.
+  const status = git(root, ["status", "--porcelain", "--", "."]);
   if (!status?.trim()) return null;
-  if (git(root, ["add", "-A"]) === null) return null;
-  const staged = git(root, ["diff", "--cached", "--name-only"])?.split("\n").filter(Boolean) ?? [];
+  if (git(root, ["add", "-A", "--", "."]) === null) return null;
+  const staged = git(root, ["diff", "--cached", "--name-only", "--", "."])?.split("\n").filter(Boolean) ?? [];
   if (staged.length === 0) return null;
   const committed = git(root, [
     "-c",
@@ -277,6 +303,8 @@ export const checkpointCommit = (root: string, subject: string, body: string): {
     "-m",
     subject,
     ...(body ? ["-m", body] : []),
+    "--",
+    ".",
   ]);
   if (committed === null) return null;
   const sha = git(root, ["rev-parse", "HEAD"])?.trim();

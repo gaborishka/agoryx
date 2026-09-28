@@ -44,6 +44,31 @@ test("line diff: changed lines with a little context, the rest collapsed", () =>
   assert.match(renderDiff("", "x\n".repeat(200), 10)!, /190 more diff lines — read the file/);
 });
 
+test("a large file with scattered edits diffs in bounded memory and still shows only the edits", () => {
+  const before = Array.from({ length: 40_000 }, (_, i) => `line ${i}`);
+  const after = [...before];
+  after[10] = "changed near the top";
+  after[20_000] = "changed in the middle";
+  after.splice(39_990, 1);
+  const started = Date.now();
+  const lines = diffLines(before.join("\n"), after.join("\n"));
+  assert.ok(Date.now() - started < 5_000);
+  assert.deepEqual(
+    lines.filter((line) => line.t !== " "),
+    [
+      { t: "-", s: "line 10" },
+      { t: "+", s: "changed near the top" },
+      { t: "-", s: "line 20000" },
+      { t: "+", s: "changed in the middle" },
+      { t: "-", s: "line 39990" },
+    ],
+  );
+  assert.equal(lines.filter((line) => line.t !== "+").length, before.length);
+  // a rewrite of everything falls back to remove-all / add-all instead of an enormous table
+  const rewrite = diffLines(before.join("\n"), before.map((line) => `${line}!`).join("\n"));
+  assert.equal(rewrite.length, before.length * 2);
+});
+
 test("every change to the canonical file is kept with its author, and the others get the diff", async () => {
   const room = createTestRoom({
     settings: { doc: "README.md" },

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { RoomEngine, RoomLockedError } from "../../internal/agora/engine.js";
@@ -218,6 +219,49 @@ test("a human decision posts Decision №1 and wakes the agents", async () => {
   }
 });
 
+test("reopening the chosen option reopens its question, so it can be decided again", async () => {
+  const room = createTestRoom({ rules: [{ reply: "::pass::" }] });
+  try {
+    room.engine.tableOp({ op: "ask", text: "Name?" });
+    room.engine.tableOp({ op: "propose", title: "Agora" }, "claude");
+    room.engine.tableOp({ op: "decide", target: "P1" });
+    await withTimeout(room.engine.waitIdle());
+    room.engine.tableOp({ op: "reopen", target: "P1" });
+    await withTimeout(room.engine.waitIdle());
+    const question = room.store.state.table.questions[0]!;
+    assert.equal(question.status, "open");
+    assert.equal(question.decision, undefined);
+    room.engine.tableOp({ op: "decide", target: "P1", note: "again" });
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(room.store.state.table.questions[0]?.status, "decided");
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a message sent while a stop is under way is not swallowed by the run being stopped", async () => {
+  const room = createTestRoom({
+    rules: [
+      { match: "Take your time", sleepMs: 30_000, reply: "too late" },
+      { match: "follow-up", reply: "got the follow-up" },
+    ],
+  });
+  try {
+    room.engine.postHuman("Take your time");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const stopping = room.engine.stop();
+    const followUp = room.engine.postHuman("a follow-up");
+    await withTimeout(stopping, 10_000);
+    await withTimeout(room.engine.waitIdle());
+    const runs = room.store.state.runs;
+    assert.equal(runs.at(-2)?.endReason, "stopped");
+    assert.equal(runs.at(-1)?.trigger, followUp.id);
+    assert.ok(room.store.state.messages.some((message) => message.text === "got the follow-up"));
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("stop interrupts running turns and ends the run", async () => {
   const room = createTestRoom({ rules: [{ sleepMs: 30_000, reply: "too late" }] });
   try {
@@ -353,6 +397,28 @@ test("a second engine cannot drive the same room; restart closes stale turns", a
     assert.match(reopened.state.messages.at(-1)!.text, /restarted/);
     await engine.close();
     assert.ok(!existsSync(join(reopened.dir, "engine.lock")));
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a lock left by a dead process is reclaimed; one held by a live process is not", async () => {
+  const room = createTestRoom();
+  try {
+    await room.engine.close();
+    const lock = join(room.store.dir, "engine.lock");
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+    writeFileSync(lock, String(dead));
+    const engine = new RoomEngine({ store: RoomStore.open(room.roomsRoot, room.store.id), runners: {}, env: room.env });
+    assert.equal(readFileSync(lock, "utf8"), String(process.pid));
+    await engine.close();
+    writeFileSync(lock, String(process.ppid));
+    assert.throws(
+      () => new RoomEngine({ store: RoomStore.open(room.roomsRoot, room.store.id), runners: {}, env: room.env }),
+      RoomLockedError,
+    );
+    assert.equal(readFileSync(lock, "utf8"), String(process.ppid));
+    rmSync(lock);
   } finally {
     await room.cleanup();
   }

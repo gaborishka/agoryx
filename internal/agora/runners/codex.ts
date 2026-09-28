@@ -94,7 +94,7 @@ export const createCodexRunner = (bin = process.env.AGORYX_CODEX_BIN || "codex")
   kind: "codex",
 
   resumeCommand(sessionId: string, cwd: string): string {
-    return `cd ${shellQuote(cwd)} && codex resume ${sessionId}`;
+    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} resume ${shellQuote(sessionId)}`;
   },
 
   async run(request: TurnRequest, callbacks: TurnCallbacks): Promise<TurnResult> {

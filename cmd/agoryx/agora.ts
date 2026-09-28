@@ -1,12 +1,12 @@
-import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import pc from "picocolors";
 import { DaemonClient, type DaemonStreamItem } from "../../internal/agora/client.js";
 import { AgoraDaemon, findDaemon, readDaemonInfo, type DaemonInfo } from "../../internal/agora/daemon.js";
 import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
-import { agoraHome, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
+import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { activeRun } from "../../internal/agora/projection.js";
 import { createRoom, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
@@ -445,10 +445,27 @@ const runUp = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+/** The command line of a process, or "" if it cannot be read. */
+const processCommand = (pid: number): string => {
+  try {
+    return execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 }).trim();
+  } catch {
+    return "";
+  }
+};
+
 const runDown = async (): Promise<number> => {
   const info = readDaemonInfo();
   if (!info) {
     console.log("no agoryx daemon is running");
+    return 0;
+  }
+  // daemon.json can outlive a crashed daemon and its pid be reused: signal only a process that is
+  // provably the daemon — it answers /api/health with that pid, or at least runs agoryx.
+  const verified = (await findDaemon()) !== null || /agoryx/i.test(processCommand(info.pid));
+  if (!verified) {
+    rmSync(daemonInfoPath(), { force: true });
+    console.log(`no agoryx daemon is running (removed a stale record for pid ${info.pid}, which is now another process)`);
     return 0;
   }
   process.kill(info.pid, "SIGTERM");

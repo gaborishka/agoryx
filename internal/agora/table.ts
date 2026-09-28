@@ -258,7 +258,16 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
         }
       } else {
         const option = table.options.find((entry) => entry.id === op.target);
-        if (option) option.status = "open";
+        if (!option) return;
+        const wasChosen = option.status === "chosen";
+        option.status = "open";
+        // Un-choosing the option that decided its question reopens the question, so it can be decided again.
+        const question = wasChosen && option.q ? table.questions.find((entry) => entry.id === option.q) : undefined;
+        const decision = question?.decision ? table.decisions.find((entry) => entry.id === question.decision) : undefined;
+        if (question && decision?.option === option.id) {
+          question.status = "open";
+          delete question.decision;
+        }
       }
       return;
     }

@@ -11,7 +11,9 @@ import {
   patchSection,
   prepareWorkspace,
   readTurnPatch,
+  snapshotChanges,
   snapshotTree,
+  treeChangedPaths,
   treeChanges,
   turnPatchPath,
   writeTurnPatch,
@@ -173,6 +175,56 @@ test("a pass that changed files is still reported, with its changes", async () =
     assert.doesNotMatch(prompt, /\(Codex passed\)/);
   } finally {
     await room.cleanup();
+  }
+});
+
+test("work an agent commits during its turn is still that turn's change", async () => {
+  const room = createTestRoom({
+    rules: [
+      {
+        agent: "codex",
+        match: "ship",
+        write: { path: "shipped.ts", content: "export const shipped = true;\n" },
+        git: [["add", "shipped.ts"], ["commit", "-qm", "ship it"]],
+        reply: "Committed shipped.ts.",
+        once: true,
+      },
+    ],
+  });
+  try {
+    room.engine.postHuman("@codex ship it");
+    await withTimeout(room.engine.waitIdle());
+    const codexTurn = room.store.state.turns.find((turn) => turn.agent === "codex")!;
+    assert.deepEqual(codexTurn.changes, [{ path: "shipped.ts", status: "A", added: 1, removed: 0 }]);
+    assert.match(room.engine.turnPatch(codexTurn.id)!.patch, /\+export const shipped = true;/);
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a workspace inside a larger repo sees only its own files, by paths relative to itself", () => {
+  const root = mkdtempSync(join(tmpdir(), "agora-sub-"));
+  try {
+    git(root, "init", "-q");
+    const ws = join(root, "app");
+    mkdirSync(ws);
+    writeFileSync(join(ws, "a.txt"), "one\n");
+    writeFileSync(join(root, "outside.txt"), "out\n");
+    const before = snapshotTree(ws)!;
+    writeFileSync(join(ws, "a.txt"), "one\ntwo\n");
+    writeFileSync(join(ws, "b.txt"), "new\n");
+    writeFileSync(join(root, "outside.txt"), "changed\n");
+    writeFileSync(join(root, "also-outside.txt"), "x\n");
+    assert.deepEqual([...snapshotChanges(ws)!.keys()].sort(), ["a.txt", "b.txt"]);
+    const after = snapshotTree(ws)!;
+    assert.deepEqual(treeChangedPaths(ws, before, after), ["a.txt", "b.txt"]);
+    const diff = treeChanges(ws, before, after, ["a.txt", "b.txt"])!;
+    assert.deepEqual(
+      diff.changes.map((change) => [change.path, change.status, change.added, change.removed]),
+      [["a.txt", "M", 1, 0], ["b.txt", "A", 1, 0]],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

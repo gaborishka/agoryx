@@ -402,7 +402,10 @@ test("static UI is served with a CSP; unknown paths fall back to the app shell",
   const index = await call("GET", "/", { token: null });
   assert.equal(index.status, 200);
   assert.match(String(index.headers["content-security-policy"]), /frame-ancestors 'none'/);
-  assert.equal((await call("GET", "/app.js", { token: null })).status, 200);
+  // Whichever page is served (ui/dist or web/), the script it references must load.
+  const script = /<script[^>]*\ssrc="(\/[^"]+\.js)"/.exec(String(index.body))?.[1];
+  assert.ok(script, "index.html references a script");
+  assert.equal((await call("GET", script, { token: null })).status, 200);
   assert.equal((await call("GET", "/../package.json", { token: null })).status, 404);
   const route = await call("GET", "/rooms/whatever", { token: null });
   assert.equal(route.status, 200);

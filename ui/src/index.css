@@ -1,0 +1,283 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/onest/wght.css";
+@import "@fontsource-variable/literata/wght.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
+@import "streamdown/styles.css";
+
+@source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
+@source "../node_modules/@streamdown/mermaid/dist/*.js";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Agora: stone ground, olive-sage for the human and the room itself, two agent
+ * inks — Claude's fired clay and Codex's deep water. Neutrals lean green so the
+ * page reads as one material, not a grey template.
+ */
+:root {
+  --radius: 0.7rem;
+  --background: #f3f4ef;
+  --foreground: #1b211d;
+  --canvas: #eceee7;
+  --card: #ffffff;
+  --card-foreground: #1b211d;
+  --popover: #ffffff;
+  --popover-foreground: #1b211d;
+  --primary: #2e5a48;
+  --primary-foreground: #ffffff;
+  --secondary: #e6ebe4;
+  --secondary-foreground: #1f3a2f;
+  --muted: #eceee8;
+  --muted-foreground: #5d675f;
+  --faint: #8c948d;
+  --accent: #e3e9e1;
+  --accent-foreground: #1b211d;
+  --destructive: #b4533a;
+  --destructive-soft: #fbefea;
+  --border: #dde1d7;
+  --input: #d3d8cd;
+  --ring: #2e5a48;
+  --sidebar: #eceee7;
+  --paper: #fffffe;
+  --code: #f5f6f1;
+  --claude: #c4663f;
+  --claude-soft: #f7ebe4;
+  --codex: #2f7896;
+  --codex-soft: #e5f0f4;
+  --human: #2e5a48;
+  --human-soft: #e2ebe4;
+  --fact: #9b4a7c;
+  --amber: #b9851f;
+  --amber-soft: #fbf3df;
+  --add: #e3f1e6;
+  --add-ink: #1f5b33;
+  --del: #f8e6e1;
+  --del-ink: #8a3322;
+  --shadow-soft: 0 1px 2px rgb(30 40 30 / 0.05), 0 8px 24px rgb(30 40 30 / 0.06);
+  --shadow-lift: 0 1px 2px rgb(30 40 30 / 0.06), 0 18px 48px rgb(30 40 30 / 0.12);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #111411;
+  --foreground: #e7ebe5;
+  --canvas: #0d100d;
+  --card: #181c18;
+  --card-foreground: #e7ebe5;
+  --popover: #1b201b;
+  --popover-foreground: #e7ebe5;
+  --primary: #86c0a2;
+  --primary-foreground: #0e1a13;
+  --secondary: #1f2a23;
+  --secondary-foreground: #cfe3d6;
+  --muted: #1c211c;
+  --muted-foreground: #a0a9a1;
+  --faint: #6f7870;
+  --accent: #222922;
+  --accent-foreground: #e7ebe5;
+  --destructive: #f08f74;
+  --destructive-soft: #2d1d17;
+  --border: #283028;
+  --input: #323b32;
+  --ring: #86c0a2;
+  --sidebar: #0d100d;
+  --paper: #161a16;
+  --code: #131713;
+  --claude: #e58a60;
+  --claude-soft: #2c1d15;
+  --codex: #63abcb;
+  --codex-soft: #14252d;
+  --human: #86c0a2;
+  --human-soft: #1b2a21;
+  --fact: #db7aae;
+  --amber: #e0ae4e;
+  --amber-soft: #2a2415;
+  --add: #16301f;
+  --add-ink: #9bd8ae;
+  --del: #351c16;
+  --del-ink: #f0a08c;
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
+  --shadow-lift: 0 1px 2px rgb(0 0 0 / 0.35), 0 18px 48px rgb(0 0 0 / 0.45);
+}
+
+@theme inline {
+  --font-sans: "Onest Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "Literata Variable", Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-canvas: var(--canvas);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-paper: var(--paper);
+  --color-code: var(--code);
+  --color-claude: var(--claude);
+  --color-claude-soft: var(--claude-soft);
+  --color-codex: var(--codex);
+  --color-codex-soft: var(--codex-soft);
+  --color-human: var(--human);
+  --color-human-soft: var(--human-soft);
+  --color-fact: var(--fact);
+  --color-amber: var(--amber);
+  --color-amber-soft: var(--amber-soft);
+  --color-add: var(--add);
+  --color-add-ink: var(--add-ink);
+  --color-del: var(--del);
+  --color-del-ink: var(--del-ink);
+  --shadow-soft: var(--shadow-soft);
+  --shadow-lift: var(--shadow-lift);
+  --animate-breathe: breathe 1.8s ease-in-out infinite;
+  --animate-flash: flash 1.6s ease-out;
+  @keyframes breathe {
+    0%, 100% { opacity: 0.35; transform: scale(0.85); }
+    50% { opacity: 1; transform: scale(1); }
+  }
+  @keyframes flash {
+    0% { box-shadow: 0 0 0 3px var(--ring); }
+    100% { box-shadow: 0 0 0 3px transparent; }
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 15px;
+    line-height: 1.55;
+    overflow: hidden;
+    font-feature-settings: "ss01", "cv11";
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 22%, transparent);
+  }
+}
+
+/* ---------- prose: chat replies and the room document ---------- */
+.prose-chat {
+  font-size: 15px;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+}
+.prose-chat > * + * {
+  margin-top: 0.7em;
+}
+.prose-chat :where(p, li) {
+  text-wrap: pretty;
+}
+.prose-chat :where(h1, h2, h3, h4) {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  text-wrap: balance;
+  margin-top: 1.1em;
+}
+.prose-chat :where(h1) { font-size: 1.18em; }
+.prose-chat :where(h2) { font-size: 1.1em; }
+.prose-chat :where(h3, h4) { font-size: 1em; }
+.prose-chat :where(ul) { list-style: disc; padding-left: 1.3em; }
+.prose-chat :where(ol) { list-style: decimal; padding-left: 1.4em; }
+.prose-chat :where(li + li) { margin-top: 0.25em; }
+.prose-chat :where(li::marker) { color: var(--faint); }
+.prose-chat :where(blockquote) {
+  border-left: 3px solid var(--border);
+  padding-left: 0.9em;
+  color: var(--muted-foreground);
+}
+.prose-chat :where(hr) { border-top: 1px solid var(--border); margin: 1.2em 0; }
+.prose-chat :where(a) {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--primary) 35%, transparent);
+  text-underline-offset: 3px;
+}
+.prose-chat :where(a:hover) { text-decoration-color: currentColor; }
+.prose-chat :where(:not(pre) > code) {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--code);
+  border: 1px solid var(--border);
+  padding: 0.05em 0.35em;
+  border-radius: 5px;
+}
+.prose-chat :where(strong) { font-weight: 650; }
+.prose-chat :where(img) { border-radius: 10px; }
+.prose-chat :where(table) { font-size: 0.93em; }
+
+.prose-doc {
+  font-family: var(--font-serif);
+  font-size: 16.5px;
+  line-height: 1.72;
+}
+.prose-doc :where(h1, h2, h3, h4) {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.prose-doc :where(h1) { font-size: 1.7em; margin-top: 0.4em; }
+.prose-doc :where(h2) { font-size: 1.32em; margin-top: 1.5em; }
+.prose-doc :where(h3) { font-size: 1.12em; margin-top: 1.3em; }
+.prose-doc :where(code, pre) { font-family: var(--font-mono); }
+
+/* Streamdown blocks sit on our surfaces, not theirs. */
+[data-streamdown="code-block"] {
+  border-color: var(--border) !important;
+  background: var(--code) !important;
+  border-radius: 12px !important;
+}
+[data-streamdown="mermaid-block"] {
+  border-color: var(--border) !important;
+  border-radius: 12px !important;
+  background: var(--paper) !important;
+}
+
+/* ---------- @pierre/diffs inherits our fonts ---------- */
+diffs-container,
+.diff-host {
+  --diffs-font-family: var(--font-mono);
+  --diffs-header-font-family: var(--font-sans);
+  --diffs-font-size: 12.5px;
+  --diffs-line-height: 1.6;
+}
+
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 18%, transparent) transparent;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

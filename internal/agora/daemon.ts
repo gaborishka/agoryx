@@ -60,6 +60,7 @@ const MIME: Record<string, string> = {
   ".ico": "image/x-icon",
   ".json": "application/json; charset=utf-8",
   ".woff2": "font/woff2",
+  ".woff": "font/woff",
   ".avif": "image/avif",
   ".pdf": "application/pdf",
   ".txt": "text/plain; charset=utf-8",
@@ -162,10 +163,11 @@ const cookieValue = (req: IncomingMessage, name: string): string | undefined => 
   return undefined;
 };
 
+/** The built React UI (ui/dist, `npm run build:ui`) wins; the plain page in web/ is the fallback. */
 const findWebDir = (): string | null => {
   try {
-    const dir = join(repoRoot(), "web");
-    return existsSync(join(dir, "index.html")) ? dir : null;
+    const root = repoRoot();
+    return [join(root, "ui", "dist"), join(root, "web")].find((dir) => existsSync(join(dir, "index.html"))) ?? null;
   } catch {
     return null;
   }

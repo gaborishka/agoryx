@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { RoomEngine, RoomLockedError } from "../../internal/agora/engine.js";
@@ -74,27 +74,52 @@ test("blind first round, then each agent sees the other and passes → quiet", a
   }
 });
 
-test("an image Codex generates outside the workspace is copied in and shown in its message", async () => {
+test("media an agent made outside the workspace is copied in and shown in its message", async () => {
   const room = createTestRoom({
     rules: [
       { agent: "codex", match: "moon", image: "PNG-BYTES", reply: "🌕" },
       { agent: "codex", match: "sun", image: "SUN", reply: "::pass::" },
+      { agent: "codex", match: "chart", reply: "Here: ![chart](CHART) and [data](DATA), not [secret](SECRET)." },
     ],
   });
+  const media = (text: string) => [...text.matchAll(/\.agoryx\/media\/[^)\s]+/g)].map((match) => match[0]);
+  const read = (rel: string) => readFileSync(join(room.store.state.workspace, rel), "utf8");
+  const lastCodex = () => room.store.state.messages.filter((message) => message.author === "codex" && message.kind === "agent").at(-1)!;
   try {
     room.engine.postHuman("@codex draw the moon");
     await withTimeout(room.engine.waitIdle());
-    const moon = room.store.state.messages.find((message) => message.author === "codex" && message.kind === "agent")!;
-    assert.equal(moon.text, `🌕\n\n![](.agoryx/images/${moon.turnId}-1.png)`);
-    assert.equal(readFileSync(join(room.store.state.workspace, ".agoryx", "images", `${moon.turnId}-1.png`), "utf8"), "PNG-BYTES");
+    const moon = lastCodex();
+    assert.match(moon.text, /^🌕\n\n!\[\]\(\.agoryx\/media\/t\d+-ig_\d+\.png\)$/);
+    assert.equal(read(media(moon.text)[0]!), "PNG-BYTES");
 
     // A reply that would be a pass still carries the image; an older image is not picked up again.
     room.engine.postHuman("@codex now the sun");
     await withTimeout(room.engine.waitIdle());
-    const sun = room.store.state.messages.filter((message) => message.author === "codex" && message.kind === "agent").at(-1)!;
+    const sun = lastCodex();
     assert.notEqual(sun.id, moon.id);
-    assert.equal(sun.text, `![](.agoryx/images/${sun.turnId}-1.png)`);
-    assert.equal(readFileSync(join(room.store.state.workspace, ".agoryx", "images", `${sun.turnId}-1.png`), "utf8"), "SUN");
+    assert.equal(media(sun.text).length, 1);
+    assert.match(sun.text, /^!\[\]\(\.agoryx\/media\/t\d+-ig_\d+\.png\)$/);
+    assert.equal(read(media(sun.text)[0]!), "SUN");
+
+    // Absolute paths to media outside the room are brought in; other files are not.
+    const outside = join(room.home, "outside");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "chart.png"), "CHART-BYTES");
+    writeFileSync(join(outside, "data.csv"), "a,b\n1,2\n");
+    writeFileSync(join(outside, "notes.txt"), "private");
+    const rules = JSON.parse(readFileSync(room.env.FAKE_RULES!, "utf8"));
+    rules[2].reply = rules[2].reply
+      .replace("CHART", join(outside, "chart.png"))
+      .replace("DATA", `file://${join(outside, "data.csv")}`)
+      .replace("SECRET", join(outside, "notes.txt"));
+    writeFileSync(room.env.FAKE_RULES!, JSON.stringify(rules));
+    room.engine.postHuman("@codex make the chart");
+    await withTimeout(room.engine.waitIdle());
+    const chart = lastCodex();
+    const [png, csv] = media(chart.text);
+    assert.match(chart.text, /^Here: !\[chart\]\(\.agoryx\/media\/t\d+-chart\.png\) and \[data\]\(\.agoryx\/media\/t\d+-data\.csv\), not \[secret\]\(\/.+notes\.txt\)\.$/);
+    assert.equal(read(png!), "CHART-BYTES");
+    assert.equal(read(csv!), "a,b\n1,2\n");
   } finally {
     await room.cleanup();
   }

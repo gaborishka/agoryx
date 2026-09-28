@@ -1,6 +1,7 @@
-import { closeSync, copyFileSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
+import { bringMedia, outsideMediaRefs, rewriteMediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
@@ -795,11 +796,15 @@ export class RoomEngine {
     let messageId: string | undefined;
     let status: "ok" | "pass" | "error" | "interrupted" = result.status;
     if (result.status === "ok") {
-      const images = this.keepImages(turnId, result.images ?? []);
+      // Media made outside the workspace (Codex image_gen, a chart in /tmp) is copied in so everyone can see it.
+      const workspace = this.state.workspace;
+      const linked = outsideMediaRefs(result.text, workspace);
+      const copies = bringMedia(workspace, turnId, [...linked, ...(result.images ?? [])], (line) => this.log(line));
+      const images = (result.images ?? []).flatMap((source) => copies.get(source) ?? []);
       const pass = passNote(result.text);
       // An agent that only made an image still said something: show it, with the pass note (if any) as the caption.
       const note = images.length ? null : pass;
-      const said = images.length && pass !== null ? pass : result.text.trim();
+      const said = rewriteMediaRefs(images.length && pass !== null ? pass : result.text.trim(), workspace, copies);
       if (note !== null) {
         status = "pass";
         messageId = this.postMessage({ author: agent.id, kind: "pass", text: note, mentions: [], wakes: false, turnId, runId }).id;
@@ -808,7 +813,7 @@ export class RoomEngine {
         messageId = this.postMessage({
           author: agent.id,
           kind: "agent",
-          text: [said, ...images.map((path) => `![](${path})`)].filter(Boolean).join("\n\n"),
+          text: [said, ...images.filter((path) => !said.includes(path)).map((path) => `![](${path})`)].filter(Boolean).join("\n\n"),
           mentions: parseMentions(said, handles),
           wakes: true,
           turnId,
@@ -882,24 +887,6 @@ export class RoomEngine {
    * a file to everyone who was running. A file another overlapping turn
    * reported editing (and this one did not) belongs to that turn.
    */
-  /** Copies images an agent generated outside the workspace into .agoryx/images/, so everyone in the room can see them. */
-  private keepImages(turnId: string, sources: string[]): string[] {
-    const kept: string[] = [];
-    if (!sources.length) return kept;
-    const dir = join(workspacePaths(this.state.workspace).agoryxDir, "images");
-    sources.forEach((source, index) => {
-      const name = `${turnId}-${index + 1}${extname(source).toLowerCase() || ".png"}`;
-      try {
-        mkdirSync(dir, { recursive: true });
-        copyFileSync(source, join(dir, name));
-        kept.push(`.agoryx/images/${name}`);
-      } catch (error) {
-        this.log(`could not keep generated image ${source}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    });
-    return kept;
-  }
-
   private attributeFiles(turnId: string, files: string[]): string[] {
     if (files.length === 0) return files;
     const turn = this.state.turns.find((entry) => entry.id === turnId);

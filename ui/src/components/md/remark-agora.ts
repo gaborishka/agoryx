@@ -1,10 +1,28 @@
 // Turns "@claude" and table refs ("P3", "Q1") in plain text into links the
 // renderer recognises (#@claude, #~P3). The renderer decides whether they are
 // real — an unknown handle or a ref not on the table falls back to plain text.
+// It also marks links and embeds to local paths ("chart.svg", ".agoryx/media/x.png",
+// "/abs/path"): the sanitizer drops bare relative URLs, so they travel as /@ws/<path>
+// and the renderer turns them back into workspace files.
 
 type Node = { type: string; value?: string; url?: string; children?: Node[] };
 
 const PATTERN = /(^|[^\w@])@([a-z][\w-]{1,30})\b|\b([QPDNXSF]\d{1,3})\b/gi;
+const LOCAL = "/@ws/";
+const LINKED = new Set(["link", "image", "definition"]);
+const isLocal = (url: string) => url !== "" && !/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith("#") && !url.startsWith("//");
+
+/** The local path a marked link or embed points at, or null for anything else. */
+export const localPath = (url: string | undefined): string | null => {
+  if (!url?.startsWith(LOCAL)) return null;
+  const path = url.slice(LOCAL.length);
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+};
+
 const SKIP = new Set(["link", "linkReference", "inlineCode", "code", "html", "definition"]);
 
 const split = (value: string): Node[] | null => {
@@ -29,6 +47,7 @@ const split = (value: string): Node[] | null => {
 };
 
 const walk = (node: Node) => {
+  if (LINKED.has(node.type) && node.url && isLocal(node.url)) node.url = `${LOCAL}${node.url}`;
   if (!node.children || SKIP.has(node.type)) return;
   const next: Node[] = [];
   for (const child of node.children) {

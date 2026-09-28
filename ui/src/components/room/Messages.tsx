@@ -82,7 +82,7 @@ export const AgentMessage = memo(function AgentMessage({
         {!card ? <span className={cn("absolute top-1 bottom-1 left-[13px] w-[2px] rounded-full opacity-0 transition group-hover/msg:opacity-100", railTone[p.tone])} /> : null}
         {clamp ? <Clamp max={clamp} fade={card ? "from-card" : "from-background"}>{text}</Clamp> : text}
         <OpCards ops={ops} compact={Boolean(clamp)} />
-        <TurnBar turn={turn} docs={docs} compact={Boolean(clamp)} />
+        <TurnBar turn={turn} docs={docs} compact={Boolean(clamp)} text={m.text} />
       </div>
     </article>
   );
@@ -120,7 +120,7 @@ export function PassLine({ m, turn, ops, docs }: { m: MessageEntry; turn?: TurnS
       {docs?.length || turn?.files?.length || ops?.length ? (
         <div className="pl-7">
           <OpCards ops={ops} />
-          <TurnBar turn={turn} docs={docs} />
+          <TurnBar turn={turn} docs={docs} text={m.text} />
         </div>
       ) : null}
     </div>

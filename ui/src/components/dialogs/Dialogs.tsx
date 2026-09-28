@@ -3,7 +3,8 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CodeFile, Patch } from "@/components/code/Code";
 import { LiveFrame } from "@/components/md/LiveFrame";
-import { Markdown, rawUrl } from "@/components/md/Markdown";
+import { Markdown, MermaidFile, rawUrl } from "@/components/md/Markdown";
+import { DataTable, Player } from "@/components/md/Media";
 import { Avatar, Stats } from "@/components/room/bits";
 import { RefChip } from "@/components/table/OpCard";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api, roomPath, Unauthorized } from "@/lib/api";
 import { copyText } from "@/lib/copy";
-import { baseName, ext, FRAME_EXT, fullDate, IMAGE_EXT, kb } from "@/lib/format";
+import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, fullDate, IMAGE_EXT, kb, TABLE_EXT, VIDEO_EXT } from "@/lib/format";
 import { participant } from "@/lib/room";
 import { type DialogState, type TableFormOp, useStore } from "@/lib/store";
 import type { FileChange } from "@/lib/types";
@@ -86,7 +87,8 @@ function FileDialog({ path }: { path: string }) {
   const kind = ext(path);
   const url = rawUrl(rawBase, path);
   const image = IMAGE_EXT.has(kind) && kind !== "svg";
-  const file = useLoad(image ? null : `${roomId}:${path}`, () => api<FileView>("GET", `${roomPath(roomId, "/file")}?path=${encodeURIComponent(path)}`));
+  const media = VIDEO_EXT.has(kind) || AUDIO_EXT.has(kind);
+  const file = useLoad(image || media ? null : `${roomId}:${path}`, () => api<FileView>("GET", `${roomPath(roomId, "/file")}?path=${encodeURIComponent(path)}`));
   const open = (
     <Button asChild variant="outline" size="sm" className="w-fit">
       <a href={url} target="_blank" rel="noopener noreferrer">
@@ -101,6 +103,15 @@ function FileDialog({ path }: { path: string }) {
       <>
         <div className="grid place-items-center rounded-xl border border-border bg-[conic-gradient(var(--muted)_25%,transparent_0_50%,var(--muted)_0_75%,transparent_0)] bg-[length:16px_16px] p-3">
           <img src={url} alt={path} className="max-h-[70vh] max-w-full object-contain" />
+        </div>
+        {open}
+      </>
+    );
+  } else if (media) {
+    body = (
+      <>
+        <div className="grid place-items-center">
+          <Player url={url} kind={VIDEO_EXT.has(kind) ? "video" : "audio"} title={path} className={VIDEO_EXT.has(kind) ? "max-h-[70vh]" : undefined} />
         </div>
         {open}
       </>
@@ -128,6 +139,24 @@ function FileDialog({ path }: { path: string }) {
               <CodeFile name={path} text={f.text} className="mt-2" />
             </details>
           ) : null}
+        </>
+      );
+    } else if ((TABLE_EXT.has(kind) || DIAGRAM_EXT.has(kind)) && !f.binary) {
+      body = (
+        <>
+          {meta}
+          {TABLE_EXT.has(kind) ? (
+            <DataTable text={f.text} sep={kind === "tsv" ? "\t" : ","} cut={f.truncated} limit={1000} />
+          ) : (
+            <div className="rounded-xl border border-border bg-paper p-3">
+              <MermaidFile url={url} />
+            </div>
+          )}
+          {open}
+          <details>
+            <summary className="cursor-pointer text-[13px] text-muted-foreground select-none hover:text-foreground">Сирий текст</summary>
+            <CodeFile name={path} text={f.text} className="mt-2" />
+          </details>
         </>
       );
     } else if (f.binary) {

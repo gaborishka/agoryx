@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
@@ -71,9 +71,34 @@ const MIME: Record<string, string> = {
   ".webm": "video/webm",
   ".mp3": "audio/mpeg",
   ".wav": "audio/wav",
+  ".mov": "video/quicktime",
+  ".ogg": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".tsv": "text/plain; charset=utf-8",
+  ".mmd": "text/plain; charset=utf-8",
 };
 
 const MAX_RAW = 25 * 1024 * 1024;
+/** Video and audio stream in ranges, so they may be larger. */
+const MAX_RAW_MEDIA = 512 * 1024 * 1024;
+
+/** "bytes=a-b" → the inclusive range, null without a (usable) header, "bad" when unsatisfiable. */
+export const parseRange = (header: string | undefined, size: number): { start: number; end: number } | null | "bad" => {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header?.trim() ?? "");
+  if (!match || (!match[1] && !match[2])) return null;
+  let start: number;
+  let end: number;
+  if (!match[1]) {
+    const suffix = Number(match[2]);
+    if (suffix === 0) return "bad";
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
+  }
+  return start > end || start >= size ? "bad" : { start, end };
+};
 /**
  * Workspace files are agent-authored: serve them as sandboxed documents with an
  * opaque origin, so an agent's HTML can run its own scripts but can never talk
@@ -493,23 +518,44 @@ export class AgoraDaemon {
     if (!full || inGitDir(handle.store.state.workspace, full)) throw new HttpError(404, "no such file in the workspace");
     if (!existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
     const size = statSync(full).size;
-    if (size > MAX_RAW) throw new HttpError(413, "file too large to preview");
     const type = MIME[extname(full).toLowerCase()] ?? "text/plain; charset=utf-8";
     const html = type.startsWith("text/html");
-    res.writeHead(200, {
+    const media = /^(video|audio)\//.test(type);
+    if (size > (media ? MAX_RAW_MEDIA : MAX_RAW)) throw new HttpError(413, "file too large to preview");
+    const headers = {
       "content-type": type,
-      "content-length": size + (html ? FRAME_REPORTER.length : 0),
       "cache-control": "no-cache",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       "cross-origin-resource-policy": "same-origin",
       "content-security-policy": RAW_CSP,
-    });
-    if (req.method === "HEAD") {
+    };
+    if (html) {
+      res.writeHead(200, { ...headers, "content-length": size + FRAME_REPORTER.length });
+      res.end(req.method === "HEAD" ? undefined : Buffer.concat([readFileSync(full), FRAME_REPORTER]));
+      return;
+    }
+    // Ranges let video and audio seek (Safari will not play them without).
+    const range = parseRange(req.headers.range, size);
+    if (range === "bad") {
+      res.writeHead(416, { ...headers, "content-range": `bytes */${size}` });
       res.end();
       return;
     }
-    res.end(html ? Buffer.concat([readFileSync(full), FRAME_REPORTER]) : readFileSync(full));
+    const { start, end } = range ?? { start: 0, end: size - 1 };
+    res.writeHead(range ? 206 : 200, {
+      ...headers,
+      "accept-ranges": "bytes",
+      "content-length": size ? end - start + 1 : 0,
+      ...(range ? { "content-range": `bytes ${start}-${end}/${size}` } : {}),
+    });
+    if (req.method === "HEAD" || !size) {
+      res.end();
+      return;
+    }
+    const stream = createReadStream(full, { start, end });
+    stream.on("error", () => res.destroy());
+    stream.pipe(res);
   }
 
   /** An ```html / ```svg fence from a message (m:<id>) or a proposal body (o:<id>), as its own sandboxed page. */

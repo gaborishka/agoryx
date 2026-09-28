@@ -4,13 +4,14 @@ import type { DiagramPlugin, MermaidConfig } from "@streamdown/mermaid";
 import { Code2Icon, ExternalLinkIcon, FileIcon, Maximize2Icon } from "lucide-react";
 import { type ComponentProps, memo, type ReactNode, useMemo } from "react";
 import { type Components, type CustomRendererProps, defaultRemarkPlugins, Streamdown, type StreamdownTranslations } from "streamdown";
-import { baseName, ext, FRAME_EXT, hashBlock, IMAGE_EXT, workspaceRel } from "@/lib/format";
+import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, hashBlock, IMAGE_EXT, TABLE_EXT, VIDEO_EXT, workspaceRel } from "@/lib/format";
 import { participant, refExists, toneText } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { LiveFrame } from "./LiveFrame";
-import { remarkAgora } from "./remark-agora";
+import { CsvFile, Player, useRawText } from "./Media";
+import { localPath, remarkAgora } from "./remark-agora";
 
 const code = createCodePlugin({ themes: ["vitesse-light", "vitesse-dark"] });
 /**
@@ -169,8 +170,10 @@ function Link({ href, children }: ComponentProps<"a">) {
   const workspace = useStore((s) => s.snap?.state.workspace);
   if (href?.startsWith("#@")) return <Mention handle={href.slice(2)}>{children}</Mention>;
   if (href?.startsWith("#~")) return <Ref id={href.slice(2)} />;
-  const rel = workspaceRel(href, workspace);
+  const local = localPath(href);
+  const rel = workspaceRel(local ?? href, workspace);
   if (rel) return <FileLink path={rel}>{children}</FileLink>;
+  if (local !== null) return <span title={local}>{children}</span>;
   return (
     <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary underline decoration-primary/35 underline-offset-[3px] hover:decoration-current">
       {children}
@@ -182,7 +185,7 @@ function Embed({ src, alt }: ComponentProps<"img">) {
   const workspace = useStore((s) => s.snap?.state.workspace);
   const rawBase = useStore((s) => s.snap?.rawBase);
   const openDialog = useStore((s) => s.openDialog);
-  const url = typeof src === "string" ? src : "";
+  const url = typeof src === "string" ? (localPath(src) ?? src) : "";
   if (/^https?:|^data:image\//i.test(url)) {
     return (
       <span className="my-2 inline-flex max-w-full flex-col gap-1 align-top">
@@ -198,7 +201,7 @@ function Embed({ src, alt }: ComponentProps<"img">) {
     return (
       <button type="button" onClick={() => openDialog({ kind: "file", path: rel })} className="group my-2 inline-flex max-w-full flex-col gap-1 text-left align-top" title={rel}>
         <img src={rawUrl(rawBase, rel)} alt={alt ?? rel} loading="lazy" className="max-h-[520px] max-w-full rounded-lg border border-border bg-paper object-contain transition group-hover:shadow-soft" />
-        <span className="text-xs text-muted-foreground">{alt || rel}</span>
+        <span className="text-xs text-muted-foreground">{alt || baseName(rel)}</span>
       </button>
     );
   }
@@ -216,6 +219,25 @@ function Embed({ src, alt }: ComponentProps<"img">) {
       </span>
     );
   }
+  if (VIDEO_EXT.has(e) || AUDIO_EXT.has(e)) {
+    return (
+      <span className="my-2 inline-flex max-w-full flex-col gap-1 align-top">
+        <Player url={rawUrl(rawBase, rel)} kind={VIDEO_EXT.has(e) ? "video" : "audio"} title={alt || rel} />
+        <span className="text-xs text-muted-foreground">{alt || baseName(rel)}</span>
+      </span>
+    );
+  }
+  if (TABLE_EXT.has(e) || DIAGRAM_EXT.has(e)) {
+    return (
+      <span className="my-3 block">
+        <button type="button" onClick={() => openDialog({ kind: "file", path: rel })} className="mb-1.5 inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" title={rel}>
+          <span className="font-semibold tracking-wider">{e.toUpperCase()}</span>
+          <span className="truncate font-mono">{alt || rel}</span>
+        </button>
+        {TABLE_EXT.has(e) ? <CsvFile url={rawUrl(rawBase, rel)} name={rel} /> : <MermaidFile url={rawUrl(rawBase, rel)} />}
+      </span>
+    );
+  }
   return (
     <button type="button" onClick={() => openDialog({ kind: "file", path: rel })} className="my-1 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-sm hover:bg-accent">
       <FileIcon className="size-4 text-muted-foreground" />
@@ -223,6 +245,14 @@ function Embed({ src, alt }: ComponentProps<"img">) {
       <span className="text-xs text-muted-foreground">відкрити</span>
     </button>
   );
+}
+
+/** A workspace .mmd file, drawn like a ```mermaid fence. */
+export function MermaidFile({ url }: { url: string }) {
+  const file = useRawText(url);
+  if (file.error) return <span className="text-[13px] text-destructive">{file.error}</span>;
+  if (file.text === undefined) return <span className="block h-24 animate-pulse rounded-xl bg-muted" />;
+  return <Markdown text={`\`\`\`mermaid\n${file.text.trim()}\n\`\`\``} />;
 }
 
 const shifted = (Tag: "h2" | "h3" | "h4") =>

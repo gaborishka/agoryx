@@ -25,7 +25,7 @@ let port: number;
 const call = (
   method: string,
   path: string,
-  options: { token?: string | null; host?: string; origin?: string; body?: unknown } = {},
+  options: { token?: string | null; host?: string; origin?: string; body?: unknown; headers?: Record<string, string> } = {},
 ): Promise<Reply> =>
   new Promise((resolve, reject) => {
     const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
@@ -41,6 +41,7 @@ const call = (
           ...(token ? { "x-agoryx-token": token } : {}),
           ...(options.origin ? { origin: options.origin } : {}),
           ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
+          ...options.headers,
         },
       },
       (res) => {
@@ -365,6 +366,20 @@ test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .gi
     assert.equal((await call("GET", `${snap.rawBase}escape/secret.txt`, { token: null })).status, 404);
     assert.equal((await call("GET", `${snap.rawBase}..%2F..%2Fetc%2Fpasswd`, { token: null })).status, 404);
     assert.equal((await call("POST", `${snap.rawBase}site/index.html`, { token: null, body: {} })).status, 405);
+
+    // Media seeks by range (Safari will not play video without it).
+    writeFileSync(join(room.workspace, "clip.mp4"), "0123456789");
+    const whole = await call("GET", `${snap.rawBase}clip.mp4`, { token: null });
+    assert.equal(whole.status, 200);
+    assert.equal(whole.body, "0123456789");
+    assert.equal(whole.headers["accept-ranges"], "bytes");
+    assert.equal(whole.headers["content-type"], "video/mp4");
+    const part = await call("GET", `${snap.rawBase}clip.mp4`, { token: null, headers: { range: "bytes=2-5" } });
+    assert.equal(part.status, 206);
+    assert.equal(part.body, "2345");
+    assert.equal(part.headers["content-range"], "bytes 2-5/10");
+    assert.equal((await call("GET", `${snap.rawBase}clip.mp4`, { token: null, headers: { range: "bytes=-3" } })).body, "789");
+    assert.equal((await call("GET", `${snap.rawBase}clip.mp4`, { token: null, headers: { range: "bytes=20-" } })).status, 416);
 
     const file = await call("GET", `/api/rooms/${room.id}/file?path=escape/secret.txt`);
     assert.equal(file.status, 404);

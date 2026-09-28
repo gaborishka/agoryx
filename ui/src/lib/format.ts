@@ -45,6 +45,12 @@ export const ext = (path: string) => {
 
 export const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "ico"]);
 export const FRAME_EXT = new Set(["html", "htm", "pdf"]);
+export const VIDEO_EXT = new Set(["mp4", "webm", "mov"]);
+export const AUDIO_EXT = new Set(["mp3", "wav", "ogg", "m4a"]);
+export const TABLE_EXT = new Set(["csv", "tsv"]);
+export const DIAGRAM_EXT = new Set(["mmd", "mermaid"]);
+/** Files that are worth seeing, not just opening: shown under the turn that made them. */
+export const VISUAL_EXT = new Set([...IMAGE_EXT, ...FRAME_EXT, ...VIDEO_EXT, ...AUDIO_EXT, ...TABLE_EXT, ...DIAGRAM_EXT]);
 export const PROSE_EXT = new Set(["md", "markdown", "txt", ""]);
 
 export const cost = (usd?: number) => (usd == null ? "" : `$${usd < 0.1 ? usd.toFixed(3) : usd.toFixed(2)}`);

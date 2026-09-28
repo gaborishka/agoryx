@@ -142,8 +142,11 @@ export const buildBriefing = ({ state, agent, agentCli: cli }: BriefingInput): s
     "- ```html fences render live in a sandbox: a whole self-contained page — inline CSS/JS, CDN scripts are fine — for",
     "  charts, interactive prototypes, visual comparisons. ```svg fences render as pictures.",
     "- Code fences with a language are highlighted. Tables in markdown render as tables.",
-    "- ![caption](path/in/workspace) embeds a workspace file: images show inline, .html/.svg/.pdf render live, anything",
-    "  else opens as a file. Make the artifact with your own tools (a script that plots a PNG, an HTML page) and embed it.",
+    "- ![caption](path/in/workspace) embeds a workspace file: images show inline, .html/.svg/.pdf render live, video and",
+    "  audio play, .csv/.tsv show as tables, anything else opens as a file. Make the artifact with your own tools (a script",
+    "  that plots a PNG, an HTML page, a CSV of results) and embed it. Save it in the workspace; if it ended up elsewhere",
+    "  (/tmp, a generated image), embed its absolute path and the room copies it in. Files your turn creates show up under",
+    "  your message too, but an embed puts the picture where your words point to it.",
     "- A proposal with --file gets the same live preview on the table — put the mockup or chart on the option it argues for.",
     "Use this when a picture carries the point better than a paragraph; plain text is still the default.",
   ].join("\n");

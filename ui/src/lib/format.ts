@@ -82,8 +82,30 @@ export const workspaceRel = (path: string | undefined, workspace: string | undef
   }
 };
 
+const OPEN_ITEMS: Array<[RegExp, (n: number) => string]> = [
+  [/^(\d+) open questions?$/, (n) => plural(n, "питання", "питання", "питань")],
+  [/^(\d+) undecided proposals?$/, (n) => plural(n, "пропозиція без рішення", "пропозиції без рішення", "пропозицій без рішення")],
+  [/^(\d+) steps? to do$/, (n) => plural(n, "крок до виконання", "кроки до виконання", "кроків до виконання")],
+];
+
+/** "1 open question, 2 steps to do" → "1 питання, 2 кроки до виконання". */
+const openItems = (list: string) =>
+  list
+    .split(", ")
+    .map((item) => {
+      for (const [pattern, say] of OPEN_ITEMS) {
+        const m = pattern.exec(item);
+        if (m) return say(Number(m[1]));
+      }
+      return item;
+    })
+    .join(", ");
+
 const SYS_TEXT: Array<[RegExp, (...m: string[]) => string]> = [
-  [/^Turn budget reached \((\d+) agent turns\)\..*$/s, (_, n) => `Агенти зробили ${plural(Number(n), "хід", "ходи", "ходів")} — розмова чекає на вас.`],
+  [
+    /^Turn budget reached \((\d+) agent turns\)\.(?: Still open on the table: (.+?) —)?.*$/s,
+    (_, n, open) => `Агенти зробили ${plural(Number(n), "хід", "ходи", "ходів")} — розмова чекає на вас.${open ? ` На столі ще відкрито: ${openItems(open)}.` : ""}`,
+  ],
   [/^Agoryx restarted in the middle of a run.*$/s, () => "Agoryx перезапустився посеред розмови, тож її зупинено. Напишіть щось або натисніть «Продовжити»."],
   [/^The room's canonical file is now (.+)\.$/, (_, path) => `Спільний документ кімнати тепер — \`${path}\`.`],
   [/^The room no longer has a canonical file\.$/, () => "У кімнати більше немає спільного документа."],

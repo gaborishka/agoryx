@@ -373,6 +373,13 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
   return `${lines.join("\n")}\n`;
 };
 
+/** What the table still holds open: questions without an answer, undecided options, steps not done. */
+export const openOnTable = (table: TableState): { questions: number; options: number; steps: number } => ({
+  questions: table.questions.filter((question) => question.status === "open").length,
+  options: table.options.filter((option) => option.status === "open").length,
+  steps: table.next.filter((step) => !step.done).length,
+});
+
 /**
  * The table's current state for the end of a delta: what is still open, where
  * each live option stands, what is settled and what someone still has to do.

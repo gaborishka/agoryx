@@ -6,7 +6,7 @@ import { activeRun } from "./projection.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
 import { truncate, type AgentRunner, type TurnResult } from "./runners/types.js";
 import type { RoomStore } from "./store.js";
-import { describeTableOp, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
+import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
 import type {
   Activity,
   AgentKind,
@@ -589,8 +589,17 @@ export class RoomEngine {
       turns: run.used,
     });
     if (blockedByBudget) {
+      const open = openOnTable(this.state.table);
+      const count = (n: number, one: string, many: string) => (n ? [`${n} ${n === 1 ? one : many}`] : []);
+      const left = [
+        ...count(open.questions, "open question", "open questions"),
+        ...count(open.options, "undecided proposal", "undecided proposals"),
+        ...count(open.steps, "step to do", "steps to do"),
+      ];
       this.postSystem(
-        `Turn budget reached (${run.used} agent turns). The run paused with things still open — write anything, or ask for another round, to continue.`,
+        left.length
+          ? `Turn budget reached (${run.used} agent turns). Still open on the table: ${left.join(", ")} — write anything, or ask for another round, to continue.`
+          : `Turn budget reached (${run.used} agent turns). Nothing is left open on the table — write anything to continue.`,
         false,
       );
     }

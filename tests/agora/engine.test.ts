@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 
 import { join } from "node:path";
 import { test } from "node:test";
 import { RoomEngine, RoomLockedError } from "../../internal/agora/engine.js";
+import { promptNorms } from "../../internal/agora/prompts.js";
 import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { createCodexRunner } from "../../internal/agora/runners/codex.js";
 import { eventPatch } from "../../internal/agora/snapshot.js";
@@ -85,13 +86,36 @@ test("turn budget ends a run that would otherwise never converge", async () => {
     assert.equal(state.runs.at(-1)?.endReason, "budget");
     const last = state.messages.at(-1)!;
     assert.equal(last.kind, "system");
-    assert.match(last.text, /Turn budget reached/);
+    assert.match(last.text, /Turn budget reached \(5 agent turns\)\. Nothing is left open on the table/);
     // Prompts count down the remaining budget.
     const prompts = [...room.invocations("claude"), ...room.invocations("codex")].map((entry) => entry.prompt!);
     assert.ok(prompts.some((prompt) => /Turns left in this run after yours: \d/.test(prompt)));
   } finally {
     await room.cleanup();
   }
+});
+
+test("a budget stop names what the table still holds open", async () => {
+  const room = createTestRoom({ settings: { budget: 3 }, rules: [{ reply: "I still disagree." }] });
+  try {
+    room.engine.tableOp({ op: "ask", text: "Name?" }, "claude");
+    room.engine.tableOp({ op: "propose", title: "Agora", q: "Q1" }, "codex");
+    await withTimeout(room.engine.waitIdle());
+    room.engine.postHuman("Argue forever");
+    await withTimeout(room.engine.waitIdle());
+    const last = room.store.state.messages.at(-1)!;
+    assert.match(last.text, /Still open on the table: 1 open question, 1 undecided proposal — write anything/);
+    // A turn that would only acknowledge is asked to be a pass, so a settled room goes quiet by itself.
+    const prompts = room.invocations("claude").map((entry) => entry.prompt!);
+    assert.ok(prompts.some((prompt) => prompt.includes("or tidy the table is a pass")));
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("the disagreement norms are on unless a control run switches them off", () => {
+  assert.deepEqual([promptNorms({}), promptNorms({ AGORYX_PROMPT_NORMS: "on" })], [true, true]);
+  assert.equal(promptNorms({ AGORYX_PROMPT_NORMS: "OFF" }), false);
 });
 
 test("@mention wakes only the addressed agent first; the other hears the reply", async () => {

@@ -428,6 +428,31 @@ test("media outside the workspace is served only while a message in the room lin
   }
 });
 
+test("media outside the workspace is served while the table's prose links it too", async () => {
+  const room = await newRoom("Daemon table media");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();
+  const outside = mkdtempSync(join(tmpdir(), "agora-media-"));
+  writeFileSync(join(outside, "chart.png"), "PNG");
+  writeFileSync(join(outside, "100%20 sure.png"), "PCT");
+  const abs = (name: string) => `${snap.rawBase}~abs${join(outside, name).split("/").map(encodeURIComponent).join("/")}`;
+  try {
+    assert.equal((await call("GET", abs("chart.png"), { token: null })).status, 404);
+    const op = await call("POST", `/api/rooms/${room.id}/table`, { body: { op: "propose", title: "Plot", body: `![chart](${join(outside, "chart.png")})` } });
+    assert.equal(op.status, 201, op.body);
+    assert.equal((await call("GET", abs("chart.png"), { token: null })).status, 200, "a proposal body renders through markdown");
+    // A literal %20 in the file's own name survives: the path is decoded once.
+    const text = `![](${encodeURI(join(outside, "100%20 sure.png"))})`;
+    assert.equal((await call("POST", `/api/rooms/${room.id}/messages`, { body: { text } })).status, 201);
+    const pct = await call("GET", abs("100%20 sure.png"), { token: null });
+    assert.equal(pct.status, 200);
+    assert.equal(pct.body, "PCT");
+    // A broken escape in the room part is just not a room.
+    assert.equal((await call("GET", snap.rawBase.replace(/\/raw\/[^/]+\//, "/raw/%E0%A4%A/") + "x.png", { token: null })).status, 404);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test("a file preview reads only its first 2 MB", async () => {
   const room = await newRoom("Daemon big file");
   writeFileSync(join(room.workspace, "big.txt"), "x".repeat(3 * 1024 * 1024));

@@ -1,7 +1,7 @@
 import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
-import { embed } from "./media.js";
+import { embed, mediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
@@ -811,7 +811,7 @@ export class RoomEngine {
         messageId = this.postMessage({
           author: agent.id,
           kind: "agent",
-          text: [said, ...images.filter((path) => !said.includes(path) && !said.includes(encodeURI(path))).map(embed)].filter(Boolean).join("\n\n"),
+          text: [said, ...images.filter((path) => !mediaRefs(said).includes(path)).map(embed)].filter(Boolean).join("\n\n"),
           mentions: parseMentions(said, handles),
           wakes: true,
           turnId,

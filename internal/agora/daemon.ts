@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
-import { linkedMedia } from "./media.js";
+import { linkedMedia, markdownTexts } from "./media.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
@@ -502,7 +502,12 @@ export class AgoraDaemon {
   private serveRaw(req: IncomingMessage, res: ServerResponse, path: string): void {
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method not allowed");
     const [, , roomPart = "", key = "", ...rest] = path.split("/");
-    const roomId = decodeURIComponent(roomPart);
+    let roomId = "";
+    try {
+      roomId = decodeURIComponent(roomPart);
+    } catch {
+      // Not a room id; falls through to 404.
+    }
     if (!/^[\w.-]+$/.test(roomId) || !safeEqual(key, this.rawKey(roomId))) throw new HttpError(404, "not found");
     let relPath: string;
     try {
@@ -517,10 +522,11 @@ export class AgoraDaemon {
     }
     let full: string | null;
     if (relPath.startsWith("~abs/")) {
-      // A media file outside the workspace, served only while a message in the room links it.
+      // A media file outside the workspace, served only while a text in the room links it.
+      // relPath is decoded already: the path is taken as is, not decoded again.
       const ref = relPath.slice("~abs/".length);
-      full = linkedMedia(handle.store.state.messages, ref.startsWith("~/") ? ref : `/${ref}`);
-      if (!full) throw new HttpError(404, "no such file, or no message in the room links it");
+      full = linkedMedia(markdownTexts(handle.store.state), ref.startsWith("~/") ? ref : `/${ref}`);
+      if (!full) throw new HttpError(404, "no such file, or nothing in the room links it");
     } else {
       if (!relPath || relPath.endsWith("/")) relPath += "index.html";
       full = resolveInside(handle.store.state.workspace, relPath);

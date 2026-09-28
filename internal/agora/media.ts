@@ -2,12 +2,13 @@
  * Media an agent points at outside the room's workspace: Codex's image_gen output in
  * $CODEX_HOME, a chart plotted to /tmp. The room does not copy or keep these — the file
  * stays where the agent put it, and lives or goes with it. The UI may show such a file
- * only while a message in the room links or embeds it, and only if it is a media type.
+ * only while a text in the room (a message, the table's prose) links or embeds it, and only if it is a media type.
  */
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, normalize } from "node:path";
-import type { MessageEntry } from "./types.js";
+import { marked, type Tokens } from "marked";
+import type { RoomState } from "./types.js";
 
 // Keep in step with VISUAL_EXT in ui/src/lib/format.ts: the UI asks for what it can show.
 export const MEDIA_EXTS = new Set([
@@ -17,43 +18,69 @@ export const MEDIA_EXTS = new Set([
   ".csv", ".tsv", ".mmd", ".mermaid",
 ]);
 
-// ![alt](path "title") and [text](path) with an absolute, ~/ or file:// path: the path is group 1.
-const LINK = /!?\[[^\]\n]*\]\(<?((?:file:\/\/|~\/|\/)[^)\s>]+)>?(?:\s+"[^"\n]*")?\)/g;
-
-/** A link target as a filesystem path: file:// stripped, %-escapes decoded, ~/ expanded. */
-export const expandPath = (ref: string): string => {
+/** A link target as written in markdown → a filesystem path: file:// and any ?query/#fragment dropped, %-escapes decoded once. */
+export const linkPath = (ref: string): string => {
   let path = ref.startsWith("file://") ? ref.slice("file://".length) : ref;
+  path = path.replace(/[?#].*$/, "");
   try {
-    path = decodeURIComponent(path);
+    return decodeURIComponent(path);
   } catch {
-    // Keep it as written.
+    return path; // Keep it as written.
   }
-  return normalize(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
 };
 
-/** Absolute media paths a message links or embeds, in order. */
+/** A filesystem path with ~/ expanded and normalized. Already decoded: nothing here touches % signs. */
+export const nativePath = (path: string): string => normalize(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
+
+const refsCache = new Map<string, string[]>();
+
+/**
+ * Absolute media paths a text links or embeds, in order — read with a markdown lexer, as the
+ * UI renders it: reference-style links count, examples inside code spans and fences do not.
+ */
 export const mediaRefs = (text: string): string[] => {
+  const cached = refsCache.get(text);
+  if (cached) return cached;
   const found: string[] = [];
-  for (const match of text.matchAll(LINK)) {
-    const path = expandPath(match[1]!);
+  marked.walkTokens(marked.lexer(text), (token) => {
+    if (token.type !== "image" && token.type !== "link") return;
+    const href = (token as Tokens.Image | Tokens.Link).href;
+    if (!/^(file:\/\/|~\/|\/)/.test(href) || href.startsWith("//")) return;
+    const path = nativePath(linkPath(href));
     if (isAbsolute(path) && MEDIA_EXTS.has(extname(path).toLowerCase()) && !found.includes(path)) found.push(path);
-  }
+  });
+  if (refsCache.size > 5000) refsCache.clear();
+  refsCache.set(text, found);
   return found;
 };
 
-/** An embed for a file wherever it is: spaces and non-ASCII escaped so the markdown link holds. */
-export const embed = (path: string): string => `![](${encodeURI(path)})`;
+/** An embed for a file wherever it is, escaped so the markdown link holds and the name survives as written. */
+export const embed = (path: string): string =>
+  `![](${encodeURI(path).replace(/[()#?]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)})`;
+
+/** Every text in the room the UI renders as markdown, and so may embed a file: messages and the table's prose. */
+export const markdownTexts = (state: Pick<RoomState, "messages" | "table">): string[] => {
+  const { table } = state;
+  return [
+    ...state.messages.map((message) => message.text),
+    ...table.questions.map((q) => q.text),
+    ...table.options.map((o) => o.body ?? ""),
+    ...table.notes.map((n) => n.text),
+    ...[...table.facts, ...table.settled, ...table.next, ...table.shifts].map((item) => item.text),
+    ...table.decisions.map((d) => d.note ?? ""),
+  ].filter(Boolean);
+};
 
 /**
- * The real path of `ref` if a message in the room links it and it is a media file that
- * still exists; null otherwise. The room's messages are the whole allowlist.
+ * The real path of `path` (a filesystem path, already decoded) if one of `texts` links it and
+ * it is a media file that still exists; null otherwise. The room's texts are the whole allowlist.
  */
-export const linkedMedia = (messages: MessageEntry[], ref: string): string | null => {
-  const path = expandPath(ref);
-  if (!isAbsolute(path) || !MEDIA_EXTS.has(extname(path).toLowerCase())) return null;
-  if (!messages.some((message) => message.text.includes("](") && mediaRefs(message.text).includes(path))) return null;
+export const linkedMedia = (texts: string[], path: string): string | null => {
+  const wanted = nativePath(path);
+  if (!isAbsolute(wanted) || !MEDIA_EXTS.has(extname(wanted).toLowerCase())) return null;
+  if (!texts.some((text) => mediaRefs(text).includes(wanted))) return null;
   try {
-    const real = realpathSync(path);
+    const real = realpathSync(wanted);
     // A symlink may not turn a linked picture into some other kind of file.
     if (!MEDIA_EXTS.has(extname(real).toLowerCase()) || !statSync(real).isFile()) return null;
     return real;

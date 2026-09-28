@@ -169,7 +169,7 @@ export function NoteSource({ source }: { source: string }) {
       </a>
     );
   }
-  const rel = workspaceRel(source, workspace);
+  const rel = workspaceRel(source.split(/[?#]/)[0], workspace);
   if (rel && IMAGE_EXT.has(ext(rel))) return <FilePreview file={rel} />;
   if (rel) {
     return (

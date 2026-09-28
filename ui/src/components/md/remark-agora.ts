@@ -12,10 +12,13 @@ const LOCAL = "/@ws/";
 const LINKED = new Set(["link", "image", "definition"]);
 const isLocal = (url: string) => url !== "" && !/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith("#") && !url.startsWith("//");
 
-/** The local path a marked link or embed points at, or null for anything else. */
+/**
+ * The local path a marked link or embed points at, or null for anything else: a ?query or
+ * #fragment dropped (report.pdf#page=2 is report.pdf), then %-escapes decoded once.
+ */
 export const localPath = (url: string | undefined): string | null => {
   if (!url?.startsWith(LOCAL)) return null;
-  const path = url.slice(LOCAL.length);
+  const path = url.slice(LOCAL.length).replace(/[?#].*$/, "");
   try {
     return decodeURIComponent(path);
   } catch {

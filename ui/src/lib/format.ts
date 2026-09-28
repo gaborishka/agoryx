@@ -73,19 +73,16 @@ export const hashBlock = (text: string) => {
 
 /** A link target inside the room's workspace, as a relative path; null for anything else. */
 export const workspaceRel = (path: string | undefined, workspace: string | undefined) => {
-  if (!workspace || !path || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith("#")) return null;
+  // ~/ is the home folder, never a folder named "~" in the workspace.
+  if (!workspace || !path || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith("#") || path.startsWith("~/")) return null;
   let rel = path;
   if (rel.startsWith("/")) {
     if (!rel.startsWith(`${workspace}/`)) return null;
     rel = rel.slice(workspace.length + 1);
   }
-  rel = rel.replace(/^\.\//, "").split(/[?#]/)[0] ?? "";
+  rel = rel.replace(/^\.\//, "");
   if (!rel || rel.split("/").includes("..")) return null;
-  try {
-    return decodeURIComponent(rel);
-  } catch {
-    return rel;
-  }
+  return rel;
 };
 
 const OPEN_ITEMS: Array<[RegExp, (n: number) => string]> = [

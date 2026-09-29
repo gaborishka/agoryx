@@ -358,7 +358,7 @@ export function FolderDialog({
         <DialogHeader>
           <DialogTitle>Тека для кімнати</DialogTitle>
           <DialogDescription>
-            Агенти працюватимуть у ній — кожен у своїй пісочниці.
+            Агенти працюватимуть у ній.
           </DialogDescription>
         </DialogHeader>
         <form

@@ -342,7 +342,7 @@ function FilesDialog() {
       }
       sub={room?.workspace}
     >
-      <Faint>Спільна git-тека кімнати. Агенти читають і пишуть тут (у пісочниці).</Faint>
+      <Faint>Спільна git-тека кімнати. Агенти читають і пишуть тут.</Faint>
       {body}
     </Shell>
   );
@@ -470,7 +470,7 @@ function SettingsDialog() {
               <SelectItem value="readonly">Лише читання</SelectItem>
             </SelectContent>
           </Select>
-          <Faint>Агенти завжди працюють у пісочниці; поза робочою текою писати не можуть.</Faint>
+          <Faint>Агенти працюють, як у вашому терміналі: Claude — з вашими налаштуваннями, Codex — у своїй пісочниці. «Лише читання» чи вимкнена мережа обмежують обох.</Faint>
         </div>
         <label className="flex items-center justify-between gap-3 text-sm">
           Мережа для команд агентів

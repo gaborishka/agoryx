@@ -20,8 +20,11 @@ const asObject = (value: unknown): Json | undefined =>
 const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
 
 /**
- * Codex always runs inside its own sandbox: workspace-write (or read-only),
- * never with approvals/sandbox bypass.
+ * Codex runs inside its own sandbox: workspace-write (read-only when the room is), never with
+ * approvals/sandbox bypass. Nobody is at a prompt in a room, so in an unrestricted room a request
+ * to leave the sandbox goes to Codex's own automatic review (what `--approve-for-me` does) instead
+ * of being refused unseen; when the human turns the network off or makes the room read-only, it is
+ * refused as before.
  */
 export const buildCodexArgs = (request: TurnRequest): string[] => {
   const sandbox = request.settings.access === "readonly" ? "read-only" : "workspace-write";
@@ -30,6 +33,7 @@ export const buildCodexArgs = (request: TurnRequest): string[] => {
   if (request.effort) common.push("-c", `model_reasoning_effort="${request.effort}"`);
   if (request.settings.network && sandbox === "workspace-write") {
     common.push("-c", "sandbox_workspace_write.network_access=true");
+    common.push("-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"');
   }
   if (request.sessionId) {
     return ["exec", "resume", request.sessionId, ...common, "-c", `sandbox_mode="${sandbox}"`, "-"];

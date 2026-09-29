@@ -32,7 +32,7 @@ export interface RoomSettings {
    */
   budget: number | null;
   turnTimeoutMs: number;
-  /** Filesystem access for agents. Always sandboxed; "workspace" = write inside the room dir. */
+  /** Filesystem access for agents. "workspace" = as in the human's terminal; "readonly" = sandboxed, no writes. */
   access: SandboxAccess;
   /** Let sandboxed commands reach the network. */
   network: boolean;

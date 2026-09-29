@@ -935,7 +935,7 @@ const runSettings = async (argv: string[]): Promise<number> => {
     }
   }
   console.log(`budget      ${budgetLine(settings.budget)}`);
-  console.log(`access      ${settings.access === "workspace" ? "agents can edit the workspace (sandboxed)" : "read-only"}`);
+  console.log(`access      ${settings.access === "workspace" ? "agents can edit the workspace" : "read-only"}`);
   console.log(`network     ${settings.network ? "on" : "off"}`);
   console.log(`autocommit  ${settings.autoCommit ? "on (checkpoint commit after each run)" : "off"}`);
   console.log(`turn limit  ${Math.round(settings.turnTimeoutMs / 60_000)} min`);

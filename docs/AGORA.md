@@ -335,12 +335,17 @@ It works both ways. Whatever you say to an agent there comes back into the room:
 
 ## Safety
 
-- Agents run **sandboxed but capable**:
-  - Codex: `-s workspace-write` (`read-only` when the room's access is readonly).
-  - Claude: `--permission-mode acceptEdits` with a sandbox settings file that auto-allows Bash only
-    inside the sandbox.
-  - Network is **on** by default for both: sandboxed commands may reach the network. A room turns it off
-    with `agoryx settings --network off` (`internal/agora/types.ts`, `DEFAULT_SETTINGS`).
+- Agents run **as in the human's own terminal**. Agoryx adds no sandbox of its own and no restriction the
+  human does not have; restrictions come only from the human's own room settings:
+  - Claude: the human's own settings and permission mode (e.g. `auto`). Only the room's shim is allowed by
+    name. With network off or read-only access, Claude runs in its sandbox (Bash auto-allowed there),
+    `--permission-mode acceptEdits` (`default` and edits denied when read-only).
+  - Codex: its own sandbox, `-s workspace-write` (`read-only` when the room's access is readonly). Nobody is
+    at a prompt, so in an unrestricted room a request to leave the sandbox goes to Codex's own automatic
+    review (`approval_policy="on-request"`, `approvals_reviewer="auto_review"`, what `--approve-for-me`
+    does); with network off or read-only access it is refused, as before.
+  - Network is **on** by default for both. A room turns it off with `agoryx settings --network off`
+    (`internal/agora/types.ts`, `DEFAULT_SETTINGS`).
 - No bypass or "dangerous" flags are ever passed.
 - The daemon listens on `127.0.0.1` only, checks the `Host` header (DNS rebinding) and refuses
   cross-origin writes.

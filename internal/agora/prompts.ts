@@ -173,7 +173,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile }: Bri
   const access =
     state.settings.access === "readonly"
       ? "You can read the workspace; writes are disabled in this room."
-      : "You can read, create and run anything inside the workspace (sandboxed).";
+      : "You can read, create and run anything inside the workspace.";
   return [
     `You are ${agent.label} (@${agent.id}), in an Agoryx room — one shared conversation between ${state.human} (human, @${state.human.toLowerCase()}) and ${peers || "no other agents yet"}.`,
     "Nobody here has an assigned role. Act as yourself, with everything you can do: read and write code, run things, research, draw, write, argue.",

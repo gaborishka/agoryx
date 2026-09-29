@@ -18,27 +18,32 @@ const asObject = (value: unknown): Json | undefined =>
 const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
 
 /**
- * Claude Code runs sandboxed: file edits inside the workspace are accepted,
- * Bash runs inside Claude Code's own sandbox (auto-allowed there), and the
- * web tools stay available. No permission bypass.
+ * Claude Code runs as it does in the human's own terminal: their settings, their permission mode
+ * (e.g. auto), no sandbox of Agoryx's own. Agoryx adds restrictions only when the human sets them
+ * for the room: read-only access or network off put Claude in its sandbox (Bash auto-allowed
+ * there), with edits accepted or denied. No permission bypass either way.
  *
- * Two narrow additions keep the room's own tools working in -p mode, where
- * nobody can answer an approval prompt: the room's shim (table, diff, read, say) is allowed by
- * name (Claude Code otherwise refuses commands it cannot statically analyse,
- * e.g. an evidence note quoting `===`), and when the room has network on,
- * sandboxed Bash gets it too — the same as Codex's network_access.
+ * The room's shim (table, diff, read, say) is allowed by name, so the room's own tools work in -p
+ * mode whatever the permission mode (Claude Code otherwise refuses commands it cannot statically
+ * analyse, e.g. an evidence note quoting `===`).
  */
+export const restrictedRoom = (settings: TurnRequest["settings"]): boolean => settings.access === "readonly" || !settings.network;
+
 export const buildClaudeSettings = (request: Pick<TurnRequest, "settings"> & { env?: NodeJS.ProcessEnv }): Json => {
   const readonly = request.settings.access === "readonly";
   const shim = request.env?.AGORYX_CLI;
   const tools = ["agoryx", ...(shim ? [shim] : [])].flatMap((cli) => ["table", "diff", "read", "say"].map((verb) => `Bash(${cli} ${verb} *)`));
   return {
-    sandbox: {
-      enabled: true,
-      autoAllowBashIfSandboxed: true,
-      allowUnsandboxedCommands: false,
-      ...(request.settings.network ? { network: { allowedDomains: ["*"] } } : {}),
-    },
+    ...(restrictedRoom(request.settings)
+      ? {
+          sandbox: {
+            enabled: true,
+            autoAllowBashIfSandboxed: true,
+            allowUnsandboxedCommands: false,
+            ...(request.settings.network ? { network: { allowedDomains: ["*"] } } : {}),
+          },
+        }
+      : {}),
     permissions: {
       allow: tools,
       ...(readonly ? { deny: ["Edit", "Write", "MultiEdit", "NotebookEdit"] } : {}),
@@ -53,8 +58,7 @@ export const buildClaudeArgs = (request: TurnRequest, sessionId: string, fresh: 
     "stream-json",
     "--verbose",
     "--include-partial-messages",
-    "--permission-mode",
-    request.settings.access === "readonly" ? "default" : "acceptEdits",
+    ...(restrictedRoom(request.settings) ? ["--permission-mode", request.settings.access === "readonly" ? "default" : "acceptEdits"] : []),
     "--settings",
     JSON.stringify(buildClaudeSettings(request)),
     "--allowedTools",

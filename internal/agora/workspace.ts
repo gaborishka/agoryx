@@ -73,6 +73,13 @@ const fewerFilesThan = (root: string, limit: number): boolean => {
   };
   return walk(root);
 };
+/**
+ * How a workspace's changes are seen: its own git repository, Agoryx's shadow one (the folder has no .git, so
+ * `git status` there finds nothing), or not at all (a folder too big to scan).
+ */
+export const workspaceTracking = (root: string): "git" | "shadow" | "none" =>
+  isGitRepo(root) ? "git" : existsSync(shadowGitDir(root)) ? "shadow" : "none";
+
 /** git for seeing changes: the workspace's own repository, or Agoryx's shadow one for a folder without it. */
 const track = (root: string, args: string[], timeout = 15_000, env?: NodeJS.ProcessEnv): string | null => git(root, args, timeout, shadowEnv(root, env));
 

@@ -49,6 +49,7 @@ import {
   treeChanges,
   workspacePaths,
   workspaceRooms,
+  workspaceTracking,
   writeAck,
   writeRoomMessage,
   writeTurnPatch,
@@ -1114,6 +1115,7 @@ export class RoomEngine {
         rejoin,
         doc: this.docDelta(agent, fromSeq, fresh),
         profile: fresh ? (profile ? profileBriefing(profile, this.state.human) : null) : profileUpdate(profile, held, this.state.human),
+        tracking: fresh ? workspaceTracking(this.state.workspace) : undefined,
       });
     const prompt = promptFor(!sessionId, false);
 

@@ -311,3 +311,25 @@ test("a folder that is not a git repository still has each turn's changes tracke
     await room.cleanup();
   }
 });
+
+test("the briefing says what the folder is — a room in a folder without git is not told to run git status there", async () => {
+  const briefing = async (createdWorkspace: boolean) => {
+    const room = createTestRoom({ createdWorkspace, rules: [{ reply: "::pass::" }] });
+    try {
+      room.engine.postHuman("@claude look around");
+      await withTimeout(room.engine.waitIdle());
+      return room.invocations("claude")[0]!.prompt!;
+    } finally {
+      await room.cleanup();
+    }
+  };
+  const inGit = await briefing(true);
+  assert.match(inGit, /A shared git directory/);
+  assert.match(inGit, /check `git status` \/ `git diff` before overwriting/);
+
+  const outside = await briefing(false);
+  assert.doesNotMatch(outside, /git directory|check `git status`/);
+  assert.match(outside, /A shared folder — everyone works here/);
+  assert.match(outside, /It is not a git repository \(`git status` there finds none\); Agoryx tracks each turn's changes itself\./);
+  assert.match(outside, /Every turn's exact change is kept/);
+});

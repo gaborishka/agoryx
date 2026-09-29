@@ -219,7 +219,10 @@ So Agoryx keeps **the exact change of every turn**, and the other agents see it.
   no `.git`, nothing is committed for it, and your `.gitignore` still applies. There the rest of a cut
   patch is `git --git-dir=.agoryx/shadow.git --work-tree=. diff <before> <after>`. A folder of more than
   20,000 files (a home directory) is left untracked. Once the folder becomes a repository of its own,
-  that repository is used.
+  that repository is used. The agents' briefing says which of these the folder is: in a git repository
+  it tells them to check `git status` before overwriting; in a folder without git it says `git status`
+  finds nothing there and that Agoryx tracks the changes; in an untracked one, that nobody's changes
+  are recorded, so they name the files they touched.
 
 ## Using it
 

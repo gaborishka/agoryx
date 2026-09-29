@@ -162,13 +162,15 @@ export interface BriefingInput {
    * to that session. Null for an agent the profile is off for — it gets nothing of it.
    */
   profile?: string | null;
+  /** How the workspace's changes are seen (workspace.ts workspaceTracking); its own git when not given. */
+  tracking?: "git" | "shadow" | "none";
 }
 
 /**
  * First-turn context. Deliberately no role: who is here, where the work lives,
  * how turns and passing work, and how to use the table.
  */
-export const buildBriefing = ({ state, agent, agentCli: cli, env, profile }: BriefingInput): string => {
+export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, tracking = "git" }: BriefingInput): string => {
   const agentCli = cli.command;
   const norms = promptNorms(env);
   const others = state.agents.filter((entry) => entry.id !== agent.id);
@@ -183,10 +185,24 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile }: Bri
     "",
     `Room: "${state.name}"`,
     `Workspace: ${state.workspace}`,
-    `  A shared git directory — everyone works here. ${access}`,
-    "  Others may edit files at the same time: check `git status` / `git diff` before overwriting, and say which files you touched.",
+    ...(tracking === "git"
+      ? [
+          `  A shared git directory — everyone works here. ${access}`,
+          "  Others may edit files at the same time: check `git status` / `git diff` before overwriting, and say which files you touched.",
+        ]
+      : [
+          `  A shared folder — everyone works here. ${access}`,
+          tracking === "shadow"
+            ? "  It is not a git repository (`git status` there finds none); Agoryx tracks each turn's changes itself."
+            : "  It is not a git repository, and it is too big for Agoryx to track: nobody's changes are recorded here, so say exactly which files you touched.",
+          "  Others may edit files at the same time: re-read a file before overwriting it, and say which files you touched.",
+        ]),
     `  Say what you are doing while you do it: \`${agentCli} say "taking internal/x.ts — leaving the CLI to you"\` posts to the room at once, as often as is useful (it is not a turn; it wakes only an agent you @mention that is not working now — that one starts at once, so \`say "@<agent> can you run the daemon tests?"\` gets an answer while you keep going; see it with \`read new\`). \`${agentCli} read new\` shows what the others said since your turn began — look before you take a file someone may be on.`,
-    `  Every turn's exact change is kept. Your delta lists what others changed with +/− counts and the turn id; \`${agentCli} diff t7\` prints that turn's patch (add a path to narrow it, or no id to list recent ones). What was done is in the diff, not only in what was said about it.`,
+    ...(tracking === "none"
+      ? []
+      : [
+          `  Every turn's exact change is kept. Your delta lists what others changed with +/− counts and the turn id; \`${agentCli} diff t7\` prints that turn's patch (add a path to narrow it, or no id to list recent ones). What was done is in the diff, not only in what was said about it.`,
+        ]),
     "",
     "How the room works:",
     "- Each turn you get only what is new since your last turn. Your final message is posted to the room; your tool calls show up to others as a short activity trace.",
@@ -208,7 +224,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile }: Bri
       ? [
           `The room's canonical file: ${state.settings.doc} (in the workspace)`,
           "  The one text this room is making. Anyone edits it, with their own tools, when the conversation changes what it should say — there is no owner and no turn order for it.",
-          "  Keep it the current version, not a log: the conversation and git hold the history. When others change it, your next turn shows you the diff.",
+          `  Keep it the current version, not a log: the conversation and ${tracking === "git" ? "git" : "the kept changes"} hold the history. When others change it, your next turn shows you the diff.`,
           "",
         ]
       : []),

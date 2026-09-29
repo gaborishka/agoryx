@@ -181,7 +181,7 @@ test("a native exchange whose reply was not imported yet still gets it, once", a
   }
 });
 
-test("in parallel turns a file only a shell command changed is credited to neither", async () => {
+test("in parallel turns a file a shell command changed without naming it is credited to neither; one it named is its", async () => {
   const room = createTestRoom();
   try {
     const { store } = room;
@@ -190,9 +190,10 @@ test("in parallel turns a file only a shell command changed is credited to neith
     }
     store.append({ type: "turn.activity", turnId: "t-claude", agent: "claude", activity: { id: "a1", kind: "edit", label: "src/a.ts" } });
     store.append({ type: "turn.activity", turnId: "t-codex", agent: "codex", activity: { id: "a2", kind: "command", label: "sed -i s/x/y/ src/b.ts" } });
+    store.append({ type: "turn.activity", turnId: "t-codex", agent: "codex", activity: { id: "a3", kind: "command", label: "npm run format" } });
     const attribute = (room.engine as unknown as { attributeFiles(turnId: string, files: string[]): string[] }).attributeFiles.bind(room.engine);
-    assert.deepEqual(attribute("t-claude", ["src/a.ts", "src/b.ts"]), ["src/a.ts"]);
-    assert.deepEqual(attribute("t-codex", ["src/a.ts", "src/b.ts"]), []);
+    assert.deepEqual(attribute("t-claude", ["src/a.ts", "src/b.ts", "src/c.ts"]), ["src/a.ts"]);
+    assert.deepEqual(attribute("t-codex", ["src/a.ts", "src/b.ts", "src/c.ts"]), ["src/b.ts"], "sed named b.ts; what the formatter touched is nobody's");
   } finally {
     await room.cleanup();
   }

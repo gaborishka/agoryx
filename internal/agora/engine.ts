@@ -12,6 +12,7 @@ import type { SecondLook } from "./jev.js";
 import { validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { RoomStore } from "./store.js";
+import { namesFile, shellWriteTargets } from "./shell-writes.js";
 import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
 import type {
   Activity,
@@ -1047,7 +1048,18 @@ export class RoomEngine {
   /** Rewrites of machine paths into what a reader recognises, longest first. */
   private tidyRules?: Array<[string, string]>;
 
-  private tidyActivity(activity: Activity): Activity {
+  /** What each running turn's shell commands named as written, read from the whole command before its label is clipped. */
+  private shellWrites = new Map<string, Set<string>>();
+
+  private noteShellWrites(turnId: string, command: string): void {
+    const targets = shellWriteTargets(this.tidyText(command));
+    if (targets.length === 0) return;
+    const known = this.shellWrites.get(turnId) ?? new Set<string>();
+    for (const target of targets) known.add(target);
+    this.shellWrites.set(turnId, known);
+  }
+
+  private tidyText(text: string): string {
     if (!this.tidyRules) {
       const variants = (path: string) => {
         let real = path;
@@ -1063,9 +1075,12 @@ export class RoomEngine {
       for (const root of variants(this.state.workspace)) rules.push([`${root}/`, ""], [root, "."]);
       this.tidyRules = rules.sort((a, b) => b[0].length - a[0].length);
     }
+    return this.tidyRules!.reduce((acc, [from, to]) => acc.split(from).join(to), text);
+  }
+
+  private tidyActivity(activity: Activity): Activity {
     // Runners keep labels long enough for this to see whole paths; clip afterwards.
-    const tidy = (text: string, max: number) =>
-      truncate(this.tidyRules!.reduce((acc, [from, to]) => acc.split(from).join(to), text), max);
+    const tidy = (text: string, max: number) => truncate(this.tidyText(text), max);
     return {
       ...activity,
       label: tidy(activity.label, 200),
@@ -1132,6 +1147,7 @@ export class RoomEngine {
         this.store.emit({ type: "turn.stream", turnId, agent: agent.id, text, ...(reset ? { reset } : {}) });
       },
       onActivity: (activity: Activity) => {
+        if (activity.kind === "command") this.noteShellWrites(turnId, activity.label);
         this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity: this.tidyActivity(activity) });
       },
     };
@@ -1218,6 +1234,7 @@ export class RoomEngine {
     // did is this turn's, whatever tool changed it. Its patch starts from where that turn left the file.
     const late = handoff && handoff.dirty && dirty && alone ? seen.filter((file) => handoff.dirty!.get(file) !== dirty.get(file)) : [];
     let files = this.attributeFiles(turnId, seen, late, foreign.map((entry) => `${entry.room}/${entry.turn}`));
+    this.shellWrites.delete(turnId);
     const changed = this.turnChanges(agent, turnId, tree, after, files, late.length && handoff?.tree ? { tree: handoff.tree, files: late } : undefined);
     // A file only touched (same content) is not a change.
     if (changed) files = files.filter((file) => changed.changes.some((change) => change.path === file));
@@ -1340,12 +1357,17 @@ export class RoomEngine {
     const turn = this.state.turns.find((entry) => entry.id === turnId);
     if (!turn) return files;
     const claims = (entry: TurnState, file: string) =>
-      entry.activity.some((activity) => activity.kind === "edit" && activity.label.includes(file)) ||
+      entry.activity.some(
+        (activity) =>
+          (activity.kind === "edit" && activity.label.includes(file)) ||
+          (activity.kind === "command" && shellWriteTargets(activity.label).some((target) => namesFile(target, file))),
+      ) ||
+      [...(this.shellWrites.get(entry.id) ?? [])].some((target) => namesFile(target, file)) ||
       this.state.docRevisions.some((revision) => revision.turnId === entry.id && revision.path === file);
     if (this.overlapping(turnId).length === 0 && foreign.length === 0) return files;
-    // Another turn — of this room or of another room sharing the workspace — ran at the same time: a file only this turn's own edit tool
-    // touched is its (both, if both edited it), and so is one changed after the others had ended.
-    // One changed only by a shell command while they ran could be either's, so it is credited to nobody.
+    // Another turn — of this room or of another room sharing the workspace — ran at the same time: a file this turn's own edit tool
+    // touched, or its own shell command named as written (`> file`, `sed -i … file`, `open('file', 'w')`), is its (both, if both did),
+    // and so is one changed after the others had ended. One a command changed without naming it could be either's: credited to nobody.
     const mine = files.filter((file) => claims(turn, file) || late.includes(file));
     const unclaimed = files.filter((file) => !mine.includes(file));
     if (unclaimed.length > 0) this.log(`${turnId}: not credited (parallel turns${foreign.length ? `, other rooms: ${foreign.join(", ")}` : ""}): ${unclaimed.join(", ")}`);

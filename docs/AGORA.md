@@ -166,7 +166,10 @@ Rooms created with a fresh workspace get `README.md`. Set it with `agoryx new --
 keeps its history. It never says what goes in it, and anyone can write it with any tool.
 
 - **Every revision has an author.** A change made during a room turn is credited to that turn, using
-  git status and the turn's own edit trace (parallel turns don't steal each other's edits). A change
+  git status and the turn's own edit trace (parallel turns don't steal each other's edits). In parallel
+  turns a file a shell command changed is the turn's only if its own command named it as written
+  (`> file`, `tee`, `sed -i … file`, `cp`/`mv`/`rm`, a script's `open('file', 'w')`); one no command named
+  could be either's and is credited to nobody. A change
   made between turns goes to the only agent in a native exchange (marked "у власній сесії").
   Otherwise it is the human's (their editor or the UI). The version the room found is the baseline.
 - **The others get the diff.** An agent's delta carries the revisions made since its last turn, as a

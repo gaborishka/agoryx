@@ -77,10 +77,13 @@ export const createTestRoom = (options: {
   /** Issues the agents' keys, as the daemon does. */
   agentKey?: (agentId: string) => string | undefined;
   secondLook?: import("../../internal/agora/jev.js").SecondLook;
+  /** false: the workspace is a folder the human brought (it exists, and is not a git repository). */
+  createdWorkspace?: boolean;
 } = {}): TestRoom => {
   const home = mkdtempSync(join(tmpdir(), "agora-test-"));
   const roomsRoot = join(home, "rooms");
   const workspace = join(home, "ws");
+  if (options.createdWorkspace === false) mkdirSync(workspace, { recursive: true });
   const { fakeClaude, fakeCodex } = writeFakeBins(home);
   const rulesPath = join(home, "rules.json");
   writeFileSync(rulesPath, JSON.stringify(options.rules ?? []));
@@ -101,7 +104,7 @@ export const createTestRoom = (options: {
   const store = RoomStore.create(roomsRoot, {
     name: options.name ?? "Test room",
     workspace,
-    createdWorkspace: true,
+    createdWorkspace: options.createdWorkspace ?? true,
     human: "Ivan",
     agents: options.agents ?? AGENTS,
     settings: { ...DEFAULT_SETTINGS, network: false, ...options.settings },

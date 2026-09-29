@@ -211,6 +211,12 @@ So Agoryx keeps **the exact change of every turn**, and the other agents see it.
   lost patch file is rebuilt from git. Patches over 256 KB are cut, and the note names the
   `git diff <before> <after>` that has the rest. Snapshots are skipped when more than 3000 files
   are dirty. The turn then lists its files without counts.
+- **A folder that is not a git repository** (one you pass with `--dir`) is tracked the same way through
+  Agoryx's own repository in `.agoryx/shadow.git`, with your folder as its work tree. Your folder gains
+  no `.git`, nothing is committed for it, and your `.gitignore` still applies. There the rest of a cut
+  patch is `git --git-dir=.agoryx/shadow.git --work-tree=. diff <before> <after>`. A folder of more than
+  20,000 files (a home directory) is left untracked. Once the folder becomes a repository of its own,
+  that repository is used.
 
 ## Using it
 

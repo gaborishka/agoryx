@@ -268,3 +268,27 @@ test("a file two parallel turns both wrote is marked in each change as not that 
     await room.cleanup();
   }
 });
+
+test("a folder that is not a git repository still has each turn's changes tracked — through Agoryx's own shadow repository, the folder gains no .git", async () => {
+  const room = createTestRoom({
+    createdWorkspace: false,
+    rules: [
+      { agent: "claude", match: "fix", write: { path: "src/locale.js", content: "export const fixed = true;\n" }, reply: "Fixed locale.js.", once: true },
+      { reply: "::pass::" },
+    ],
+  });
+  const workspace = room.store.state.workspace;
+  try {
+    writeFileSync(join(workspace, "README.md"), "the human's own file\n");
+    room.engine.postHuman("@claude fix the locale");
+    await withTimeout(room.engine.waitIdle());
+    const turn = room.store.state.turns.find((entry) => entry.agent === "claude")!;
+    assert.deepEqual(turn.changes, [{ path: "src/locale.js", status: "A", added: 1, removed: 0 }]);
+    assert.match(readFileSync(join(workspace, ".agoryx", "rooms", room.store.state.id, "turns", `${turn.id}.patch`), "utf8"), /\+export const fixed = true;/);
+    assert.equal(existsSync(join(workspace, ".git")), false, "the human's folder is not made a repository");
+    assert.ok(existsSync(join(workspace, ".agoryx", "shadow.git", "HEAD")));
+    assert.equal(room.store.state.commits?.length ?? 0, 0, "nothing is committed for a folder Agoryx did not create");
+  } finally {
+    await room.cleanup();
+  }
+});

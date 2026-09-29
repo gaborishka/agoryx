@@ -41,11 +41,47 @@ const git = (cwd: string, args: string[], timeout = 15_000, env?: NodeJS.Process
 export const isGitRepo = (dir: string): boolean => git(dir, ["rev-parse", "--is-inside-work-tree"])?.trim() === "true";
 
 /**
+ * A folder the human brought that is not a git repository still gets its changes tracked: Agoryx keeps its
+ * own repository for that in .agoryx/shadow.git, with the folder as its work tree. The folder itself gains no
+ * .git and nothing is ever committed there; it only lets Agoryx see what each turn changed. Once the folder
+ * becomes a repository of its own, that one is used.
+ */
+const SHADOW_GIT = "shadow.git";
+const shadowGitDir = (root: string): string => join(root, AGORYX_DIR, SHADOW_GIT);
+const shadowEnv = (root: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined => {
+  const dir = shadowGitDir(root);
+  if (!existsSync(dir) || existsSync(join(root, ".git"))) return env;
+  return { ...(env ?? process.env), GIT_DIR: dir, GIT_WORK_TREE: root };
+};
+/** A folder past this many files (a home directory…) is left untracked rather than scanned on every turn. */
+export const MAX_SHADOW_FILES = 20_000;
+const fewerFilesThan = (root: string, limit: number): boolean => {
+  let seen = 0;
+  const walk = (dir: string): boolean => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return true;
+    }
+    for (const entry of entries) {
+      if (entry.name === AGORYX_DIR || entry.name === ".git") continue;
+      if ((seen += 1) >= limit) return false;
+      if (entry.isDirectory() && !walk(join(dir, entry.name))) return false;
+    }
+    return true;
+  };
+  return walk(root);
+};
+/** git for seeing changes: the workspace's own repository, or Agoryx's shadow one for a folder without it. */
+const track = (root: string, args: string[], timeout = 15_000, env?: NodeJS.ProcessEnv): string | null => git(root, args, timeout, shadowEnv(root, env));
+
+/**
  * Where the workspace sits inside its repository ("" at the root, "sub/dir/" below it). A room given a
  * subdirectory of a bigger repository sees, diffs and commits only that subdirectory; git reports paths
  * from the repository root, so they are made workspace-relative with this.
  */
-const repoPrefix = (root: string): string => git(root, ["rev-parse", "--show-prefix"])?.trim() ?? "";
+const repoPrefix = (root: string): string => track(root, ["rev-parse", "--show-prefix"])?.trim() ?? "";
 
 /** A repository-relative path as a workspace-relative one; null when it lies outside the workspace. */
 const underPrefix = (prefix: string, path: string): string | null =>
@@ -104,6 +140,15 @@ export const prepareWorkspace = (root: string, options: { initGit: boolean; room
   if (options.initGit && !isGitRepo(root)) {
     git(root, ["init", "-q"]);
   }
+  if (!isGitRepo(root) && !existsSync(shadowGitDir(root)) && fewerFilesThan(root, MAX_SHADOW_FILES)) {
+    mkdirSync(join(root, AGORYX_DIR), { recursive: true });
+    git(root, ["init", "-q"], 15_000, { ...process.env, GIT_DIR: shadowGitDir(root), GIT_WORK_TREE: root });
+    try {
+      writeFileSync(join(shadowGitDir(root), "info", "exclude"), `/${AGORYX_DIR}/\n`);
+    } catch {
+      rmSync(shadowGitDir(root), { recursive: true, force: true }); // untracked is better than tracking Agoryx's own files
+    }
+  }
   const paths = workspacePaths(root, options.room?.id);
   mkdirSync(paths.acksDir, { recursive: true });
   if (options.room) {
@@ -137,7 +182,7 @@ export type ChangeSnapshot = Map<string, string>;
 
 /** Signature of every dirty/untracked file: git status code + mtime + size. */
 export const snapshotChanges = (root: string): ChangeSnapshot | null => {
-  const output = git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
+  const output = track(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
   if (output === null) return null;
   const prefix = repoPrefix(root);
   const snapshot: ChangeSnapshot = new Map();
@@ -250,15 +295,15 @@ export const MAX_TREE_SNAPSHOT_DIRTY = 3000;
  * what the turn changed.
  */
 export const snapshotTree = (root: string): string | null => {
-  const indexRel = git(root, ["rev-parse", "--git-path", "index"])?.trim();
+  const indexRel = track(root, ["rev-parse", "--git-path", "index"])?.trim();
   if (!indexRel) return null;
   const index = isAbsolute(indexRel) ? indexRel : join(root, indexRel);
   const scratch = join(tmpdir(), `agoryx-index-${process.pid}-${randomBytes(4).toString("hex")}`);
   try {
     if (existsSync(index)) copyFileSync(index, scratch);
     const env = { ...process.env, GIT_INDEX_FILE: scratch };
-    if (git(root, ["add", "-A", "--", "."], 30_000, env) === null) return null;
-    return git(root, ["write-tree"], 15_000, env)?.trim() || null;
+    if (track(root, ["add", "-A", "--", "."], 30_000, env) === null) return null;
+    return track(root, ["write-tree"], 15_000, env)?.trim() || null;
   } catch {
     return null;
   } finally {
@@ -289,8 +334,8 @@ export const treeChanges = (
   const specs = files.map((file) => `:(top,literal)${prefix}${file}`);
   // --relative: paths in the counts and the patch are the workspace's, like everywhere else in the room.
   const base = ["-c", "core.quotepath=off", "diff", "--no-renames", "--no-ext-diff", "--no-color", "--relative", before, after];
-  const numstat = git(root, [...base, "--numstat", "-z", "--", ...specs]);
-  const names = git(root, [...base, "--name-status", "-z", "--", ...specs]);
+  const numstat = track(root, [...base, "--numstat", "-z", "--", ...specs]);
+  const names = track(root, [...base, "--name-status", "-z", "--", ...specs]);
   if (numstat === null || names === null) return null;
   const statusOf = new Map<string, string>();
   const nameParts = names.split("\0");
@@ -307,7 +352,7 @@ export const treeChanges = (
       removed: match[2] === "-" ? null : Number(match[2]),
     });
   }
-  let patch = git(root, [...base, "-U3", "--", ...specs], 30_000) ?? "";
+  let patch = track(root, [...base, "-U3", "--", ...specs], 30_000) ?? "";
   const truncated = patch.length > MAX_TURN_PATCH;
   if (truncated) patch = `${patch.slice(0, MAX_TURN_PATCH)}\n${CUT_MARK} (${patch.length - MAX_TURN_PATCH} more chars): git diff ${before.slice(0, 12)} ${after.slice(0, 12)}\n`;
   return { changes, patch, truncated };
@@ -319,7 +364,7 @@ export const treeChanges = (
  */
 export const treeChangedPaths = (root: string, before: string, after: string): string[] | null => {
   if (before === after) return [];
-  const output = git(root, ["-c", "core.quotepath=off", "diff", "--no-renames", "--relative", "--name-only", "-z", before, after, "--", "."]);
+  const output = track(root, ["-c", "core.quotepath=off", "diff", "--no-renames", "--relative", "--name-only", "-z", before, after, "--", "."]);
   if (output === null) return null;
   return output.split("\0").filter((path) => path && !path.startsWith(`${AGORYX_DIR}/`));
 };
@@ -553,7 +598,7 @@ export const checkpointCommit = (root: string, subject: string, body: string, fi
 // ---------------------------------------------------------------------------
 
 export const listWorkspaceFiles = (root: string, limit = 2000): string[] => {
-  const fromGit = git(root, ["ls-files", "-co", "--exclude-standard"]);
+  const fromGit = track(root, ["ls-files", "-co", "--exclude-standard"]);
   if (fromGit !== null) {
     return fromGit
       .split("\n")

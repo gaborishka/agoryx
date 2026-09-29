@@ -354,7 +354,7 @@ export const describeTableOp = (op: TableOp, table?: TableState, options: { whol
   }
 };
 
-/** Markdown snapshot of the table, written to <workspace>/.agoryx/TABLE.md for agents. */
+/** Markdown snapshot of the table, written to <workspace>/.agoryx/rooms/<room>/TABLE.md for agents. */
 export const renderTableMarkdown = (table: TableState, roomName: string): string => {
   const lines: string[] = [`# Table — ${roomName}`, ""];
   const isEmpty =

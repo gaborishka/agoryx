@@ -52,28 +52,65 @@ const underPrefix = (prefix: string, path: string): string | null =>
 export interface WorkspacePaths {
   root: string;
   agoryxDir: string;
+  /** Where this room's own service files live: .agoryx/rooms/<room>/, or .agoryx/ itself (the layout before rooms shared a workspace). */
+  roomDir: string;
   opsDir: string;
   acksDir: string;
   tableFile: string;
+  turnsDir: string;
 }
 
-export const workspacePaths = (root: string): WorkspacePaths => {
+/** A room id as a directory name, or null when nothing safe is left of it. */
+export const roomDirName = (roomId: string): string | null => {
+  const clean = roomId.replace(/[^\w.-]/g, "");
+  return clean && !clean.startsWith(".") ? clean : null;
+};
+
+/**
+ * Rooms may share a workspace, and each numbers its turns from t1, has its own table and its own
+ * inbox; so everything but the message copies (already per room) sits under .agoryx/rooms/<room>/.
+ * Without a room id: the single-room layout older rooms and shims used, straight under .agoryx/.
+ */
+export const workspacePaths = (root: string, roomId?: string): WorkspacePaths => {
   const agoryxDir = join(root, AGORYX_DIR);
-  const opsDir = join(agoryxDir, "ops");
-  return { root, agoryxDir, opsDir, acksDir: join(opsDir, "acks"), tableFile: join(agoryxDir, "TABLE.md") };
+  const dirName = roomId === undefined ? null : roomDirName(roomId);
+  if (roomId !== undefined && !dirName) throw new Error(`'${roomId}' is not a room id`);
+  const roomDir = dirName ? join(agoryxDir, "rooms", dirName) : agoryxDir;
+  const opsDir = join(roomDir, "ops");
+  return { root, agoryxDir, roomDir, opsDir, acksDir: join(opsDir, "acks"), tableFile: join(roomDir, "TABLE.md"), turnsDir: join(roomDir, "turns") };
+};
+
+/** Where a room writes its id and name, so the agent tool can list the rooms sharing a workspace. */
+const ROOM_INFO = "room.json";
+
+/** Ids of the rooms that have opened in this workspace since rooms got their own directories. */
+export const workspaceRooms = (root: string): string[] => {
+  const dir = join(root, AGORYX_DIR, "rooms");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && existsSync(join(dir, entry.name, ROOM_INFO)))
+    .map((entry) => entry.name)
+    .sort();
 };
 
 /**
  * Make sure the workspace exists, is a git repo when Agoryx created it, and
  * keeps Agoryx's own files (.agoryx/) out of git status.
  */
-export const prepareWorkspace = (root: string, options: { initGit: boolean }): WorkspacePaths => {
+export const prepareWorkspace = (root: string, options: { initGit: boolean; room?: { id: string; name: string } }): WorkspacePaths => {
   mkdirSync(root, { recursive: true });
   if (options.initGit && !isGitRepo(root)) {
     git(root, ["init", "-q"]);
   }
-  const paths = workspacePaths(root);
+  const paths = workspacePaths(root, options.room?.id);
   mkdirSync(paths.acksDir, { recursive: true });
+  if (options.room) {
+    try {
+      writeFileSync(join(paths.roomDir, ROOM_INFO), `${JSON.stringify({ id: options.room.id, name: options.room.name })}\n`);
+    } catch {
+      // the agent tool then cannot list this room by name; --room <id> still reaches it
+    }
+  }
   if (isGitRepo(root)) {
     const excludeRel = git(root, ["rev-parse", "--git-path", "info/exclude"])?.trim();
     if (excludeRel) {
@@ -222,7 +259,7 @@ export const treeChangedPaths = (root: string, before: string, after: string): s
 const TURN_ID = /^t\d{1,9}$/;
 
 export const turnPatchPath = (paths: WorkspacePaths, turnId: string): string | null =>
-  TURN_ID.test(turnId) ? join(paths.agoryxDir, "turns", `${turnId}.patch`) : null;
+  TURN_ID.test(turnId) ? join(paths.turnsDir, `${turnId}.patch`) : null;
 
 /** "+12 −3", or "(binary)". */
 export const changeStats = (change: FileChange): string =>
@@ -290,18 +327,36 @@ export const writeRoomMessage = (
 export const readTurnPatch = (
   paths: WorkspacePaths,
   turnId: string,
-  fallback?: { trees?: { before: string; after: string }; files: string[] },
+  fallback?: { trees?: { before: string; after: string }; files: string[]; author?: string; endedAt?: string; ownsLegacy?: () => boolean },
 ): { patch: string; truncated: boolean } | null => {
   const target = turnPatchPath(paths, turnId);
   if (!target) return null;
-  if (existsSync(target)) {
-    const text = readFileSync(target, "utf8");
+  const fromFile = (file: string) => {
+    const text = readFileSync(file, "utf8");
     const patch = text.replace(/^(#[^\n]*\n)+/, "");
-    return { patch, truncated: patch.includes(CUT_MARK) };
+    return { header: text.split("\n", 1)[0]!, patch, truncated: patch.includes(CUT_MARK) };
+  };
+  if (existsSync(target)) {
+    const { patch, truncated } = fromFile(target);
+    return { patch, truncated };
   }
-  if (!fallback?.trees || fallback.files.length === 0) return null;
-  const diff = treeChanges(paths.root, fallback.trees.before, fallback.trees.after, fallback.files);
-  return diff ? { patch: diff.patch, truncated: diff.truncated } : null;
+  if (fallback?.trees && fallback.files.length > 0) {
+    const diff = treeChanges(paths.root, fallback.trees.before, fallback.trees.after, fallback.files);
+    if (diff) return { patch: diff.patch, truncated: diff.truncated };
+  }
+  // A turn from before rooms had their own directories: its patch sits in .agoryx/turns/, where another
+  // room sharing the workspace may have written a turn of the same number, by the same agent, in the same
+  // minute. So it is taken only by a room that alone ever had this workspace (the caller knows the rooms),
+  // and only when its header names this turn's author and the minute it ended.
+  const legacy = turnPatchPath(workspacePaths(paths.root), turnId)!;
+  if (legacy !== target && fallback?.author && fallback.ownsLegacy && existsSync(legacy) && fallback.ownsLegacy()) {
+    const { header, patch, truncated } = fromFile(legacy);
+    const match = /^# (t\d+) · (.*) · (\d{4}-\d\d-\d\d \d\d:\d\d) UTC$/.exec(header);
+    const written = match ? Date.parse(`${match[3]!.replace(" ", "T")}:00Z`) : NaN;
+    const near = !fallback.endedAt || Math.abs(written - Date.parse(fallback.endedAt)) <= 2 * 60_000;
+    if (match?.[1] === turnId && match[2] === fallback.author && near) return { patch, truncated };
+  }
+  return null;
 };
 
 /** One file's `diff --git` section of a patch; null when the patch does not touch it. */

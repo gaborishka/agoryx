@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // The `agoryx` command agents see inside a room. Zero dependencies on purpose:
 // it runs inside the agents' sandboxes, writes table ops into the workspace
-// inbox (.agoryx/ops/<agent>.jsonl) and waits briefly for the room to ack.
+// inbox (.agoryx/rooms/<room>/ops/<agent>.jsonl) and waits briefly for the room to ack.
 // It also works outside a room turn, when someone talks to the agent directly
 // in its own session: the op is signed with --as, or with a hint from the
 // agent's environment, and the room reads it from the same inbox.
-// `agoryx diff` reads what each turn changed (.agoryx/turns/<turn>.patch).
+// `agoryx diff` reads what each turn changed (.agoryx/rooms/<room>/turns/<turn>.patch).
 // `agoryx read` reads what was said, in full (.agoryx/messages/<room>/<id>.md).
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -37,21 +37,78 @@ const USAGE = `agoryx — room tools for agents
   agoryx read              recent messages: id, who, how long, how it starts
   agoryx read m12          the full text of message m12 (your turn's delta may give only its start)
   agoryx read m12 m15      several at once
-                           (outside a room turn, if rooms share this workspace: --room <id>)
 
 Outside a room turn (someone talking to you directly in your own session), run it
 from the room's workspace and sign it: agoryx table … --as <your id in the room>.
+If several rooms share the workspace, name yours too: --room <room id> (table, diff, read).
 `;
 
+const cleanRoom = (value) => String(value).replace(/[^\w.-]/g, "");
+
+/** The workspace's .agoryx directory: the one the room turn's inbox is in, or the nearest one up from here. */
 const findAgoryxDir = () => {
-  if (process.env.AGORYX_OPS_DIR) return dirname(resolve(process.env.AGORYX_OPS_DIR));
+  if (process.env.AGORYX_OPS_DIR) {
+    const opsParent = dirname(resolve(process.env.AGORYX_OPS_DIR));
+    // .agoryx/rooms/<room>/ops, or .agoryx/ops from a room that opened before rooms had their own directories
+    return /[\\/]rooms$/.test(dirname(opsParent)) ? dirname(dirname(opsParent)) : opsParent;
+  }
   let dir = process.cwd();
   for (;;) {
-    if (existsSync(join(dir, ".agoryx", "ops"))) return join(dir, ".agoryx");
+    if (existsSync(join(dir, ".agoryx", "ops")) || existsSync(join(dir, ".agoryx", "rooms"))) return join(dir, ".agoryx");
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
+};
+
+/** Rooms that opened in this workspace with their own directories: [{ id, name }]. */
+const roomsHere = (agoryxDir) => {
+  const root = join(agoryxDir, "rooms");
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "room.json")))
+    .map((entry) => {
+      try {
+        return { id: entry.name, name: JSON.parse(readFileSync(join(root, entry.name, "room.json"), "utf8")).name ?? entry.name };
+      } catch {
+        return { id: entry.name, name: entry.name };
+      }
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+};
+
+/**
+ * The directory holding one room's inbox (ops/), table (TABLE.md) and turn patches (turns/). Rooms may
+ * share a workspace, so each has .agoryx/rooms/<room>/. A room turn names it (AGORYX_OPS_DIR, AGORYX_ROOM);
+ * outside one, --room does, or the only room here. Several rooms and no --room is an error, not a guess:
+ * a move on the wrong room's table is worse than none. A workspace no room has opened with per-room
+ * directories yet keeps the older layout straight under .agoryx/.
+ */
+const roomDir = (agoryxDir, flagRoom) => {
+  const named = flagRoom ?? process.env.AGORYX_ROOM;
+  if (named !== undefined) {
+    const room = cleanRoom(named);
+    if (!room || room !== String(named) || room.startsWith(".")) fail(`'${named}' is not a room id`);
+    const dir = join(agoryxDir, "rooms", room);
+    if (!existsSync(dir)) {
+      // A room turn run by an engine from before per-room directories: its inbox is the one it named.
+      if (flagRoom === undefined && process.env.AGORYX_OPS_DIR && roomsHere(agoryxDir).length === 0
+        && dirname(resolve(process.env.AGORYX_OPS_DIR)) === agoryxDir) return agoryxDir;
+      const rooms = roomsHere(agoryxDir);
+      fail(`no room '${room}' in this workspace${rooms.length ? ` — rooms here: ${rooms.map((entry) => `${entry.id} (${entry.name})`).join(", ")}` : ""}`);
+    }
+    return dir;
+  }
+  if (process.env.AGORYX_OPS_DIR) {
+    const selected = dirname(resolve(process.env.AGORYX_OPS_DIR));
+    if (selected !== agoryxDir) return selected;
+  }
+  const rooms = roomsHere(agoryxDir);
+  if (rooms.length === 0) return agoryxDir;
+  if (rooms.length === 1) return join(agoryxDir, "rooms", rooms[0].id);
+  fail(
+    `${rooms.length} rooms share this workspace — say which one with --room <id>:\n${rooms.map((entry) => `  --room ${entry.id}   ${entry.name}`).join("\n")}`,
+  );
 };
 
 const parseArgs = (argv) => {
@@ -161,21 +218,30 @@ const splitPatch = (text) => {
   return { header, body: lines.join("\n") };
 };
 
-const runDiff = (agoryxDir, ref, path) => {
-  const dir = join(agoryxDir, "turns");
-  const turns = existsSync(dir)
-    ? readdirSync(dir)
-        .filter((name) => /^t\d+\.patch$/.test(name))
-        .map((name) => Number(name.slice(1, -".patch".length)))
-        .sort((a, b) => b - a)
-    : [];
+/**
+ * A room's turn patches; a room that opened before rooms had their own directories keeps its older
+ * ones in .agoryx/turns/, read too while it is the only room in the workspace.
+ */
+const runDiff = (agoryxDir, room, ref, path) => {
+  const dirs = [join(room, "turns")];
+  if (room !== agoryxDir && roomsHere(agoryxDir).length <= 1) dirs.push(join(agoryxDir, "turns"));
+  const found = new Map();
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSync(dir)) {
+      if (!/^t\d+\.patch$/.test(name)) continue;
+      const n = Number(name.slice(1, -".patch".length));
+      if (!found.has(n)) found.set(n, join(dir, name));
+    }
+  }
+  const turns = [...found.keys()].sort((a, b) => b - a);
   if (!ref) {
     if (turns.length === 0) {
       process.stdout.write("No turn has changed files yet.\n");
       return;
     }
     for (const n of turns.slice(0, 15)) {
-      const { header } = splitPatch(readFileSync(join(dir, `t${n}.patch`), "utf8"));
+      const { header } = splitPatch(readFileSync(found.get(n), "utf8"));
       process.stdout.write(`${header.filter((line) => line !== "#").map((line) => line.replace(/^# ?/, "")).join("\n")}\n\n`);
     }
     if (turns.length > 15) process.stdout.write(`… ${turns.length - 15} older turns: agoryx diff t<N>\n`);
@@ -183,8 +249,8 @@ const runDiff = (agoryxDir, ref, path) => {
   }
   const id = /^t?\d+$/.test(ref) ? `t${ref.replace(/^t/, "")}` : null;
   if (!id) fail(`'${ref}' is not a turn id (like t7) — agoryx diff lists them`);
-  const file = join(dir, `${id}.patch`);
-  if (!existsSync(file)) fail(`turn ${id} changed no files (or its patch is gone) — agoryx diff lists the ones that did`);
+  const file = found.get(Number(id.slice(1)));
+  if (!file) fail(`turn ${id} changed no files (or its patch is gone) — agoryx diff lists the ones that did`);
   const { header, body } = splitPatch(readFileSync(file, "utf8"));
   if (!path) {
     process.stdout.write(`${header.join("\n")}\n${body}`);
@@ -210,7 +276,7 @@ const messagesDir = (agoryxDir, flagRoom) => {
   const named = flagRoom ?? process.env.AGORYX_ROOM;
   if (named) {
     const room = clean(named);
-    if (!room || room.startsWith(".")) fail(`'${named}' is not a room id`);
+    if (!room || room !== String(named) || room.startsWith(".")) fail(`'${named}' is not a room id`);
     return join(root, room);
   }
   const rooms = existsSync(root)
@@ -270,24 +336,27 @@ const main = async () => {
 
   const agoryxDir = findAgoryxDir();
   if (!agoryxDir) fail("not inside an Agoryx room workspace (no .agoryx/ directory found)");
-  if (command === "diff") {
-    runDiff(agoryxDir, verb, args[0]);
-    return;
-  }
   if (command === "read") {
     runRead(agoryxDir, verb ? [verb, ...args] : []);
     return;
   }
+  const { positional, flags } = parseArgs(verb ? [verb, ...args] : []);
+  const room = roomDir(agoryxDir, flags.room);
+  if (command === "diff") {
+    runDiff(agoryxDir, room, positional[0], positional[1]);
+    return;
+  }
 
+  positional.shift();
   if (!verb || verb === "show") {
-    const tableFile = process.env.AGORYX_TABLE || join(agoryxDir, "TABLE.md");
+    const tableFile = join(room, "TABLE.md");
     process.stdout.write(existsSync(tableFile) ? readFileSync(tableFile, "utf8") : "The table is empty.\n");
     return;
   }
 
-  const { positional, flags } = parseArgs(args);
   const agent = signer(flags);
   delete flags.as;
+  delete flags.room;
   // A long markdown body (diagrams, html) is easier to pass as a file or on stdin than as one shell argument.
   if (flags["body-file"]) {
     try {
@@ -302,7 +371,7 @@ const main = async () => {
   const op = buildOp(verb, positional, flags);
   for (const key of Object.keys(op)) if (op[key] === undefined) delete op[key];
   const nonce = randomBytes(6).toString("hex");
-  const opsDir = process.env.AGORYX_OPS_DIR || join(agoryxDir, "ops");
+  const opsDir = join(room, "ops");
   mkdirSync(opsDir, { recursive: true });
   appendFileSync(join(opsDir, `${agent}.jsonl`), `${JSON.stringify({ ...op, nonce })}\n`);
 

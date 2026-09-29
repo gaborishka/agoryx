@@ -16,7 +16,7 @@ import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import type { AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
-import { listWorkspaceFiles, repoRoot, resolveInside } from "./workspace.js";
+import { listWorkspaceFiles, repoRoot, resolveInside, workspacePaths } from "./workspace.js";
 
 export interface DaemonInfo {
   pid: number;
@@ -921,7 +921,8 @@ export class AgoraDaemon {
 
   private readWorkspaceFile(handle: RoomHandle, relPath: string) {
     const root = handle.store.state.workspace;
-    const full = relPath === ".agoryx/TABLE.md" ? join(root, ".agoryx", "TABLE.md") : resolveInside(root, relPath);
+    // The room's own table, wherever it lives in .agoryx/ (rooms sharing the workspace have one each).
+    const full = relPath === ".agoryx/TABLE.md" ? workspacePaths(root, handle.store.state.id).tableFile : resolveInside(root, relPath);
     if (!full || inGitDir(root, full) || !existsSync(full)) throw new HttpError(404, "no such file in the workspace");
     const stats = statSync(full);
     if (!stats.isFile()) throw new HttpError(400, "not a file");

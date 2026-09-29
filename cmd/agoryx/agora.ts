@@ -670,10 +670,10 @@ const runTail = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
-/** The room workspace containing `dir`, if any (it has .agoryx/ops). */
+/** The room workspace containing `dir`, if any (it has .agoryx/rooms, or .agoryx/ops from before rooms had their own directories). */
 const roomWorkspaceOf = (dir: string): string | null => {
   for (let current = dir; ; current = dirname(current)) {
-    if (existsSync(join(current, ".agoryx", "ops"))) return current;
+    if (existsSync(join(current, ".agoryx", "rooms")) || existsSync(join(current, ".agoryx", "ops"))) return current;
     if (dirname(current) === current) return null;
   }
 };
@@ -706,10 +706,12 @@ const runTable = async (argv: string[]): Promise<number> => {
     const store = RoomStore.open(roomsDir(), resolveRoom(room));
     if (!signedAs || signedAs.toLowerCase() !== store.state.human.toLowerCase()) {
       const { workspacePaths } = await import("../../internal/agora/workspace.js");
+      const paths = workspacePaths(store.state.workspace, store.state.id);
       return runAgentTool([...rest, ...(signedAs ? ["--as", signedAs] : [])], {
         ...process.env,
-        AGORYX_OPS_DIR: workspacePaths(store.state.workspace).opsDir,
-        AGORYX_TABLE: workspacePaths(store.state.workspace).tableFile,
+        AGORYX_ROOM: store.state.id,
+        AGORYX_OPS_DIR: paths.opsDir,
+        AGORYX_TABLE: paths.tableFile,
       });
     }
   }

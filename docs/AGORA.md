@@ -71,7 +71,17 @@ current state, so nobody has to reconstruct it from the scroll. Agents and the h
 
 Agents use `agoryx table …` from their shell. Agoryx puts a shim first on `PATH` and also exports
 `AGORYX_CLI` (absolute path), because login shells can reorder `PATH` and an older global `agoryx` may win.
-Each op is acknowledged, and the rendered table lives at `<workspace>/.agoryx/TABLE.md`.
+Each op is acknowledged, and the rendered table lives at `<workspace>/.agoryx/rooms/<room>/TABLE.md`.
+
+Several rooms may work in one directory. Each keeps its own inbox, acks, `TABLE.md` and turn patches
+under `.agoryx/rooms/<room>/`, so one room's op or `t1` never lands in another. Message copies stay
+in `.agoryx/messages/<room>/`.
+- **In a room turn,** the agent tool knows its room from `AGORYX_ROOM`.
+- **Outside a turn,** it uses `--room <id>` or the only room in the directory. With several rooms and
+  none named, a write is refused with their ids.
+- **Older rooms and tools:** the shared `.agoryx/ops` and `.agoryx/turns` are still read, but only
+  by a room that the room logs show is alone in that directory. Otherwise an op there is refused with
+  an ack that says to add `--room`.
 
 ## The canonical file (Документ)
 
@@ -118,7 +128,7 @@ So Agoryx keeps **the exact change of every turn**, and the other agents see it.
   with `-r room` to use it from anywhere.
 - **In the UI,** the files a turn changed are chips with `+/−` counts. A chip opens a dialog with every
   file of the turn and the patch.
-- **Storage:** `.agoryx/turns/t7.patch` in the workspace. The file has a `#` header saying who and
+- **Storage:** `.agoryx/rooms/<room>/turns/t7.patch` in the workspace. The file has a `#` header saying who and
   when, then a plain `git diff`. The `turn.ended` event carries the counts and both tree ids, so a
   lost patch file is rebuilt from git. Patches over 256 KB are cut, and the note names the
   `git diff <before> <after>` that has the rest. Snapshots are skipped when more than 3000 files

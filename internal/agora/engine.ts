@@ -1,12 +1,12 @@
-import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
 import { embed, mediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
 import { truncate, type AgentRunner, type TurnResult } from "./runners/types.js";
-import type { RoomStore } from "./store.js";
+import { RoomStore } from "./store.js";
 import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
 import type {
   Activity,
@@ -33,11 +33,13 @@ import {
   messagePath,
   prepareWorkspace,
   readTurnPatch,
+  roomDirName,
   snapshotChanges,
   snapshotTree,
   treeChangedPaths,
   treeChanges,
   workspacePaths,
+  workspaceRooms,
   writeAck,
   writeRoomMessage,
   writeTurnPatch,
@@ -165,10 +167,32 @@ export const roomTurnPatch = (store: RoomStore, turnId: string): { patch: string
   if (!turn?.changes?.length) return null;
   const ended = store.events.find((event) => event.type === "turn.ended" && event.turnId === turnId);
   const trees = ended?.type === "turn.ended" ? ended.trees : undefined;
-  return readTurnPatch(workspacePaths(store.state.workspace), turnId, {
+  const author = store.state.agents.find((agent) => agent.id === turn.agent)?.label;
+  return readTurnPatch(workspacePaths(store.state.workspace, store.state.id), turnId, {
     ...(trees ? { trees } : {}),
     files: turn.changes.map((change) => change.path),
+    ...(author ? { author } : {}),
+    ...(turn.endedAt ? { endedAt: turn.endedAt } : {}),
+    // An old .agoryx/turns/ file is this room's only when no other room ever had this workspace.
+    ownsLegacy: () => roomsSharingWorkspace(store).length === 1,
   });
+};
+
+/**
+ * Every room whose workspace this room's is, this one included: by the room logs next to its own
+ * (a room that never opened since rooms got their own directories counts too), and by the room
+ * directories rooms from elsewhere left in the workspace. Room logs are the persisted owner record.
+ */
+export const roomsSharingWorkspace = (store: RoomStore): Array<{ id: string; name: string }> => {
+  const here = resolve(store.state.workspace);
+  const rooms = new Map<string, string>();
+  for (const id of workspaceRooms(store.state.workspace)) rooms.set(id, id);
+  for (const room of RoomStore.list(dirname(store.dir))) {
+    const id = roomDirName(room.id);
+    if (id && resolve(room.workspace) === here) rooms.set(id, room.name);
+  }
+  rooms.set(roomDirName(store.state.id)!, store.state.name);
+  return [...rooms].map(([id, name]) => ({ id, name })).sort((a, b) => a.id.localeCompare(b.id));
 };
 
 /**
@@ -218,8 +242,13 @@ export class RoomEngine {
     this.log = options.log ?? (() => {});
     this.acquireLock();
     try {
-      this.ws = prepareWorkspace(this.state.workspace, { initGit: this.state.createdWorkspace });
+      this.ws = prepareWorkspace(this.state.workspace, {
+        initGit: this.state.createdWorkspace,
+        room: { id: this.state.id, name: this.state.name },
+      });
       clearStaleAcks(this.ws);
+      clearStaleAcks(workspacePaths(this.state.workspace));
+      this.publishSharingRooms();
       this.writeTableFile();
       this.writeMissingMessages();
       this.recover();
@@ -1318,14 +1347,51 @@ export class RoomEngine {
 
   /** Pull table ops agents wrote via the `agoryx table` shim and ack them. */
   ingestOps(): void {
-    drainOpsInbox(this.ws, ({ agent, raw }) => {
+    this.drainInbox(this.ws);
+    // The inbox straight under .agoryx/ is where shims before per-room directories queued ops (and
+    // where an op waits that was queued before this room first opened with them). It is this room's
+    // only when no other room lives in the workspace; otherwise nobody can tell whose an op is.
+    const legacy = workspacePaths(this.state.workspace);
+    if (!existsSync(legacy.opsDir) || !readdirSync(legacy.opsDir).some((name) => /\.jsonl(\.\d+\.\d+\.taking)?$/.test(name))) return;
+    const rooms = roomsSharingWorkspace(this.store);
+    if (rooms.length === 1) {
+      this.drainInbox(legacy);
+      return;
+    }
+    const ids = rooms.map((room) => room.id).join(", ");
+    drainOpsInbox(legacy, ({ agent, raw }) => {
+      const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
+      if (nonce) writeAck(legacy, nonce, { ok: false, error: `${rooms.length} rooms share this workspace (${ids}) — run it again with --room <id>` });
+      this.log(`rejected table op from ${agent} in the shared inbox: ${rooms.length} rooms share the workspace`);
+    });
+  }
+
+  /**
+   * Name every room of this workspace in .agoryx/rooms/<id>/room.json, those not opened since rooms got
+   * their own directories too: the agent tool sees only the workspace, and must know when to ask for --room.
+   */
+  private publishSharingRooms(): void {
+    for (const room of roomsSharingWorkspace(this.store)) {
+      const info = join(this.ws.agoryxDir, "rooms", room.id, "room.json");
+      if (existsSync(info)) continue;
+      try {
+        mkdirSync(dirname(info), { recursive: true });
+        writeFileSync(info, `${JSON.stringify(room)}\n`);
+      } catch {
+        // the agent tool falls back to what it can see
+      }
+    }
+  }
+
+  private drainInbox(inbox: WorkspacePaths): void {
+    drainOpsInbox(inbox, ({ agent, raw }) => {
       const member = this.opAuthor(agent);
       const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
       if (!member) {
         const kind = /^kind\.(.+)$/.exec(agent)?.[1];
         const same = this.state.agents.filter((entry) => entry.kind === kind);
         const ids = (same.length > 1 ? same : this.state.agents).map((entry) => entry.id).join(" or --as ");
-        if (nonce) writeAck(this.ws, nonce, { ok: false, error: `can't tell which agent wrote this — add --as ${ids}` });
+        if (nonce) writeAck(inbox, nonce, { ok: false, error: `can't tell which agent wrote this — add --as ${ids}` });
         this.log(`rejected unsigned table op (${agent})`);
         return;
       }
@@ -1334,16 +1400,16 @@ export class RoomEngine {
       // An inbox file recovered after a crash may hold ops already applied: the nonce in the log says so.
       const applied = nonce ? this.appliedOp(nonce) : undefined;
       if (applied) {
-        writeAck(this.ws, nonce!, { ok: true, id: applied.id ?? applied.op, text: `${applied.id ? `${applied.id} · ` : ""}${describeTableOp(applied, this.state.table)}` });
+        writeAck(inbox, nonce!, { ok: true, id: applied.id ?? applied.op, text: `${applied.id ? `${applied.id} · ` : ""}${describeTableOp(applied, this.state.table)}` });
         this.log(`skipped table op ${nonce} from ${agent}: already applied`);
         return;
       }
       try {
         const op = this.applyTableOp(raw, by, false, turnId);
-        if (nonce) writeAck(this.ws, nonce, { ok: true, id: op.id ?? op.op, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, this.state.table)}` });
+        if (nonce) writeAck(inbox, nonce, { ok: true, id: op.id ?? op.op, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, this.state.table)}` });
       } catch (error) {
         const message = error instanceof TableOpError ? error.message : error instanceof Error ? error.message : String(error);
-        if (nonce) writeAck(this.ws, nonce, { ok: false, error: message });
+        if (nonce) writeAck(inbox, nonce, { ok: false, error: message });
         this.log(`rejected table op from ${agent}: ${message}`);
       }
     });

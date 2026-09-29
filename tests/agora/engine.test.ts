@@ -265,7 +265,7 @@ test("agents put things on the table through the agoryx shim, with acks and attr
     assert.ok(outputs.some((line) => line.startsWith("P2 ·")), outputs.join("\n"));
     assert.ok(outputs.some((line) => line.includes("ERR") && line.includes("no option P9")), outputs.join("\n"));
     // TABLE.md in the workspace mirrors the table.
-    const md = readFileSync(join(room.store.state.workspace, ".agoryx", "TABLE.md"), "utf8");
+    const md = readFileSync(room.engine.ws.tableFile, "utf8");
     assert.match(md, /## Q1 · Where do rooms live\?/);
     assert.match(md, /✗ objection \(codex\): no indexes/);
     // Codex's prompt showed Claude's table ops under Claude's message.

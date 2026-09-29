@@ -467,6 +467,14 @@ test("a file preview reads only its first 2 MB", async () => {
   assert.equal(body.text.length, 2 * 1024 * 1024);
 });
 
+test("the table file a message links opens the room's own table", async () => {
+  const room = await newRoom("Daemon table file");
+  assert.equal((await call("POST", `/api/rooms/${room.id}/table`, { body: { op: "propose", title: "Own table" } })).status, 201);
+  const file = await call("GET", `/api/rooms/${room.id}/file?path=.agoryx/TABLE.md`);
+  assert.equal(file.status, 200, file.body);
+  assert.match(file.json<{ text: string }>().text, /Own table/);
+});
+
 test("html and svg fences in a message are served as sandboxed pages, found by the hash of their body", async () => {
   const room = await newRoom("Daemon blocks");
   const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();

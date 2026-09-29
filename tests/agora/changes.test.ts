@@ -127,7 +127,7 @@ test("every turn's exact change is kept; the others see +/− and pull the patch
     assert.match(codexPrompt, /agoryx diff t7` prints that turn's patch/, "the briefing explains the tool");
 
     // The patch file, and the same thing through the engine.
-    const patchFile = join(ws, ".agoryx", "turns", `${claudeTurn.id}.patch`);
+    const patchFile = join(room.engine.ws.turnsDir, `${claudeTurn.id}.patch`);
     assert.match(readFileSync(patchFile, "utf8"), new RegExp(`^# ${claudeTurn.id} · Claude · `));
     assert.match(room.engine.turnPatch(codexTurn.id)!.patch, /-export const zero = 0;\n\+export const ZERO = 0;/);
 
@@ -148,8 +148,8 @@ test("every turn's exact change is kept; the others see +/− and pull the patch
     assert.match(claudePrompt, new RegExp(`src/clock\\.ts \\+1 −1 — the exact diff: agoryx diff ${codexTurn.id}`));
     assert.doesNotMatch(claudePrompt, new RegExp(`agoryx diff ${claudeTurn.id}\\b`));
 
-    // Losing .agoryx/turns loses nothing: the trees in the log rebuild it.
-    rmSync(join(ws, ".agoryx", "turns"), { recursive: true });
+    // Losing the turns directory loses nothing: the trees in the log rebuild it.
+    rmSync(room.engine.ws.turnsDir, { recursive: true });
     assert.match(roomTurnPatch(room.store, claudeTurn.id)!.patch, /\+export const zero = 0;/);
     assert.equal(roomTurnPatch(room.store, "t999"), null);
   } finally {
@@ -237,7 +237,7 @@ test("a turn that changed nothing has no changes and no patch", async () => {
       assert.equal(turn.changes, undefined);
       assert.equal(room.engine.turnPatch(turn.id), null);
     }
-    assert.equal(existsSync(join(room.store.state.workspace, ".agoryx", "turns")), false);
+    assert.equal(existsSync(room.engine.ws.turnsDir), false);
   } finally {
     await room.cleanup();
   }

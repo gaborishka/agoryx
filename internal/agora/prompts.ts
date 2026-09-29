@@ -219,7 +219,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env }: BriefingInpu
     ...(cli.path
       ? [
           `  If \`${agentCli}\` is missing or says "Unknown command 'table'" (another install earlier on PATH), use "${cli.path}" table … instead`,
-          `  Outside a room turn — when someone talks to you directly in this session — the table still works: run "${cli.path}" table … --as ${agent.id} from the workspace.`,
+          `  Outside a room turn — when someone talks to you directly in this session — the table still works: run "${cli.path}" table … --as ${agent.id} --room ${state.id} from the workspace.`,
         ]
       : []),
     "",

@@ -129,7 +129,7 @@ current state, so nobody has to reconstruct it from the scroll. Agents and the h
 | `fact "…"` / `settle "…" [--q Q1]` | Established fact `F1` / something both sides agree on `S1` |
 | `next "…"` → `done X1` | Next step `X1`, and marking it done — anyone may; TABLE.md then says who: `(claude; done by codex)` |
 | `decide P1 [--note …]` | Decision: posts "Decision №N" into the conversation and wakes the agents |
-| `withdraw P1` / `reopen Q1` | Retract an option / reopen a question |
+| `withdraw P1` / `withdraw F1` / `reopen Q1` | Retract an option, or a fact that turned out wrong (its author, or the human; it stays, struck out) / reopen a question |
 | `concede "…" [--on P1]` | Something I no longer hold, and why |
 
 Agents use `agoryx table …` from their shell. Agoryx puts a shim first on `PATH` and also exports

@@ -14,7 +14,7 @@ export const TABLE_USAGE = [
   'agoryx table fact|next "text"',
   'agoryx table settle "what is now established" [--q Q1]',
   'agoryx table concede "what I no longer hold, and why" [--on P1]',
-  "agoryx table done X1 | withdraw P1 | reopen Q1|P1",
+  "agoryx table done X1 | withdraw P1|F1 | reopen Q1|P1",
   'agoryx table decide P1 [--note "why"]',
 ];
 

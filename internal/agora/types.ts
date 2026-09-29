@@ -226,6 +226,8 @@ export interface TableItem {
   done?: boolean;
   /** Who marked this step done — not always who put it on the table. */
   doneBy?: string;
+  /** A fact its author (or the human) took back: it stays on the table, struck out. */
+  withdrawn?: boolean;
   /** A settled item that answers a question: the question's id. */
   q?: string;
   /** A concession about a specific table item (P2, S1, Q1). */

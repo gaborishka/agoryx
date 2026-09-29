@@ -723,9 +723,9 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                 ) : (
                   <span className="mt-1.5 size-2 shrink-0 rounded-full bg-primary/70 ring-4 ring-primary/10" />
                 )}
-                <div className="min-w-0">
+                <div className={cn("min-w-0", s.withdrawn && "opacity-60")}>
                   <Clamp max={88} more="Далі">
-                    <Markdown text={s.text} className="text-[13.5px]" />
+                    <Markdown text={s.text} className={cn("text-[13.5px]", s.withdrawn && "line-through decoration-faint")} />
                   </Clamp>
                   <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-faint">
                     {s.q ? (
@@ -733,7 +733,7 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                         відповідь на <RefChip id={s.q} />
                       </span>
                     ) : null}
-                    {s.fact ? "факт" : null}
+                    {s.fact ? (s.withdrawn ? "факт · відкликано" : "факт") : null}
                     <span>{participant(room, s.by).label}</span>
                   </div>
                 </div>

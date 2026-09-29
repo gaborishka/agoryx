@@ -281,6 +281,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     "- ```mermaid fences render as diagrams (flowchart, sequence, class, state, gantt, pie, …).",
     "- ```html fences render live in a sandbox: a whole self-contained page — inline CSS/JS, CDN scripts are fine — for",
     "  charts, interactive prototypes, visual comparisons. ```svg fences render as pictures.",
+    `  ${agentCli} table withdraw P1|F1   (take back your own option, or a fact of yours that turned out wrong — it stays, struck out)`,
     "- Code fences with a language are highlighted. Tables in markdown render as tables.",
     "- ![caption](path/in/workspace) embeds a workspace file: images show inline, .html/.svg/.pdf render live, video and",
     "  audio play, .csv/.tsv show as tables, anything else opens as a file. Make the artifact with your own tools (a script",

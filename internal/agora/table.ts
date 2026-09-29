@@ -156,11 +156,21 @@ export const prepareTableOp = (
       return { ...base, op, text: cleanText(input.text, "text")!, id: `X${table.next.length + 1}` };
     case "done": {
       const target = normalizeRef(input.target);
-      if (!table.next.some((item) => item.id === target)) throw new TableOpError(`no next step ${target}`);
+      if (!table.next.some((item) => item.id === target)) {
+        const fact = table.facts.some((item) => item.id === target);
+        throw new TableOpError(`no next step ${target}${fact ? ` — ${target} is a fact; to take it back: withdraw ${target}` : ""}`);
+      }
       return { ...base, op, target };
     }
     case "withdraw": {
       const target = normalizeRef(input.target);
+      if (target.startsWith("F")) {
+        const fact = table.facts.find((item) => item.id === target);
+        if (!fact) throw new TableOpError(`no fact ${target} on the table`);
+        if (!isHuman && fact.by !== by) throw new TableOpError(`${target} was noted by ${fact.by}; only they can withdraw it`);
+        if (fact.withdrawn) throw new TableOpError(`${target} is already withdrawn`);
+        return { ...base, op, target };
+      }
       const found = option(target);
       if (!isHuman && found.by !== by) throw new TableOpError(`${target} was proposed by ${found.by}; only they can withdraw it`);
       if (found.status !== "open") throw new TableOpError(`${target} is already ${found.status}`);
@@ -256,6 +266,8 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
       return;
     }
     case "withdraw": {
+      const fact = table.facts.find((entry) => entry.id === op.target);
+      if (fact) fact.withdrawn = true;
       const option = table.options.find((entry) => entry.id === op.target);
       if (option) option.status = "withdrawn";
       return;
@@ -348,8 +360,10 @@ export const describeTableOp = (op: TableOp, table?: TableState, options: { whol
       return `added next step ${op.id}: ${quote(op.text)}`;
     case "done":
       return `marked ${op.target} done`;
-    case "withdraw":
-      return `withdrew ${op.target}${titleOf(op.target)}`;
+    case "withdraw": {
+      const fact = table?.facts.find((entry) => entry.id === op.target);
+      return `withdrew ${op.target}${fact ? ` ${quote(fact.text, 60)}` : titleOf(op.target)}`;
+    }
     case "decide":
       return `decided ${op.target}${titleOf(op.target)} (${op.id})${op.note ? `: ${quote(op.note)}` : ""}`;
     case "reopen":
@@ -416,7 +430,8 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
     lines.push(`## ${title}`);
     for (const entry of items) {
       const about = entry.q ? ` [answers ${entry.q}]` : entry.target ? ` [on ${entry.target}]` : "";
-      lines.push(`- ${entry.done ? "~~" : ""}${entry.id}: ${entry.text}${entry.done ? "~~" : ""}${about} (${entry.by}${entry.doneBy && entry.doneBy !== entry.by ? `; done by ${entry.doneBy}` : ""})`);
+      const struck = entry.done || entry.withdrawn ? "~~" : "";
+      lines.push(`- ${struck}${entry.id}: ${entry.text}${struck}${about} (${entry.by}${entry.doneBy && entry.doneBy !== entry.by ? `; done by ${entry.doneBy}` : ""}${entry.withdrawn ? "; withdrawn" : ""})`);
     }
     lines.push("");
   };
@@ -478,7 +493,8 @@ export const summarizeTable = (table: TableState): string | null => {
     const option = table.options.find((entry) => entry.id === decision.option);
     lines.push(`  decided: ${decision.option}${option ? ` ${quote(option.title, 70)}` : ""}${decision.q ? ` for ${decision.q}` : ""}`);
   }
-  if (table.facts.length > 0) lines.push(`  facts: ${table.facts.slice(-4).map((item) => `${item.id} ${quote(item.text, 70)}`).join("; ")}`);
+  const facts = table.facts.filter((item) => !item.withdrawn);
+  if (facts.length > 0) lines.push(`  facts: ${facts.slice(-4).map((item) => `${item.id} ${quote(item.text, 70)}`).join("; ")}`);
   if (table.settled.length > 0) {
     const settled = table.settled.slice(-4).map((item) => `${item.id}${item.q ? ` (answers ${item.q})` : ""} ${quote(item.text, 70)}`);
     lines.push(`  settled: ${settled.join("; ")}`);

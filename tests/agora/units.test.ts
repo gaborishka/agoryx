@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { passNote } from "../../internal/agora/prompts.js";
 import { unwrapShellCommand } from "../../internal/agora/runners/codex.js";
 import { parseTableCommand, TableCommandError } from "../../internal/agora/table-cli.js";
-import { applyTableOp, emptyTable, renderTableMarkdown } from "../../internal/agora/table.js";
+import { applyTableOp, emptyTable, prepareTableOp, renderTableMarkdown, summarizeTable, TableOpError } from "../../internal/agora/table.js";
 import { createRoom } from "../../internal/agora/service.js";
 import { drainOpsInbox, resolveInside, workspacePaths, type InboxOp } from "../../internal/agora/workspace.js";
 
@@ -131,4 +131,22 @@ test("a step marked done by someone else says who did it — the table never rea
   const md = renderTableMarkdown(table, "room");
   assert.match(md, /- ~~X1: write down the chosen semantics~~ \(claude; done by codex\)/);
   assert.match(md, /- ~~X2: run the suite~~ \(codex\)$/m);
+});
+
+test("a fact that turned out wrong is withdrawn by its author: struck out, not gone, and no longer counted as a fact", () => {
+  const table = emptyTable();
+  const note = (text: string, by: string) => applyTableOp(table, prepareTableOp(table, { op: "fact", text }, by, false), table.facts.length + 1);
+  note("npm test: 27 tests pass", "claude");
+  note("npm test: 26 tests pass", "claude");
+  // In loop 24 Claude reached for `done` to take a wrong fact back; the answer now says how.
+  assert.throws(() => prepareTableOp(table, { op: "done", target: "F1" }, "claude", false), (error: unknown) => error instanceof TableOpError && /F1 is a fact; to take it back: withdraw F1/.test(error.message));
+  assert.throws(() => prepareTableOp(table, { op: "withdraw", target: "F1" }, "codex", false), /F1 was noted by claude; only they can withdraw it/);
+  applyTableOp(table, prepareTableOp(table, { op: "withdraw", target: "F1" }, "claude", false), 3);
+  assert.equal(table.facts[0]!.withdrawn, true);
+  assert.throws(() => prepareTableOp(table, { op: "withdraw", target: "F1" }, "claude", false), /already withdrawn/);
+  assert.match(renderTableMarkdown(table, "room"), /- ~~F1: npm test: 27 tests pass~~ \(claude; withdrawn\)/);
+  assert.match(summarizeTable(table)!, /facts: F2 "npm test: 26 tests pass"$/m);
+  // The human may take back anyone's.
+  applyTableOp(table, prepareTableOp(table, { op: "withdraw", target: "F2" }, "Ivan", true), 4);
+  assert.equal(table.facts[1]!.withdrawn, true);
 });

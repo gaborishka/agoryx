@@ -352,7 +352,7 @@ export function OpCard({ o }: { o: TableOp }) {
       const text =
         o.op === "done"
           ? table.next.find((x) => x.id === o.target)?.text
-          : (table.options.find((x) => x.id === o.target)?.title ?? table.questions.find((x) => x.id === o.target)?.text);
+          : (table.options.find((x) => x.id === o.target)?.title ?? table.questions.find((x) => x.id === o.target)?.text ?? table.facts.find((x) => x.id === o.target)?.text);
       return (
         <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
           <Kind op={o.op} />
@@ -368,11 +368,13 @@ export function OpCard({ o }: { o: TableOp }) {
 function ItemCard({ o, table }: { o: Extract<TableOp, { op: "fact" | "settle" | "next" }>; table: TableState }) {
   const list = o.op === "fact" ? table.facts : o.op === "settle" ? table.settled : table.next;
   const done = o.op === "next" && list.find((x) => x.id === o.id)?.done;
+  const withdrawn = o.op === "fact" && list.find((x) => x.id === o.id)?.withdrawn;
   return (
     <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
       <Kind op={o.op} />
-      <span className={cn("min-w-0 flex-1 text-[14px]", done && "text-muted-foreground line-through")}>{o.text}</span>
+      <span className={cn("min-w-0 flex-1 text-[14px]", (done || withdrawn) && "text-muted-foreground line-through")}>{o.text}</span>
       {done ? <span className="text-[11px] font-medium text-add-ink">виконано</span> : null}
+      {withdrawn ? <span className="text-[11px] font-medium text-muted-foreground">відкликано</span> : null}
     </div>
   );
 }

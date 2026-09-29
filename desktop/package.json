@@ -1,0 +1,22 @@
+{
+  "name": "agoryx-desktop",
+  "productName": "Agoryx",
+  "version": "0.3.0",
+  "description": "Agoryx for macOS: the local daemon and its room UI in one window.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/make-icon.mjs",
+    "start": "npm --prefix .. run build:core && npm run build && electron .",
+    "stage": "node scripts/stage-core.mjs",
+    "dist": "npm --prefix .. run build && npm run build && npm run stage && electron-builder --config electron-builder.config.cjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.0",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.9.3"
+  }
+}

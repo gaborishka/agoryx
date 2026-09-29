@@ -12,6 +12,7 @@ import { agentModels } from "./models.js";
 import { locateNativeSession } from "./native.js";
 import { readTranscript } from "./transcript.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
+import type { DaemonInfo } from "./daemoninfo.js";
 import { profilePath, readProfile } from "./profile.js";
 import { defaultRoster } from "./roster.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
@@ -23,14 +24,6 @@ import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
 import { listWorkspaceFiles, repoRoot, resolveInside, workspacePaths } from "./workspace.js";
-
-export interface DaemonInfo {
-  pid: number;
-  port: number;
-  url: string;
-  token: string;
-  startedAt: string;
-}
 
 export interface DaemonOptions {
   env?: NodeJS.ProcessEnv;
@@ -1135,40 +1128,7 @@ export class AgoraDaemon {
 }
 
 // ---------------------------------------------------------------------------
-// Finding a running daemon
+// Finding a running daemon (in daemoninfo.ts, which the desktop app can load without the daemon)
 // ---------------------------------------------------------------------------
 
-const pidAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-};
-
-export const readDaemonInfo = (env: NodeJS.ProcessEnv = process.env): DaemonInfo | null => {
-  const path = daemonInfoPath(env);
-  if (!existsSync(path)) return null;
-  try {
-    const info = JSON.parse(readFileSync(path, "utf8")) as DaemonInfo;
-    if (!info.pid || !info.port || !info.token || !pidAlive(info.pid)) return null;
-    return info;
-  } catch {
-    return null;
-  }
-};
-
-/** A daemon that is alive and answers /api/health, or null. */
-export const findDaemon = async (env: NodeJS.ProcessEnv = process.env): Promise<DaemonInfo | null> => {
-  const info = readDaemonInfo(env);
-  if (!info) return null;
-  try {
-    const response = await fetch(`${info.url}/api/health`, { signal: AbortSignal.timeout(1500) });
-    if (!response.ok) return null;
-    const health = (await response.json()) as { pid?: number };
-    return health.pid === info.pid ? info : null;
-  } catch {
-    return null;
-  }
-};
+export { findDaemon, readDaemonInfo, type DaemonInfo } from "./daemoninfo.js";

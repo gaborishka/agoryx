@@ -20,6 +20,7 @@ import { changeStats, patchSection } from "../../internal/agora/workspace.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { applyTurnContext, TURN_FILE_ENV } from "../../internal/agora/turn-context.js";
 import { parseTableCommand, TABLE_USAGE } from "../../internal/agora/table-cli.js";
+import { TURN_ENV_VARS } from "../../internal/desktop/shellenv.js";
 import { describeTableOp, renderTableMarkdown } from "../../internal/agora/table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
 import { CliUsageError, parseCliArgsOrThrow, type OptionSpec, type OutputWriter } from "./cli-args.js";
@@ -328,9 +329,7 @@ const daemonEnv = (): NodeJS.ProcessEnv => {
     if (existsSync(file)) jevEnvFrom(readFileSync(file, "utf8"), env);
   }
   const agent = localAgentOrNull();
-  for (const key of [TURN_FILE_ENV, "AGORYX_ROOM", "AGORYX_ROOM_NAME", "AGORYX_AGENT", "AGORYX_TURN", "AGORYX_SEEN", "AGORYX_OPS_DIR", "AGORYX_TABLE", AGENT_KEY_ENV]) {
-    delete env[key];
-  }
+  for (const key of TURN_ENV_VARS) delete env[key];
   if (agent) env.AGORYX_UP_BY = originName(agent);
   return env;
 };

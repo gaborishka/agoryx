@@ -31,6 +31,22 @@ orchestrator and assigns no roles. Every new message wakes the agents that haven
 ends when the room goes quiet. Use it headless (`agoryx new`, `say`, `tail -f`, `table`) or through the
 local web UI (`agoryx up -d && agoryx open`). See [docs/AGORA.md](docs/AGORA.md).
 
+## macOS app
+
+`Agoryx.app` is the daemon and its room UI in one window, and it works like `agoryx up -d && agoryx open`
+from a terminal. It uses the same daemon and rooms, and it reads your login shell's environment, so the agents get
+your PATH and keys. Its first screen lists what is missing (Node, the `claude` / `codex` CLIs and their
+logins), each with the command that fixes it. Quitting the app leaves the daemon and its rooms running.
+
+```bash
+npm run build && npm --prefix desktop install
+npm run desktop                  # run it from this checkout
+npm --prefix desktop run dist    # build desktop/release/Agoryx.app (unsigned, arm64)
+agoryx doctor                    # the same checks, in a terminal
+```
+
+The app needs `node` >= 22 on the Mac: the daemon runs on it, not on Electron. See [docs/DESKTOP.md](docs/DESKTOP.md).
+
 ## Prerequisites
 
 - Node.js >= 22
@@ -159,6 +175,7 @@ agoryx completion fish
 
 ```
 cmd/agoryx/          CLI entry point + Ink UI
+desktop/             macOS app (Electron shell around the daemon and its UI)
 internal/
   adapters/          Codex and Claude CLI adapters, output parser, event factory
   config/            Config loader, defaults, path resolution

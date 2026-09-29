@@ -14,8 +14,28 @@ agoryx \- local-first multi-agent CLI chat orchestrator
 .br
 .B agoryx completion
 .RI "<bash|zsh|fish>"
+.br
+.B agoryx doctor
+.RI "[--probe] [--json]"
 .SH DESCRIPTION
 Agoryx runs Codex and Claude in one shared local session with SQLite persistence.
+.SH COMMANDS
+.TP
+.B doctor
+Check Node.js (22 or newer), this install and its build, better-sqlite3 under that node, Claude Code and
+Codex (installed and logged in), git, the state folder and the daemon, and print a fix for each problem.
+Output names versions and paths, never environment values or accounts.
+Exits 1 when Agoryx cannot run.
+.RS
+.TP
+.B --probe
+Also send each logged-in agent one short prompt (a real request each) and report how long it took.
+.TP
+.B --json
+Print
+.I { verdict, checks }
+as JSON.
+.RE
 .SH FILES
 .TP
 .I $XDG_CONFIG_HOME/agoryx/config.json

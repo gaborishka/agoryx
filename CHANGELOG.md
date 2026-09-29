@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **macOS app (`desktop/`):** `Agoryx.app` puts the daemon and its room UI in one window, and works like `agoryx up -d && agoryx open` from a terminal. It is an Electron shell.
+  - It reads the login shell's environment once, so the agents get the same PATH and keys as from a terminal.
+  - It runs the doctor's checks: nothing starts while something needed is missing.
+  - It starts the daemon on the user's own `node`, or attaches to the one already running for that `AGORYX_HOME`, and follows it: restarted from a terminal, gone, back.
+  - Quitting leaves the daemon running. The menu item «Зупинити демона й вийти» (Stop Daemon and Quit) stops it through its API.
+  - Its start page and menu are in Ukrainian, like the room UI.
+  - Run it from the checkout with `npm run desktop`. Build it with `npm --prefix desktop run dist` (unsigned, arm64 `.app` + `.dmg`). See [docs/DESKTOP.md](docs/DESKTOP.md).
+- **`agoryx doctor [--probe] [--json]`:** checks what a room needs here: Node and its sqlite module, the `claude` / `codex` CLIs and their logins, git, the state folder and the daemon. Each problem comes with the command that fixes it. `--probe` also makes one short real call to each logged-in agent.
+
+---
+
 ## [0.3.0] - 2026-02-25
 
 ### Added

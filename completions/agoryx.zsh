@@ -6,6 +6,7 @@ _agoryx() {
     'sessions:Session management'
     'config:Configuration diagnostics'
     'completion:Shell completion'
+    'doctor:Check what Agoryx needs'
     'man:Manual page'
     'help:Help'
   )
@@ -27,6 +28,9 @@ _agoryx() {
           ;;
         completion)
           _values 'shell' bash zsh fish
+          ;;
+        doctor)
+          _arguments '--probe[Also send each logged-in agent one short prompt]' '--json[Print the checks as JSON]'
           ;;
       esac
       ;;

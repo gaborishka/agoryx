@@ -316,6 +316,20 @@ which is a choice about how agents run (they run as in your own terminal), not m
 is asked not to copy it into the room, files or commits; that is an instruction, not something Agoryx enforces. Existing sessions of rooms from before
 the profile get it once, on their next turn.
 
+### Checking the setup
+
+```bash
+agoryx doctor           # node, this install, better-sqlite3, Claude Code / Codex and their logins, git, AGORYX_HOME, the daemon
+agoryx doctor --probe   # also one short real prompt to each logged-in agent, timed
+agoryx doctor --json    # { verdict, checks } for scripts
+```
+
+Each problem comes with the command that fixes it. The output names versions and paths, never an
+environment value or the account behind a login, so it is safe to paste. It exits 1 when a room cannot
+run (no Node 22+, better-sqlite3 not loading, no usable agent, no writable state folder); a missing or
+logged-out second agent is only a warning. The macOS app runs the same checks
+(`internal/desktop/doctor.ts`) with the environment of your login shell.
+
 ### As a daemon without UI
 
 ```bash
@@ -470,9 +484,12 @@ Without `--dir`, a room's workspace is `~/agoryx/<slug>/` (git-initialised); `AG
 | `internal/agora/store.ts`, `projection.ts` | JSONL event log and state projection |
 | `internal/agora/actor.ts` | Agents' keys to the daemon, and who did what (`by`, guests from other rooms) |
 | `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |
+| `internal/agora/daemoninfo.ts` | Finding the running daemon (`daemon.json` + `/api/health`) without loading it |
+| `internal/desktop/` | Dependency-free core for the macOS app and `agoryx doctor`: login-shell environment (`shellenv.ts`), setup checks (`doctor.ts`), daemon supervisor (`supervisor.ts`) |
 | `internal/agora/profile.ts` | The human's profile: reading and cutting it, the prompt blocks, who sees it |
 | `internal/agora/blocks.ts` | Live html/svg fences: finding a block in a message by the hash of its body |
 | `cmd/agoryx/agora.ts` | `agoryx up/new/say/tail/table/doc/diff/profile/…` |
+| `cmd/agoryx/doctor.ts` | `agoryx doctor` |
 | `ui/` | The web UI (React; `npm run build` builds it into `ui/dist`, which the daemon serves) |
 | `web/` | The older plain page, served only when `ui/dist` is not built |
 

@@ -35,7 +35,7 @@ function Presence({ a }: { a: RoomAgent }) {
     s.snap?.state.turns.find((t) => t.agent === a.id && t.status === "running"),
   );
   const room = useStore((s) => s.snap?.state);
-  const openDialog = useStore((s) => s.openDialog);
+  const openSession = useStore((s) => s.openSession);
   const profile = useStore((s) => s.snap?.profile);
   const tick = useNow(now === "working" && Boolean(turn));
   const who = participant(room, a.id);
@@ -49,12 +49,12 @@ function Presence({ a }: { a: RoomAgent }) {
       : now === "queued"
         ? `${a.label} у черзі на хід`
         : `${a.label} чекає на нове в розмові`;
-  const tip = seen ? `${state}. ${seen}` : state;
+  const tip = `${seen ? `${state}. ${seen}` : state}. Натисніть — сесія збоку.`;
   return (
     <Tip tip={tip}>
       <button
         type="button"
-        onClick={() => openDialog({ kind: "sessions" })}
+        onClick={() => openSession(a.id, true)}
         style={ink(who)}
         className={cn(
           "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12.5px] transition",
@@ -329,14 +329,14 @@ export function RoomHeader() {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuItem
-            onSelect={() => openDialog({ kind: "sessions" })}
+            onSelect={() => useStore.getState().openSession()}
             className="items-start gap-2.5 py-2"
           >
             <TerminalIcon className="mt-0.5" />
             <span className="flex flex-col">
               Сесії агентів
               <small className="text-xs text-muted-foreground">
-                Відкрити розмову в Claude Code чи Codex
+                Усе, що агенти робили у своїх сесіях; модель і effort
               </small>
             </span>
           </DropdownMenuItem>

@@ -339,6 +339,8 @@ export type RoomEventBody =
   /** `by`: who changed them (absent in logs from before authors were recorded). */
   | { type: "settings.changed"; patch: Partial<RoomSettings>; by?: string; from?: ActorOrigin }
   | { type: "room.renamed"; name: string; by?: string; from?: ActorOrigin }
+  /** An agent's model or effort changed; null: back to the CLI's own default. Its next turn uses them. */
+  | { type: "agent.changed"; agent: string; model?: string | null; effort?: string | null; by?: string; from?: ActorOrigin }
   | { type: "commit.created"; sha: string; subject: string; files: number }
   | DocRevisedEvent;
 
@@ -474,3 +476,79 @@ export interface RoomState {
   /** The agent that opened this room from another room, if one did. */
   createdBy?: ActorOrigin;
 }
+
+// ---------------------------------------------------------------------------
+// An agent's own session, read back from its CLI's session file (see transcript.ts)
+// ---------------------------------------------------------------------------
+
+export interface TranscriptImage {
+  /** A data: URL, when the image is in the session or a readable file. */
+  src?: string;
+  /** Where the agent saw it, when it is a file. */
+  path?: string;
+}
+
+export interface TranscriptDiff {
+  path: string;
+  op: "add" | "update" | "delete";
+  /** Unified diff with ---/+++ headers. */
+  patch: string;
+}
+
+export interface TranscriptTodo {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+interface TranscriptBase {
+  id: string;
+  at?: string;
+}
+
+export type TranscriptEntry =
+  | (TranscriptBase & { kind: "user"; text: string; agoryx?: boolean; images?: TranscriptImage[] })
+  | (TranscriptBase & { kind: "assistant"; text: string; commentary?: boolean; /** The room's pass: nothing to add this turn (text: its note, if any). */ pass?: boolean })
+  | (TranscriptBase & { kind: "thinking"; text: string })
+  | (TranscriptBase & {
+      kind: "tool";
+      /** The tool's own name (Bash, Edit, exec, mcp server.tool…). */
+      tool: string;
+      category: ActivityKind;
+      title: string;
+      detail?: string;
+      input?: string;
+      output?: string;
+      status: "running" | "ok" | "fail";
+      diffs?: TranscriptDiff[];
+      todos?: TranscriptTodo[];
+      images?: TranscriptImage[];
+    })
+  | (TranscriptBase & { kind: "system"; code: "compacted" | "interrupted" | "error"; text?: string });
+
+export type TranscriptTool = Extract<TranscriptEntry, { kind: "tool" }>;
+
+export interface Transcript {
+  entries: TranscriptEntry[];
+  /** Byte offset the entries start from; 0 means the whole session. Pass it as `end` to read what came before. */
+  start: number;
+  /** Where reading stopped (the file size, less a partial last line). */
+  end: number;
+  size: number;
+}
+
+/** The models and effort levels each CLI offers (see models.ts). */
+export interface ModelChoice {
+  id: string;
+  label: string;
+  description?: string;
+  /** Levels this model takes; the kind's `efforts` when absent. */
+  efforts?: string[];
+  defaultEffort?: string;
+}
+
+export interface KindModels {
+  models: ModelChoice[];
+  efforts: string[];
+}
+
+export type AgentModels = Record<AgentKind, KindModels>;

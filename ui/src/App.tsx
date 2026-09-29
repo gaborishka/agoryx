@@ -1,4 +1,4 @@
-import { FileTextIcon, Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react";
+import { FileTextIcon, Maximize2Icon, Minimize2Icon, SquareTerminalIcon, XIcon } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Palette } from "@/components/Palette";
 import { AgoraGlyph } from "@/components/room/bits";
@@ -19,8 +19,10 @@ import { cn } from "@/lib/utils";
 // dialog or document panel, and are fetched in the background once the room is up.
 const loadDialogs = () => import("@/components/dialogs/Dialogs");
 const loadDocPanel = () => import("@/components/doc/DocPanel");
+const loadSessionPanel = () => import("@/components/session/SessionPanel");
 const Dialogs = lazy(() => loadDialogs().then((m) => ({ default: m.Dialogs })));
 const DocPanel = lazy(() => loadDocPanel().then((m) => ({ default: m.DocPanel })));
+const SessionPanel = lazy(() => loadSessionPanel().then((m) => ({ default: m.SessionPanel })));
 
 function PanelLoading() {
   return (
@@ -65,20 +67,22 @@ function SidePanel({ overlay }: { overlay: boolean }) {
   const setWide = useStore((s) => s.setWide);
   const setPanel = useStore((s) => s.setPanel);
   if (!panel) return null;
+  const title = panel === "session" ? "Сесія агента" : "Документ";
+  const TitleIcon = panel === "session" ? SquareTerminalIcon : FileTextIcon;
   return (
     <>
       {overlay ? <button type="button" aria-label="Закрити панель" className="fixed inset-0 z-30 bg-black/25 backdrop-blur-[1px]" onClick={() => setPanel(null)} /> : null}
       <aside
-        aria-label="Документ"
+        aria-label={title}
         className={cn(
-          "flex min-h-0 flex-col border-l border-border bg-background",
+          "flex min-h-0 flex-col border-l border-border bg-background animate-in duration-200 fade-in-0 slide-in-from-right-8",
           overlay ? "fixed inset-y-0 right-0 z-40 w-[min(560px,100vw)] shadow-lift" : wide ? "w-[min(760px,52vw)]" : "w-[440px] xl:w-[480px]",
         )}
       >
         <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 px-3">
           <span className="flex items-center gap-2 px-1 text-[14px] font-semibold">
-            <FileTextIcon className="size-4 text-primary" />
-            Документ
+            <TitleIcon className="size-4 text-primary" />
+            {title}
           </span>
           <div className="ml-auto flex items-center">
             {!overlay ? (
@@ -91,11 +95,17 @@ function SidePanel({ overlay }: { overlay: boolean }) {
             </Button>
           </div>
         </div>
-        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+        {panel === "session" ? (
           <Suspense fallback={<PanelLoading />}>
-            <DocPanel />
+            <SessionPanel />
           </Suspense>
-        </div>
+        ) : (
+          <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+            <Suspense fallback={<PanelLoading />}>
+              <DocPanel />
+            </Suspense>
+          </div>
+        )}
       </aside>
     </>
   );
@@ -175,7 +185,7 @@ export function App() {
   const dialogOpen = useStore((s) => s.dialog !== null);
   useEffect(() => {
     // Warm the lazy chunks while the page is idle, so the first dialog opens without a wait.
-    const warm = () => void Promise.all([loadDialogs(), loadDocPanel()]).catch(() => {});
+    const warm = () => void Promise.all([loadDialogs(), loadDocPanel(), loadSessionPanel()]).catch(() => {});
     if ("requestIdleCallback" in window) {
       const id = window.requestIdleCallback(warm, { timeout: 4000 });
       return () => window.cancelIdleCallback(id);

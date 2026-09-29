@@ -38,6 +38,7 @@ const eventOrigin = (event: RoomEvent): ActorOrigin | undefined => {
     case "run.ended":
     case "settings.changed":
     case "room.renamed":
+    case "agent.changed":
     case "doc.revised":
       return event.from;
     default:
@@ -173,6 +174,21 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       return;
     case "room.renamed":
       state.name = event.name;
+      return;
+    case "agent.changed":
+      state.agents = state.agents.map((agent) => {
+        if (agent.id !== event.agent) return agent;
+        const next = { ...agent };
+        if (event.model !== undefined) {
+          if (event.model === null) delete next.model;
+          else next.model = event.model;
+        }
+        if (event.effort !== undefined) {
+          if (event.effort === null) delete next.effort;
+          else next.effort = event.effort;
+        }
+        return next;
+      });
       return;
     case "commit.created":
       state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq });

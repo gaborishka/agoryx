@@ -67,7 +67,7 @@ export interface AgentRunner {
    * Shell command a human can use to open this agent's native session. With the agent's model:
    * two agents of one kind can differ only by it, and a resumed session would otherwise talk to the CLI's default.
    */
-  resumeCommand(sessionId: string, cwd: string, model?: string): string;
+  resumeCommand(sessionId: string, cwd: string, model?: string, effort?: string): string;
 }
 
 export const shellQuote = (value: string): string =>

@@ -1,5 +1,5 @@
-import { CopyIcon, ExternalLinkIcon, FileIcon, FolderOpenIcon } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { ExternalLinkIcon, FileIcon, FolderOpenIcon } from "lucide-react";
+import { type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { CodeFile, Patch } from "@/components/code/Code";
 import { LiveFrame } from "@/components/md/LiveFrame";
@@ -16,7 +16,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api, roomPath, Unauthorized } from "@/lib/api";
-import { copyText } from "@/lib/copy";
 import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, fullDate, IMAGE_EXT, kb, names, TABLE_EXT, VIDEO_EXT } from "@/lib/format";
 import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { type DialogState, type TableFormOp, useStore } from "@/lib/store";
@@ -348,65 +347,6 @@ function FilesDialog() {
   );
 }
 
-// --- agent sessions -------------------------------------------------------------------
-
-function SessionsDialog() {
-  const snap = useStore((s) => s.snap);
-  if (!snap) return null;
-  const st = snap.state;
-  return (
-    <Shell title="Сесії агентів">
-      <Faint className="text-[13.5px]">
-        Agoryx не перепаковує агентів: кожен працює у своїй справжній сесії, і розмова в кімнаті — це їхні ходи в цих сесіях. Відкрийте сесію в терміналі, щоб
-        побачити все, що агент робив, або поговорити сам-на-сам — кімната це теж побачить.
-      </Faint>
-      {st.agents.map((a) => {
-        const session = st.sessions[a.id];
-        const command = snap.resume?.[a.id];
-        return (
-          <div key={a.id} className="flex items-start gap-3 rounded-xl border border-border bg-card p-3.5">
-            <Avatar handle={a.id} size={34} />
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <div className="flex items-baseline gap-2">
-                <b className="text-[14.5px]">{a.label}</b>
-                {a.model ? <span className="font-mono text-[11px] text-faint">{a.model}</span> : null}
-              </div>
-              <span className="truncate text-xs text-muted-foreground">
-                {session ? (
-                  <>
-                    сесія <span className="font-mono">{session.sessionId}</span>
-                  </>
-                ) : (
-                  "Ще не говорив у кімнаті — сесія з'явиться після першого ходу"
-                )}
-              </span>
-              {command ? <CopyLine text={command} /> : null}
-            </div>
-          </div>
-        );
-      })}
-      <Faint>
-        Уся кімната в терміналі: <code className="font-mono">agoryx tail -f</code> · <code className="font-mono">agoryx say "…"</code> ·{" "}
-        <code className="font-mono">agoryx table</code>
-      </Faint>
-    </Shell>
-  );
-}
-
-function CopyLine({ text }: { text: string }) {
-  const code = useRef<HTMLElement>(null);
-  return (
-    <div className="flex items-center gap-1 rounded-lg border border-border bg-code py-1 pr-1 pl-2.5">
-      <code ref={code} className="scroll-thin min-w-0 flex-1 overflow-x-auto font-mono text-[12px] whitespace-nowrap">
-        {text}
-      </code>
-      <Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Копіювати" title="Копіювати" onClick={() => void copyText(text, code.current)}>
-        <CopyIcon className="size-3.5" />
-      </Button>
-    </div>
-  );
-}
-
 // --- room settings -----------------------------------------------------------------------
 
 function SettingsDialog() {
@@ -689,8 +629,6 @@ const render = (d: DialogState) => {
       return <CommitDialog sha={d.sha} />;
     case "files":
       return <FilesDialog />;
-    case "sessions":
-      return <SessionsDialog />;
     case "settings":
       return <SettingsDialog />;
     case "help":

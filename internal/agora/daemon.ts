@@ -8,6 +8,9 @@ import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, origin
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
 import { linkedMedia, markdownTexts } from "./media.js";
+import { agentModels } from "./models.js";
+import { locateNativeSession } from "./native.js";
+import { readTranscript } from "./transcript.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import { profilePath, readProfile } from "./profile.js";
 import { defaultRoster } from "./roster.js";
@@ -242,6 +245,8 @@ export class AgoraDaemon {
   readonly token: string;
   private readonly options: DaemonOptions;
   private readonly rooms = new Map<string, RoomHandle>();
+  /** Where each agent session's file was found (room, agent, session id → path). */
+  private readonly sessionFiles = new Map<string, string>();
   private readonly log: (message: string) => void;
   private readonly runners: Partial<Record<AgentKind, AgentRunner>>;
   private readonly webDir: string | null;
@@ -695,6 +700,11 @@ export class AgoraDaemon {
       return;
     }
 
+    if (parts[0] === "models" && parts.length === 1 && method === "GET") {
+      sendJson(res, 200, await agentModels(this.env));
+      return;
+    }
+
     // Picking the folder a room works in: its subfolders, and what git says about it.
     if (parts[0] === "fs" && parts.length === 1 && method === "GET") {
       const asked = url.searchParams.get("path")?.trim();
@@ -812,6 +822,11 @@ export class AgoraDaemon {
       return;
     }
 
+    if (action === "session" && method === "GET") {
+      sendJson(res, 200, this.sessionTranscript(handle, url.searchParams));
+      return;
+    }
+
     if (action === "tree" && method === "GET") {
       sendJson(res, 200, { files: listWorkspaceFiles(handle.store.state.workspace) });
       return;
@@ -890,6 +905,22 @@ export class AgoraDaemon {
         sendJson(res, 200, { ok: true });
         return;
       }
+      case "agent": {
+        const agentId = typeof body.agent === "string" ? body.agent : "";
+        const patch: { model?: string | null; effort?: string | null } = {};
+        for (const key of ["model", "effort"] as const) {
+          const value = body[key];
+          if (value === null || typeof value === "string") patch[key] = value;
+          else if (value !== undefined) throw new HttpError(400, `${key} must be a string or null`);
+        }
+        try {
+          const agent = engine.updateAgent(agentId, patch, actor);
+          sendJson(res, 200, { agent });
+        } catch (error) {
+          throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
       case "settings": {
         try {
           engine.updateSettings(body as Partial<RoomSettings>, actor);
@@ -935,6 +966,33 @@ export class AgoraDaemon {
       // Whether there is a profile at all, never what it says: the UI shows who is given it.
       profile: { path: profilePath(this.env), exists: readProfile(profilePath(this.env)) !== null },
     };
+  }
+
+  /**
+   * An agent's own session as its CLI wrote it: `end` reads what came before an earlier page; `size`
+   * (the file size the caller already has) answers `unchanged` without reading anything.
+   */
+  private sessionTranscript(handle: RoomHandle, params: URLSearchParams) {
+    const state = handle.store.state;
+    const agent = state.agents.find((entry) => entry.id === params.get("agent"));
+    if (!agent) throw new HttpError(404, "no such agent in this room");
+    const session = state.sessions[agent.id];
+    if (!session) return { agent: agent.id, sessionId: null, file: null, entries: [], start: 0, end: 0, size: 0 };
+    const key = `${state.id}\0${agent.id}\0${session.sessionId}`;
+    let file = this.sessionFiles.get(key) ?? null;
+    if (!file || !existsSync(file)) {
+      file = locateNativeSession(agent.kind, session.sessionId, state.workspace, this.env);
+      if (file) this.sessionFiles.set(key, file);
+    }
+    if (!file) return { agent: agent.id, sessionId: session.sessionId, file: null, entries: [], start: 0, end: 0, size: 0 };
+    const endParam = params.get("end");
+    const end = endParam !== null && /^\d{1,15}$/.test(endParam) ? Number(endParam) : undefined;
+    const known = Number(params.get("size") ?? "");
+    if (end === undefined && Number.isFinite(known) && known > 0) {
+      const size = statSync(file).size;
+      if (size === known) return { agent: agent.id, sessionId: session.sessionId, file, unchanged: true, size };
+    }
+    return { agent: agent.id, sessionId: session.sessionId, file, ...readTranscript(agent.kind, file, end === undefined ? {} : { end }) };
   }
 
   /** The canonical file as it is on disk now. */
@@ -1028,7 +1086,12 @@ export class AgoraDaemon {
         return;
       }
       const state = handle.store.state;
-      const patch = { ...eventPatch(state, event), presence: this.presence(handle) };
+      const patch = {
+        ...eventPatch(state, event),
+        presence: this.presence(handle),
+        // The command to open a session names its model: it changes with either.
+        ...(event.type === "agent.changed" || event.type === "session.bound" ? { resume: resumeCommands(handle.store, this.runners) } : {}),
+      };
       res.write(`id: ${event.seq}\nevent: room\ndata: ${JSON.stringify({ event, patch })}\n\n`);
     };
     const start = Number.isFinite(after) ? after : handle.store.state.seq;

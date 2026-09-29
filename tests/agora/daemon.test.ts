@@ -598,3 +598,38 @@ test("the folder picker lists subfolders and says which are git repositories", a
   assert.deepEqual([...inside.git.branches].sort(), ["feature", "main"]);
   assert.equal((await call("GET", `/api/fs?path=${encodeURIComponent(join(home, "missing"))}`)).status, 404);
 });
+
+test("an agent's own session is read from its CLI's file; its model and effort change through the room", async () => {
+  const room = await newRoom("Sessions");
+  const none = (await call("GET", `/api/rooms/${room.id}/session?agent=claude`)).json<any>();
+  assert.equal(none.sessionId, null, "no turn yet, no session");
+  assert.deepEqual(none.entries, []);
+  assert.equal((await call("GET", `/api/rooms/${room.id}/session?agent=nobody`)).status, 404);
+
+  const done = readEvents(`/api/rooms/${room.id}/events?after=0`, (frame) => frame.event === "room" && frame.data.event.type === "run.ended");
+  await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "Hello both" } });
+  await done;
+  for (const agent of ["claude", "codex"]) {
+    const t = (await call("GET", `/api/rooms/${room.id}/session?agent=${agent}`)).json<any>();
+    assert.ok(t.sessionId && t.file, `${agent}'s session file is found`);
+    assert.ok(t.entries.some((e: any) => e.kind === "user" && e.agoryx), `${agent}: the room's prompt is there, marked`);
+    assert.ok(t.entries.some((e: any) => e.kind === "assistant" && e.text === `${agent} here`), `${agent}: its reply is there`);
+    const same = (await call("GET", `/api/rooms/${room.id}/session?agent=${agent}&size=${t.size}`)).json<any>();
+    assert.equal(same.unchanged, true, "nothing new: nothing sent");
+    assert.equal(same.entries, undefined);
+  }
+
+  const models = await call("GET", "/api/models");
+  assert.equal(models.status, 200);
+  assert.ok(models.json<any>().claude.models.some((m: any) => m.id === "opus"));
+
+  const changed = readEvents(`/api/rooms/${room.id}/events?after=0`, (frame) => frame.event === "room" && frame.data.event.type === "agent.changed");
+  const set = await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "claude", model: "sonnet", effort: "high" } });
+  assert.equal(set.status, 200, set.body);
+  assert.deepEqual(set.json<any>().agent, { id: "claude", kind: "claude", label: "Claude", model: "sonnet", effort: "high" });
+  const frame = (await changed).at(-1)!;
+  assert.equal(frame.data.patch.agents.find((a: any) => a.id === "claude").model, "sonnet", "the stream carries the new roster");
+  assert.match(frame.data.patch.resume.claude, /--model sonnet/, "and the resume command that goes with it");
+  assert.equal((await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "claude", model: "a b" } })).status, 400);
+  assert.equal((await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "nobody", model: "opus" } })).status, 400);
+});

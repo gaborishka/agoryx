@@ -453,8 +453,8 @@ class ClaudeLiveProcess implements LiveProcess {
 export const createClaudeRunner = (bin = process.env.AGORYX_CLAUDE_BIN || "claude"): AgentRunner => ({
   kind: "claude",
 
-  resumeCommand(sessionId: string, cwd: string, model?: string): string {
-    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} --resume ${shellQuote(sessionId)}${model ? ` --model ${shellQuote(model)}` : ""}`;
+  resumeCommand(sessionId: string, cwd: string, model?: string, effort?: string): string {
+    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} --resume ${shellQuote(sessionId)}${model ? ` --model ${shellQuote(model)}` : ""}${effort ? ` --effort ${shellQuote(effort)}` : ""}`;
   },
 
   liveFingerprint(request: TurnRequest): string {

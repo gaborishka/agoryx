@@ -246,7 +246,7 @@ export const resumeCommands = (
   for (const agent of store.state.agents) {
     const session = store.state.sessions[agent.id];
     const runner = runners[agent.kind];
-    if (session && runner) commands[agent.id] = runner.resumeCommand(session.sessionId, store.state.workspace, agent.model);
+    if (session && runner) commands[agent.id] = runner.resumeCommand(session.sessionId, store.state.workspace, agent.model, agent.effort);
   }
   return commands;
 };

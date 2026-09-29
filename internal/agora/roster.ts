@@ -38,6 +38,10 @@ const KEYS = new Set(["id", "kind", "label", "model", "effort", "profile"]);
 /** A level name for the CLI, never a flag or anything with quotes: it ends up inside -c key="…". */
 const EFFORT = /^[a-z][a-z0-9-]{0,19}$/;
 
+/** A model name a CLI can be given (never a flag). */
+export const validModel = (model: string): boolean => Boolean(model) && !model.startsWith("-") && model.length <= 100 && !/[\s"'`$\\]/.test(model);
+export const validEffort = (effort: string): boolean => EFFORT.test(effort);
+
 export class RosterError extends Error {}
 
 const capitalise = (id: string): string => id[0]!.toUpperCase() + id.slice(1);

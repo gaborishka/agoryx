@@ -4,8 +4,8 @@ import { api, ApiError, local, roomPath, setUnauthorizedHandler, Unauthorized } 
 import { lastLine } from "./room";
 import type { AgentPresence, OpEntry, RoomEvent, RoomSummary, RunState, Snapshot, TurnState } from "./types";
 
-/** The right-hand panel holds the shared document; the table is a view of its own. */
-export type PanelTab = "doc";
+/** The right-hand panel: the shared document, or an agent's own session; the table is a view of its own. */
+export type PanelTab = "doc" | "session";
 
 /** What the room's main area shows: the conversation, or the table laid out as a board. */
 export type RoomView = "chat" | "table";
@@ -15,7 +15,6 @@ export type DialogState =
   | { kind: "turn-diff"; turnId: string; path?: string }
   | { kind: "commit"; sha: string }
   | { kind: "files" }
-  | { kind: "sessions" }
   | { kind: "settings" }
   | { kind: "help" }
   | { kind: "table-form"; op: TableFormOp; target?: string; q?: string };
@@ -43,6 +42,8 @@ interface Store {
   /** Messages already shown once — only newer ones animate in. */
   seen: Set<string>;
   panel: PanelTab | null;
+  /** Whose session the session panel shows. */
+  sessionAgent: string | null;
   view: RoomView;
   wide: boolean;
   navOpen: boolean;
@@ -64,6 +65,8 @@ interface Store {
   openRoom: (id: string, quiet?: boolean) => Promise<void>;
   setPanel: (panel: PanelTab | null) => void;
   togglePanel: (tab: PanelTab) => void;
+  /** Show an agent's session in the side panel (the first agent's when none is named); again for the same agent closes it. */
+  openSession: (agent?: string, toggle?: boolean) => void;
   setView: (view: RoomView) => void;
   setWide: (wide: boolean) => void;
   setNavOpen: (open: boolean) => void;
@@ -94,6 +97,7 @@ export const useStore = create<Store>((set, get) => ({
   snap: null,
   seen: new Set(),
   panel: null,
+  sessionAgent: null,
   view: local.get("view") === "table" ? "table" : "chat",
   wide: local.get("wide") === "1",
   navOpen: false,
@@ -169,6 +173,15 @@ export const useStore = create<Store>((set, get) => ({
     const { panel } = get();
     get().setPanel(panel === tab ? null : tab);
   },
+  openSession(agent, toggle = false) {
+    const { panel, sessionAgent, snap } = get();
+    const target = agent ?? sessionAgent ?? snap?.state.agents[0]?.id ?? null;
+    if (toggle && panel === "session" && sessionAgent === target) {
+      set({ panel: null });
+      return;
+    }
+    set({ panel: "session", sessionAgent: target });
+  },
   setView(view) {
     local.set("view", view === "table" ? "table" : null);
     set({ view });
@@ -227,6 +240,8 @@ type Patch = {
   commits?: Snapshot["state"]["commits"];
   docRevisions?: Snapshot["state"]["docRevisions"];
   guests?: Snapshot["state"]["guests"];
+  agents?: Snapshot["state"]["agents"];
+  resume?: Snapshot["resume"];
   activity?: { turnId: string; activity: TurnState["activity"][number] };
 };
 
@@ -247,6 +262,8 @@ const applyPatch = (event: RoomEvent, patch: Patch) => {
   if (patch.commits) st.commits = patch.commits;
   if (patch.docRevisions) st.docRevisions = patch.docRevisions;
   if (patch.guests) st.guests = patch.guests;
+  if (patch.agents) st.agents = patch.agents;
+  if (patch.resume) next.resume = patch.resume;
   if (patch.name) {
     st.name = patch.name;
     document.title = `${patch.name} · Agoryx`;

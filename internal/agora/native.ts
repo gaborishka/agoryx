@@ -203,7 +203,7 @@ const SYSTEM_TAGS =
   /^<(local-command-[a-z]+|bash-(input|stdout|stderr)|task-notification|ci-monitor-event|system-reminder|user-prompt-submit-hook|[a-z]+(-[a-z]+)*-(command|event|notification))[\s>]/;
 
 /** Text the human typed, without harness wrappers; null when the line is not a human prompt. */
-const humanText = (content: unknown): string | null => {
+export const humanText = (content: unknown): string | null => {
   let text: string;
   if (typeof content === "string") {
     text = content;
@@ -332,7 +332,7 @@ const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: bool
   };
 };
 
-const codexText = (content: unknown): string => {
+export const codexText = (content: unknown): string => {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
@@ -350,7 +350,7 @@ const codexText = (content: unknown): string => {
  * What the human typed into Codex, without what the app wraps around it
  * (attachment notes, ambient UI state blocks, "## My request:" framing).
  */
-const codexHumanText = (text: string): string => {
+export const codexHumanText = (text: string): string => {
   const request = /^## My request(?: for Codex)?:[ \t]*$/m.exec(text);
   let body = request ? text.slice(request.index + request[0].length) : text;
   for (let block = LEADING_BLOCK.exec(body); block; block = LEADING_BLOCK.exec(body)) body = body.slice(block[0].length);

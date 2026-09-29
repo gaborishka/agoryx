@@ -8,6 +8,7 @@ import { locateNativeSession, scanNativeSession, type NativeExchange } from "./n
 import { activeRun } from "./projection.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
+import { validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
@@ -600,6 +601,37 @@ export class RoomEngine {
     else if (clean.doc !== undefined) {
       this.postSystem(clean.doc ? `The room's canonical file is now ${clean.doc}.` : "The room no longer has a canonical file.", false);
     }
+  }
+
+  /**
+   * Another model or effort for an agent, from its next turn on (a live process restarts for it). Empty
+   * or null: back to the CLI's own default. Said in the transcript by whoever changed it; wakes nobody.
+   */
+  updateAgent(agentId: string, patch: { model?: string | null; effort?: string | null }, by?: string | Actor): RoomAgent {
+    const actor = this.actor(by);
+    const agent = this.state.agents.find((entry) => entry.id === agentId);
+    if (!agent) throw new Error(`no agent @${agentId} in this room`);
+    const change: { model?: string | null; effort?: string | null } = {};
+    if (patch.model !== undefined) {
+      const model = typeof patch.model === "string" ? patch.model.trim() : patch.model;
+      if (model !== null && typeof model !== "string") throw new Error("model must be a string or null");
+      if (model && !validModel(model)) throw new Error(`"${model}" is not a model name the ${agent.kind} CLI could be given`);
+      if ((model || null) !== (agent.model ?? null)) change.model = model || null;
+    }
+    if (patch.effort !== undefined) {
+      const effort = typeof patch.effort === "string" ? patch.effort.trim() : patch.effort;
+      if (effort !== null && typeof effort !== "string") throw new Error("effort must be a string or null");
+      if (effort && !validEffort(effort)) throw new Error(`"${effort}" is not an effort level (like "high" or "xhigh")`);
+      if ((effort || null) !== (agent.effort ?? null)) change.effort = effort || null;
+    }
+    if (Object.keys(change).length === 0) return agent;
+    this.store.append({ type: "agent.changed", agent: agent.id, ...change, ...actorFields(actor) });
+    const parts = [
+      ...(change.model !== undefined ? [change.model ? `model ${change.model}` : "the CLI's default model"] : []),
+      ...(change.effort !== undefined ? [change.effort ? `effort ${change.effort}` : "the CLI's default effort"] : []),
+    ];
+    this.postNote(actor, `${actorLabel(this.state, actor.by)} set ${agent.label} to ${parts.join(", ")}.`);
+    return this.state.agents.find((entry) => entry.id === agentId)!;
   }
 
   /** A new name for the room; it wakes nobody. */

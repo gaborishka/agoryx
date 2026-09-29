@@ -489,8 +489,9 @@ class CodexLiveProcess implements LiveProcess {
 export const createCodexRunner = (bin = process.env.AGORYX_CODEX_BIN || "codex"): AgentRunner => ({
   kind: "codex",
 
-  resumeCommand(sessionId: string, cwd: string, model?: string): string {
-    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} resume ${shellQuote(sessionId)}${model ? ` -m ${shellQuote(model)}` : ""}`;
+  resumeCommand(sessionId: string, cwd: string, model?: string, effort?: string): string {
+    const reasoning = effort ? ` -c ${shellQuote(`model_reasoning_effort="${effort}"`)}` : "";
+    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} resume ${shellQuote(sessionId)}${model ? ` -m ${shellQuote(model)}` : ""}${reasoning}`;
   },
 
   liveFingerprint(request: TurnRequest): string {

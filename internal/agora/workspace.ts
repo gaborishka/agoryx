@@ -352,7 +352,10 @@ export const writeTurnPatch = (
   if (!target) return;
   const header = [
     `# ${turn.id} · ${turn.author} · ${turn.ts.slice(0, 16).replace("T", " ")} UTC`,
-    ...changes.map((change) => `#   ${change.path}  ${changeStats(change)}${change.status === "A" ? " (new)" : change.status === "D" ? " (deleted)" : ""}`),
+    ...changes.map(
+      (change) =>
+        `#   ${change.path}  ${changeStats(change)}${change.status === "A" ? " (new)" : change.status === "D" ? " (deleted)" : ""}${change.with?.length ? ` (also edited by ${change.with.join(", ")} meanwhile)` : ""}`,
+    ),
     "#",
   ];
   try {

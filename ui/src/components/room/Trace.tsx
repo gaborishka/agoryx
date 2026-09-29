@@ -22,6 +22,7 @@ import { useState } from "react";
 import { rawUrl } from "@/components/md/Markdown";
 import { Player } from "@/components/md/Media";
 import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, IMAGE_EXT, plural, TABLE_EXT, VIDEO_EXT, VISUAL_EXT } from "@/lib/format";
+import { nameOf } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { Activity, DocRevision, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -178,6 +179,7 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
   const [all, setAll] = useState(false);
   const openDialog = useStore((s) => s.openDialog);
   const openDocRevision = useStore((s) => s.openDocRevision);
+  const room = useStore((s) => s.snap?.state);
   const docPaths = new Set((docs ?? []).map((r) => r.path));
   const changes = (turn?.changes ?? []).filter((c) => !docPaths.has(c.path));
   const files = turn?.changes?.length ? [] : (turn?.files ?? []).filter((f) => !docPaths.has(f));
@@ -208,15 +210,22 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
             </button>
           </Tip>
         ))}
-        {shownChanges.map((c) => (
-          <Tip key={c.path} tip={`Що саме цей хід змінив у ${c.path}`}>
-            <button type="button" className={chip} onClick={() => turn && openDialog({ kind: "turn-diff", turnId: turn.id, path: c.path })}>
-              <FilePenLineIcon className="size-3.5" />
-              <span className="truncate font-mono text-[11.5px]">{baseName(c.path)}</span>
-              <Stats added={c.added} removed={c.removed} deleted={c.status === "D"} binary={c.added === null} isNew={c.status === "A"} />
-            </button>
-          </Tip>
-        ))}
+        {shownChanges.map((c) => {
+          const alongside = (c.with ?? []).map((handle) => nameOf(room, handle));
+          return (
+            <Tip
+              key={c.path}
+              tip={`Що саме цей хід змінив у ${c.path}${alongside.length ? ` — тим часом цей файл редагували й інші: ${alongside.join(", ")}, тож зміна не лише цього ходу` : ""}`}
+            >
+              <button type="button" className={chip} onClick={() => turn && openDialog({ kind: "turn-diff", turnId: turn.id, path: c.path })}>
+                <FilePenLineIcon className="size-3.5" />
+                <span className="truncate font-mono text-[11.5px]">{baseName(c.path)}</span>
+                <Stats added={c.added} removed={c.removed} deleted={c.status === "D"} binary={c.added === null} isNew={c.status === "A"} />
+                {alongside.length ? <span className="text-muted-foreground">+ {alongside.join(", ")}</span> : null}
+              </button>
+            </Tip>
+          );
+        })}
         {shownFiles.map((f) => (
           <button key={f} type="button" className={chip} title={f} onClick={() => openDialog({ kind: "file", path: f })}>
             <NotebookPenIcon className="size-3.5" />

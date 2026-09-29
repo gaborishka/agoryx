@@ -129,14 +129,17 @@ interface TurnFiles {
 }
 
 /** "↳ changed: a.ts +12 −3, b.ts +40 −0 (new) — the exact diff: agoryx diff t7" */
-const changedLine = (turnId: string, entry: TurnFiles): string => {
+const changedLine = (turnId: string, entry: TurnFiles, name: (handle: string) => string = (handle) => handle): string => {
   if (!entry.changes?.length) {
     const { files } = entry;
     return `   ↳ changed: ${files.slice(0, 20).join(", ")}${files.length > 20 ? ` (+${files.length - 20} more)` : ""}`;
   }
   const shown = entry.changes
     .slice(0, 20)
-    .map((change) => `${change.path} ${changeStats(change)}${change.status === "A" ? " (new)" : change.status === "D" ? " (deleted)" : ""}`);
+    .map((change) => {
+      const notes = [change.status === "A" ? "new" : change.status === "D" ? "deleted" : "", change.with?.length ? `${change.with.map(name).join(" and ")} edited it too meanwhile` : ""].filter(Boolean);
+      return `${change.path} ${changeStats(change)}${notes.length ? ` (${notes.join("; ")})` : ""}`;
+    });
   const more = entry.changes.length > 20 ? ` (+${entry.changes.length - 20} more)` : "";
   return `   ↳ changed: ${shown.join(", ")}${more} — the exact diff: agoryx diff ${turnId}`;
 };
@@ -362,7 +365,7 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
         // Passing after changing files still changed them.
         const files = message.turnId ? filesByTurn.get(message.turnId) : undefined;
         if (files) {
-          blocks.push(`── ${displayName(state, message.author)} · ${clock(event.ts)} · passed, after changing files\n${changedLine(message.turnId!, files)}`);
+          blocks.push(`── ${displayName(state, message.author)} · ${clock(event.ts)} · passed, after changing files\n${changedLine(message.turnId!, files, (handle) => displayName(state, handle))}`);
           filesByTurn.delete(message.turnId!);
         } else if (message.author !== agent.id) passes.push(displayName(state, message.author));
         continue;
@@ -390,7 +393,7 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
       }
       const files = message.turnId ? filesByTurn.get(message.turnId) : undefined;
       if (files) {
-        lines.push(changedLine(message.turnId!, files));
+        lines.push(changedLine(message.turnId!, files, (handle) => displayName(state, handle)));
         filesByTurn.delete(message.turnId!);
       }
       if (message.kind !== "agent" || message.author === state.human) kept.add(blocks.length);
@@ -418,7 +421,7 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
   }
   // Turns that changed files but left no message (interrupted, or a pass before this delta).
   for (const [turnId, entry] of filesByTurn) {
-    blocks.push(`── ${displayName(state, entry.agent)} · changed files without a message\n${changedLine(turnId, entry)}`);
+    blocks.push(`── ${displayName(state, entry.agent)} · changed files without a message\n${changedLine(turnId, entry, (handle) => displayName(state, handle))}`);
   }
   if (passes.length > 0) blocks.push(`(${[...new Set(passes)].join(", ")} passed)`);
 

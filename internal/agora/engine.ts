@@ -1240,7 +1240,10 @@ export class RoomEngine {
     const handedOver = late.filter(
       (file) => foreign.length > 0 || !self || !this.claimsFile(self, file) || this.overlapping(turnId).some((entry) => this.claimsFile(entry, file)),
     );
-    const changed = this.turnChanges(agent, turnId, tree, after, files, handedOver.length && handoff?.tree ? { tree: handoff.tree, files: handedOver } : undefined);
+    // A file a parallel turn of this room also wrote while this one ran is not this turn's alone: its change says so.
+    const sharedWith = (file: string) =>
+      self && this.claimsFile(self, file) ? [...new Set(this.overlapping(turnId).filter((entry) => this.claimsFile(entry, file)).map((entry) => entry.agent))] : [];
+    const changed = this.turnChanges(agent, turnId, tree, after, files, handedOver.length && handoff?.tree ? { tree: handoff.tree, files: handedOver } : undefined, sharedWith);
     // Every parallel turn has ended: nothing needs their shell writes any more.
     if (this.running.size === 0) this.shellWrites.clear();
     // A file only touched (same content) is not a change.
@@ -1334,13 +1337,20 @@ export class RoomEngine {
     after: string | null,
     files: string[],
     late?: { tree: string; files: string[] },
+    sharedWith: (file: string) => string[] = () => [],
   ): { changes: FileChange[]; trees: { before: string; after: string } } | null {
     if (!before || !after || files.length === 0) return null;
     const early = late ? files.filter((file) => !late.files.includes(file)) : files;
     const parts = [treeChanges(this.state.workspace, before, after, early), ...(late ? [treeChanges(this.state.workspace, late.tree, after, late.files)] : [])];
     if (parts.some((part) => !part)) return null;
     const diff = {
-      changes: parts.flatMap((part) => part!.changes).sort((a, b) => a.path.localeCompare(b.path)),
+      changes: parts
+        .flatMap((part) => part!.changes)
+        .map((change) => {
+          const others = sharedWith(change.path).filter((id) => id !== agent.id);
+          return others.length ? { ...change, with: others } : change;
+        })
+        .sort((a, b) => a.path.localeCompare(b.path)),
       patch: parts.map((part) => part!.patch).filter(Boolean).join(""),
     };
     if (diff.changes.length > 0) {

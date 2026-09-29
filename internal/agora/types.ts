@@ -429,6 +429,8 @@ export interface FileChange {
   /** Line counts; null for a binary file. */
   added: number | null;
   removed: number | null;
+  /** Agents whose parallel turns also edited this file while this turn ran: the change is not this turn's alone. */
+  with?: string[];
 }
 
 export interface RunState {

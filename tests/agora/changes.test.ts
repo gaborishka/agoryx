@@ -242,3 +242,29 @@ test("a turn that changed nothing has no changes and no patch", async () => {
     await room.cleanup();
   }
 });
+
+test("a file two parallel turns both wrote is marked in each change as not that turn's alone", async () => {
+  const room = createTestRoom({
+    rules: [
+      { agent: "claude", match: "glob", earlyWrite: { path: "glob.test.ts", content: "mine\n" }, sleepMs: 1200, write: { path: "glob.ts", content: "x\n" }, reply: "glob.ts is in.", once: true },
+      { agent: "codex", match: "glob", sleepMs: 400, write: { path: "glob.test.ts", content: "codex 1\ncodex 2\n" }, reply: "Tests in.", once: true },
+      { agent: "claude", reply: "::pass::" },
+      { agent: "codex", reply: "::pass::" },
+    ],
+  });
+  try {
+    room.engine.postHuman("Implement glob");
+    await withTimeout(room.engine.waitIdle());
+    const turn = (agent: string) => room.store.state.turns.find((entry) => entry.agent === agent)!;
+    const change = (agent: string, path: string) => turn(agent).changes?.find((entry) => entry.path === path);
+    assert.deepEqual(change("claude", "glob.test.ts")?.with, ["codex"]);
+    assert.deepEqual(change("codex", "glob.test.ts")?.with, ["claude"]);
+    assert.equal(change("claude", "glob.ts")?.with, undefined, "only Claude wrote glob.ts");
+    const prompt = room.invocations("codex").at(-1)!.prompt!;
+    assert.match(prompt, /glob\.test\.ts \+2 −0 \(new; Codex edited it too meanwhile\)|glob\.test\.ts \+\d+ −\d+ \([^)]*Codex edited it too meanwhile\)/);
+    const patch = readFileSync(join(room.store.state.workspace, ".agoryx", "rooms", room.store.state.id, "turns", `${turn("claude").id}.patch`), "utf8");
+    assert.match(patch, /#   glob\.test\.ts .*\(also edited by codex meanwhile\)/);
+  } finally {
+    await room.cleanup();
+  }
+});

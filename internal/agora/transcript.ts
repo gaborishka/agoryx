@@ -19,6 +19,9 @@ type Json = Record<string, any>;
 
 const WINDOW = 6 * 1024 * 1024;
 const MAX_ENTRIES = 600;
+/** A page reaches further back until it has this many entries: raw tool output and pages read can fill a window. */
+const MIN_ENTRIES = 30;
+const REACH = 24 * 1024 * 1024;
 const MAX_TEXT = 60_000;
 const MAX_OUTPUT = 24_000;
 const MAX_PATCH = 200_000;
@@ -47,37 +50,45 @@ interface Line {
 const readWindow = (file: string, end: number | undefined, window: number): { lines: Line[]; start: number; size: number } => {
   const size = statSync(file).size;
   const until = Math.min(end ?? size, size);
-  const from = Math.max(0, until - window);
-  const fd = openSync(file, "r");
-  let buffer: Buffer;
-  try {
-    buffer = Buffer.alloc(until - from);
-    readSync(fd, buffer, 0, buffer.length, from);
-  } finally {
-    closeSync(fd);
-  }
-  let cursor = 0;
-  if (from > 0) {
-    const first = buffer.indexOf(0x0a);
-    cursor = first < 0 ? buffer.length : first + 1;
-  }
-  const lines: Line[] = [];
-  const begin = from + cursor;
-  while (cursor < buffer.length) {
-    const newline = buffer.indexOf(0x0a, cursor);
-    if (newline < 0) break;
-    const raw = buffer.subarray(cursor, newline).toString("utf8").trim();
-    if (raw) {
-      try {
-        const value = JSON.parse(raw);
-        if (value && typeof value === "object") lines.push({ start: from + cursor, value });
-      } catch {
-        // a corrupt line is skipped
+  let reach = window;
+  for (;;) {
+    const from = Math.max(0, until - reach);
+    const fd = openSync(file, "r");
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.alloc(until - from);
+      readSync(fd, buffer, 0, buffer.length, from);
+    } finally {
+      closeSync(fd);
+    }
+    let cursor = 0;
+    if (from > 0) {
+      const first = buffer.indexOf(0x0a);
+      cursor = first < 0 ? buffer.length : first + 1;
+      // One line longer than the window: take it whole, or the page never moves back.
+      if (cursor >= buffer.length) {
+        reach *= 2;
+        continue;
       }
     }
-    cursor = newline + 1;
+    const lines: Line[] = [];
+    const begin = from + cursor;
+    while (cursor < buffer.length) {
+      const newline = buffer.indexOf(0x0a, cursor);
+      if (newline < 0) break;
+      const raw = buffer.subarray(cursor, newline).toString("utf8").trim();
+      if (raw) {
+        try {
+          const value = JSON.parse(raw);
+          if (value && typeof value === "object") lines.push({ start: from + cursor, value });
+        } catch {
+          // a corrupt line is skipped
+        }
+      }
+      cursor = newline + 1;
+    }
+    return { lines, start: begin, size };
   }
-  return { lines, start: begin, size };
 };
 
 const dataUrl = (media: string, base64: string): string | undefined =>
@@ -579,9 +590,17 @@ const parseCodex = (lines: Line[]): Array<TranscriptEntry & { offset: number }> 
  * reaches. `start` in the result is where to continue backwards from.
  */
 export const readTranscript = (kind: AgentKind, file: string, options: { end?: number; window?: number } = {}): Transcript => {
-  const { lines, start, size } = readWindow(file, options.end, options.window ?? WINDOW);
+  const window = options.window ?? WINDOW;
+  let { lines, start, size } = readWindow(file, options.end, window);
   const until = Math.min(options.end ?? size, size);
-  const parsed = kind === "claude" ? parseClaude(lines) : parseCodex(lines);
+  const parse = () => (kind === "claude" ? parseClaude(lines) : parseCodex(lines));
+  let parsed = parse();
+  while (parsed.length < MIN_ENTRIES && start > 0 && until - start < REACH) {
+    const older = readWindow(file, start, window);
+    lines = [...older.lines, ...lines];
+    start = older.start;
+    parsed = parse();
+  }
   const kept = parsed.length > MAX_ENTRIES ? parsed.slice(parsed.length - MAX_ENTRIES) : parsed;
   const from = parsed.length > MAX_ENTRIES ? kept[0]!.offset : start;
   return {

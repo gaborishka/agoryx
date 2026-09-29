@@ -127,6 +127,31 @@ test("a long session is read from its end, and older pages continue exactly wher
   }
 });
 
+test("lines the view skips, even one longer than the window, never leave a page empty or stuck", () => {
+  const dir = scratch();
+  try {
+    const file = join(dir, "rollout.jsonl");
+    const item = (id: number) => ({ timestamp: TS, type: "event_msg", payload: { type: "item_completed", item: { type: "AgentMessage", id: `i${id}`, content: [{ type: "Text", text: `reply ${id}` }] } } });
+    // Codex keeps a code-mode tool's raw output too; the view shows the items, so these lines add nothing.
+    const raw = (size: number) => ({ timestamp: TS, type: "response_item", payload: { type: "custom_tool_call_output", call_id: "c", output: "x".repeat(size) } });
+    writeFileSync(file, jsonl([...Array.from({ length: 40 }, (_, i) => item(i)), raw(20_000), item(40), raw(5_000), raw(5_000), raw(5_000), item(41)]));
+    const whole = readTranscript("codex", file).entries.map((e) => e.id);
+    assert.equal(whole.length, 42);
+    let page = readTranscript("codex", file, { window: 8000 });
+    assert.ok(page.entries.length >= 30, `the first page reaches back past the raw output (${page.entries.length})`);
+    const pages = [page.entries.map((e) => e.id)];
+    while (page.start > 0) {
+      const before = page.start;
+      page = readTranscript("codex", file, { end: before, window: 8000 });
+      assert.ok(page.start < before, "every older page moves back");
+      pages.unshift(page.entries.map((e) => e.id));
+    }
+    assert.deepEqual(pages.flat(), whole);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- Codex -------------------------------------------------------------------------------
 
 test("a Codex rollout reads as Codex shows it: commands with exit codes, patches, plans, commentary", () => {

@@ -76,6 +76,7 @@ export const createTestRoom = (options: {
   live?: boolean | { idleMs?: number };
   /** Issues the agents' keys, as the daemon does. */
   agentKey?: (agentId: string) => string | undefined;
+  secondLook?: import("../../internal/agora/jev.js").SecondLook;
 } = {}): TestRoom => {
   const home = mkdtempSync(join(tmpdir(), "agora-test-"));
   const roomsRoot = join(home, "rooms");
@@ -113,6 +114,7 @@ export const createTestRoom = (options: {
     ...(options.profilePath ? { profilePath: options.profilePath } : {}),
     ...(options.live !== undefined ? { live: options.live } : {}),
     ...(options.agentKey ? { agentKey: options.agentKey } : {}),
+    ...(options.secondLook ? { secondLook: options.secondLook } : {}),
     opsPollMs: 50,
     nativePollMs: 50,
   });

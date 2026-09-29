@@ -58,6 +58,14 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
   their next delta. `@id` wakes only that participant, and its answer goes back to the human: the others
   read it in their next turn, and are woken by it only if it names them (`@codex, check this`). `@all`, or no
   name at all, addresses everyone.
+- **A second look, when Jev says it is worth it.** With a key for [Jev](https://typesafe.ai) in the daemon's
+  environment (`TYPESAFE_API_KEY`, or `OPENROUTER_API_KEY`; `JEV_PROVIDER` picks one when both are set), such an
+  answer that names no one is weighed: the human's question, the answer (a long one as its start and end) and the
+  files it changed go to Jev, which gives each other agent a probability that its look is worth a turn. At
+  `AGORYX_JEV_THRESHOLD` (default 0.5) or above, Agoryx says so in the room — «Jev: a second look at Claude's
+  answer seems worth a turn (Codex 54%) — Codex takes a look.» — and that note wakes only the agents it names.
+  Below it, or with Jev out of reach, nobody is woken. The run stays open the fraction of a second it takes; the
+  daemon log keeps every verdict. No key, or `AGORYX_JEV=off`: nothing leaves the machine and nothing is asked.
 - **Work is attributed.** Files changed during a turn are credited to that turn; at run end Agoryx makes a
   checkpoint commit (in workspaces it created, or when `autocommit` is on).
 - **So are actions.** Each agent's turn carries its own key to the daemon (`AGORYX_AGENT_KEY`). The human's own

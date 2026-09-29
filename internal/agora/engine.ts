@@ -8,6 +8,7 @@ import { locateNativeSession, scanNativeSession, type NativeExchange } from "./n
 import { activeRun } from "./projection.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
+import type { SecondLook } from "./jev.js";
 import { validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { RoomStore } from "./store.js";
@@ -80,6 +81,13 @@ export interface EngineOptions {
    * start, fall back to one process per turn without a word.
    */
   live?: boolean | { idleMs?: number };
+  /**
+   * Asked when the human put something to one agent alone and its answer names no one: whether another
+   * agent should take a look (see jev.ts). Without it such an answer wakes nobody else.
+   */
+  secondLook?: SecondLook | null;
+  /** How sure secondLook must be before it wakes an agent (default one half). */
+  secondLookThreshold?: number;
 }
 
 /** A process kept up for an agent between turns. */
@@ -273,6 +281,10 @@ export class RoomEngine {
   private idleWaiters: Array<() => void> = [];
   private opsTimer: NodeJS.Timeout | undefined;
   private scheduleQueued = false;
+  private readonly secondLook: SecondLook | null;
+  private readonly secondLookThreshold: number;
+  /** Turns whose answer is being weighed for a second look: the run stays open until it is. */
+  private readonly consulting = new Set<string>();
   private stopping = false;
   private heldWork: { trigger: string | null; minTurns: number | undefined; actor: Actor | undefined } | null = null;
   private closed = false;
@@ -294,6 +306,8 @@ export class RoomEngine {
     this.liveOn = Boolean(options.live);
     this.liveIdleMs = typeof options.live === "object" && options.live.idleMs !== undefined ? options.live.idleMs : DEFAULT_LIVE_IDLE_MS;
     this.env = options.env ?? process.env;
+    this.secondLook = options.secondLook ?? null;
+    this.secondLookThreshold = options.secondLookThreshold ?? 0.5;
     this.profilePath = options.profilePath;
     this.opsPollMs = options.opsPollMs ?? 250;
     this.nativePollMs = options.nativePollMs ?? 2000;
@@ -710,6 +724,8 @@ export class RoomEngine {
       if (message.native) {
         return message.native.agent !== agent.id && (message.mentions.includes("all") || message.mentions.includes(agent.id));
       }
+      // Agoryx's own note that names agents (a second look) wakes only them.
+      if (message.kind === "system" && message.author === "agoryx" && message.mentions.length > 0) return message.mentions.includes(agent.id);
       if (message.kind === "human" && message.mentions.length > 0) {
         const agentMentions = message.mentions.filter((handle) => handle === "all" || this.state.agents.some((entry) => entry.id === handle));
         if (agentMentions.length > 0 && !agentMentions.includes("all") && !agentMentions.includes(agent.id)) return false;
@@ -722,19 +738,60 @@ export class RoomEngine {
     return false;
   }
 
-  /** Whether everything that woke this turn was the human speaking to this agent alone (`@claude …`, no one else). */
-  private askedAlone(agent: RoomAgent, turnId: string): boolean {
+  /** What the human said to this agent alone (`@claude …`, no one else), when that is all that woke this turn; else null. */
+  private askedAlone(agent: RoomAgent, turnId: string): RoomMessage[] | null {
     const turn = this.state.turns.find((entry) => entry.id === turnId);
-    if (!turn) return false;
+    if (!turn) return null;
     const woke = this.store.since(turn.cursorBefore).filter((event) => event.seq <= turn.cursor && this.wakes(event, agent));
-    return (
-      woke.length > 0 &&
-      woke.every((event) => {
-        if (event.type !== "message.posted" || event.message.kind !== "human" || event.message.author !== this.state.human) return false;
-        const agents = event.message.mentions.filter((handle) => handle === "all" || this.state.agents.some((entry) => entry.id === handle));
-        return agents.length === 1 && agents[0] === agent.id;
+    const asked: RoomMessage[] = [];
+    for (const event of woke) {
+      if (event.type !== "message.posted" || event.message.kind !== "human" || event.message.author !== this.state.human) return null;
+      const agents = event.message.mentions.filter((handle) => handle === "all" || this.state.agents.some((entry) => entry.id === handle));
+      if (agents.length !== 1 || agents[0] !== agent.id) return null;
+      asked.push(event.message);
+    }
+    return asked.length ? asked : null;
+  }
+
+  /**
+   * An answer to the human alone wakes nobody; secondLook (Jev) may still judge another agent's look worth a
+   * turn. Then Agoryx says so in the room, with how sure it is, and that agent is woken by that note.
+   * Unreachable or unsure: nobody is woken. The run stays open until the answer is in.
+   */
+  private weighSecondLook(agent: RoomAgent, turnId: string, runId: string, asked: RoomMessage[], answer: RoomMessage, changes: FileChange[]): void {
+    const others = this.state.agents.filter((entry) => entry.id !== agent.id && !this.benched.has(entry.id) && this.runners[entry.kind]);
+    if (!this.secondLook || !others.length) return;
+    this.consulting.add(turnId);
+    const done = () => {
+      this.consulting.delete(turnId);
+      this.requestSchedule();
+    };
+    this.secondLook({
+      question: asked.map((message) => message.text).join("\n\n"),
+      answeredBy: agent.label,
+      answer: answer.text,
+      changed: changes.map((change) => `${change.path} +${change.added} −${change.removed}`),
+      others: others.map((entry) => ({ id: entry.id, label: entry.label })),
+    })
+      .then((verdict) => {
+        const worth = others.filter((entry) => (verdict.worth[entry.id] ?? 0) >= this.secondLookThreshold);
+        const said = others.map((entry) => `${entry.id} ${verdict.worth[entry.id]?.toFixed(2) ?? "?"}`).join(", ");
+        this.log(`${turnId} second look: ${said} (${verdict.ms} ms, ${verdict.tokens} tokens)${worth.length ? "" : " — nobody woken"}`);
+        // The run it was for has ended (stopped): what it says no longer has a run to join.
+        if (!worth.length || this.closed || this.stopping || activeRun(this.state)?.id !== runId) return;
+        const names = worth.map((entry) => entry.label);
+        const sure = worth.map((entry) => `${entry.label} ${Math.round(verdict.worth[entry.id]! * 100)}%`).join(", ");
+        this.postMessage({
+          author: "agoryx",
+          kind: "system",
+          text: `Jev: a second look at ${agent.label}'s answer seems worth a turn (${sure}) — ${names.join(" and ")} ${names.length === 1 ? "takes" : "take"} a look.`,
+          mentions: worth.map((entry) => entry.id),
+          wakes: true,
+          turnId,
+        });
       })
-    );
+      .catch((error: unknown) => this.log(`${turnId} second look unavailable: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(done);
   }
 
   private addressesOthers(mentions: string[], agent: RoomAgent): boolean {
@@ -813,6 +870,8 @@ export class RoomEngine {
       this.startTurn(agent, run);
     }
     if (this.running.size > 0) return;
+    // An answer is being weighed for a second look: the run ends once that is decided.
+    if (this.consulting.size > 0) return;
     if (waitingOnNative) {
       this.retrySoon();
       return;
@@ -1188,17 +1247,20 @@ export class RoomEngine {
         messageId = this.postMessage({ author: agent.id, kind: "pass", text: note, mentions: [], wakes: false, turnId, runId }).id;
       } else {
         const handles = [...this.state.agents.map((entry) => entry.id), this.state.human.toLowerCase()];
-        messageId = this.postMessage({
+        const asked = this.askedAlone(agent, turnId);
+        const message = this.postMessage({
           author: agent.id,
           kind: "agent",
           text: [said, ...images.filter((path) => !mediaRefs(said).includes(path)).map(embed)].filter(Boolean).join("\n\n"),
           mentions: parseMentions(said, handles),
           // An answer to what the human put to this agent alone goes back to the human: the others hear
           // it in their next delta, and it wakes one of them only if it says @name.
-          wakes: !this.askedAlone(agent, turnId) || this.addressesOthers(parseMentions(said, handles), agent),
+          wakes: !asked || this.addressesOthers(parseMentions(said, handles), agent),
           turnId,
           runId,
-        }).id;
+        });
+        messageId = message.id;
+        if (asked && !message.wakes) this.weighSecondLook(agent, turnId, runId, asked, message, changed?.changes ?? []);
       }
     } else if (result.status === "error") {
       const error = result.error ?? { kind: "unknown", message: "failed" };

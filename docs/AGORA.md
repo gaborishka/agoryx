@@ -5,9 +5,9 @@ A room puts you and a configurable group of Claude and Codex agents in one conve
 shared workspace. Agoryx sets the context; it does not assign roles, pick speakers or summarise for anyone.
 
 ```
-you ──┐                     ┌── Claude  (native session, sandboxed, full tools)
+you ──┐                     ┌── Claude  (native session, your settings; sandbox only if the room limits it)
       ├── room event log ───┤
-table ┘   (JSONL, replayable)└── Codex   (native session, workspace-write sandbox)
+table ┘   (JSONL, replayable)└── Codex   (native session, its own workspace-write sandbox)
 ```
 
 ## How a room runs
@@ -423,7 +423,7 @@ Without `--dir`, a room's workspace is `~/agoryx/<slug>/` (git-initialised); `AG
 
 | File | Role |
 |------|------|
-| `internal/agora/engine.ts` | Room engine: wake rules, deltas, blind rounds, pass, budget, table inbox, attribution, per-turn changes, checkpoints |
+| `internal/agora/engine.ts` | Room engine: wake rules, deltas, parallel first rounds, pass, budget, table inbox, attribution, per-turn changes, checkpoints |
 | `internal/agora/workspace.ts` | Workspace git helpers: dirty snapshots, tree snapshots and turn patches, checkpoints, safe paths |
 | `internal/agora/prompts.ts` | Briefing (first turn) and delta prompts |
 | `internal/agora/runners/{claude,codex}.ts` | Native CLI runners: session ids, stream parsing, activity traces; the live Claude / Codex (app-server) processes; `process.ts` spawns and ends CLI processes |

@@ -103,7 +103,7 @@ const TOOL_KINDS: Record<string, ActivityKind> = {
   TodoWrite: "note",
 };
 
-export const describeClaudeTool = (name: string, input: Json | undefined): { kind: ActivityKind; label: string; detail?: string } => {
+export const describeClaudeTool = (name: string, input: Json | undefined): { kind: ActivityKind; label: string; detail?: string; command?: string } => {
   const kind = TOOL_KINDS[name] ?? "tool";
   const pick = (...keys: string[]) => {
     for (const key of keys) {
@@ -113,8 +113,10 @@ export const describeClaudeTool = (name: string, input: Json | undefined): { kin
     return undefined;
   };
   switch (kind) {
-    case "command":
-      return { kind, label: truncate(pick("command", "bash_id", "shell_id") ?? name, 800), detail: pick("description") };
+    case "command": {
+      const command = pick("command");
+      return { kind, label: truncate(command ?? pick("bash_id", "shell_id") ?? name, 800), detail: pick("description"), ...(command ? { command } : {}) };
+    }
     case "edit":
     case "read":
       return { kind, label: pick("file_path", "notebook_path", "path") ?? name };

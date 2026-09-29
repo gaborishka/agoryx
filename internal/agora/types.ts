@@ -136,6 +136,8 @@ export interface Activity {
   label: string;
   detail?: string;
   status?: "running" | "ok" | "fail";
+  /** A shell command in full, while the label may be clipped: read for the files it names as written, never stored. */
+  command?: string;
 }
 
 export type TurnStatus = "running" | "ok" | "pass" | "error" | "interrupted";

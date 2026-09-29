@@ -60,9 +60,11 @@ export const describeCodexItem = (item: Json): Omit<Activity, "id"> | null => {
       const exitCode = typeof item.exit_code === "number" ? item.exit_code : null;
       const failed = status === "failed" || (exitCode !== null && exitCode !== 0);
       const output = str(item.aggregated_output) ?? "";
+      const command = unwrapShellCommand(str(item.command) ?? "");
       return {
         kind: "command",
-        label: truncate(unwrapShellCommand(str(item.command) ?? ""), 800),
+        label: truncate(command, 800),
+        command,
         status: status === "in_progress" ? "running" : failed ? "fail" : "ok",
         ...(failed && output ? { detail: truncate(output, 240) } : {}),
       };

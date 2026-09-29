@@ -53,6 +53,39 @@ test("in parallel turns a file an agent's own shell command wrote is credited to
   }
 });
 
+test("in parallel turns a long script's write at its very end is still read — from the whole command, not its clipped label", async () => {
+  const edits = Array.from({ length: 40 }, (_, i) => `s=s.replace('const v${i} = ${i};', 'const v${i} = ${i + 1};')`).join("\n");
+  const command = `python3 - <<'PY'\nfrom pathlib import Path\np=Path('src/kvl.js')\ns=p.read_text()\n${edits}\np.write_text(s)\nPY`;
+  assert.ok(command.length > 1500, "longer than any label is kept");
+  const room = createTestRoom({
+    rules: [
+      { agent: "claude", match: "parser", sleepMs: 1200, reply: "Auditing the spec.", once: true },
+      {
+        agent: "codex",
+        match: "parser",
+        sleepMs: 200,
+        command,
+        write: { path: "src/kvl.js", content: "export const parse = () => ({});\n", via: "shell" },
+        reply: "Patched src/kvl.js.",
+        once: true,
+      },
+      { reply: "::pass::" },
+    ],
+  });
+  try {
+    room.engine.postHuman("Fix the parser");
+    await withTimeout(room.engine.waitIdle());
+    const turn = (agent: string) => room.store.state.turns.find((entry) => entry.agent === agent)!;
+    assert.ok(turn("claude").startedAt < turn("codex").endedAt!, "the turns ran in parallel");
+    assert.deepEqual(turn("codex").files, ["src/kvl.js"]);
+    assert.ok(!turn("claude").files?.length, "not the other agent's");
+    const labels = turn("codex").activity.filter((activity) => activity.kind === "command");
+    assert.ok(labels.every((activity) => activity.label.length <= 200 && !("command" in activity)), "the stored trace keeps only the clipped label");
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("a file a turn wrote itself before and after a parallel turn ended is its whole change, not just the part after", async () => {
   const room = createTestRoom({
     rules: [

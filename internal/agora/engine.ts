@@ -1078,7 +1078,7 @@ export class RoomEngine {
     return this.tidyRules!.reduce((acc, [from, to]) => acc.split(from).join(to), text);
   }
 
-  private tidyActivity(activity: Activity): Activity {
+  private tidyActivity({ command: _command, ...activity }: Activity): Activity {
     // Runners keep labels long enough for this to see whole paths; clip afterwards.
     const tidy = (text: string, max: number) => truncate(this.tidyText(text), max);
     return {
@@ -1147,7 +1147,7 @@ export class RoomEngine {
         this.store.emit({ type: "turn.stream", turnId, agent: agent.id, text, ...(reset ? { reset } : {}) });
       },
       onActivity: (activity: Activity) => {
-        if (activity.kind === "command") this.noteShellWrites(turnId, activity.label);
+        if (activity.kind === "command") this.noteShellWrites(turnId, activity.command ?? activity.label);
         this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity: this.tidyActivity(activity) });
       },
     };

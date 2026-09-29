@@ -8,6 +8,7 @@ import { AgoraDaemon, findDaemon, readDaemonInfo, type DaemonInfo } from "../../
 import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { activeRun } from "../../internal/agora/projection.js";
+import { readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
 import { createRoom, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
 import { changeStats, patchSection } from "../../internal/agora/workspace.js";
@@ -38,12 +39,12 @@ export const AGORA_COMMANDS = new Set([
 export const printAgoraUsage = (write: OutputWriter = console.log): void => {
   write(
     [
-      "Rooms — Claude and Codex in one conversation, each in its own native session.",
+      "Rooms — Claude and Codex (or any agents you list) in one conversation, each in its own native session.",
       "",
       "  agoryx up [--port N] [-d]          Start the daemon (web UI + API). -d runs it in the background",
       "  agoryx down                        Stop the background daemon",
       "  agoryx open [room]                 Open the web UI (starts the daemon if needed)",
-      '  agoryx new ["name"] [--dir D [--worktree [--base BRANCH]]] [--budget N] [--doc PATH|none] [-m "first message"]   (no name: the message names it)',
+      '  agoryx new ["name"] [--dir D [--worktree [--base BRANCH]]] [--budget N] [--doc PATH|none] [--agents FILE|JSON] [-m "first message"]   (no name: the message names it)',
       "  agoryx rooms                       List rooms",
       '  agoryx say [-r room] "text"        Post to the room and follow the run until it goes quiet',
       "  agoryx tail [-r room] [-f] [-n N] [--trace]   Print the conversation (and follow it)",
@@ -60,6 +61,8 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "",
       "The room defaults to the one whose workspace contains the current directory, else the most recent.",
       "Without a running daemon, say/table/more run the room in this process until it goes quiet.",
+      'Agents: a JSON list like [{"id":"opus","kind":"claude","model":"opus"},{"kind":"codex"}] (kind: claude|codex; id, label, model optional).',
+      `New rooms seat the agents in ${rosterPath()} when it exists, else Claude and Codex; --agents seats others in one room.`,
       `State lives in ${agoraHome()} (override with AGORYX_HOME).`,
     ].join("\n"),
   );
@@ -507,6 +510,7 @@ const runNew = async (argv: string[]): Promise<number> => {
     { long: "base", takesValue: true },
     { long: "budget", takesValue: true },
     { long: "doc", takesValue: true },
+    { long: "agents", takesValue: true },
     { long: "message", short: "m", takesValue: true },
   ]);
   // No name: the first message names the room (rename it later in the web UI).
@@ -517,8 +521,16 @@ const runNew = async (argv: string[]): Promise<number> => {
   }
   const budget = parsed.options.budget ? Number.parseInt(parsed.options.budget, 10) : undefined;
   const doc = docOption(parsed.options.doc);
+  let agents: RoomAgent[] | undefined;
+  try {
+    agents = parsed.options.agents !== undefined ? readRoster(parsed.options.agents) : undefined;
+  } catch (error) {
+    if (error instanceof RosterError) throw new CliUsageError(`--agents: ${error.message}`);
+    throw error;
+  }
   const input = {
     name,
+    ...(agents ? { agents } : {}),
     ...(parsed.options.dir ? { dir: resolve(parsed.options.dir) } : {}),
     ...(parsed.options.worktree ? { worktree: true } : {}),
     ...(parsed.options.base ? { base: parsed.options.base } : {}),

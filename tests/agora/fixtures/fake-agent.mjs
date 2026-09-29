@@ -1,13 +1,14 @@
 // Emulates `claude -p --output-format stream-json` and `codex exec --json`
 // closely enough to drive the room engine in tests.
 //
-// Behaviour comes from $FAKE_RULES (JSON array). The first rule whose `agent`
-// (optional) and `match` (substring of the prompt, optional) fit is used:
-//   { agent, match, reply, table: [[...argv]], write: {path, content, via?: "shell"} (or a list),
+// Behaviour comes from $FAKE_RULES (JSON array). The first rule whose `agent` (the kind,
+// optional), `id` (the room's agent id, $AGORYX_AGENT, optional) and `match` (substring of
+// the prompt, optional) fit is used:
+//   { agent, id, match, reply, table: [[...argv]], write: {path, content, via?: "shell"} (or a list),
 //     command: "shown as the tool call; {cwd} and {cli} expand", sleepMs,
 //     streamSleepMs (claude: pause after streaming the reply, before finishing),
 //     error: "text", exitCode, once: true }
-// Without a matching rule: first turn replies "<agent> here", later turns pass.
+// Without a matching rule: first turn replies "<agent id> here", later turns pass.
 // Every invocation is appended to $FAKE_LOG as one JSON line.
 // With CLAUDE_CONFIG_DIR / CODEX_HOME set, the turn is also written to a native
 // session file in the real CLI's format, like `claude -p` and `codex exec` do.
@@ -130,6 +131,7 @@ const main = async () => {
   const ruleIndex = rules.findIndex(
     (rule, index) =>
       (!rule.agent || rule.agent === kind) &&
+      (!rule.id || rule.id === process.env.AGORYX_AGENT) &&
       (!rule.match || prompt.includes(rule.match)) &&
       (!rule.once || !used.includes(index)),
   );
@@ -137,7 +139,7 @@ const main = async () => {
   if (rule?.once) writeFileSync(usedFile, JSON.stringify([...used, ruleIndex]));
 
   const firstTurn = !resumed;
-  const reply = rule?.reply ?? (firstTurn ? `${kind} here` : "::pass::");
+  const reply = rule?.reply ?? (firstTurn ? `${process.env.AGORYX_AGENT || kind} here` : "::pass::");
 
   if (kind === "claude") {
     out({ type: "system", subtype: "init", session_id: sessionId, cwd: process.cwd() });

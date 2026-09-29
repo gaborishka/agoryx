@@ -9,7 +9,8 @@ export interface RoomSummary {
   createdAt: string;
   updatedAt: string;
   messages: number;
-  lastMessage?: { author: string; text: string };
+  /** `label`: the author's display name when an agent wrote it. */
+  lastMessage?: { author: string; text: string; label?: string };
   running: boolean;
   driven?: boolean;
 }

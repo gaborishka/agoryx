@@ -2,20 +2,11 @@ import { CircleHelpIcon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SunIcon } 
 import { AgoraGlyph, Tip } from "@/components/room/bits";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
-import { ago, preview } from "@/lib/format";
+import { ago, roomPreview } from "@/lib/format";
 import { useStore } from "@/lib/store";
 import { THEME_LABEL, useTheme } from "@/lib/theme";
 import type { RoomSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
-
-const WHO: Record<string, string> = { claude: "Claude", codex: "Codex" };
-
-const previewOf = (room: RoomSummary) => {
-  const last = room.lastMessage;
-  if (!last) return "Ще без повідомлень";
-  const who = WHO[last.author] ?? (last.author === "agoryx" ? "" : "Ви");
-  return `${who ? `${who}: ` : ""}${preview(last.text)}`;
-};
 
 function RoomRow({ room, on }: { room: RoomSummary; on: boolean }) {
   const go = useStore((s) => s.go);
@@ -37,7 +28,7 @@ function RoomRow({ room, on }: { room: RoomSummary; on: boolean }) {
       ) : (
         <span className="tabular text-[11px] text-faint">{ago(room.updatedAt)}</span>
       )}
-      <span className="col-span-2 truncate text-[12px] text-muted-foreground">{previewOf(room)}</span>
+      <span className="col-span-2 truncate text-[12px] text-muted-foreground">{roomPreview(room.lastMessage)}</span>
     </button>
   );
 }

@@ -106,14 +106,18 @@ function argumentMap(table: TableState) {
 }
 
 /** One side objects again and again, the other never does: agreement without friction may be politeness. */
-function asymmetry(room: RoomState, edges: Edge[]) {
+function asymmetry(room: RoomState, edges: Edge[], tally: Map<string, Tally>) {
   const agents = new Set(room.agents.map((a) => a.id));
-  let best: { loud: string; quiet: string; objections: number; shifts: number } | null = null;
+  let best: { loud: string; quiet: string; objections: number; shifts: number; alone: boolean } | null = null;
   for (const x of edges) {
     if (!agents.has(x.from) || !agents.has(x.to) || x.object < 2) continue;
     const back = edges.find((y) => y.from === x.to && y.to === x.from);
     if (back?.object) continue;
-    if (!best || x.object > best.objections) best = { loud: x.from, quiet: x.to, objections: x.object, shifts: back?.shifts ?? 0 };
+    if (!best || x.object > best.objections) {
+      // "Only X argues" holds only if no other agent objects to anything; with three, a third may be arguing too.
+      const alone = room.agents.every((a) => a.id === x.from || !tally.get(a.id)?.object);
+      best = { loud: x.from, quiet: x.to, objections: x.object, shifts: back?.shifts ?? 0, alone };
+    }
   }
   return best;
 }
@@ -220,7 +224,7 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
   const hot = [...disputes].sort((a, b) => noteCounts(table, b.id).obj - noteCounts(table, a.id).obj || b.seq - a.seq)[0];
   const waiting = !hot ? openQ.find((q) => !table.options.some((o) => o.q === q.id && o.status === "open")) : undefined;
   const { tally, edges } = argumentMap(table);
-  const lean = asymmetry(room, edges);
+  const lean = asymmetry(room, edges, tally);
   const order = [...room.agents.map((a) => a.id), ...[...tally.keys()].filter((k) => !room.agents.some((a) => a.id === k))];
   const people = order.filter((who) => tally.has(who));
   const name = (who: string) => participant(room, who).label;
@@ -286,7 +290,7 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
             <div className="flex flex-col gap-2 rounded-2xl border border-amber/30 bg-amber-soft/70 p-3.5">
               <div className="flex items-center gap-2 text-[13px] font-semibold text-amber">
                 <ScaleIcon className="size-4" />
-                Сперечається лише {name(lean.loud)}
+                {lean.alone ? `Сперечається лише ${name(lean.loud)}` : `${name(lean.quiet)} не заперечує ${name(lean.loud)} у відповідь`}
               </div>
               <p className="text-[13px] leading-relaxed text-pretty text-foreground/85">
                 {name(lean.loud)} — {plural(lean.objections, "заперечення", "заперечення", "заперечень")} до пунктів {name(lean.quiet)}, від {name(lean.quiet)} у відповідь — жодного

@@ -8,16 +8,14 @@ import { defaultWorkspaceRoot, roomsDir, shimDir } from "./paths.js";
 import { createClaudeRunner } from "./runners/claude.js";
 import { createCodexRunner } from "./runners/codex.js";
 import type { AgentRunner } from "./runners/types.js";
+import { defaultRoster, parseAgents } from "./roster.js";
 import { newRoomId, RoomStore, slugify } from "./store.js";
 import { DEFAULT_SETTINGS, type AgentKind, type RoomAgent, type RoomSettings, type RoomWorktree } from "./types.js";
 import { ensureAgentShim, prepareWorkspace } from "./workspace.js";
 
-export const DEFAULT_DOC = "README.md";
+export { DEFAULT_AGENTS } from "./roster.js";
 
-export const DEFAULT_AGENTS: RoomAgent[] = [
-  { id: "claude", kind: "claude", label: "Claude" },
-  { id: "codex", kind: "codex", label: "Codex" },
-];
+export const DEFAULT_DOC = "README.md";
 
 /** "Ivan_Habor" / git "Ivan Habor" → "Ivan". */
 export const defaultHumanName = (env: NodeJS.ProcessEnv = process.env): string => {
@@ -43,7 +41,8 @@ export interface CreateRoomOptions {
   /** Branch or commit the worktree starts from. Default: the branch checked out in `dir`. */
   base?: string;
   human?: string;
-  agents?: RoomAgent[];
+  /** Who sits in the room (see roster.ts). Default: <AGORYX_HOME>/agents.json if it exists, else Claude and Codex. */
+  agents?: unknown;
   budget?: number;
   network?: boolean;
   autoCommit?: boolean;
@@ -74,6 +73,25 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
   const env = options.env ?? process.env;
   const name = options.name.trim();
   if (!name) throw new Error("a room needs a name");
+  // All that can be refused is checked before a workspace folder is claimed, so a refused room leaves nothing behind.
+  // The roster is checked here, whoever calls: one that came as JSON is not trusted to be well-formed.
+  const agents = (options.agents === undefined ? defaultRoster(env) : parseAgents(options.agents)).map((agent) =>
+    options.models?.[agent.id] ? { ...agent, model: options.models[agent.id] } : agent,
+  );
+  // Same bounds as a settings change: a run must be able to spend at least one turn, and not without limit.
+  if (options.budget !== undefined && !(Number.isInteger(options.budget) && options.budget >= 1 && options.budget <= 100)) {
+    throw new Error(`the turn budget must be a whole number from 1 to 100 (got ${options.budget})`);
+  }
+  // Messages are told apart by author: a human named like an agent would be taken for that agent.
+  const human = (options.human?.trim() || defaultHumanName(env)).replace(/^@+/, "");
+  if (!human || agents.some((agent) => agent.id === human.toLowerCase() || agent.label.toLowerCase() === human.toLowerCase())) {
+    throw new Error(`"${human}" cannot be the human's name in this room: it is taken by an agent`);
+  }
+  let doc: string | null = null;
+  if (options.doc) {
+    doc = normalizeDocPath(options.doc);
+    if (!doc) throw new Error(`the canonical file must be a path inside the workspace: ${options.doc}`);
+  }
   const id = newRoomId(name);
   let workspace: string;
   // True only when Agoryx picked the directory. One the human names stays theirs even if it is empty:
@@ -97,25 +115,7 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     }
     createdWorkspace = true;
   }
-  let doc: string | null = null;
-  if (options.doc) {
-    doc = normalizeDocPath(options.doc);
-    if (!doc) throw new Error(`the canonical file must be a path inside the workspace: ${options.doc}`);
-  } else if (options.doc === undefined && createdWorkspace) {
-    doc = DEFAULT_DOC;
-  }
-  const agents = (options.agents ?? DEFAULT_AGENTS).map((agent) =>
-    options.models?.[agent.id] ? { ...agent, model: options.models[agent.id] } : agent,
-  );
-  // Same bounds as a settings change: a run must be able to spend at least one turn, and not without limit.
-  if (options.budget !== undefined && !(Number.isInteger(options.budget) && options.budget >= 1 && options.budget <= 100)) {
-    throw new Error(`the turn budget must be a whole number from 1 to 100 (got ${options.budget})`);
-  }
-  // Messages are told apart by author: a human named like an agent would be taken for that agent.
-  const human = (options.human?.trim() || defaultHumanName(env)).replace(/^@+/, "");
-  if (!human || agents.some((agent) => agent.id.toLowerCase() === human.toLowerCase())) {
-    throw new Error(`"${human}" cannot be the human's name in this room: it is taken by an agent`);
-  }
+  if (options.doc === undefined && createdWorkspace) doc = DEFAULT_DOC;
   const settings: RoomSettings = {
     ...DEFAULT_SETTINGS,
     ...(options.budget !== undefined ? { budget: options.budget } : {}),
@@ -223,7 +223,7 @@ export const resumeCommands = (
   for (const agent of store.state.agents) {
     const session = store.state.sessions[agent.id];
     const runner = runners[agent.kind];
-    if (session && runner) commands[agent.id] = runner.resumeCommand(session.sessionId, store.state.workspace);
+    if (session && runner) commands[agent.id] = runner.resumeCommand(session.sessionId, store.state.workspace, agent.model);
   }
   return commands;
 };

@@ -256,7 +256,7 @@ export function FolderBar({
             <Tip
               tip={
                 canWorktree
-                  ? "Окрема гілка й окрема тека для цієї кімнати. Claude і Codex працюють в одному спільному worktree, а ваша тека й гілка лишаються як є."
+                  ? "Окрема гілка й окрема тека для цієї кімнати. Агенти працюють в одному спільному worktree, а ваша тека й гілка лишаються як є."
                   : "У репозиторії ще немає комітів — worktree нема від чого почати"
               }
             >
@@ -358,7 +358,7 @@ export function FolderDialog({
         <DialogHeader>
           <DialogTitle>Тека для кімнати</DialogTitle>
           <DialogDescription>
-            Claude і Codex працюватимуть у ній — кожен у своїй пісочниці.
+            Агенти працюватимуть у ній — кожен у своїй пісочниці.
           </DialogDescription>
         </DialogHeader>
         <form

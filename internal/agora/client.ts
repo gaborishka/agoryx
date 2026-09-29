@@ -1,5 +1,5 @@
 import type { RoomSummary } from "./store.js";
-import type { AgentPresence, EphemeralEvent, MessageEntry, RoomEvent, RoomSettings, RoomState, TableOp } from "./types.js";
+import type { AgentPresence, EphemeralEvent, MessageEntry, RoomAgent, RoomEvent, RoomSettings, RoomState, TableOp } from "./types.js";
 
 export interface RoomSnapshot {
   state: RoomState;
@@ -58,7 +58,16 @@ export class DaemonClient {
     return this.request("GET", "/api/rooms");
   }
 
-  createRoom(input: { name: string; dir?: string; worktree?: boolean; base?: string; budget?: number; doc?: string | null; text?: string }): Promise<{ room: RoomSummary }> {
+  createRoom(input: {
+    name: string;
+    dir?: string;
+    worktree?: boolean;
+    base?: string;
+    budget?: number;
+    doc?: string | null;
+    text?: string;
+    agents?: RoomAgent[];
+  }): Promise<{ room: RoomSummary }> {
     return this.request("POST", "/api/rooms", input);
   }
 

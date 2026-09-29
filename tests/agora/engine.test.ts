@@ -39,7 +39,7 @@ test("blind first round, then each agent sees the other and passes → quiet", a
     assert.equal(claude.length, 2);
     assert.equal(codex.length, 2);
     // Round 1 is blind: briefing + the human message, nothing from the other agent.
-    assert.match(claude[0]!.prompt!, /You are Claude, in an Agoryx room/);
+    assert.match(claude[0]!.prompt!, /You are Claude \(@claude\), in an Agoryx room/);
     assert.match(claude[0]!.prompt!, /How should we store rooms\?/);
     assert.doesNotMatch(claude[0]!.prompt!, /use JSONL/);
     assert.doesNotMatch(codex[0]!.prompt!, /use SQLite/);

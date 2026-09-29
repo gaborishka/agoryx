@@ -36,7 +36,8 @@ export interface NativeScan {
 }
 
 /** Prompts Agoryx sends: the first-turn briefing and every delta. */
-const AGORYX_PROMPT = /^(You are [^\n,]{1,40}, in an Agoryx room|\[agoryx · )/;
+// Any roster label (a comma in it too), with the "(@id)" briefings carry now or without it, as older ones were.
+const AGORYX_PROMPT = /^(You are [^\n]{1,80}?, in an Agoryx room|\[agoryx · )/;
 
 export const isAgoryxPrompt = (text: string): boolean => AGORYX_PROMPT.test(text.trimStart());
 

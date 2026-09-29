@@ -1,6 +1,6 @@
 # Agoryx Rooms
 
-A room puts Claude, Codex and you in one conversation. Each agent works in its **own native session**
+A room puts you and a configurable group of Claude and Codex agents in one conversation. Each agent works in its **own native session**
 (`claude -p --session-id/--resume`, `codex exec` / `codex exec resume`), with its full toolset, in a
 shared workspace. Agoryx sets the context; it does not assign roles, pick speakers or summarise for anyone.
 
@@ -14,15 +14,15 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
 
 - **No orchestrator.** Every new message wakes the agents that have not seen it yet. Each gets only the
   **delta** since its last turn — its native session already holds the rest.
-- **Blind first round, then one at a time.** On a human message both agents answer in parallel
+- **Blind first round, then one at a time.** On a human message the addressed agents answer in parallel
   without seeing each other, so the first opinions are independent. After that they take the floor one
   at a time (whoever has waited longest goes first), so each reply answers the latest state — one
   conversation, not two crossing ones. A new message from the human still reaches an idle agent at
   once, even while the other one is working.
 - **Silence is an answer.** An agent that has nothing to add replies `::pass::` (optionally with a short
   reason). A run ends when the room goes **quiet** (everyone passed) or the **turn budget** runs out.
-- **The human is a participant,** not a dispatcher. Write any time — your message reaches both agents in
-  their next delta. `@claude` / `@codex` wakes only that agent first.
+- **The human is a participant,** not a dispatcher. Write any time — your message reaches the agents in
+  their next delta. `@id` wakes only that participant first; `@all` addresses everyone.
 - **Work is attributed.** Files changed during a turn are credited to that turn; at run end Agoryx makes a
   checkpoint commit (in workspaces it created, or when `autocommit` is on).
 
@@ -105,6 +105,47 @@ So Agoryx keeps **the exact change of every turn**, and the other agents see it.
   are dirty. The turn then lists its files without counts.
 
 ## Using it
+
+### Choose the participants with JSON
+
+Save a roster anywhere you can read it, for example `roster.json`:
+
+```json
+[
+  { "id": "opus", "kind": "claude", "label": "Claude Opus", "model": "opus" },
+  { "id": "sonnet", "kind": "claude", "label": "Claude Sonnet", "model": "sonnet" },
+  { "id": "codex", "kind": "codex", "label": "Codex" }
+]
+```
+
+```bash
+agoryx new "Three voices" --agents ./roster.json
+agoryx say "@sonnet compare the alternatives"
+```
+
+`--agents` accepts a file path (relative to your current directory) or inline JSON.
+Both an array and `{ "agents": [...] }` are accepted. The HTTP equivalent is
+`POST /api/rooms` with `{ "name": "Three voices", "agents": [...] }`.
+
+Without an explicit roster, new rooms use `<AGORYX_HOME>/agents.json` if present,
+otherwise the original Claude + Codex pair. `agoryx --help` prints the state directory
+when `AGORYX_HOME` is unset. This default also applies to rooms created in the web UI,
+whose start screen shows who will be seated (`GET /api/info` returns it as `agents`). An
+invalid default file produces an error instead of silently using the pair.
+
+Only `kind` is required: it selects the installed `claude` or `codex` CLI and may repeat.
+`id` is the @handle and defaults to the kind: a unique lowercase handle, 2–32 characters,
+starting with a letter and containing only letters, digits, `_` or `-`. `all`, `agoryx`
+and the human's name cannot be used. `label` (1–40 characters) defaults to the id with a
+capital letter, and no two agents may share one. `model` is optional and passed to the CLI
+as given (also when you resume the session); omitting it uses that CLI's default. Any other
+field is refused. A refused roster creates nothing: no room, no folder.
+
+The resolved roster is stored in the room's event log. Editing or deleting the source
+JSON does not change existing rooms. Each participant has its own cursor and native
+session, even when several use the same CLI. `agoryx resume` lists their commands by
+handle. From a native session, use `agoryx table ... --as opus` if the provider hint is
+ambiguous because multiple Claude agents are active.
 
 ### As a daemon without UI
 

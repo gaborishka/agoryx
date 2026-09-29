@@ -6,7 +6,7 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Markdown } from "@/components/md/Markdown";
 import { OpCards } from "@/components/table/OpCard";
 import { useNow } from "@/hooks/use-now";
-import { secs } from "@/lib/format";
+import { names, secs } from "@/lib/format";
 import { buildFeed, type FeedItem, type FeedModel, type FeedRow, nameOf } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { TableOp, TurnState } from "@/lib/types";
@@ -27,7 +27,7 @@ function Hello() {
       </div>
       <h2 className="text-xl font-semibold tracking-tight text-balance">Кімната готова</h2>
       <p className="text-[14.5px] leading-relaxed text-pretty text-muted-foreground">
-        Напишіть, що треба зробити чи обговорити. {room.agents.map((a) => a.label).join(" і ")} спершу відповідять одночасно й незалежно, а далі говоритимуть по
+        Напишіть, що треба зробити чи обговорити. {names(room.agents.map((a) => a.label))} спершу відповідять одночасно й незалежно, а далі говоритимуть по
         черзі — з усім, що вже сказано в кімнаті.
       </p>
     </div>

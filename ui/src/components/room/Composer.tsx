@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { local, Unauthorized } from "@/lib/api";
-import { plural } from "@/lib/format";
+import { names as nameList, plural } from "@/lib/format";
 import { participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -45,7 +45,7 @@ export function StatusBar() {
       <div key="run" className="flex items-center gap-2.5">
         <span className={cn(dot, "animate-breathe bg-primary")} />
         <span className="min-w-0 flex-1 truncate">
-          {working.length ? `${working.join(" і ")} ${working.length > 1 ? "працюють" : "працює"}` : "Розмова триває"}
+          {working.length ? `${nameList(working)} ${working.length > 1 ? "працюють" : "працює"}` : "Розмова триває"}
           <span className="tabular text-faint"> · хід {run.used} з {run.budget}</span>
         </span>
         <Button size="sm" variant="ghost" className="h-7 text-destructive hover:bg-destructive-soft hover:text-destructive" disabled={busy} onClick={() => act("/stop")}>
@@ -157,7 +157,7 @@ export function Composer() {
       el?.setSelectionRange(pos, pos);
     });
   };
-  const names = room.agents.map((a) => a.label).join(" і ");
+  const names = nameList(room.agents.map((a) => a.label));
 
   return (
     <div className="mx-auto w-full max-w-[860px] px-3 pb-3 sm:px-8 sm:pb-5">

@@ -33,8 +33,11 @@ export interface TurnResult {
 export interface AgentRunner {
   kind: AgentKind;
   run(request: TurnRequest, callbacks: TurnCallbacks): Promise<TurnResult>;
-  /** Shell command a human can use to open this agent's native session. */
-  resumeCommand(sessionId: string, cwd: string): string;
+  /**
+   * Shell command a human can use to open this agent's native session. With the agent's model:
+   * two agents of one kind can differ only by it, and a resumed session would otherwise talk to the CLI's default.
+   */
+  resumeCommand(sessionId: string, cwd: string, model?: string): string;
 }
 
 export const shellQuote = (value: string): string =>

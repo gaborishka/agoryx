@@ -134,6 +134,16 @@ export const passNote = (text: string) => {
   return text.replace(/^[`"'*_\s]*::pass::[`"'*_\s.:—–-]*/i, "").trim();
 };
 
+/** "Claude", "Claude і Codex", "Opus, Sonnet і Codex": a room may seat any number of agents. */
+export const names = (list: string[]) => (list.length <= 1 ? (list[0] ?? "") : `${list.slice(0, -1).join(", ")} і ${list.at(-1)}`);
+
+/** The last line in a room list: who said it (by label — any agent, not only Claude and Codex) and a preview. */
+export const roomPreview = (last: { author: string; text: string; label?: string } | undefined) => {
+  if (!last) return "Ще без повідомлень";
+  const who = last.label ?? (last.author === "agoryx" ? "" : "Ви");
+  return `${who ? `${who}: ` : ""}${preview(last.text)}`;
+};
+
 /** Plain one-line preview of a markdown message. */
 export const preview = (text: string) =>
   sysText(text)

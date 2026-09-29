@@ -17,10 +17,10 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api, roomPath, Unauthorized } from "@/lib/api";
 import { copyText } from "@/lib/copy";
-import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, fullDate, IMAGE_EXT, kb, TABLE_EXT, VIDEO_EXT } from "@/lib/format";
-import { participant } from "@/lib/room";
+import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, fullDate, IMAGE_EXT, kb, names, TABLE_EXT, VIDEO_EXT } from "@/lib/format";
+import { DEFAULT_AGENTS, participant } from "@/lib/room";
 import { type DialogState, type TableFormOp, useStore } from "@/lib/store";
-import type { FileChange } from "@/lib/types";
+import type { FileChange, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const errText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -491,15 +491,22 @@ function SettingsDialog() {
 // --- help -------------------------------------------------------------------------------------
 
 function HelpDialog() {
-  const at = (who: "claude" | "codex") => (
-    <span className={cn("rounded-md px-1.5 py-0.5 font-mono text-[12.5px]", who === "claude" ? "bg-claude-soft text-claude" : "bg-codex-soft text-codex")}>@{who}</span>
+  // The room's own agents (any number, any mix); outside a room — the default pair.
+  const agents = useStore((s) => s.snap?.state.agents) ?? DEFAULT_AGENTS;
+  const at = (agent: RoomAgent) => (
+    <span
+      key={agent.id}
+      className={cn("rounded-md px-1.5 py-0.5 font-mono text-[12.5px]", agent.kind === "claude" ? "bg-claude-soft text-claude" : "bg-codex-soft text-codex")}
+    >
+      @{agent.id}
+    </span>
   );
   const li = "relative pl-5 before:absolute before:top-[0.6em] before:left-1 before:size-1.5 before:rounded-full before:bg-primary/50";
   return (
     <Shell title="Як це працює">
       <div className="flex flex-col gap-3.5 text-[14.5px] leading-relaxed">
         <p>
-          <b>Кімната</b> — одна розмова для вас, Claude і Codex. Agoryx задає контекст, а не ролі: агенти працюють у своїх рідних сесіях з усіма своїми
+          <b>Кімната</b> — одна розмова для вас і {names(agents.map((a) => a.label))}. Agoryx задає контекст, а не ролі: агенти працюють у своїх рідних сесіях з усіма своїми
           інструментами.
         </p>
         <ul className="flex flex-col gap-2">
@@ -511,7 +518,7 @@ function HelpDialog() {
           </li>
           <li className={li}>Після кількох ходів розмова зупиняється й чекає на вас. Кількість — у налаштуваннях кімнати.</li>
           <li className={li}>
-            {at("claude")} чи {at("codex")} — звернутися лише до одного.
+            {agents.map((agent, i) => [i ? (i === agents.length - 1 ? " чи " : ", ") : null, at(agent)])} — звернутися лише до одного.
           </li>
           <li className={li}>
             <b>Стіл</b> — питання, варіанти, заперечення й рішення, коли є справжні альтернативи.

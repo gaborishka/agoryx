@@ -1267,16 +1267,24 @@ export class RoomEngine {
   }
 
   /**
-   * Which room agent wrote an inbox op. The shim signs it with the agent's id (or
-   * kind, from a hint in its environment); an unsigned op belongs to the only
-   * agent that is working right now, in a room turn or in its own session.
+   * Which room agent wrote an inbox op. The shim signs it with the agent's id, or with
+   * "kind.<cli>" when only its environment hints at which CLI wrote it. A hint names an
+   * agent only when the room has one agent of that kind; otherwise (and for an unsigned
+   * op) it is the only such agent working right now, in a room turn or in its own session.
    */
   private opAuthor(signed: string): RoomAgent | undefined {
-    const agents = this.state.agents;
-    const byId = agents.find((entry) => entry.id === signed);
-    if (byId) return byId;
-    const byKind = agents.filter((entry) => entry.kind === signed);
-    if (byKind.length === 1) return byKind[0];
+    const hint = /^kind\.(.+)$/.exec(signed)?.[1];
+    let agents = this.state.agents;
+    if (hint === undefined) {
+      const byId = agents.find((entry) => entry.id === signed);
+      if (byId) return byId;
+    }
+    // A bare kind is what shims before "kind." wrote; it is read as the hint it was.
+    const kind = hint ?? (agents.some((entry) => entry.kind === signed) ? signed : undefined);
+    if (kind !== undefined) {
+      agents = agents.filter((entry) => entry.kind === kind);
+      if (agents.length === 1) return agents[0];
+    }
     const active = () => agents.filter((entry) => this.running.has(entry.id) || this.nativeOpen(entry));
     let candidates = active();
     if (candidates.length !== 1) {
@@ -1301,7 +1309,9 @@ export class RoomEngine {
       const member = this.opAuthor(agent);
       const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
       if (!member) {
-        const ids = this.state.agents.map((entry) => entry.id).join(" or --as ");
+        const kind = /^kind\.(.+)$/.exec(agent)?.[1];
+        const same = this.state.agents.filter((entry) => entry.kind === kind);
+        const ids = (same.length > 1 ? same : this.state.agents).map((entry) => entry.id).join(" or --as ");
         if (nonce) writeAck(this.ws, nonce, { ok: false, error: `can't tell which agent wrote this — add --as ${ids}` });
         this.log(`rejected unsigned table op (${agent})`);
         return;

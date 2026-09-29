@@ -7,13 +7,14 @@ import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
 import { linkedMedia, markdownTexts } from "./media.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
+import { defaultRoster } from "./roster.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
 import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js";
 import { createRoom, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
-import type { AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomEvent, RoomSettings } from "./types.js";
+import type { AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
 import { listWorkspaceFiles, repoRoot, resolveInside } from "./workspace.js";
 
@@ -627,6 +628,15 @@ export class AgoraDaemon {
     res.end(body);
   }
 
+  /** Who a new room seats unless told otherwise, for the start screen; a broken roster file is reported, not hidden. */
+  private roster(): { agents: RoomAgent[] } | { rosterError: string } {
+    try {
+      return { agents: defaultRoster(this.env) };
+    } catch (error) {
+      return { rosterError: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   private async api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const parts = url.pathname.split("/").filter(Boolean).slice(1); // drop "api"
     const method = req.method ?? "GET";
@@ -637,6 +647,7 @@ export class AgoraDaemon {
         url: this.url,
         home: agoraHome(this.env),
         rooms: RoomStore.list(roomsDir(this.env)).length,
+        ...this.roster(),
       });
       return;
     }
@@ -703,6 +714,8 @@ export class AgoraDaemon {
             ...(typeof body.base === "string" && body.base.trim() ? { base: body.base.trim() } : {}),
             ...(typeof body.budget === "number" ? { budget: body.budget } : {}),
             ...(typeof body.human === "string" ? { human: body.human } : {}),
+            // Who sits in the room, as JSON (checked by createRoom); absent: the default roster.
+            ...(body.agents !== undefined ? { agents: body.agents } : {}),
             // `agoryx new --doc none` sends null: no canonical file.
             ...(typeof body.doc === "string" ? { doc: body.doc.trim() || null } : body.doc === null ? { doc: null } : {}),
             env: this.env,

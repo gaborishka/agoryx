@@ -137,8 +137,8 @@ const toolResultText = (content: unknown): string => {
 export const createClaudeRunner = (bin = process.env.AGORYX_CLAUDE_BIN || "claude"): AgentRunner => ({
   kind: "claude",
 
-  resumeCommand(sessionId: string, cwd: string): string {
-    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} --resume ${shellQuote(sessionId)}`;
+  resumeCommand(sessionId: string, cwd: string, model?: string): string {
+    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} --resume ${shellQuote(sessionId)}${model ? ` --model ${shellQuote(model)}` : ""}`;
   },
 
   async run(request: TurnRequest, callbacks: TurnCallbacks): Promise<TurnResult> {

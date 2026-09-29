@@ -1,4 +1,5 @@
-import type { DocRevision, MessageEntry, RoomState, TableOp, TurnState } from "./types";
+import { names as nameList } from "./format";
+import type { DocRevision, MessageEntry, RoomAgent, RoomState, TableOp, TurnState } from "./types";
 import type { OpEntry } from "./types";
 
 export type Tone = "claude" | "codex" | "human" | "sys";
@@ -10,6 +11,12 @@ export interface Participant {
   agent: boolean;
   kind?: "claude" | "codex";
 }
+
+/** Who a room seats when nobody chose otherwise; the server's own default (GET /api/info `agents`) wins when known. */
+export const DEFAULT_AGENTS: RoomAgent[] = [
+  { id: "claude", kind: "claude", label: "Claude" },
+  { id: "codex", kind: "codex", label: "Codex" },
+];
 
 const KNOWN_LABEL: Record<string, string> = { claude: "Claude", codex: "Codex" };
 
@@ -108,7 +115,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
       }
       if (group.length > 1 && group.some((g) => g.m.kind === "agent")) {
         const prev = st.messages.filter((m) => m.seq < item.m.seq && m.kind !== "system").at(-1);
-        const names = group.map((g) => name(g.m.author)).join(" і ");
+        const names = nameList(group.map((g) => name(g.m.author)));
         rows.push(
           prev?.kind === "human"
             ? {
@@ -138,7 +145,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   let liveDivider: string | null = null;
   if (live.length > 1) {
     const prev = st.messages.filter((m) => m.kind !== "system").at(-1);
-    if (prev?.kind === "human") liveDivider = `${live.map((t) => name(t.agent)).join(" і ")} відповідають, не бачачи одне одного`;
+    if (prev?.kind === "human") liveDivider = `${nameList(live.map((t) => name(t.agent)))} відповідають, не бачачи одне одного`;
   }
   return { turns, opsByTurn, docByTurn, rows, live, liveDivider };
 };

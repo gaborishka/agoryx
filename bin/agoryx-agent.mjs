@@ -74,15 +74,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Who is writing. A room turn sets AGORYX_AGENT; outside one, --as says it, or
- * the agent's own environment hints at it. "unknown" lets the room decide by
- * who is mid-exchange in its own session right now.
+ * the agent's own environment hints at which CLI it is ("kind.claude": a room
+ * may seat two Claudes, and one of them may even be called "claude", so a hint
+ * is never an id). "unknown" lets the room decide by who is mid-exchange in its
+ * own session right now.
  */
 const signer = (flags) => {
   const clean = (value) => String(value).replace(/[^a-z0-9_-]/gi, "");
   if (flags.as) return clean(flags.as) || "unknown";
   if (process.env.AGORYX_AGENT) return clean(process.env.AGORYX_AGENT) || "unknown";
-  if (process.env.CLAUDECODE) return "claude";
-  if (process.env.CODEX_SANDBOX || process.env.CODEX_SANDBOX_NETWORK_DISABLED) return "codex";
+  if (process.env.CLAUDECODE) return "kind.claude";
+  if (process.env.CODEX_SANDBOX || process.env.CODEX_SANDBOX_NETWORK_DISABLED) return "kind.codex";
   return "unknown";
 };
 

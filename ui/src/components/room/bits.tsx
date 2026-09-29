@@ -41,9 +41,23 @@ export const AgoraGlyph = ({ className }: { className?: string }) => (
   </svg>
 );
 
-export function Avatar({ handle, size = 28, live = false, className }: { handle: string; size?: number; live?: boolean; className?: string }) {
+/** `kind`: an agent's CLI when there is no room to look it up in (the start screen). */
+export function Avatar({
+  handle,
+  kind,
+  size = 28,
+  live = false,
+  className,
+}: {
+  handle: string;
+  kind?: "claude" | "codex";
+  size?: number;
+  live?: boolean;
+  className?: string;
+}) {
   const room = useStore((s) => s.snap?.state);
-  const p = participant(room, handle);
+  const found = participant(room, handle);
+  const p = kind && !found.agent ? { ...found, tone: kind, agent: true, kind } : found;
   return (
     <span
       className={cn(

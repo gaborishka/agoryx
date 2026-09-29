@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useNow } from "@/hooks/use-now";
 import { api, roomPath, Unauthorized } from "@/lib/api";
-import { baseName, secs, shortPath } from "@/lib/format";
+import { baseName, names, secs, shortPath } from "@/lib/format";
 import { participant, tableCount } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
@@ -239,7 +239,7 @@ function Place() {
   const wt = room.worktree;
   const folder = wt ? wt.source : room.workspace;
   const tip = wt
-    ? `Worktree кімнати: гілка ${wt.branch} від ${wt.base}, тека ${room.workspace}. Claude і Codex працюють у ньому разом; ${wt.source} лишається як є.`
+    ? `Worktree кімнати: гілка ${wt.branch} від ${wt.base}, тека ${room.workspace}. ${names(room.agents.map((a) => a.label))} працюють у ньому разом; ${wt.source} лишається як є.`
     : `Робоча тека: ${room.workspace}${branch ? `, гілка ${branch}` : ""}`;
   return (
     <Tip tip={tip}>

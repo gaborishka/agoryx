@@ -129,8 +129,8 @@ export const newImages = (before: Map<string, number>, after: Map<string, number
 export const createCodexRunner = (bin = process.env.AGORYX_CODEX_BIN || "codex"): AgentRunner => ({
   kind: "codex",
 
-  resumeCommand(sessionId: string, cwd: string): string {
-    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} resume ${shellQuote(sessionId)}`;
+  resumeCommand(sessionId: string, cwd: string, model?: string): string {
+    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} resume ${shellQuote(sessionId)}${model ? ` -m ${shellQuote(model)}` : ""}`;
   },
 
   async run(request: TurnRequest, callbacks: TurnCallbacks): Promise<TurnResult> {

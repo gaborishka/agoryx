@@ -28,8 +28,10 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { api, local, Unauthorized } from "@/lib/api";
-import { plural } from "@/lib/format";
+import { names, plural } from "@/lib/format";
+import { DEFAULT_AGENTS } from "@/lib/room";
 import { useStore } from "@/lib/store";
+import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const EXAMPLES = [
@@ -57,8 +59,8 @@ const DOCS = ["README.md", "PLAN.md", "DESIGN.md"];
 const footChip =
   "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] text-muted-foreground transition hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
-/** You, Claude and Codex at one table: the lines are the conversation between all three. */
-function Seats() {
+/** You and the agents at one table (Claude and Codex unless agents.json says otherwise): the lines are the conversation between all of you. */
+function Seats({ agents }: { agents: RoomAgent[] }) {
   const Line = ({ tone }: { tone: "claude" | "codex" }) => (
     <span
       className={cn(
@@ -90,25 +92,32 @@ function Seats() {
       </span>
     </span>
   );
+  const seat = (agent: RoomAgent) => (
+    <Seat key={agent.id} label={agent.label}>
+      <Avatar handle={agent.id} kind={agent.kind} size={44} />
+    </Seat>
+  );
+  const left = agents.slice(0, Math.ceil(agents.length / 2));
+  const right = agents.slice(left.length);
   return (
     <div className="flex items-start">
-      <Seat label="Claude">
-        <Avatar handle="claude" size={44} />
-      </Seat>
+      <span className="flex gap-3">{left.map(seat)}</span>
       <span className="mx-1.5 mt-[22px]">
-        <Line tone="claude" />
+        <Line tone={left.at(-1)?.kind ?? "claude"} />
       </span>
       <Seat label="Ви">
         <span className="grid size-11 place-items-center rounded-[30%] bg-human-soft text-human ring-1 ring-human/25 ring-inset">
           <UserIcon className="size-5" />
         </span>
       </Seat>
-      <span className="mx-1.5 mt-[22px]">
-        <Line tone="codex" />
-      </span>
-      <Seat label="Codex">
-        <Avatar handle="codex" size={44} />
-      </Seat>
+      {right.length ? (
+        <>
+          <span className="mx-1.5 mt-[22px]">
+            <Line tone={right[0]!.kind} />
+          </span>
+          <span className="flex gap-3">{right.map(seat)}</span>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -254,7 +263,7 @@ function BudgetChip({
       <PopoverContent align="start" className="w-80 rounded-xl p-3">
         <PopHead
           title="Ходів на ваше повідомлення"
-          text="Скільки ходів Claude і Codex разом можуть зробити після кожного вашого повідомлення. Далі кімната чекає на вас — або стихає раніше, коли агентам нема що додати."
+          text="Скільки ходів агенти разом можуть зробити після кожного вашого повідомлення. Далі кімната чекає на вас — або стихає раніше, коли агентам нема що додати."
         />
         <div className="mt-3 flex items-center gap-2">
           <div className="grid flex-1 grid-cols-4 gap-1 rounded-lg bg-muted p-1">
@@ -371,9 +380,17 @@ export function StartScreen() {
   };
   const inWorktree = Boolean(folder && git?.head && worktree);
   const [busy, setBusy] = useState(false);
+  // Who a new room seats: the daemon's roster (agents.json), Claude and Codex until it answers.
+  const [agents, setAgents] = useState<RoomAgent[]>(DEFAULT_AGENTS);
+  const who = names(agents.map((a) => a.label));
   useEffect(() => {
     document.title = "Нова кімната · Agoryx";
     setTimeout(() => ta.current?.focus(), 30);
+    api<{ agents?: RoomAgent[] }>("GET", "/api/info")
+      .then((info) => {
+        if (info.agents?.length) setAgents(info.agents);
+      })
+      .catch(() => {});
   }, []);
   useLayoutEffect(() => autosize(ta.current, 0.4), [text]);
   const change = (value: string) => {
@@ -423,15 +440,15 @@ export function StartScreen() {
       <div className="scroll-thin relative flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col justify-center gap-8 px-4 py-10 sm:px-6">
           <div className="flex flex-col items-center gap-5 text-center">
-            <Seats />
+            <Seats agents={agents} />
             <div className="flex flex-col items-center gap-2.5">
               <h1 className="font-serif text-[clamp(28px,4.4vw,40px)] leading-[1.1] font-semibold tracking-tight text-balance">
                 {first
-                  ? "Спільна кімната для вас, Claude і Codex"
+                  ? `Спільна кімната для вас, ${who}`
                   : "Про що поговоримо?"}
               </h1>
               <p className="max-w-[52ch] text-[15px] leading-relaxed text-pretty text-muted-foreground">
-                Одна розмова на трьох. Кожен агент працює у власній рідній
+                Одна розмова на всіх. Кожен агент працює у власній рідній
                 сесії, з усіма своїми інструментами, і бачить усе, що сказано в
                 кімнаті.
               </p>
@@ -472,7 +489,7 @@ export function StartScreen() {
                     void submit();
                   }
                 }}
-                placeholder="Опишіть задачу чи питання для Claude і Codex…"
+                placeholder={`Опишіть задачу чи питання для ${who}…`}
                 aria-label="Перше повідомлення"
                 className="scroll-thin block min-h-[108px] w-full resize-none bg-transparent px-5 pt-4 text-[16px] leading-relaxed outline-none placeholder:text-faint"
               />

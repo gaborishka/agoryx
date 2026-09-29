@@ -39,6 +39,9 @@ const toolResult = [{ type: "tool_result", tool_use_id: "t", content: "ok" }];
 
 test("Agoryx prompts are recognised by their header", () => {
   assert.ok(isAgoryxPrompt("You are Claude, in an Agoryx room — one shared conversation"));
+  assert.ok(isAgoryxPrompt("You are Claude (@claude), in an Agoryx room — one shared conversation"));
+  // A roster label may hold a comma; the handle after it is up to 32 characters.
+  assert.ok(isAgoryxPrompt("You are Opus, the long one (@opus-with-a-long-handle-here), in an Agoryx room — one shared conversation"));
   assert.ok(isAgoryxPrompt("[agoryx · Storage · new since your last turn]\n\n── Codex · 10:00"));
   assert.ok(!isAgoryxPrompt("can you look at agoryx rooms?"));
   assert.ok(!isAgoryxPrompt("You are wrong, in my opinion"));

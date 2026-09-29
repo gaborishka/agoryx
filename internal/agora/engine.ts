@@ -29,8 +29,10 @@ import {
   clearStaleAcks,
   diffSnapshots,
   drainOpsInbox,
+  markTurnLive,
   MAX_TREE_SNAPSHOT_DIRTY,
   messagePath,
+  otherRoomTurns,
   prepareWorkspace,
   readTurnPatch,
   roomDirName,
@@ -111,8 +113,8 @@ interface RunningTurn {
   done: Promise<void>;
   /** Hash of the canonical file as the human last saved it while this turn ran (not the turn's work). */
   outsideDoc?: string;
-  /** The workspace when the last turn that ran alongside this one ended: what changed after it is this turn's. */
-  handoff?: { dirty: ChangeSnapshot | null; tree: string | null };
+  /** The workspace when the last turn that ran alongside this one (in any room here) ended: what changed after it is this turn's. */
+  handoff?: { dirty: ChangeSnapshot | null; tree: string | null; at: number };
 }
 
 const LOCK_FILE = "engine.lock";
@@ -156,6 +158,18 @@ export class RoomLockedError extends Error {}
 
 /** Rooms driven by an engine in this process (the lock file covers other processes). */
 const lockedHere = new Set<string>();
+
+/** Engines in this process, by workspace: a turn that ends hands the workspace to the others' running turns. */
+const enginesHere = new Map<string, Set<RoomEngine>>();
+
+/** One key for one directory, however it was reached (a symlinked path is the same workspace). */
+const workspaceKey = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+};
 
 /**
  * One turn's exact patch: the file written when it ended, or regenerated from
@@ -216,6 +230,8 @@ export class RoomEngine {
   private lastPresence = "";
   /** Last stat of the canonical file, so the sync tick reads it only when it changed. */
   private docWatch = "";
+  /** When the canonical file was last seen as `docWatch` (another room's turn since then may have changed it). */
+  private docWatchAt = Date.now();
   private retryTimer: NodeJS.Timeout | undefined;
   /** Agents already announced as busy in their own session (cleared when they are free). */
   private readonly nativeBusyNoted = new Set<string>();
@@ -249,6 +265,8 @@ export class RoomEngine {
       clearStaleAcks(this.ws);
       clearStaleAcks(workspacePaths(this.state.workspace));
       this.publishSharingRooms();
+      const peers = enginesHere.get(workspaceKey(this.state.workspace)) ?? new Set<RoomEngine>();
+      enginesHere.set(workspaceKey(this.state.workspace), peers.add(this));
       this.writeTableFile();
       this.writeMissingMessages();
       this.recover();
@@ -346,6 +364,8 @@ export class RoomEngine {
   private recover(): void {
     const stale = this.state.turns.filter((turn) => turn.status === "running");
     for (const turn of stale) {
+      // Its marker may carry this very pid (a restart in place): other rooms must not wait on it forever.
+      markTurnLive(this.state.workspace, { room: this.state.id, turn: turn.id, pid: process.pid, startedAt: Date.parse(turn.startedAt), endedAt: Date.now() });
       this.store.append({
         type: "turn.ended",
         turnId: turn.id,
@@ -371,6 +391,7 @@ export class RoomEngine {
     if (this.opsTimer) clearInterval(this.opsTimer);
     if (this.nativeTimer) clearInterval(this.nativeTimer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    enginesHere.get(workspaceKey(this.state.workspace))?.delete(this);
     this.releaseLock();
   }
 
@@ -748,9 +769,11 @@ export class RoomEngine {
     });
 
     const controller = new AbortController();
+    const startedAt = Date.now();
+    // Announced before the snapshot: another room's turn ending after this sees it overlapped.
+    markTurnLive(this.state.workspace, { room: this.state.id, turn: turnId, pid: process.pid, startedAt });
     const snapshot = snapshotChanges(this.state.workspace);
     const tree = snapshot && snapshot.size <= MAX_TREE_SNAPSHOT_DIRTY ? snapshotTree(this.state.workspace) : null;
-    const startedAt = Date.now();
     const env = this.agentEnv(agent, turnId);
 
     const callbacks = {
@@ -815,6 +838,13 @@ export class RoomEngine {
     const { outsideDoc, handoff } = this.running.get(agent.id) ?? {};
     this.running.delete(agent.id);
     this.notePresence();
+    markTurnLive(this.state.workspace, { room: this.state.id, turn: turnId, pid: process.pid, startedAt, endedAt: Date.now() });
+    // Turns of other rooms that ran in this workspace while this one did (in this process or another).
+    const foreign = otherRoomTurns(this.state.workspace, this.state.id, startedAt);
+    // Every turn alongside it has ended, and the handoff is from after the last of them.
+    const alone = this.running.size === 0 && foreign.every((entry) => entry.endedAt !== undefined && handoff !== undefined && entry.endedAt <= handoff.at);
+    // Taken before the snapshot: a turn of another process that ends while it is taken ends after this handoff.
+    const snappedAt = Date.now();
     const dirty = snapshotChanges(this.state.workspace);
     const after = tree && !(dirty && dirty.size > MAX_TREE_SNAPSHOT_DIRTY) ? snapshotTree(this.state.workspace) : null;
     // Work the agent committed during the turn is gone from `git status`, but not from the trees.
@@ -826,18 +856,20 @@ export class RoomEngine {
     const seen = [...new Set([...diffSnapshots(snapshot, dirty), ...committed])].filter((file) => !(humanDoc && file === doc)).sort();
     // The turns that ran alongside this one have all ended: a file that changed since the last of them
     // did is this turn's, whatever tool changed it. Its patch starts from where that turn left the file.
-    const late = handoff && handoff.dirty && dirty && this.running.size === 0 ? seen.filter((file) => handoff.dirty!.get(file) !== dirty.get(file)) : [];
-    let files = this.attributeFiles(turnId, seen, late);
+    const late = handoff && handoff.dirty && dirty && alone ? seen.filter((file) => handoff.dirty!.get(file) !== dirty.get(file)) : [];
+    let files = this.attributeFiles(turnId, seen, late, foreign.map((entry) => `${entry.room}/${entry.turn}`));
     const changed = this.turnChanges(agent, turnId, tree, after, files, late.length && handoff?.tree ? { tree: handoff.tree, files: late } : undefined);
     // A file only touched (same content) is not a change.
     if (changed) files = files.filter((file) => changed.changes.some((change) => change.path === file));
-    // Hand what the workspace looks like now to the turns still running.
-    for (const other of this.running.values()) other.handoff = { dirty, tree: after };
+    // Hand what the workspace looks like now to the turns still running, here and in the other rooms of this process.
+    for (const engine of enginesHere.get(workspaceKey(this.state.workspace)) ?? [this]) {
+      for (const other of engine.running.values()) other.handoff = { dirty, tree: after, at: snappedAt };
+    }
     // Credited by git status, or — without git to tell — changed while this was the only turn.
-    if (doc && (files.includes(doc) || (!snapshot && this.running.size === 0))) this.recordDoc(agent.id, { turnId });
+    if (doc && (files.includes(doc) || (!snapshot && this.running.size === 0 && foreign.length === 0))) this.recordDoc(agent.id, { turnId });
     // Changed during parallel turns and credited to none: record it as theirs, not as the human's.
     else if (doc && seen.includes(doc) && this.running.size === 0) {
-      const among = [...new Set([agent.id, ...this.overlapping(turnId).map((entry) => entry.agent)])];
+      const among = [...new Set([agent.id, ...this.overlapping(turnId).map((entry) => entry.agent), ...this.roomHandles(foreign)])];
       if (among.length > 1) this.recordDoc(among.join(" or "), { among });
     }
 
@@ -938,20 +970,20 @@ export class RoomEngine {
    * a file to everyone who was running. A file another overlapping turn
    * reported editing (and this one did not) belongs to that turn.
    */
-  private attributeFiles(turnId: string, files: string[], late: string[] = []): string[] {
+  private attributeFiles(turnId: string, files: string[], late: string[] = [], foreign: string[] = []): string[] {
     if (files.length === 0) return files;
     const turn = this.state.turns.find((entry) => entry.id === turnId);
     if (!turn) return files;
     const claims = (entry: TurnState, file: string) =>
       entry.activity.some((activity) => activity.kind === "edit" && activity.label.includes(file)) ||
       this.state.docRevisions.some((revision) => revision.turnId === entry.id && revision.path === file);
-    if (this.overlapping(turnId).length === 0) return files;
-    // Another turn ran at the same time in the same workspace: a file only this turn's own edit tool
+    if (this.overlapping(turnId).length === 0 && foreign.length === 0) return files;
+    // Another turn — of this room or of another room sharing the workspace — ran at the same time: a file only this turn's own edit tool
     // touched is its (both, if both edited it), and so is one changed after the others had ended.
     // One changed only by a shell command while they ran could be either's, so it is credited to nobody.
     const mine = files.filter((file) => claims(turn, file) || late.includes(file));
     const unclaimed = files.filter((file) => !mine.includes(file));
-    if (unclaimed.length > 0) this.log(`${turnId}: not credited (parallel turns): ${unclaimed.join(", ")}`);
+    if (unclaimed.length > 0) this.log(`${turnId}: not credited (parallel turns${foreign.length ? `, other rooms: ${foreign.join(", ")}` : ""}): ${unclaimed.join(", ")}`);
     return mine;
   }
 
@@ -990,6 +1022,7 @@ export class RoomEngine {
     const last = this.docRevisions(path).at(-1);
     const stat = statDoc(this.state.workspace, path);
     this.docWatch = stat ? `${stat.size}:${stat.mtimeMs}` : "gone";
+    this.docWatchAt = Date.now();
     if (!now) {
       if (!last || last.deleted) return false;
       const before = this.revisionText(last.seq) ?? "";
@@ -1020,6 +1053,7 @@ export class RoomEngine {
     if (baseline) this.store.append(baseline);
     const stat = statDoc(this.state.workspace, path);
     this.docWatch = stat ? `${stat.size}:${stat.mtimeMs}` : "gone";
+    this.docWatchAt = Date.now();
   }
 
   /** Between turns: pick up edits made in an editor, in the UI or in an agent's own session. */
@@ -1028,9 +1062,27 @@ export class RoomEngine {
     if (!path || this.running.size > 0 || this.closed) return;
     const stat = statDoc(this.state.workspace, path);
     const key = stat ? `${stat.size}:${stat.mtimeMs}` : "gone";
-    if (key === this.docWatch) return;
+    if (key === this.docWatch) {
+      this.docWatchAt = Date.now();
+      return;
+    }
+    // Another room's turn ran in this workspace since the file was last seen: its agent may have made
+    // the change. While it runs, wait (its own room may credit it); after, the change is theirs or ours.
+    const foreign = otherRoomTurns(this.state.workspace, this.state.id, this.docWatchAt);
+    if (foreign.some((entry) => entry.endedAt === undefined)) return;
     const author = this.outsideAuthor();
+    if (foreign.length > 0) {
+      const among = [author.id, ...this.roomHandles(foreign)];
+      this.recordDoc(among.join(" or "), { among });
+      return;
+    }
     this.recordDoc(author.id, author.native ? { native: true } : {});
+  }
+
+  /** Other rooms whose turns ran here, as handles for a revision's `among`: their names, marked as rooms. */
+  private roomHandles(turns: Array<{ room: string }>): string[] {
+    const names = new Map(roomsSharingWorkspace(this.store).map((room) => [room.id, room.name]));
+    return [...new Set(turns.map((turn) => `room "${names.get(roomDirName(turn.room) ?? "") ?? turn.room}"`))];
   }
 
   /** Who changed the workspace outside a room turn: the one agent just talked to in its own session, else the human. */
@@ -1425,7 +1477,24 @@ export class RoomEngine {
     });
     const trigger = this.state.messages.find((entry) => entry.id === run.trigger);
     const subject = `agoryx(${this.state.name}): ${trigger ? trigger.text.split("\n")[0]!.slice(0, 60) : `run ${run.id}`}`;
-    const commit = checkpointCommit(this.state.workspace, subject, lines.join("\n"));
+    // Only what the run's turns were credited with: not another room's work, not anyone's staged changes.
+    const files = [...new Set(turns.flatMap((turn) => turn.files ?? []))];
+    const expectedTrees = new Map<string, string>();
+    // The last completed credited turn supplies each file's checkpoint version.
+    const turnIds = new Set(turns.map((turn) => turn.id));
+    for (const event of this.store.events) {
+      if (event.type !== "turn.ended" || !turnIds.has(event.turnId)) continue;
+      for (const file of event.files ?? []) {
+        if (event.trees) expectedTrees.set(file, event.trees.after);
+        else expectedTrees.delete(file);
+      }
+    }
+    // Alone in the directory, and no other room's turn ran during this run: everything, as always.
+    const started = Date.parse(this.state.turns.find((turn) => turn.runId === run.id)?.startedAt ?? "") || 0;
+    const shared = roomsSharingWorkspace(this.store).length > 1 || otherRoomTurns(this.state.workspace, this.state.id, started).length > 0;
+    const commit = shared
+      ? checkpointCommit(this.state.workspace, subject, lines.join("\n"), files, expectedTrees)
+      : checkpointCommit(this.state.workspace, subject, lines.join("\n"));
     if (commit) this.store.append({ type: "commit.created", sha: commit.sha, subject, files: commit.files });
   }
 }

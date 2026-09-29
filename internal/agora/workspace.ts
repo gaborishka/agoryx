@@ -3,9 +3,11 @@ import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -165,6 +167,77 @@ export const diffSnapshots = (before: ChangeSnapshot | null, after: ChangeSnapsh
   for (const [path, signature] of after) if (before.get(path) !== signature) changed.add(path);
   for (const path of before.keys()) if (!after.has(path)) changed.add(path);
   return [...changed].sort();
+};
+
+// ---------------------------------------------------------------------------
+// Live turns: .agoryx/live/<room>.<turn>.json — rooms sharing a workspace (in one process
+// or in several) tell each other when their turns run, so none credits the other's work
+// ---------------------------------------------------------------------------
+
+export interface LiveTurn {
+  room: string;
+  turn: string;
+  pid: number;
+  startedAt: number;
+  /** Unset while the turn runs; a turn whose process died ends when a reader first sees it dead. */
+  endedAt?: number;
+}
+
+/** Ended markers are kept this long, so a turn still running after them can see they overlapped it. */
+const LIVE_KEEP_MS = 24 * 60 * 60 * 1000;
+
+const liveDir = (root: string): string => join(root, AGORYX_DIR, "live");
+
+const liveFile = (root: string, room: string, turn: string): string | null => {
+  const dir = roomDirName(room);
+  return dir && TURN_ID.test(turn) ? join(liveDir(root), `${dir}.${turn}.json`) : null;
+};
+
+export const markTurnLive = (root: string, entry: LiveTurn): void => {
+  const target = liveFile(root, entry.room, entry.turn);
+  if (!target) return;
+  const partial = `${target}.${randomBytes(4).toString("hex")}.tmp`;
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(partial, JSON.stringify(entry));
+    renameSync(partial, target);
+  } catch {
+    rmSync(partial, { force: true });
+  }
+};
+
+/**
+ * Turns of rooms other than `room` that ran at some point since `since` (ms): still running, ended
+ * after it, or left running by a process that died after it. Old ended markers are swept on the way.
+ */
+export const otherRoomTurns = (root: string, room: string, since: number, now = Date.now()): LiveTurn[] => {
+  const dir = liveDir(root);
+  if (!existsSync(dir)) return [];
+  const own = roomDirName(room);
+  const found: LiveTurn[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    const full = join(dir, name);
+    let entry: LiveTurn;
+    try {
+      entry = JSON.parse(readFileSync(full, "utf8")) as LiveTurn;
+    } catch {
+      continue;
+    }
+    if (typeof entry?.room !== "string" || typeof entry.startedAt !== "number") continue;
+    // Its process died mid-turn at some unknown moment: it ends now, when that is first seen (and stays so).
+    if (entry.endedAt === undefined && !processAlive(entry.pid)) {
+      entry = { ...entry, endedAt: now };
+      markTurnLive(root, entry);
+    }
+    if (entry.endedAt !== undefined && now - entry.endedAt > LIVE_KEEP_MS) {
+      rmSync(full, { force: true });
+      continue;
+    }
+    if (roomDirName(entry.room) === own) continue;
+    if (entry.endedAt === undefined || entry.endedAt >= since) found.push(entry);
+  }
+  return found;
 };
 
 /** Past this many dirty files (a fresh `npm install` without .gitignore…) turns are not snapshotted as trees. */
@@ -370,7 +443,7 @@ export const patchSection = (patch: string, path: string): string | null => {
   );
 };
 
-export const checkpointCommit = (root: string, subject: string, body: string): { sha: string; files: number } | null => {
+const commitAll = (root: string, subject: string, body: string): { sha: string; files: number } | null => {
   if (!isGitRepo(root)) return null;
   // Only the workspace: a room in a subdirectory never stages or commits the rest of the repository.
   const status = git(root, ["status", "--porcelain", "--", "."]);
@@ -397,6 +470,79 @@ export const checkpointCommit = (root: string, subject: string, body: string): {
   if (committed === null) return null;
   const sha = git(root, ["rev-parse", "HEAD"])?.trim();
   return sha ? { sha, files: staged.length } : null;
+};
+
+/**
+ * The run's checkpoint. A room alone in its directory commits all of it, as it always has. Given `files`
+ * (the room shares the directory), only those credited paths go in, and nobody's staged change is taken.
+ */
+export const checkpointCommit = (root: string, subject: string, body: string, files?: string[], expectedTrees?: ReadonlyMap<string, string>): { sha: string; files: number } | null => {
+  if (!files) return commitAll(root, subject, body);
+  if (!files.length || !isGitRepo(root)) return null;
+  const indexRel = git(root, ["rev-parse", "--git-path", "index"])?.trim();
+  if (!indexRel) return null;
+  const index = resolve(root, indexRel);
+  const lock = `${index}.lock`;
+  const scratch = join(tmpdir(), `agoryx-commit-${process.pid}-${randomBytes(8).toString("hex")}`);
+  const preserved = `${scratch}-preserved`;
+  let locked = false;
+  try {
+    // Also serializes checkpoints from separate daemons. On contention skip this checkpoint.
+    closeSync(openSync(lock, "wx"));
+    locked = true;
+    const head = git(root, ["rev-parse", "--verify", "HEAD"])?.trim();
+    const prefix = repoPrefix(root);
+    const staged = git(root, ["diff", "--cached", "--name-only", "--no-renames", "-z"]);
+    if (staged === null) return null;
+    const occupied = new Set(staged.split("\0"));
+    const paths = [...new Set(files)].filter((file) =>
+      file && !isAbsolute(file) && !file.split("/").some((part) => part === ".." || part === ".git" || part === AGORYX_DIR) &&
+      !occupied.has(`${prefix}${file}`),
+    );
+    if (!paths.length) return null;
+    let specs = paths.map((file) => `:(top,literal)${prefix}${file}`);
+    const env = { ...process.env, GIT_INDEX_FILE: scratch };
+    if (git(root, ["read-tree", head ?? "--empty"], 15_000, env) === null) return null;
+    if (git(root, ["add", "-A", "--", ...specs], 30_000, env) === null) return null;
+    if (expectedTrees) {
+      // Stage first, then compare that frozen content with the latest credited turn. A later
+      // writer may have changed an allowed file; do not put their version into this room's commit.
+      const rejected = paths.filter((file) => {
+        const expected = expectedTrees.get(file);
+        return !expected || git(root, ["diff", "--cached", "--quiet", expected, "--", `:(top,literal)${prefix}${file}`], 15_000, env) === null;
+      });
+      if (rejected.length) {
+        const rejectedSpecs = rejected.map((file) => `:(top,literal)${prefix}${file}`);
+        const args = head ? ["reset", "-q", head, "--", ...rejectedSpecs] : ["rm", "-r", "-f", "--cached", "--ignore-unmatch", "--", ...rejectedSpecs];
+        if (git(root, args, 15_000, env) === null) return null;
+        specs = paths.filter((file) => !rejected.includes(file)).map((file) => `:(top,literal)${prefix}${file}`);
+      }
+      if (!specs.length) return null;
+    }
+    const changed = git(root, ["diff", "--cached", "--name-only", "-z"], 15_000, env)?.split("\0").filter(Boolean);
+    if (!changed?.length) return null;
+    const tree = git(root, ["write-tree"], 15_000, env)?.trim();
+    if (!tree) return null;
+    const sha = git(root, ["-c", "user.name=Agoryx", "-c", "user.email=agoryx@localhost", "-c", "commit.gpgsign=false",
+      "commit-tree", tree, ...(head ? ["-p", head] : []), "-m", subject, ...(body ? ["-m", body] : [])], 15_000, env)?.trim();
+    if (!sha) return null;
+    // Prepare the real index's update before moving HEAD. Only the selected, previously unstaged
+    // entries change; all foreign staged blobs (including partial staging) remain intact.
+    if (existsSync(index)) copyFileSync(index, preserved);
+    const keptEnv = { ...process.env, GIT_INDEX_FILE: preserved };
+    if (git(root, ["reset", "-q", sha, "--", ...specs], 15_000, keptEnv) === null) return null;
+    copyFileSync(preserved, lock);
+    // Compare-and-swap: another writer moving HEAD cannot make us overwrite its commit.
+    if (git(root, ["update-ref", "-m", subject, "HEAD", sha, head ?? "0".repeat(sha.length)]) === null) return null;
+    renameSync(lock, index);
+    locked = false;
+    return { sha, files: changed.length };
+  } catch {
+    return null;
+  } finally {
+    if (locked) rmSync(lock, { force: true });
+    for (const path of [scratch, preserved, `${scratch}.lock`, `${preserved}.lock`]) rmSync(path, { force: true });
+  }
 };
 
 // ---------------------------------------------------------------------------

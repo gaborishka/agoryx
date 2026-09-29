@@ -82,6 +82,21 @@ in `.agoryx/messages/<room>/`.
 - **Older rooms and tools:** the shared `.agoryx/ops` and `.agoryx/turns` are still read, but only
   by a room that the room logs show is alone in that directory. Otherwise an op there is refused with
   an ack that says to add `--room`.
+- **Turns of two rooms at once** are credited like parallel turns in one room. Every turn leaves a marker
+  in `.agoryx/live/<room>.<turn>.json` (pid, start, end), which rooms in this process and in other
+  processes read. A file changed while another room's turn ran is this turn's only if its own edit tool
+  changed it, or it changed after the other turns ended; a shell change made meanwhile is nobody's.
+  "After they ended" needs the workspace as the last of them left it, which only rooms in the same
+  process hand to each other: with a room in another process, only the edit tool credits a file.
+  A marker left by a dead process counts as ended when a room first sees it dead. A canonical-file
+  change seen between turns, when another room's turn ran since the file was last seen, is recorded as
+  "Ivan or room "B"" (whose is not known), never as the human's alone.
+- **The checkpoint commit**, for a room alone in its directory, is everything there as before. A room
+  that shares the directory (or saw another room's turn during the run) commits through a temporary index and only files credited to that run's turns.
+  Files changed since their last credited tree snapshot, files without a tree snapshot, and files
+  with existing staged changes are skipped. Uncredited work stays uncommitted; foreign staged entries
+  are preserved. Index-lock contention skips the checkpoint; a HEAD compare-and-swap prevents overwriting
+  a concurrent commit.
 
 ## The canonical file (Документ)
 

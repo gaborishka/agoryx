@@ -45,6 +45,9 @@ export const participant = (room: Seating | undefined, handle: string): Particip
     };
   }
   if (handle === "agoryx") return { id: handle, label: "Agoryx", tone: "sys", agent: false };
+  // Another room sharing the directory, named in a revision whose author is not known (room "B").
+  const other = /^room "(.+)"$/.exec(handle);
+  if (other) return { id: handle, label: `кімната «${other[1]}»`, tone: "sys", agent: false };
   return { id: handle, label: handle === room?.human ? "Ви" : handle, tone: "human", agent: false };
 };
 

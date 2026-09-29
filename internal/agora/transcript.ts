@@ -107,6 +107,21 @@ const fileImage = (path: string): TranscriptImage => {
   }
 };
 
+/** Claude's `mcp__plugin_x_server__tool` as Codex names an MCP call: `server.tool`. */
+const toolName = (name: string): string => {
+  const match = /^mcp__(.+?)__(.+)$/.exec(name);
+  return match ? `${match[1]!.replace(/^plugin_[^_]+_/, "")}.${match[2]}` : name;
+};
+
+/** What a call with no view of its own is about, from the usual fields of its input. */
+const subjectOf = (input: Json | undefined): string => {
+  for (const key of ["title", "description", "query", "url", "file_path", "path", "pattern", "prompt", "libraryName", "name"]) {
+    const value = str(input?.[key])?.trim().split("\n")[0]?.trim();
+    if (value) return value.length > 160 ? `${value.slice(0, 159)}…` : value;
+  }
+  return "";
+};
+
 /** A path as the diff shows it: inside the session's folder, relative to it. */
 const shownPath = (path: string, cwd: string | undefined): string => {
   const clean = path.startsWith("file://") ? fileURLToPath(path) : path;
@@ -306,9 +321,9 @@ const parseClaude = (lines: Line[]): Array<TranscriptEntry & { offset: number }>
             id: str(part.id) ?? partId,
             at,
             kind: "tool",
-            tool: name,
+            tool: toolName(name),
             category: described.kind,
-            title: described.label,
+            title: described.label === name ? subjectOf(input) : described.label,
             ...(described.detail && !inputShown ? { detail: described.detail } : {}),
             ...(inputShown ? { input: inputShown } : {}),
             status: "running",
@@ -444,7 +459,7 @@ const codexItem = (item: Json, id: string, at: string | undefined, cwd: string |
         kind: "tool",
         tool: `${str(item.server) ?? "mcp"}.${str(item.tool) ?? "tool"}`,
         category: "tool",
-        title: `${str(item.server) ?? "mcp"}.${str(item.tool) ?? "tool"}`,
+        title: subjectOf(obj(item.arguments)),
         ...(args && args !== "{}" ? { input: cap(args, MAX_OUTPUT) } : {}),
         ...(text.trim() ? { output: cap(text, MAX_OUTPUT) } : {}),
         ...(images.length ? { images } : {}),
@@ -459,18 +474,44 @@ const codexItem = (item: Json, id: string, at: string | undefined, cwd: string |
           .map((result: Json) => [str(result?.title), str(result?.url)].filter(Boolean).join(" — "))
           .filter(Boolean)
           .join("\n");
+        const action = obj(item.action);
+        const opened = action?.type === "openPage" || action?.type === "findInPage";
         return {
           id,
           at,
           kind: "tool",
-          tool: kind,
+          tool: action?.type === "findInPage" ? "find in page" : opened ? "open page" : kind,
           category: "web",
-          title: str(item.query) ?? str(item.action?.query) ?? str(item.action?.url) ?? kind,
+          title: str(item.query) || str(action?.query) || str(action?.url) || str(results[0]?.url) || "",
           ...(output ? { output: cap(output, MAX_OUTPUT) } : {}),
           status: "ok",
         };
       }
-      return { id, at, kind: "tool", tool: kind, category: "tool", title: kind, status: statusOf(item.status) };
+      if (kind === "image_gen.generation") {
+        // The image is on disk once made; the session also keeps it inline.
+        const saved = str(item.savedPath);
+        const inline = str(item.result) ? dataUrl("image/png", item.result) : undefined;
+        const images: TranscriptImage[] = saved ? [fileImage(saved)] : inline ? [{ src: inline }] : [];
+        if (images[0] && !images[0].src && inline) images[0] = { ...images[0], src: inline };
+        const failed = statusOf(item.status) === "fail" || !images.length;
+        const prompt = str(item.revisedPrompt) ?? str(item.revised_prompt);
+        return {
+          id,
+          at,
+          kind: "tool",
+          tool: "image",
+          category: "tool",
+          title: saved ? shownPath(saved, cwd) : "",
+          ...(prompt ? { input: cap(prompt, MAX_OUTPUT) } : {}),
+          ...(str(item.failure) ? { output: cap(item.failure, MAX_OUTPUT) } : {}),
+          ...(images.length ? { images } : {}),
+          status: failed ? "fail" : "ok",
+        };
+      }
+      if (kind === "clock.sleep" && typeof item.durationMs === "number") {
+        return { id, at, kind: "tool", tool: "sleep", category: "tool", title: `${Math.round(item.durationMs / 100) / 10} s`, status: "ok" };
+      }
+      return { id, at, kind: "tool", tool: kind, category: "tool", title: subjectOf(item), status: statusOf(item.status) };
     }
     case "ImageView": {
       const path = str(item.path);
@@ -556,7 +597,7 @@ const parseCodex = (lines: Line[]): Array<TranscriptEntry & { offset: number }> 
           kind: "tool",
           tool: name,
           category: shell ? "command" : todos ? "note" : "tool",
-          title: shell ? cap(codexCommand(command), 4000) : todos ? "plan" : name,
+          title: shell ? cap(codexCommand(command), 4000) : todos ? "plan" : subjectOf(args),
           ...(!shell && !todos ? { input: cap(typeof payload.input === "string" ? payload.input : JSON.stringify(args ?? {}, null, 2), MAX_OUTPUT) } : {}),
           ...(todos ? { todos } : {}),
           status: "running",

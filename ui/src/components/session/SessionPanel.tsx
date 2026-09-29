@@ -454,7 +454,7 @@ function ToolEntry({ e }: { e: TranscriptTool }) {
   const stats = useMemo(() => (hasDiff ? diffStats(e.diffs!) : null), [hasDiff, e.diffs]);
   const small = hasDiff && e.diffs!.reduce((n, d) => n + d.patch.length, 0) < 8000;
   const [open, setOpen] = useState(false);
-  const body = Boolean(e.input || e.output || hasDiff || e.images?.length);
+  const body = Boolean(e.input || e.output || hasDiff);
   const showDiff = hasDiff && (open || small);
   return (
     <div className="flex flex-col gap-1.5">
@@ -477,9 +477,11 @@ function ToolEntry({ e }: { e: TranscriptTool }) {
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-2">
             <span className="shrink-0 text-[12.5px] font-semibold">{e.tool}</span>
-            <span className={cn("truncate font-mono text-[12px] text-muted-foreground", fail && "text-destructive")} title={e.title}>
-              {e.title}
-            </span>
+            {e.title && e.title !== e.tool ? (
+              <span className={cn("truncate font-mono text-[12px] text-muted-foreground", fail && "text-destructive")} title={e.title}>
+                {e.title}
+              </span>
+            ) : null}
             {stats ? <Stats added={stats.added} removed={stats.removed} /> : null}
           </span>
           {e.detail ? <span className="block truncate text-[11.5px] text-faint">{e.detail}</span> : null}
@@ -504,7 +506,11 @@ function ToolEntry({ e }: { e: TranscriptTool }) {
         <div className="flex flex-col gap-2 pl-[26px]">
           {e.input ? <Block label="Вхід" text={e.input} /> : null}
           {e.output ? <Block label={fail ? "Помилка" : "Вихід"} text={e.output} fail={fail} /> : null}
-          {e.images?.length ? <Images images={e.images} /> : null}
+        </div>
+      ) : null}
+      {e.images?.length ? (
+        <div className="pl-[26px]">
+          <Images images={e.images} />
         </div>
       ) : null}
     </div>

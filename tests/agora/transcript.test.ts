@@ -207,6 +207,51 @@ test("a Codex rollout reads as Codex shows it: commands with exit codes, patches
   }
 });
 
+test("tools without a view of their own say what they are about; a generated image is shown", () => {
+  const dir = scratch();
+  try {
+    // 1×1 PNG.
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    writeFileSync(join(dir, "ig_1.png"), Buffer.from(png, "base64"));
+    const item = (value: Record<string, unknown>) => ({ timestamp: TS, type: "event_msg", payload: { type: "item_completed", item: value } });
+    const codex = join(dir, "rollout.jsonl");
+    writeFileSync(
+      codex,
+      jsonl([
+        { timestamp: TS, type: "session_meta", payload: { cwd: dir } },
+        item({ type: "Extension", kind: "image_gen.generation", id: "g1", status: "generating", revisedPrompt: "Use case: logo\nA fox", result: png, savedPath: join(dir, "ig_1.png") }),
+        item({ type: "Extension", kind: "image_gen.generation", id: "g2", status: "failed", revisedPrompt: "A cat", result: "", failure: null }),
+        item({ type: "Extension", kind: "clock.sleep", id: "s1", durationMs: 20000 }),
+        item({ type: "Extension", kind: "web.search", id: "w1", query: "https://example.com/a", action: { type: "openPage", url: "https://example.com/a" }, results: [{ title: "A", url: "https://example.com/a" }] }),
+        item({ type: "Extension", kind: "web.search", id: "w2", query: "", action: { type: "other" }, results: [{ title: "B", url: "https://example.com/b.pdf" }] }),
+        item({ type: "McpToolCall", id: "m1", server: "cua", tool: "repl", arguments: { code: "open()", title: "Open the review map" }, status: "completed", result: { content: [] } }),
+      ]),
+    );
+    const tools = readTranscript("codex", codex).entries as TranscriptTool[];
+    const [made, failed, sleep, opened, other, mcp] = tools;
+    assert.equal(made!.tool, "image");
+    assert.equal(made!.title, "ig_1.png");
+    assert.equal(made!.status, "ok");
+    assert.match(made!.images![0]!.src!, /^data:image\/png;base64,/);
+    assert.match(made!.input!, /A fox/);
+    assert.equal(failed!.status, "fail");
+    assert.equal(failed!.images, undefined);
+    assert.deepEqual([sleep!.tool, sleep!.title], ["sleep", "20 s"]);
+    assert.deepEqual([opened!.tool, opened!.title], ["open page", "https://example.com/a"]);
+    assert.equal(other!.title, "https://example.com/b.pdf");
+    assert.deepEqual([mcp!.tool, mcp!.title], ["cua.repl", "Open the review map"]);
+
+    const claude = join(dir, "claude.jsonl");
+    const use = (id: string, name: string, input: unknown) => ({ type: "assistant", uuid: id, timestamp: TS, message: { id, role: "assistant", content: [{ type: "tool_use", id, name, input }] } });
+    writeFileSync(claude, jsonl([use("t1", "ToolSearch", { query: "select:WebFetch", max_results: 1 }), use("t2", "mcp__plugin_context7_context7__resolve-library-id", { libraryName: "react" })]));
+    const [search, lib] = readTranscript("claude", claude).entries as TranscriptTool[];
+    assert.deepEqual([search!.tool, search!.title], ["ToolSearch", "select:WebFetch"]);
+    assert.deepEqual([lib!.tool, lib!.title], ["context7.resolve-library-id", "react"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("an older Codex rollout without items still shows its calls and their output", () => {
   const dir = scratch();
   try {

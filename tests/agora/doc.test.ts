@@ -172,6 +172,55 @@ test("in a blind round the canonical file is credited only to the turn that wrot
   }
 });
 
+test("an edit made after the parallel turn ended is the remaining turn's, whatever tool made it", async () => {
+  const room = createTestRoom({
+    settings: { doc: "README.md" },
+    rules: [
+      { agent: "claude", match: "essay", write: { path: "README.md", content: "# Time\n\nA first draft.\n" }, reply: "Drafted it.", once: true },
+      // Codex reworks the draft with a script once Claude's turn is over, as a shell command would.
+      { agent: "codex", match: "essay", sleepMs: 1200, write: { path: "README.md", content: "# Time\n\nA sharper draft.\n", via: "shell" }, reply: "Tightened it.", once: true },
+    ],
+  });
+  try {
+    room.engine.postHuman("Write an essay on time");
+    await withTimeout(room.engine.waitIdle());
+    const { docRevisions, turns } = room.store.state;
+    assert.deepEqual(
+      docRevisions.map((revision) => revision.by),
+      ["claude", "codex"],
+      "no revision is put on the human",
+    );
+    const codexTurn = turns.find((turn) => turn.agent === "codex")!;
+    assert.equal(docRevisions[1]!.turnId, codexTurn.id);
+    assert.deepEqual(codexTurn.files, ["README.md"]);
+    // Its patch starts from Claude's draft, not from before Claude wrote it.
+    assert.deepEqual(codexTurn.changes?.map((change) => [change.path, change.status, change.added, change.removed]), [["README.md", "M", 1, 1]]);
+    assert.match(room.engine.turnPatch(codexTurn.id)!.patch, /-A first draft\.\n\+A sharper draft\./);
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("an edit no one can be credited with during parallel turns is recorded as theirs, not the human's", async () => {
+  const room = createTestRoom({
+    settings: { doc: "README.md" },
+    rules: [
+      { agent: "claude", match: "essay", sleepMs: 1200, reply: "Thinking it over.", once: true },
+      { agent: "codex", match: "essay", sleepMs: 200, write: { path: "README.md", content: "# Time\n\nA draft.\n", via: "shell" }, reply: "Drafted it.", once: true },
+    ],
+  });
+  try {
+    room.engine.postHuman("Write an essay on time");
+    await withTimeout(room.engine.waitIdle());
+    const revision = room.store.state.docRevisions.at(-1)!;
+    assert.deepEqual(revision.among?.sort(), ["claude", "codex"]);
+    assert.equal(revision.turnId, undefined);
+    assert.equal(room.store.state.docRevisions.some((entry) => entry.by === room.store.state.human), false);
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("a human save while a turn runs is the human's revision, not part of the turn's changes", async () => {
   const room = createTestRoom({
     settings: { doc: "README.md" },

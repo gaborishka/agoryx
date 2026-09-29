@@ -153,6 +153,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         by: event.by,
         ...(event.turnId ? { turnId: event.turnId } : {}),
         ...(event.native ? { native: true } : {}),
+        ...(event.among ? { among: event.among } : {}),
         hash: event.hash,
         ...(event.text === null ? { deleted: true } : {}),
         added: event.added,

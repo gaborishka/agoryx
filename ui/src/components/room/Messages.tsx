@@ -8,7 +8,7 @@ import { participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { DocRevision, MessageEntry, TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Avatar, Name, NativeBadge, NativeTag, Stats, Time } from "./bits";
+import { Avatar, Name, NativeBadge, NativeTag, Stats, Time, Tip } from "./bits";
 import { Clamp } from "./Clamp";
 import { TurnBar } from "./Trace";
 
@@ -185,7 +185,21 @@ export function DocLine({ r }: { r: DocRevision }) {
         <FileTextIcon className="size-3.5" />
       </span>
       <span>
-        <Name handle={r.by} /> змінює{" "}
+        {r.among ? (
+          <Tip tip="Файл змінився, поки ходи йшли паралельно, і кімната не бачить, чий це хід.">
+            <span>
+              {r.among.map((id, i) => (
+                <span key={id}>
+                  {i ? " або " : ""}
+                  <Name handle={id} />
+                </span>
+              ))}
+            </span>
+          </Tip>
+        ) : (
+          <Name handle={r.by} />
+        )}{" "}
+        змінює{" "}
         <button type="button" className="font-mono text-[12px] text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openDocRevision(r.seq)}>
           {r.path}
         </button>

@@ -79,6 +79,9 @@ const clock = (ts: string): string => {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 };
 
+/** A timestamp as a local date and time, like the room's clock shows it. */
+const localStamp = (ts: string): string => `${new Date(ts).toLocaleDateString("sv-SE")} ${clock(ts)}`;
+
 const oneLine = (text: string, max: number): string => {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
@@ -181,7 +184,9 @@ export class TranscriptPrinter {
         if (event.by === "agoryx") return;
         const outside = event.native ? pc.dim(" (in its own session)") : "";
         const what = event.text === null ? `deleted ${event.path}` : `edited ${event.path} ${pc.green(`+${event.added}`)} ${pc.red(`−${event.removed}`)}`;
-        this.out(`  ${pc.magenta("✎")} ${this.plainName(event.by)} ${what}${outside}\n`);
+        const by = event.among ? event.among.map((id) => this.plainName(id)).join(" or ") : this.plainName(event.by);
+        const whose = event.among ? pc.dim(" (parallel turns — the room cannot tell whose)") : "";
+        this.out(`  ${pc.magenta("✎")} ${by} ${what}${outside}${whose}\n`);
         return;
       }
       case "commit.created":
@@ -817,14 +822,16 @@ const runDoc = async (argv: string[]): Promise<number> => {
     const event = store.events.find((entry) => entry.seq === seq);
     return event?.type === "doc.revised" ? event.text : undefined;
   };
-  const who = (by: string) => (by === "agoryx" ? "(the version the room started from)" : (state.agents.find((agent) => agent.id === by)?.label ?? by));
+  const label = (id: string) => state.agents.find((agent) => agent.id === id)?.label ?? id;
+  const who = (by: string, among?: string[]) =>
+    by === "agoryx" ? "(the version the room started from)" : among ? `${among.map(label).join(" or ")} (parallel turns)` : label(by);
 
   if (parsed.options.log) {
     if (revisions.length === 0) console.log(pc.dim(`${path}: no revisions yet`));
     for (const revision of revisions) {
       const stats = revision.by === "agoryx" ? "" : revision.deleted ? pc.red("deleted") : `${pc.green(`+${revision.added}`)} ${pc.red(`−${revision.removed}`)}`;
       const where = revision.native ? pc.dim(" (in its own session)") : revision.turnId ? pc.dim(" (room turn)") : "";
-      console.log(`${pc.dim(`#${String(revision.seq).padEnd(5)}`)} ${revision.ts.slice(0, 16).replace("T", " ")}  ${who(revision.by)}${where}  ${stats}`);
+      console.log(`${pc.dim(`#${String(revision.seq).padEnd(5)}`)} ${localStamp(revision.ts)}  ${who(revision.by, revision.among)}${where}  ${stats}`);
     }
     return 0;
   }
@@ -840,7 +847,7 @@ const runDoc = async (argv: string[]): Promise<number> => {
     const previous = revisions[index - 1];
     const after = textAt(revision.seq);
     const before = previous && !previous.deleted ? textAt(previous.seq) : "";
-    console.log(pc.dim(`#${revision.seq} · ${who(revision.by)} · ${revision.ts.slice(0, 16).replace("T", " ")}`));
+    console.log(pc.dim(`#${revision.seq} · ${who(revision.by, revision.among)} · ${localStamp(revision.ts)}`));
     if (after === undefined || before === undefined) {
       console.log(pc.dim("too large to keep the text of this revision"));
       return 0;
@@ -855,7 +862,7 @@ const runDoc = async (argv: string[]): Promise<number> => {
   const now = readDoc(state.workspace, path);
   if (process.stdout.isTTY) {
     const last = revisions.at(-1);
-    console.log(pc.dim(`── ${join(state.workspace, path)}${last ? ` · ${revisions.length} revision${revisions.length === 1 ? "" : "s"}, last by ${who(last.by)}` : ""}`));
+    console.log(pc.dim(`── ${join(state.workspace, path)}${last ? ` · ${revisions.length} revision${revisions.length === 1 ? "" : "s"}, last by ${who(last.by, last.among)}` : ""}`));
   }
   if (!now) {
     console.log(pc.dim(`${path} does not exist yet`));
@@ -888,7 +895,7 @@ const runDiff = async (argv: string[]): Promise<number> => {
   const who = (id: string) => state.agents.find((agent) => agent.id === id)?.label ?? id;
   const when = (turn: { endedAt?: string; startedAt: string }) => {
     const ts = turn.endedAt ?? turn.startedAt;
-    return `${new Date(ts).toLocaleDateString("sv-SE")} ${clock(ts)}`;
+    return localStamp(ts);
   };
   const [ref, path] = parsed.positionals;
 

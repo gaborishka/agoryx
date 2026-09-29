@@ -293,6 +293,8 @@ export interface DocRevisedEvent {
   turnId?: string;
   /** Made by an agent in its own session, outside the room. */
   native?: boolean;
+  /** Made during these agents' parallel turns, and the room cannot tell whose: `by` is their names joined with " or ". */
+  among?: string[];
   hash: string;
   /** null: the file was deleted. */
   text?: string | null;
@@ -308,6 +310,7 @@ export interface DocRevision {
   by: string;
   turnId?: string;
   native?: boolean;
+  among?: string[];
   hash: string;
   deleted?: boolean;
   added: number;

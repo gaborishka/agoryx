@@ -68,7 +68,10 @@ export function StatusBar() {
 export const autosize = (ta: HTMLTextAreaElement | null, max = 0.4) => {
   if (!ta) return;
   ta.style.height = "auto";
-  ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * max))}px`;
+  const limit = Math.round(window.innerHeight * max);
+  ta.style.height = `${Math.min(ta.scrollHeight, limit)}px`;
+  // A scrollbar only once the text outgrows the limit, never for a pixel of rounding.
+  ta.style.overflowY = ta.scrollHeight > limit + 1 ? "auto" : "hidden";
 };
 
 export function Composer() {
@@ -165,7 +168,7 @@ export function Composer() {
             placeholder={driven ? `Напишіть ${names}…` : "Кімнату веде інший процес — лише перегляд"}
             aria-label="Повідомлення"
             title="Enter — надіслати, Shift+Enter — новий рядок"
-            className="scroll-thin block max-h-[40vh] min-h-[44px] flex-1 resize-none bg-transparent py-2.5 text-[15px] leading-relaxed outline-none placeholder:text-faint"
+            className="scroll-thin block max-h-[40vh] min-h-[44px] overflow-y-hidden flex-1 resize-none bg-transparent py-2.5 text-[15px] leading-relaxed outline-none placeholder:text-faint"
           />
           <Button
             type="submit"
@@ -380,7 +383,7 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="sm" className={quiet} disabled={!driven} title={mode.hint}>
             <Mode className="size-3.5" />
-            {mode.label}
+            <span className="hidden sm:inline">{mode.label}</span>
             <ChevronDownIcon className="size-3 opacity-60" />
           </Button>
         </DropdownMenuTrigger>
@@ -404,7 +407,7 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
         </DropdownMenuContent>
       </DropdownMenu>
       <span className="flex-1" />
-      <div className="scroll-thin flex min-w-0 items-center gap-2 overflow-x-auto">
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-0.5">
         {room.agents.map((a) => (
           <AgentModel key={a.id} agent={a} models={models} disabled={!driven} working={presence?.[a.id] === "working"} />
         ))}
@@ -416,7 +419,7 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
 
 const quietButton = "h-7 gap-1.5 rounded-lg px-2 text-[12.5px] font-normal text-muted-foreground hover:text-foreground";
 
-/** One agent in the footer: its name opens its session; its model and effort change right here, for its next turn. */
+/** One agent in the footer: its model and effort, changed right here in one menu (for its next turn). */
 function AgentModel({ agent, models, disabled, working }: { agent: RoomAgent; models: AgentModels | null; disabled: boolean; working: boolean }) {
   const room = useStore((s) => s.snap?.state);
   const post = useStore((s) => s.post);
@@ -428,6 +431,7 @@ function AgentModel({ agent, models, disabled, working }: { agent: RoomAgent; mo
   const model = choices.find((m) => m.id === agent.model);
   const levels = model?.efforts ?? kind?.efforts ?? [];
   const defaultEffort = model?.defaultEffort;
+  const effort = agent.effort ?? defaultEffort;
   const who = participant(room, agent.id);
   const set = (change: { model?: string | null; effort?: string | null }) => {
     if ("model" in change && (change.model ?? undefined) === agent.model) return;
@@ -437,44 +441,39 @@ function AgentModel({ agent, models, disabled, working }: { agent: RoomAgent; mo
   // Like Claude Code's menu: a digit picks the model at that place.
   const byDigit = (event: KeyboardEvent<HTMLDivElement>) => {
     const n = Number(event.key);
-    if (!Number.isInteger(n) || n < 1) return;
-    if (n > choices.length + 1) return;
+    if (!Number.isInteger(n) || n < 1 || n > choices.length + 1) return;
     event.preventDefault();
     setOpen(false);
     set({ model: n === 1 ? null : choices[n - 2]!.id });
   };
-  const when = working ? " — з наступного ходу" : "";
 
   return (
-    <div className="flex shrink-0 items-center">
-      <Button
-        variant="ghost"
-        size="sm"
-        className={cn(quietButton, "pr-1")}
-        onClick={() => openSession(agent.id)}
-        title={`Сесія ${agent.label}`}
-      >
-        <span className={cn("size-1.5 rounded-full", who.tone === "codex" ? "bg-codex" : "bg-claude", working && "animate-breathe")} style={ink(who)} />
-        <span className="hidden text-foreground/80 sm:inline">{agent.label}</span>
-      </Button>
-      <DropdownMenu open={open} onOpenChange={setOpen}>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className={cn(quietButton, "px-1.5 data-[state=open]:bg-accent data-[state=open]:text-foreground")} disabled={disabled} title={`Модель ${agent.label}${when}`}>
-            <span className={cn(agent.model ? "text-foreground/90" : "")}>{model?.label ?? agent.model ?? "типова"}</span>
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" side="top" className="w-[240px]" onKeyDown={byDigit}>
-          <DropdownMenuLabel className="text-[11.5px] font-normal text-muted-foreground">
-            Модель {agent.label}
-            {when}
-          </DropdownMenuLabel>
-          <DropdownMenuItem onSelect={() => set({ model: null })}>
-            <span className="flex flex-col">
-              Типова
-              <span className="text-[11.5px] text-muted-foreground">Та, що в налаштуваннях CLI</span>
-            </span>
-            <MenuMark on={!agent.model} n={1} />
-          </DropdownMenuItem>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={disabled}
+          className={cn(quietButton, "shrink-0 gap-1.5 data-[state=open]:bg-accent data-[state=open]:text-foreground")}
+          title={`${agent.label}: модель і effort`}
+        >
+          <span className={cn("size-1.5 shrink-0 rounded-full", who.tone === "codex" ? "bg-codex" : "bg-claude", working && "animate-breathe")} style={ink(who)} />
+          <span className="text-foreground/85">{agent.label}</span>
+          {model || agent.model ? <span className="max-w-[9rem] truncate">{model?.label ?? agent.model}</span> : null}
+          {effort ? <span className={cn(agent.effort ? "" : "text-faint")}>{effort}</span> : null}
+          <ChevronDownIcon className="size-3 opacity-50" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" side="top" className="w-[260px]" onKeyDown={byDigit}>
+        <DropdownMenuLabel className="flex items-baseline justify-between text-[11.5px] font-normal text-muted-foreground">
+          Модель {agent.label}
+          {working ? <span className="text-faint">з наступного ходу</span> : null}
+        </DropdownMenuLabel>
+        <DropdownMenuItem onSelect={() => set({ model: null })} title="Та, що в налаштуваннях CLI">
+          Типова <span className="text-faint">з CLI</span>
+          <MenuMark on={!agent.model} n={1} />
+        </DropdownMenuItem>
+        <div className="scroll-thin max-h-[40vh] overflow-y-auto">
           {choices.map((m, i) => (
             <DropdownMenuItem key={m.id} onSelect={() => set({ model: m.id })} title={m.description}>
               <span className="truncate">{m.label}</span>
@@ -484,42 +483,44 @@ function AgentModel({ agent, models, disabled, working }: { agent: RoomAgent; mo
           {agent.model && !model ? (
             <DropdownMenuItem disabled>
               <span className="truncate font-mono text-[12px]">{agent.model}</span>
-              <MenuMark on n={0} />
+              <MenuMark on />
             </DropdownMenuItem>
           ) : null}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={() => openSession(agent.id)}>
-            Інша модель…
-            <ChevronRightIcon className="ml-auto size-4 opacity-60" />
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      {levels.length ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className={cn(quietButton, "px-1.5 data-[state=open]:bg-accent data-[state=open]:text-foreground")} disabled={disabled} title={`Effort ${agent.label}${when}`}>
-              <span className={cn(agent.effort ? "text-foreground/90" : "text-faint")}>{agent.effort ?? defaultEffort ?? "effort"}</span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" side="top" className="w-[200px]">
-            <DropdownMenuLabel className="text-[11.5px] font-normal text-muted-foreground">Наскільки глибоко думати{when}</DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => set({ effort: null })}>
-              Типово{defaultEffort ? <span className="text-faint">({defaultEffort})</span> : null}
-              <MenuMark on={!agent.effort} />
-            </DropdownMenuItem>
-            {levels.map((level) => (
-              <DropdownMenuItem key={level} onSelect={() => set({ effort: level })}>
-                {level}
-                <MenuMark on={agent.effort === level} />
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : null}
-    </div>
+        </div>
+        {levels.length ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[11.5px] font-normal text-muted-foreground">Effort — наскільки глибоко думати</DropdownMenuLabel>
+            <div className="flex flex-wrap gap-1 px-2 pb-1.5">
+              {[null, ...levels].map((level) => {
+                const on = (agent.effort ?? null) === level;
+                return (
+                  <button
+                    key={level ?? "__default"}
+                    type="button"
+                    onClick={() => set({ effort: level })}
+                    title={level ? undefined : `Типово${defaultEffort ? `: ${defaultEffort}` : ""}`}
+                    className={cn(
+                      "h-6 rounded-md border px-2 text-[12px] transition",
+                      on ? "border-primary/50 bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+                    )}
+                  >
+                    {level ?? "типово"}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => openSession(agent.id)}>
+          Сесія {agent.label}, інша модель…
+          <ChevronRightIcon className="ml-auto size-4 opacity-60" />
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
-
 /** The right edge of a menu row: a check on the current choice, otherwise the digit that picks it. */
 function MenuMark({ on, n }: { on: boolean; n?: number }) {
   if (on) return <CheckIcon className="ml-auto size-4 text-primary" />;

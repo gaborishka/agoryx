@@ -313,8 +313,13 @@ const quote = (text: string, max = 140): string => {
   return `"${flat.length > max ? `${flat.slice(0, max)}…` : flat}"`;
 };
 
-/** One-line human description of an op, used in deltas and system lines. */
-export const describeTableOp = (op: TableOp, table?: TableState): string => {
+/**
+ * One-line human description of an op, used in deltas and system lines. `wholeDissent` keeps an
+ * objection's or a concession's reason unshortened (a turn prompt): a clipped objection can read as a
+ * quibble, and a clipped concession as more than was given up.
+ */
+export const describeTableOp = (op: TableOp, table?: TableState, options: { wholeDissent?: boolean } = {}): string => {
+  const dissent = (text: string) => (options.wholeDissent ? quote(text, Infinity) : quote(text));
   const titleOf = (ref: string) => {
     const option = table?.options.find((entry) => entry.id === ref);
     return option ? ` ${quote(option.title, 60)}` : "";
@@ -325,7 +330,7 @@ export const describeTableOp = (op: TableOp, table?: TableState): string => {
     case "propose":
       return `proposed ${op.id} ${quote(op.title, 80)}${op.q ? ` for ${op.q}` : ""}${op.file ? ` (preview: ${op.file})` : ""}`;
     case "object":
-      return `objected to ${op.target}${titleOf(op.target)}: ${quote(op.text)}`;
+      return `objected to ${op.target}${titleOf(op.target)}: ${dissent(op.text)}`;
     case "support":
       return `supported ${op.target}${titleOf(op.target)}: ${quote(op.text)}`;
     case "evidence":
@@ -335,7 +340,7 @@ export const describeTableOp = (op: TableOp, table?: TableState): string => {
     case "settle":
       return op.q ? `answered ${op.q} (${op.id}): ${quote(op.text)}` : `marked settled: ${quote(op.text)}`;
     case "concede":
-      return `conceded${op.target ? ` on ${op.target}` : ""} (${op.id}): ${quote(op.text)}`;
+      return `conceded${op.target ? ` on ${op.target}` : ""} (${op.id}): ${dissent(op.text)}`;
     case "next":
       return `added next step ${op.id}: ${quote(op.text)}`;
     case "done":

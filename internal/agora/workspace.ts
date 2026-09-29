@@ -253,6 +253,39 @@ export const writeTurnPatch = (
   }
 };
 
+const MESSAGE_ID = /^m\d{1,9}$/;
+
+/**
+ * Every room message, in full, at .agoryx/messages/<room>/<id>.md: the room log lives
+ * outside the workspace, where an agent's sandbox cannot see it, so this copy is
+ * what `agoryx read m12` prints when the delta gave only part of a message.
+ * Per room, because rooms may share a workspace and every room has its own m1.
+ */
+export const messagePath = (paths: WorkspacePaths, roomId: string, messageId: string): string | null => {
+  const room = roomId.replace(/[^\w.-]/g, "");
+  return MESSAGE_ID.test(messageId) && room && !room.startsWith(".") ? join(paths.agoryxDir, "messages", room, `${messageId}.md`) : null;
+};
+
+export const writeRoomMessage = (
+  paths: WorkspacePaths,
+  roomId: string,
+  message: { id: string; author: string; ts: string; text: string; turnId?: string },
+): void => {
+  const target = messagePath(paths, roomId, message.id);
+  if (!target) return;
+  const turn = message.turnId ? ` · turn ${message.turnId}` : "";
+  const partial = `${target}.${randomBytes(4).toString("hex")}.tmp`;
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    // Written aside and renamed in: a reader never sees half a message.
+    writeFileSync(partial, `# ${message.id} · ${message.author} · ${message.ts.slice(0, 16).replace("T", " ")} UTC${turn}\n\n${message.text}\n`);
+    renameSync(partial, target);
+  } catch {
+    rmSync(partial, { force: true });
+    // the message is still in the event log; only the agents' copy is lost
+  }
+};
+
 /** The patch without its header; regenerated from the turn's trees when the file is gone. */
 export const readTurnPatch = (
   paths: WorkspacePaths,

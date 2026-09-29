@@ -30,6 +30,7 @@ import {
   diffSnapshots,
   drainOpsInbox,
   MAX_TREE_SNAPSHOT_DIRTY,
+  messagePath,
   prepareWorkspace,
   readTurnPatch,
   snapshotChanges,
@@ -38,6 +39,7 @@ import {
   treeChanges,
   workspacePaths,
   writeAck,
+  writeRoomMessage,
   writeTurnPatch,
   type ChangeSnapshot,
   type WorkspacePaths,
@@ -219,6 +221,7 @@ export class RoomEngine {
       this.ws = prepareWorkspace(this.state.workspace, { initGit: this.state.createdWorkspace });
       clearStaleAcks(this.ws);
       this.writeTableFile();
+      this.writeMissingMessages();
       this.recover();
       this.recordDocBaseline();
       // Table ops written while no engine ran, or taken by one that died before applying them.
@@ -1222,7 +1225,17 @@ export class RoomEngine {
   private postMessage(input: Omit<RoomMessage, "id"> & { kind: MessageKind }): MessageEntry {
     const id = `m${(this.state.counters.m ?? 0) + 1}`;
     this.store.append({ type: "message.posted", message: { id, ...input } });
-    return this.state.messages[this.state.messages.length - 1]!;
+    const entry = this.state.messages[this.state.messages.length - 1]!;
+    writeRoomMessage(this.ws, this.state.id, entry);
+    return entry;
+  }
+
+  /** Rooms from before .agoryx/messages/ existed, or a workspace that lost it: agents read messages from there. */
+  private writeMissingMessages(): void {
+    for (const message of this.state.messages) {
+      const target = messagePath(this.ws, this.state.id, message.id);
+      if (target && !existsSync(target)) writeRoomMessage(this.ws, this.state.id, message);
+    }
   }
 
   private postSystem(text: string, wakes: boolean, turnId?: string): MessageEntry {

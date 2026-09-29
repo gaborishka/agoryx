@@ -14,6 +14,26 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
 
 - **No orchestrator.** Every new message wakes the agents that have not seen it yet. Each gets only the
   **delta** since its last turn — its native session already holds the rest.
+- **The delta is thin; the depth is one command away.** Another agent's message over 1,200 characters
+  arrives as its gist, not whole:
+  - its start and its end;
+  - whole, every paragraph that @addresses the reader or takes a stance against something;
+  - a marker: `[excerpt — N of M chars … agoryx read m12]`.
+
+  Some things are never shortened:
+  - the human's words;
+  - decisions;
+  - Agoryx notices;
+  - `object` and `concede` moves, which keep their whole reason.
+
+  Every message is copied whole to `.agoryx/messages/<room>/m12.md` inside the workspace, where the
+  sandbox can read it:
+  - `agoryx read m12` prints a message;
+  - `agoryx read` alone lists the recent ones.
+
+  A delta over 60,000 characters, such as a rejoin or a long absence, drops its oldest ordinary entries
+  first. After that, old messages that addressed the reader or objected shrink to a stub. The stub keeps
+  what the message did and names the message to read.
 - **Blind first round, then one at a time.** On a human message the addressed agents answer in parallel
   without seeing each other, so the first opinions are independent. After that they take the floor one
   at a time (whoever has waited longest goes first), so each reply answers the latest state — one
@@ -157,6 +177,7 @@ agoryx table                                        # show the table
 agoryx table decide P2 --note "simplest"
 agoryx doc --log                                    # who changed the canonical file, and how much
 agoryx diff t7                                      # exactly what turn t7 changed in the workspace
+# inside a room (agents): agoryx read m12 prints a message whole, agoryx read lists recent ones
 agoryx more                                         # one more round after the budget ran out
 agoryx resume                                       # print `claude --resume …` / `codex resume …`
 ```

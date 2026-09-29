@@ -6,7 +6,8 @@
 // in its own session: the op is signed with --as, or with a hint from the
 // agent's environment, and the room reads it from the same inbox.
 // `agoryx diff` reads what each turn changed (.agoryx/turns/<turn>.patch).
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+// `agoryx read` reads what was said, in full (.agoryx/messages/<room>/<id>.md).
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -32,6 +33,11 @@ const USAGE = `agoryx — room tools for agents
   agoryx diff              recent turns that changed files: who, when, +/−
   agoryx diff t7           exactly what turn t7 changed (a patch)
   agoryx diff t7 src/a.ts  only that file
+
+  agoryx read              recent messages: id, who, how long, how it starts
+  agoryx read m12          the full text of message m12 (your turn's delta may give only its start)
+  agoryx read m12 m15      several at once
+                           (outside a room turn, if rooms share this workspace: --room <id>)
 
 Outside a room turn (someone talking to you directly in your own session), run it
 from the room's workspace and sign it: agoryx table … --as <your id in the room>.
@@ -193,18 +199,83 @@ const runDiff = (agoryxDir, ref, path) => {
   process.stdout.write(`${header[0]}\n${section}`);
 };
 
+/**
+ * Messages are kept per room (.agoryx/messages/<room>/), since rooms may share a
+ * workspace. A room turn names its room in AGORYX_ROOM; outside one, --room does,
+ * or the only room here, or the one that spoke last (said on stderr).
+ */
+const messagesDir = (agoryxDir, flagRoom) => {
+  const root = join(agoryxDir, "messages");
+  const clean = (value) => String(value).replace(/[^\w.-]/g, "");
+  const named = flagRoom ?? process.env.AGORYX_ROOM;
+  if (named) {
+    const room = clean(named);
+    if (!room || room.startsWith(".")) fail(`'${named}' is not a room id`);
+    return join(root, room);
+  }
+  const rooms = existsSync(root)
+    ? readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => ({ name: entry.name, mtime: statSync(join(root, entry.name)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+    : [];
+  if (rooms.length === 0) return join(root, "-");
+  if (rooms.length > 1) process.stderr.write(`agoryx: ${rooms.length} rooms share this workspace; reading ${rooms[0].name} (--room <id> for another)\n`);
+  return join(root, rooms[0].name);
+};
+
+const runRead = (agoryxDir, argv) => {
+  const { positional: refs, flags } = parseArgs(argv);
+  const dir = messagesDir(agoryxDir, flags.room);
+  if (refs.length === 0) {
+    const all = existsSync(dir)
+      ? readdirSync(dir)
+          .filter((name) => /^m\d+\.md$/.test(name))
+          .map((name) => Number(name.slice(1, -".md".length)))
+          .sort((a, b) => b - a)
+      : [];
+    if (all.length === 0) {
+      process.stdout.write("No messages yet.\n");
+      return;
+    }
+    for (const n of all.slice(0, 20)) {
+      const [header, , ...body] = readFileSync(join(dir, `m${n}.md`), "utf8").split("\n");
+      const text = body.join("\n").trim();
+      const start = text.replace(/\s+/g, " ").slice(0, 100);
+      process.stdout.write(`${header.replace(/^# /, "")} · ${text.length} chars\n   ${start}${text.length > 100 ? " …" : ""}\n`);
+    }
+    if (all.length > 20) process.stdout.write(`… ${all.length - 20} older messages: agoryx read m<N>\n`);
+    return;
+  }
+  const out = [];
+  for (const ref of refs) {
+    const id = /^m?\d+$/.test(ref) ? `m${ref.replace(/^m/, "")}` : null;
+    if (!id) fail(`'${ref}' is not a message id (like m12) — agoryx read lists them`);
+    const file = join(dir, `${id}.md`);
+    if (!existsSync(file)) fail(`no message ${id} — agoryx read lists recent ones`);
+    out.push(readFileSync(file, "utf8"));
+  }
+  process.stdout.write(out.join("\n"));
+};
+
 const main = async () => {
   const [command, verb, ...args] = process.argv.slice(2);
   if (!command || command === "help" || command === "--help" || command === "-h") {
     process.stdout.write(USAGE);
     return;
   }
-  if (command !== "table" && command !== "diff") fail(`inside a room only 'agoryx table …' and 'agoryx diff …' are available\n\n${USAGE}`);
+  if (command !== "table" && command !== "diff" && command !== "read") {
+    fail(`inside a room only 'agoryx table …', 'agoryx diff …' and 'agoryx read …' are available\n\n${USAGE}`);
+  }
 
   const agoryxDir = findAgoryxDir();
   if (!agoryxDir) fail("not inside an Agoryx room workspace (no .agoryx/ directory found)");
   if (command === "diff") {
     runDiff(agoryxDir, verb, args[0]);
+    return;
+  }
+  if (command === "read") {
+    runRead(agoryxDir, verb ? [verb, ...args] : []);
     return;
   }
 

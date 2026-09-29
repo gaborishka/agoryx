@@ -365,7 +365,7 @@ test("a settled conclusion can answer a question, and a concession is kept on th
       table.shifts.map((shift) => [shift.id, shift.by, shift.target]),
       [["C1", "claude", "P1"]],
     );
-    assert.deepEqual(openOnTable(table), { questions: 0, options: 0, steps: 0 });
+    assert.deepEqual(openOnTable(table), { questions: 0, options: 0, steps: 0, disputes: 0 });
     assert.match(summarizeTable(table)!, /changed minds: C1 claude on P1/);
     assert.match(renderTableMarkdown(table, "time"), /answered → S1/);
     assert.match(renderTableMarkdown(table, "time"), /## Changed minds/);

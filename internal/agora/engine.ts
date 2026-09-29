@@ -971,6 +971,7 @@ export class RoomEngine {
         ...count(open.questions, "open question", "open questions"),
         ...count(open.options, "undecided proposal", "undecided proposals"),
         ...count(open.steps, "step to do", "steps to do"),
+        ...count(open.disputes, "contested point", "contested points"),
       ];
       this.postSystem(
         left.length

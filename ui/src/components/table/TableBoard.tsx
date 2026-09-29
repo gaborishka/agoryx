@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { plural } from "@/lib/format";
 import { inkColor, participant, refAnchor } from "@/lib/room";
+import { disputeOf } from "@agora/table";
 import { type TableFormOp, useStore } from "@/lib/store";
 import type { RoomState, TableItem, TableNote, TableOption, TableQuestion, TableState } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -212,17 +213,21 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
   const driven = useStore((s) => s.snap?.driven);
   const live = table.options.filter((o) => isLive(table, o));
   const disputes = live.filter((o) => noteCounts(table, o.id).obj);
+  // A settled point or a fact someone still objects to is a dispute, not common ground.
+  const contested = [...table.settled, ...table.facts].filter((s) => disputeOf(table, s).length);
   const openQ = table.questions.filter((q) => q.status === "open");
-  const agreed = table.settled.length + table.facts.length + table.decisions.length;
+  const agreed = table.settled.length + table.facts.filter((f) => !f.withdrawn).length + table.decisions.length - contested.length;
   const shifts = shiftsOf(table).length;
   const parts: Array<[string, string]> = [];
   if (agreed) parts.push([`Зійшлися в ${plural(agreed, "пункті", "пунктах", "пунктах")}`, "text-primary"]);
-  if (disputes.length) parts.push([plural(disputes.length, "відкрита суперечка", "відкриті суперечки", "відкритих суперечок"), "text-destructive"]);
+  const quarrels = disputes.length + contested.length;
+  if (quarrels) parts.push([plural(quarrels, "відкрита суперечка", "відкриті суперечки", "відкритих суперечок"), "text-destructive"]);
   if (openQ.length) parts.push([plural(openQ.length, "питання без відповіді", "питання без відповіді", "питань без відповіді"), "text-amber"]);
   if (shifts) parts.push([plural(shifts, "зміна думки", "зміни думки", "змін думки"), "text-shift"]);
-  const settled = !disputes.length && !openQ.length && !live.length;
+  const settled = !quarrels && !openQ.length && !live.length;
   const hot = [...disputes].sort((a, b) => noteCounts(table, b.id).obj - noteCounts(table, a.id).obj || b.seq - a.seq)[0];
-  const waiting = !hot ? openQ.find((q) => !table.options.some((o) => o.q === q.id && o.status === "open")) : undefined;
+  const hotPoint = !hot ? contested.sort((a, b) => b.seq - a.seq)[0] : undefined;
+  const waiting = !hot && !hotPoint ? openQ.find((q) => !table.options.some((o) => o.q === q.id && o.status === "open")) : undefined;
   const { tally, edges } = argumentMap(table);
   const lean = asymmetry(room, edges, tally);
   const order = [...room.agents.map((a) => a.id), ...[...tally.keys()].filter((k) => !room.agents.some((a) => a.id === k))];
@@ -266,6 +271,27 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
                     const { sup, obj } = noteCounts(table, hot.id);
                     return `${plural(obj, "заперечення", "заперечення", "заперечень")} проти ${plural(sup, "підтримки", "підтримок", "підтримок")} · пропонує ${name(hot.by)}`;
                   })()}
+                </span>
+              </span>
+              <ArrowRightIcon className="mt-2 size-4 shrink-0 text-destructive/60 transition group-hover:translate-x-0.5" />
+            </button>
+          ) : hotPoint ? (
+            <button
+              type="button"
+              onClick={() => goToRef(hotPoint.id)}
+              className="group flex items-start gap-3 rounded-2xl border border-destructive/20 bg-destructive-soft/50 p-3 text-left transition hover:border-destructive/40"
+            >
+              <span className="grid size-8 shrink-0 place-items-center rounded-xl bg-destructive/10 text-destructive">
+                <FlameIcon className="size-4" />
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="text-[11.5px] font-semibold text-destructive">Оскаржено</span>
+                <span className="line-clamp-2 text-[14.5px] leading-snug font-semibold text-pretty">
+                  <span className="mr-1 font-mono text-[12px] text-muted-foreground">{hotPoint.id}</span>
+                  {hotPoint.text}
+                </span>
+                <span className="text-[12px] text-muted-foreground">
+                  {hotPoint.id.startsWith("F") ? "факт" : "узгодив"} {name(hotPoint.by)} · заперечує {disputeOf(table, hotPoint).map(name).join(", ")}
                 </span>
               </span>
               <ArrowRightIcon className="mt-2 size-4 shrink-0 text-destructive/60 transition group-hover:translate-x-0.5" />
@@ -735,7 +761,24 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                     ) : null}
                     {s.fact ? (s.withdrawn ? "факт · відкликано" : "факт") : null}
                     <span>{participant(room, s.by).label}</span>
+                    {disputeOf(table, s).length ? (
+                      <span className="inline-flex items-center gap-1 font-medium text-destructive">
+                        <ShieldAlertIcon className="size-3" />
+                        заперечує {disputeOf(table, s).map((who) => participant(room, who).label).join(", ")}
+                      </span>
+                    ) : null}
                   </div>
+                  {table.notes.some((n) => n.target === s.id) ? (
+                    <div className="mt-2 flex flex-col gap-1.5">
+                      {table.notes
+                        .filter((n) => n.target === s.id)
+                        .map((n) => (
+                          <div key={n.id} className={cn("rounded-xl", n.kind === "object" ? "ring-1 ring-destructive/25" : "")}>
+                            <NoteItem n={n} />
+                          </div>
+                        ))}
+                    </div>
+                  ) : null}
                 </div>
               </li>
             ))}

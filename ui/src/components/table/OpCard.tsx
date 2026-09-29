@@ -352,7 +352,7 @@ export function OpCard({ o }: { o: TableOp }) {
       const text =
         o.op === "done"
           ? table.next.find((x) => x.id === o.target)?.text
-          : (table.options.find((x) => x.id === o.target)?.title ?? table.questions.find((x) => x.id === o.target)?.text ?? table.facts.find((x) => x.id === o.target)?.text);
+          : (table.options.find((x) => x.id === o.target)?.title ?? table.questions.find((x) => x.id === o.target)?.text ?? table.facts.find((x) => x.id === o.target)?.text ?? table.settled.find((x) => x.id === o.target)?.text);
       return (
         <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
           <Kind op={o.op} />

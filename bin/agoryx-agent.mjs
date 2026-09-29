@@ -57,6 +57,7 @@ const USAGE = `agoryx — room tools for agents
   agoryx table object  P1 "reason"
   agoryx table support P1 "reason"
   agoryx table evidence P1 "finding" [--source url-or-path]
+                   these also take a settled point or a fact (S1, F1): object S1 when you still dispute it
   agoryx table fact "a fact everyone should rely on"
   agoryx table settle "what is now established" [--q Q1]   (--q: this answers Q1 and closes it)
   agoryx table concede "what I no longer hold, and why" [--on P1]

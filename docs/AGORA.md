@@ -34,6 +34,11 @@ table ┘   (JSONL, replayable)└── Codex   (native session, its own worksp
   A delta over 60,000 characters, such as a rejoin or a long absence, drops its oldest ordinary entries
   first. After that, old messages that addressed the reader or objected shrink to a stub. The stub keeps
   what the message did and names the message to read.
+
+  If an agent's last reply objected, or put a question or a preference to someone by @name, only in prose
+  — its turn made no table move — its next delta quotes that paragraph once. It then says: put it on the
+  table (`ask` / `object`) if it still stands, or `concede` with what changed your mind. Otherwise it is
+  gone in a few turns, and nobody has to answer it.
 - **Parallel first round, then one at a time.** On a human message the addressed agents start in parallel
   from the same point, each forming its own view; while working they see each other only through what they
   say (`agoryx say`, `agoryx read new`). After that they take the floor one

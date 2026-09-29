@@ -166,3 +166,31 @@ test("the delta carries the gist, and `agoryx read` prints the whole message fro
     await room.cleanup();
   }
 });
+
+test("a stance left only in prose is pointed out to its author next turn — once, and not when the turn put it on the table", async () => {
+  const QUESTION = "Open question for @codex: a price below the smallest unit is quietly rounded. I'd rather refuse it.";
+  const room = createTestRoom({
+    rules: [
+      { agent: "claude", match: "Split the bill", once: true, reply: `Tests are in.\n\n${QUESTION}` },
+      { agent: "codex", match: "Split the bill", once: true, reply: "Implementation is in. @claude over to you." },
+      { agent: "claude", match: "over to you", once: true, table: [["table", "ask", "Refuse sub-unit prices?"]], reply: "I would still refuse them, @codex." },
+      { agent: "codex", match: "still refuse", once: true, reply: "@claude kept rounding for now." },
+      { agent: "claude", match: "kept rounding", once: true, reply: "::pass::" },
+      { agent: "codex", reply: "::pass::" },
+    ],
+  });
+  try {
+    room.engine.postHuman("Split the bill, @claude @codex");
+    await withTimeout(room.engine.waitIdle());
+    const prompts = room.invocations("claude").map((call) => call.prompt!);
+    assert.ok(prompts.length >= 3, `${prompts.length} claude turns`);
+    assert.match(prompts[1]!, /Your reply in t\d+ said this only in prose — nothing of it is on the table: "Open question for @codex: a price below/);
+    assert.match(prompts[1]!, /agoryx table ask` \/ `object`.*agoryx table concede/);
+    // The next turn asked on the table: nothing to point out; and the first stance is not repeated.
+    assert.doesNotMatch(prompts[2]!, /said this only in prose/);
+    // Codex's plain handover took no stance: nothing for Codex either.
+    for (const prompt of room.invocations("codex").map((call) => call.prompt!)) assert.doesNotMatch(prompt, /said this only in prose/);
+  } finally {
+    await room.cleanup();
+  }
+});

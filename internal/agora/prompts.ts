@@ -70,6 +70,29 @@ const paragraphs = (text: string): string[] => {
   return out;
 };
 
+/** A question left open or a preference put to someone else — with an @name, it is a position the room may lose. Not every "?": most are coordination. */
+const OPEN_ASK = /\b(open question|question for|i'?d rather|would rather)\b|відкрите питання|питання до|я б (?:краще|волів|воліла)/iu;
+
+/**
+ * The paragraph of the reader's own last reply that took a stance or put a question to someone, when that turn
+ * made no table move: said only in prose, it is gone from the room in a few turns, and nobody has to answer it.
+ */
+const unrecordedStance = (events: RoomEvent[], state: RoomState, agent: { id: string }): { turnId: string; text: string } | null => {
+  const moved = new Set(events.flatMap((event) => (event.type === "table.op" && event.op.by === agent.id && event.op.turnId ? [event.op.turnId] : [])));
+  const others = [state.human, ...state.agents.map((entry) => entry.id)].filter((id) => id !== agent.id);
+  let found: { turnId: string; text: string } | null = null;
+  for (const event of events) {
+    if (event.type !== "message.posted") continue;
+    const { message } = event;
+    if (message.author !== agent.id || (message.kind !== "agent" && message.kind !== "update") || !message.turnId || moved.has(message.turnId)) continue;
+    const stance = paragraphs(message.text).find(
+      (part) => DISSENT.test(part) || (OPEN_ASK.test(part) && parseMentions(part, others).length > 0),
+    );
+    if (stance) found = { turnId: message.turnId, text: stance };
+  }
+  return found;
+};
+
 const cutHead = (text: string, max: number): string => {
   if (text.length <= max) return text;
   const at = text.lastIndexOf(" ", max);
@@ -455,6 +478,13 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
       turnsLeft <= 0
         ? `This is the last agent turn of this run. If the room is not in a clear state yet, leave it clear; if it already is, ${PASS_TOKEN}.`
         : `Turns left in this run after yours: ${turnsLeft}.`,
+    );
+  }
+  const stance = unrecordedStance(events, state, agent);
+  if (stance) {
+    footer.push(
+      `Your reply in ${stance.turnId} said this only in prose — nothing of it is on the table: "${cutHead(stance.text.replace(/\s+/g, " ").trim(), 220)}". ` +
+        "If it still stands, put it there (`agoryx table ask` / `object`) so the room has to answer it; if you dropped it, `agoryx table concede` with what changed your mind.",
     );
   }
   footer.push(`Reply to the room, or ${PASS_TOKEN} if you would only acknowledge, thank or repeat.`);

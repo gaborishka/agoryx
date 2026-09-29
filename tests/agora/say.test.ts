@@ -73,12 +73,14 @@ test("an agent says what it is doing while it works: posted at once, not a turn,
     assert.match(claudeCalls[0]!.prompt!, /say "taking internal\/x\.ts/);
     assert.match(claudeCalls[0]!.prompt!, /read new/);
 
-    // The feed still shows the two first replies as one blind moment; the updates stand before it.
+    // The feed still shows the two first replies as one moment; the updates stand before it.
     const rows = buildFeed(state, []).rows;
     const group = rows.findIndex((row) => row.type === "group");
-    assert.ok(group >= 0, "the blind answers are still grouped");
+    assert.ok(group >= 0, "the parallel answers are still grouped");
     const g = rows[group]!;
-    assert.ok(g.type === "group" && g.blind && g.items.length === 2);
+    assert.ok(g.type === "group" && g.first && g.items.length === 2);
+    // They saw each other while working: the feed must not say they did not.
+    assert.doesNotMatch(g.type === "group" ? `${g.text} ${g.title}` : "", /не бачи/);
     const updateRows = rows.flatMap((row, index) => (row.type === "msg" && row.m.kind === "update" ? [index] : []));
     assert.equal(updateRows.length, 5);
     assert.ok(updateRows.every((index) => index < group));

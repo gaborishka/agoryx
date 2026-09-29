@@ -34,8 +34,9 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
   A delta over 60,000 characters, such as a rejoin or a long absence, drops its oldest ordinary entries
   first. After that, old messages that addressed the reader or objected shrink to a stub. The stub keeps
   what the message did and names the message to read.
-- **Blind first round, then one at a time.** On a human message the addressed agents answer in parallel
-  without seeing each other, so the first opinions are independent. After that they take the floor one
+- **Parallel first round, then one at a time.** On a human message the addressed agents start in parallel
+  from the same point, each forming its own view; while working they see each other only through what they
+  say (`agoryx say`, `agoryx read new`). After that they take the floor one
   at a time (whoever has waited longest goes first), so each reply answers the latest state — one
   conversation, not two crossing ones. A new message from the human still reaches an idle agent at
   once, even while the other one is working.
@@ -255,8 +256,8 @@ agoryx open         # opens the browser with a login link (it becomes a 30-day c
 - **Start by writing.** "Нова кімната" opens a composer: the first message starts the room and names it
   (the name is editable later by clicking the title). The workspace, canonical file and turn budget
   sit under "Параметри" and have defaults. `agoryx new -m "…"` does the same without a name.
-- **The conversation** is one column. Replies stack in order. A divider marks the independent replies
-  right after your message. Each reply shows its trace (commands, edits), the files it changed with
+- **The conversation** is one column. Replies stack in order. A divider («Одночасно») marks the replies
+  written at the same time right after your message. Each reply shows its trace (commands, edits), the files it changed with
   +/− counts (each opens the turn's exact patch), and what it put on the table. A turn with more
   than four table moves keeps questions, proposals, objections and decisions in view and folds the
   rest (support, evidence, facts, steps) into one line with counts. Live turns stream in, and a page

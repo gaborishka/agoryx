@@ -110,7 +110,7 @@ export type FeedItem =
 
 export type FeedRow =
   | FeedItem
-  | { key: string; type: "group"; text: string; title: string; blind: boolean; items: Array<Extract<FeedItem, { type: "msg" }>> }
+  | { key: string; type: "group"; text: string; title: string; first: boolean; items: Array<Extract<FeedItem, { type: "msg" }>> }
   | { key: string; type: "hello" };
 
 export interface FeedModel {
@@ -163,7 +163,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
     const item = items[i]!;
     const first = replyTurn(item, turns);
     if (first && item.type === "msg") {
-      // Replies written at the same moment: none of them saw the others.
+      // Replies written at the same moment: each saw the others only in what they said while working.
       const group: Array<Extract<FeedItem, { type: "msg" }>> = [item];
       // What someone said while still working does not end the moment: it goes just before the group.
       const said: FeedItem[] = [];
@@ -189,17 +189,18 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
                 key: `g-${item.m.id}`,
                 type: "group",
                 items: group,
-                blind: true,
-                text: `${names} не бачили відповідей одне одного`,
-                title: "Перша відповідь на ваше повідомлення: агенти писали одночасно й не бачили відповідей одне одного — щоб думки були незалежні.",
+                first: true,
+                text: `${names} почали одночасно з вашого повідомлення`,
+                title:
+                  "Перші відповіді на ваше повідомлення: агенти почали з того самого місця й працювали паралельно. Одне від одного бачили лише те, що з'являлося в кімнаті по ходу (agoryx say, agoryx read new).",
               }
             : {
                 key: `g-${item.m.id}`,
                 type: "group",
                 items: group,
-                blind: false,
-                text: `${names} не бачили цих відповідей одне одного`,
-                title: "Ці відповіді писалися одночасно: кожен бачив попередні репліки, але не цю відповідь іншого.",
+                first: false,
+                text: `${names} писали одночасно`,
+                title: "Ці відповіді писалися паралельно: агенти бачили все, що було раніше, а одне від одного — лише те, що з'являлося в кімнаті по ходу.",
               },
         );
         i = j - 1;
@@ -212,7 +213,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   let liveDivider: string | null = null;
   if (live.length > 1) {
     const prev = st.messages.filter((m) => m.kind !== "system" && m.kind !== "update").at(-1);
-    if (prev?.kind === "human") liveDivider = `${nameList(live.map((t) => name(t.agent)))} відповідають, не бачачи одне одного`;
+    if (prev?.kind === "human") liveDivider = `${nameList(live.map((t) => name(t.agent)))} працюють одночасно`;
   }
   return { turns, opsByTurn, docByTurn, rows, live, liveDivider };
 };

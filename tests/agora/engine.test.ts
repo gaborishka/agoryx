@@ -38,7 +38,7 @@ test("blind first round, then each agent sees the other and passes → quiet", a
     const codex = room.invocations("codex");
     assert.equal(claude.length, 2);
     assert.equal(codex.length, 2);
-    // Round 1 is blind: briefing + the human message, nothing from the other agent.
+    // Round 1 starts from the same point: briefing + the human message, no reply of the other agent.
     assert.match(claude[0]!.prompt!, /You are Claude \(@claude\), in an Agoryx room/);
     assert.match(claude[0]!.prompt!, /How should we store rooms\?/);
     assert.doesNotMatch(claude[0]!.prompt!, /use JSONL/);

@@ -1,4 +1,4 @@
-import { ColumnsIcon, EyeOffIcon, RowsIcon, SplitIcon } from "lucide-react";
+import { ColumnsIcon, RowsIcon, SplitIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { Conversation, ConversationContent, ConversationScrollButton } from "@/components/ai-elements/conversation";
@@ -27,7 +27,7 @@ function Hello() {
       </div>
       <h2 className="text-xl font-semibold tracking-tight text-balance">Кімната готова</h2>
       <p className="text-[14.5px] leading-relaxed text-pretty text-muted-foreground">
-        Напишіть, що треба зробити чи обговорити. {names(room.agents.map((a) => a.label))} спершу відповідять одночасно й незалежно, а далі говоритимуть по
+        Напишіть, що треба зробити чи обговорити. {names(room.agents.map((a) => a.label))} спершу візьмуться одночасно — з того самого місця, кажучи по ходу, хто що робить, — а далі говоритимуть по
         черзі — з усім, що вже сказано в кімнаті.
       </p>
     </div>
@@ -90,8 +90,7 @@ function Item({ item, model, fresh, card, clamp }: { item: FeedItem; model: Feed
 }
 
 /** A thin label over replies written at the same moment: the order below is not a conversation. */
-function RoundMark({ blind, text, title, handles, action }: { blind: boolean; text: string; title?: string; handles: string[]; action?: ReactNode }) {
-  const Icon = blind ? EyeOffIcon : SplitIcon;
+function RoundMark({ text, title, handles, action }: { text: string; title?: string; handles: string[]; action?: ReactNode }) {
   return (
     <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
       <div className="flex -space-x-1.5">
@@ -101,8 +100,8 @@ function RoundMark({ blind, text, title, handles, action }: { blind: boolean; te
       </div>
       <Tip tip={title ?? text}>
         <span className="flex min-w-0 items-center gap-1.5">
-          <Icon className="size-3.5 shrink-0" />
-          <b className="font-semibold text-foreground">{blind ? "Незалежно" : "Одночасно"}</b>
+          <SplitIcon className="size-3.5 shrink-0" />
+          <b className="font-semibold text-foreground">Одночасно</b>
           <span className="hidden truncate sm:inline">— {text}</span>
         </span>
       </Tip>
@@ -113,7 +112,7 @@ function RoundMark({ blind, text, title, handles, action }: { blind: boolean; te
 }
 
 /**
- * Replies written at the same moment, none of them seeing the others. They read like any other
+ * Replies written at the same moment, each seeing the others only in what they said while working. They read like any other
  * messages, under a label that says so; comparing them side by side is a choice, not the default.
  */
 function Round({ row, model, isFresh }: { row: Extract<FeedRow, { type: "group" }>; model: FeedModel; isFresh: (id: string) => boolean }) {
@@ -135,7 +134,7 @@ function Round({ row, model, isFresh }: { row: Extract<FeedRow, { type: "group" 
       {side ? "По черзі" : "Порівняти"}
     </button>
   ) : null;
-  const mark = <RoundMark blind={row.blind} text={row.text} title={row.title} handles={row.items.map((g) => g.m.author)} action={toggle} />;
+  const mark = <RoundMark text={row.text} title={row.title} handles={row.items.map((g) => g.m.author)} action={toggle} />;
   if (!side) {
     return (
       <div className="flex w-full max-w-[860px] flex-col gap-6 sm:px-2">
@@ -205,7 +204,7 @@ export function Feed() {
         {model.live.length ? (
           <section className="flex w-full max-w-[860px] flex-col gap-3 sm:px-2">
             {model.liveDivider ? (
-              <RoundMark blind text={model.liveDivider} handles={model.live.map((t) => t.agent)} />
+              <RoundMark text={model.liveDivider} handles={model.live.map((t) => t.agent)} />
             ) : null}
             {model.live.map((turn) => (
               <LiveTurn key={turn.id} turn={turn} ops={model.opsByTurn.get(turn.id)} />

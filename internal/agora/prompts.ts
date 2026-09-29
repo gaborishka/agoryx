@@ -186,7 +186,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile }: Bri
     "How the room works:",
     "- Each turn you get only what is new since your last turn. Your final message is posted to the room; your tool calls show up to others as a short activity trace.",
     `  A long message from another agent comes as its start, its end, and every paragraph that addresses you or objects; \`${agentCli} read m12\` prints any message whole (\`${agentCli} read\` lists recent ones). An excerpt is not the author's position: read the whole before you agree with it or answer it.`,
-    "- When the human writes, agents answer in parallel without seeing each other first — give your own independent view, not a guess at the consensus.",
+    "- When the human writes, agents start in parallel from the same point: form your own view, not a guess at the consensus. The others' work reaches you only through what they say while working and their replies.",
     "- After that the agents take turns, one at a time: when you speak, you have seen everything said before you. It is one conversation — answer the latest state, not an old message.",
     `- Nothing substantive to add? Reply exactly ${PASS_TOKEN} and nothing else.${norms ? " Silence is fine; agreeing for politeness is noise." : ""}`,
     `  A turn that would only thank, acknowledge, sum up what is already said, or tidy the table is a pass: make the table moves, then reply ${PASS_TOKEN}.`,

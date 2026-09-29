@@ -149,7 +149,7 @@ test("three agents: a blind round of three in parallel, then one at a time; each
     assert.ok(rest.length >= 3, `the conversation went on, got ${rest.length} more turns`);
     for (let i = 1; i < rest.length; i += 1) assert.ok(started(room, rest[i]!.id) > ended(room, rest[i - 1]!.id), "then one at a time");
 
-    // The blind round is blind: no one saw another's first answer.
+    // The parallel round starts from the same point: no prompt carries another's first answer.
     for (const id of ["opus", "sonnet", "codex"]) {
       const first = callsOf(room, id)[0]!.prompt!;
       assert.match(first, /Hello all/);
@@ -190,7 +190,7 @@ test("three agents: a blind round of three in parallel, then one at a time; each
     const group = buildFeed(room.store.state, []).rows.find((row) => row.type === "group");
     assert.ok(group && group.type === "group");
     assert.equal(group.items.length, 3);
-    assert.match(group.text, /^(Opus|Sonnet|Codex), (Opus|Sonnet|Codex) і (Opus|Sonnet|Codex) не бачили відповідей одне одного$/);
+    assert.match(group.text, /^(Opus|Sonnet|Codex), (Opus|Sonnet|Codex) і (Opus|Sonnet|Codex) почали одночасно з вашого повідомлення$/);
   } finally {
     await room.cleanup();
   }

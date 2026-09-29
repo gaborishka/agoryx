@@ -340,8 +340,8 @@ function BudgetChip({
 function Steps({ budget }: { budget: number | null }) {
   const steps = [
     {
-      title: "Наосліп",
-      text: "Обидва відповідають одночасно, не бачачи одне одного.",
+      title: "Разом",
+      text: "Беруться одночасно з того самого місця й кажуть по ходу, хто що робить.",
     },
     {
       title: "По черзі",

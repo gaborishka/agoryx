@@ -17,6 +17,7 @@ import {
 import { runInkChat } from "./ink-chat.js";
 import { AGORA_COMMANDS, printAgoraUsage, runAgora } from "./agora.js";
 import { printDoctorUsage, runDoctorCommand } from "./doctor.js";
+import { CHATGPT_COMMANDS, printChatGptUsage, runChatGpt } from "./chatgpt.js";
 import { createDefaultAdapterConfig, type ChatRuntimeConfig } from "../../internal/config/default.js";
 import { loadConfig, toRuntimeConfig, type AgoryxConfig } from "../../internal/config/index.js";
 import {
@@ -354,10 +355,18 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (CHATGPT_COMMANDS.has(command)) {
+    const code = await runChatGpt(command, rest);
+    if (code !== 0) process.exitCode = code;
+    return;
+  }
+
   switch (command) {
     case "help":
       if (rest[0] === "rooms" || (rest[0] && AGORA_COMMANDS.has(rest[0]))) {
         printAgoraUsage();
+      } else if (rest[0] && CHATGPT_COMMANDS.has(rest[0])) {
+        printChatGptUsage();
       } else if (rest[0] === "chat") {
         printChatUsage();
       } else if (rest[0] === "sessions") {
@@ -2037,6 +2046,7 @@ const printUsage = (write: OutputWriter = console.log): void => {
     "  agoryx config explain [--config <path>] [--db <path>]",
     "  agoryx completion <bash|zsh|fish>",
     "  agoryx doctor [--probe] [--json]",
+    "  agoryx login chatgpt | chatgpt <status|test> | logout chatgpt   (use your ChatGPT plan)",
     "  agoryx man",
     "",
     "Rooms (see `agoryx help rooms`):",
@@ -2052,6 +2062,7 @@ const printUsage = (write: OutputWriter = console.log): void => {
     "  chat         Start interactive/non-interactive chat (default command)",
     "  sessions     List and export saved sessions",
     "  config       Explain resolved configuration and path precedence",
+    "  login        Sign in with ChatGPT to use your plan (see `agoryx help chatgpt`)",
     "  completion   Print shell completion script",
     "  doctor       Check what Agoryx needs on this machine (node, agents, logins, git)",
     "  man          Print manual page",

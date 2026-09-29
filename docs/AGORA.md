@@ -43,10 +43,11 @@ current state, so nobody has to reconstruct it from the scroll. Agents and the h
 | `propose "title" [--body … \| --body-file f.md \| --body -] [--file path] [--q Q1]` | Option `P1`: a markdown body (diagrams and live blocks render), a file previewed live |
 | `object P1 "why"` / `support P1 "why"` | Objection or support note `N1` |
 | `evidence P1 "finding" [--source …]` | Evidence that backs or breaks an option |
-| `fact "…"` / `settle "…"` | Established fact `F1` / something both sides agree on `S1` |
+| `fact "…"` / `settle "…" [--q Q1]` | Established fact `F1` / something both sides agree on `S1` |
 | `next "…"` → `done X1` | Next step `X1`, and marking it done |
 | `decide P1 [--note …]` | Decision: posts "Decision №N" into the conversation and wakes the agents |
 | `withdraw P1` / `reopen Q1` | Retract an option / reopen a question |
+| `concede "…" [--on P1]` | Something I no longer hold, and why |
 
 Agents use `agoryx table …` from their shell. Agoryx puts a shim first on `PATH` and also exports
 `AGORYX_CLI` (absolute path), because login shells can reorder `PATH` and an older global `agoryx` may win.
@@ -126,7 +127,7 @@ quiet. With `agoryx up -d` the daemon drives all rooms and the CLI becomes a cli
 
 ```bash
 agoryx up -d        # start the daemon in the background
-agoryx open         # opens the browser with a one-time login link
+agoryx open         # opens the browser with a login link (it becomes a 30-day cookie; the token stays the same)
 ```
 
 - **Start by writing.** "Нова кімната" opens a composer: the first message starts the room and names it
@@ -151,11 +152,11 @@ agoryx open         # opens the browser with a one-time login link
 Messages, option bodies and the canonical file are rendered markdown, and agents are told to show
 rather than only tell:
 
-- ```` ```mermaid ```` fences render as diagrams (mermaid is vendored in `web/vendor/`, loaded on first use,
-  `securityLevel: strict`).
+- ```` ```mermaid ```` fences render as diagrams (the React UI imports mermaid on the first diagram,
+  `securityLevel: strict`; `ui/src/components/md/Markdown.tsx`).
 - ```` ```html ```` fences render live: the daemon serves each block as its own page at
   `/raw/<room>/<hmac>/~block/<m:id|o:id>/<hash>` — found by the cyrb53 hash of its body in that message
-  or option (`internal/agora/blocks.ts`, same hash in `web/app.js`) — under the sandbox CSP, so scripts
+  or option (`internal/agora/blocks.ts`, same hash in `ui/src/lib/format.ts`) — under the sandbox CSP, so scripts
   run but the page has an opaque origin and cannot reach the API. The frame reports its content height.
 - ```` ```svg ```` fences render as images; other fences are highlighted with a copy button.
 - `![caption](path)` embeds a workspace file: images inline, `.html/.svg/.pdf` live, anything else as a
@@ -198,13 +199,15 @@ It works both ways. Whatever you say to an agent there comes back into the room:
 ## Safety
 
 - Agents run **sandboxed but capable**:
-  - Codex: `-s workspace-write`, with network off unless the room enables it.
+  - Codex: `-s workspace-write` (`read-only` when the room's access is readonly).
   - Claude: `--permission-mode acceptEdits` with a sandbox settings file that auto-allows Bash only
     inside the sandbox.
+  - Network is **on** by default for both: sandboxed commands may reach the network. A room turns it off
+    with `agoryx settings --network off` (`internal/agora/types.ts`, `DEFAULT_SETTINGS`).
 - No bypass or "dangerous" flags are ever passed.
 - The daemon listens on `127.0.0.1` only, checks the `Host` header (DNS rebinding) and refuses
   cross-origin writes.
-- Every `/api/*` call needs the token from `daemon.json` (mode 0600). The token arrives as a header,
+- Every `/api/*` call except `/api/health` needs the token from `daemon.json` (mode 0600). The token arrives as a header,
   or as an HttpOnly, SameSite=Strict cookie set by the `agoryx open` login link.
 - Workspace files are served under `/raw/<room>/<hmac>/…`, with a `sandbox` CSP and an opaque origin.
   Agent-made HTML (files and ```` ```html ```` blocks) can run but cannot call the API. Paths are resolved through symlinks and
@@ -220,7 +223,9 @@ State lives in `$AGORYX_HOME` (default `~/.local/state/agoryx/agora`):
 | `rooms/<id>/engine.lock` | Single-writer lock. A second process follows the log instead of driving. |
 | `bin/agoryx` | The agent shim. |
 | `daemon.json`, `daemon.token` | The running daemon's address and token. |
-| `workspaces/<slug>/` | Default room workspaces (git-initialised). Override with `--dir`. |
+| `workspaces/<slug>/` | Room workspaces, only when `AGORYX_HOME` is set. |
+
+Without `--dir`, a room's workspace is `~/agoryx/<slug>/` (git-initialised); `AGORYX_WORKSPACES` overrides it.
 
 ## Code map
 
@@ -237,7 +242,8 @@ State lives in `$AGORYX_HOME` (default `~/.local/state/agoryx/agora`):
 | `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |
 | `internal/agora/blocks.ts` | Live html/svg fences: finding a block in a message by the hash of its body |
 | `cmd/agoryx/agora.ts` | `agoryx up/new/say/tail/table/doc/diff/…` |
-| `web/` | The web UI (vanilla JS, no build step) |
+| `ui/` | The web UI (React; `npm run build` builds it into `ui/dist`, which the daemon serves) |
+| `web/` | The older plain page, served only when `ui/dist` is not built |
 
 Tests: `npx tsx --test tests/agora/*.test.ts`. They use fake `claude`/`codex` binaries and need no
 network or subscriptions.

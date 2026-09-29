@@ -23,7 +23,7 @@ const str = (value: unknown): string | undefined => (typeof value === "string" ?
  * web tools stay available. No permission bypass.
  *
  * Two narrow additions keep the room's own tools working in -p mode, where
- * nobody can answer an approval prompt: the table/diff shim is allowed by
+ * nobody can answer an approval prompt: the room's shim (table, diff, read, say) is allowed by
  * name (Claude Code otherwise refuses commands it cannot statically analyse,
  * e.g. an evidence note quoting `===`), and when the room has network on,
  * sandboxed Bash gets it too — the same as Codex's network_access.
@@ -31,7 +31,7 @@ const str = (value: unknown): string | undefined => (typeof value === "string" ?
 export const buildClaudeSettings = (request: Pick<TurnRequest, "settings"> & { env?: NodeJS.ProcessEnv }): Json => {
   const readonly = request.settings.access === "readonly";
   const shim = request.env?.AGORYX_CLI;
-  const tools = ["agoryx", ...(shim ? [shim] : [])].flatMap((cli) => [`Bash(${cli} table *)`, `Bash(${cli} diff *)`]);
+  const tools = ["agoryx", ...(shim ? [shim] : [])].flatMap((cli) => ["table", "diff", "read", "say"].map((verb) => `Bash(${cli} ${verb} *)`));
   return {
     sandbox: {
       enabled: true,

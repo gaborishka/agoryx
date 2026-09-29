@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { agentCliScript } from "../../internal/agora/workspace.js";
@@ -104,6 +105,33 @@ test("say needs a room turn; outside one it is refused, not posted", async () =>
 
     const empty = await run(process.execPath, [agentCliScript(), "say"], { cwd: room.store.state.workspace, env }).catch((error: { stderr: string }) => error);
     assert.match((empty as { stderr: string }).stderr, /'say' needs text/);
+  } finally {
+    clearInterval(poll);
+    await room.cleanup();
+  }
+});
+
+test("inside a room turn the human's agoryx hands say/read/table to the agent's tool — it never speaks as the human", async () => {
+  const room = createTestRoom();
+  const poll = setInterval(() => room.engine.ingestOps(), 50);
+  try {
+    room.engine.postHuman("hello");
+    await withTimeout(room.engine.waitIdle());
+    const before = room.store.state.messages.length;
+    // What a shell that put the global install ahead of the room's shim runs.
+    const human = join(dirname(agentCliScript()), "agoryx.js");
+    const env: NodeJS.ProcessEnv = { ...room.env, PATH: process.env.PATH, AGORYX_AGENT: "codex", AGORYX_ROOM: room.store.id, AGORYX_SEEN: "m0" };
+    delete env.CLAUDECODE;
+    const said = await run(process.execPath, [human, "say", "taking a.ts"], { cwd: room.store.state.workspace, env }).catch(
+      (error: { stderr: string; code: number }) => error,
+    );
+    // The agent tool's own answer (no turn is running for codex now), not a message posted as Ivan.
+    assert.match((said as { stderr: string }).stderr, /'say' is for while you work in a room turn/);
+    assert.equal(room.store.state.messages.length, before);
+    assert.ok(room.store.state.messages.every((message) => message.author !== "Ivan" || message.text !== "taking a.ts"));
+
+    const read = await run(process.execPath, [human, "read", "new"], { cwd: room.store.state.workspace, env });
+    assert.match(read.stdout, /hello/);
   } finally {
     clearInterval(poll);
     await room.cleanup();

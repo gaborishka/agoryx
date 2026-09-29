@@ -12,6 +12,16 @@ const distEntry = resolve(repoRoot, "dist/cmd/agoryx/main.js");
 const sourceEntry = resolve(repoRoot, "cmd/agoryx/main.ts");
 const tsxLoader = resolve(repoRoot, "node_modules/tsx/dist/loader.mjs");
 
+// Inside a room turn (the room sets AGORYX_AGENT), a shell that put this install ahead of the room's shim
+// still gets the agent's tools: `agoryx say` there is the agent speaking, never the human.
+if (process.env.AGORYX_AGENT && ["say", "table", "read", "diff"].includes(process.argv[2] ?? "")) {
+  const agent = spawnSync(process.execPath, [resolve(repoRoot, "bin/agoryx-agent.mjs"), ...process.argv.slice(2)], {
+    stdio: "inherit",
+    env: process.env,
+  });
+  process.exit(agent.status ?? 1);
+}
+
 const runSourceFallback = () => {
   const fallback = spawnSync(
     process.execPath,

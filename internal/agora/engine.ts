@@ -216,7 +216,8 @@ export const roomsSharingWorkspace = (store: RoomStore): Array<{ id: string; nam
  * Drives one room. There is no orchestrator deciding who speaks: every new
  * message wakes the agents that have not seen it, each agent gets a turn with
  * only what is new for it, a pass is silence, and a run ends when nobody has
- * anything unseen (quiet) or the turn budget is spent.
+ * anything unseen (quiet), the human stops it, or — only in a room given a turn
+ * limit — the limit is spent.
  */
 export class RoomEngine {
   readonly store: RoomStore;
@@ -488,7 +489,9 @@ export class RoomEngine {
 
   updateSettings(patch: Partial<RoomSettings>): void {
     const clean: Partial<RoomSettings> = {};
-    if (typeof patch.budget === "number" && patch.budget >= 1 && patch.budget <= 100) clean.budget = Math.round(patch.budget);
+    if (patch.budget === null || (typeof patch.budget === "number" && patch.budget >= 1 && patch.budget <= 100)) {
+      clean.budget = patch.budget === null ? null : Math.round(patch.budget);
+    }
     if (typeof patch.network === "boolean") clean.network = patch.network;
     if (typeof patch.autoCommit === "boolean") clean.autoCommit = patch.autoCommit;
     if (patch.access === "workspace" || patch.access === "readonly") clean.access = patch.access;
@@ -551,6 +554,8 @@ export class RoomEngine {
     const wanted = minTurns ?? budget;
     const run = activeRun(this.state);
     if (run) {
+      // A run without a limit has room for any number of turns: nothing to extend.
+      if (run.budget === null || wanted === null) return run;
       const remaining = run.budget - run.used;
       if (remaining < wanted) {
         this.store.append({ type: "run.extended", runId: run.id, by: this.state.human, turns: wanted - remaining });
@@ -558,7 +563,8 @@ export class RoomEngine {
       return run;
     }
     const runId = `r${(this.state.counters.r ?? 0) + 1}`;
-    this.store.append({ type: "run.started", runId, trigger, budget: minTurns ?? budget });
+    // "Another round" in a room without a limit is a run without one too: it ends when the room goes quiet.
+    this.store.append({ type: "run.started", runId, trigger, budget: budget === null ? null : (minTurns ?? budget) });
     return activeRun(this.state)!;
   }
 
@@ -630,7 +636,7 @@ export class RoomEngine {
       .sort((a, b) => a.wake.seq - b.wake.seq);
     for (const { agent } of candidates) {
       if (this.running.size > 0 && !this.humanWaiting(agent)) continue;
-      if (run.used >= run.budget) {
+      if (run.budget !== null && run.used >= run.budget) {
         blockedByBudget = true;
         continue;
       }
@@ -749,7 +755,7 @@ export class RoomEngine {
     const fromSeq = this.state.cursors[agent.id] ?? 0;
     const cursor = this.state.seq;
     const sessionId = this.state.sessions[agent.id]?.sessionId ?? null;
-    const turnsLeft = run.budget - run.used - 1;
+    const turnsLeft = run.budget === null ? null : run.budget - run.used - 1;
     // Read once per turn: the version given is the version recorded. An agent it is off for never gets a word of it.
     const profile = seesProfile(agent) ? readProfile(this.profilePath) : null;
     const held = this.state.profiles[agent.id] ?? "";

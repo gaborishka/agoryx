@@ -5,6 +5,7 @@ import {
   ChevronDownIcon,
   FileTextIcon,
   FileXIcon,
+  InfinityIcon,
   LayoutTemplateIcon,
   MinusIcon,
   PlusIcon,
@@ -52,7 +53,8 @@ const EXAMPLES = [
   },
 ];
 
-const DEFAULT_BUDGET = 8;
+/** No limit: the room goes on until everyone passes, or you stop it. The same default as the daemon's. */
+const DEFAULT_BUDGET: number | null = null;
 const BUDGETS = [4, 8, 16, 32];
 const DOCS = ["README.md", "PLAN.md", "DESIGN.md"];
 
@@ -253,26 +255,40 @@ function BudgetChip({
   budget,
   onBudget,
 }: {
-  budget: number;
-  onBudget: (n: number) => void;
+  budget: number | null;
+  onBudget: (n: number | null) => void;
 }) {
-  const set = (n: number) => onBudget(Math.min(100, Math.max(1, n)));
+  const set = (n: number | null) => onBudget(n === null ? null : Math.min(100, Math.max(1, n)));
+  // The stepper starts from a middling limit when there is none yet.
+  const step = budget ?? BUDGETS[1]!;
   return (
     <Popover>
       <PopoverTrigger className={footChip}>
-        <RepeatIcon className="size-3.5 shrink-0" />
+        {budget === null ? <InfinityIcon className="size-3.5 shrink-0" /> : <RepeatIcon className="size-3.5 shrink-0" />}
         <span className="tabular text-foreground">
-          {plural(budget, "хід", "ходи", "ходів")}
+          {budget === null ? "без ліміту ходів" : plural(budget, "хід", "ходи", "ходів")}
         </span>
         <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-80 rounded-xl p-3">
         <PopHead
           title="Ходів на ваше повідомлення"
-          text="Скільки ходів агенти разом можуть зробити після кожного вашого повідомлення. Далі кімната чекає на вас — або стихає раніше, коли агентам нема що додати."
+          text="Без ліміту агенти працюють, доки комусь є що додати: кімната стихає сама, коли всі пасують, а зупинити її можна будь-коли. З лімітом — після стількох ходів кімната чекає на вас."
         />
         <div className="mt-3 flex items-center gap-2">
-          <div className="grid flex-1 grid-cols-4 gap-1 rounded-lg bg-muted p-1">
+          <div className="grid flex-1 grid-cols-5 gap-1 rounded-lg bg-muted p-1">
+            <button
+              type="button"
+              aria-label="Без ліміту"
+              title="Без ліміту"
+              onClick={() => set(null)}
+              className={cn(
+                "grid h-7 place-items-center rounded-md transition",
+                budget === null ? "bg-card text-foreground shadow-soft" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <InfinityIcon className="size-3.5" />
+            </button>
             {BUDGETS.map((n) => (
               <button
                 key={n}
@@ -293,33 +309,35 @@ function BudgetChip({
             <button
               type="button"
               aria-label="Менше"
-              onClick={() => set(budget - 1)}
+              onClick={() => set(step - 1)}
               className="grid size-8 place-items-center text-muted-foreground hover:text-foreground"
             >
               <MinusIcon className="size-3.5" />
             </button>
             <span className="tabular w-7 text-center text-[13px] font-semibold">
-              {budget}
+              {budget ?? "—"}
             </span>
             <button
               type="button"
               aria-label="Більше"
-              onClick={() => set(budget + 1)}
+              onClick={() => set(step + 1)}
               className="grid size-8 place-items-center text-muted-foreground hover:text-foreground"
             >
               <PlusIcon className="size-3.5" />
             </button>
           </div>
         </div>
-        <p className="mt-2.5 text-[12px] text-faint">
-          Незалежні перші відповіді теж рахуються — це вже 2 ходи.
-        </p>
+        {budget !== null && (
+          <p className="mt-2.5 text-[12px] text-faint">
+            Незалежні перші відповіді теж рахуються — це вже 2 ходи.
+          </p>
+        )}
       </PopoverContent>
     </Popover>
   );
 }
 
-function Steps({ budget }: { budget: number }) {
+function Steps({ budget }: { budget: number | null }) {
   const steps = [
     {
       title: "Наосліп",
@@ -327,7 +345,10 @@ function Steps({ budget }: { budget: number }) {
     },
     {
       title: "По черзі",
-      text: `Бачать усе сказане й продовжують — до ${plural(budget, "ходу", "ходів", "ходів")}, потім чекають на вас.`,
+      text:
+        budget === null
+          ? "Бачать усе сказане й продовжують, доки комусь є що додати; стихають, коли всі пасують."
+          : `Бачать усе сказане й продовжують — до ${plural(budget, "ходу", "ходів", "ходів")}, потім чекають на вас.`,
     },
     {
       title: "Стіл",
@@ -365,7 +386,7 @@ export function StartScreen() {
   const [worktree, setWorktree] = useState(() => local.get("worktree") === "1");
   const [base, setBase] = useState<string | null>(null);
   const [doc, setDoc] = useState<string | null | undefined>(undefined);
-  const [budget, setBudget] = useState(() => {
+  const [budget, setBudget] = useState<number | null>(() => {
     const n = Number.parseInt(local.get("budget") ?? "", 10);
     return n >= 1 && n <= 100 ? n : DEFAULT_BUDGET;
   });
@@ -380,9 +401,9 @@ export function StartScreen() {
     setWorktree(on);
     local.set("worktree", on ? "1" : null);
   };
-  const changeBudget = (n: number) => {
+  const changeBudget = (n: number | null) => {
     setBudget(n);
-    local.set("budget", n === DEFAULT_BUDGET ? null : String(n));
+    local.set("budget", n === DEFAULT_BUDGET || n === null ? null : String(n));
   };
   const inWorktree = Boolean(folder && git?.head && worktree);
   const [busy, setBusy] = useState(false);

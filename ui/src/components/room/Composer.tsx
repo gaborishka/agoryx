@@ -46,7 +46,7 @@ export function StatusBar() {
         <span className={cn(dot, "animate-breathe bg-primary")} />
         <span className="min-w-0 flex-1 truncate">
           {working.length ? `${nameList(working)} ${working.length > 1 ? "працюють" : "працює"}` : "Розмова триває"}
-          <span className="tabular text-faint"> · хід {run.used} з {run.budget}</span>
+          <span className="tabular text-faint"> · хід {run.used}{run.budget !== null ? ` з ${run.budget}` : ""}</span>
         </span>
         <Button size="sm" variant="ghost" className="h-7 text-destructive hover:bg-destructive-soft hover:text-destructive" disabled={busy} onClick={() => act("/stop")}>
           <SquareIcon className="size-3 fill-current" />

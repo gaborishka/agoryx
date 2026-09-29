@@ -63,7 +63,7 @@ export class DaemonClient {
     dir?: string;
     worktree?: boolean;
     base?: string;
-    budget?: number;
+    budget?: number | null;
     doc?: string | null;
     text?: string;
     agents?: RoomAgent[];

@@ -250,6 +250,9 @@ test("settings are validated; an unknown action is 404", async () => {
   const settings = changed.json<{ settings: Record<string, unknown> }>().settings;
   assert.equal(settings.budget, 4);
   assert.notEqual(settings.access, "root");
+  // Back to no limit.
+  const unlimited = await call("POST", `/api/rooms/${room.id}/settings`, { body: { budget: null } });
+  assert.equal(unlimited.json<{ settings: Record<string, unknown> }>().settings.budget, null);
   assert.equal((await call("POST", `/api/rooms/${room.id}/explode`, { body: {} })).status, 404);
   assert.equal((await call("GET", "/api/rooms/no-such-room")).status, 404);
 });

@@ -355,6 +355,8 @@ test("a message sent while a stop is under way is not swallowed by the run being
       { match: "Take your time", sleepMs: 30_000, reply: "too late" },
       { match: "follow-up", reply: "got the follow-up" },
     ],
+    // These fakes answer each other forever; a limit ends the run (the default has none).
+    settings: { budget: 4 },
   });
   try {
     room.engine.postHuman("Take your time");
@@ -413,7 +415,7 @@ test("a lost native session is rejoined with the full context", async () => {
 });
 
 test("agent failures are reported in the room and do not wedge the run", async () => {
-  const room = createTestRoom({ rules: [{ agent: "codex", error: "stream error: 429 Too Many Requests" }] });
+  const room = createTestRoom({ rules: [{ agent: "codex", error: "stream error: 429 Too Many Requests" }], settings: { budget: 4 } });
   try {
     room.engine.postHuman("hi");
     await withTimeout(room.engine.waitIdle());
@@ -473,6 +475,7 @@ test("workspace changes are attributed per turn and checkpointed at run end", as
 test("activity traces show workspace-relative paths and a plain `agoryx`, not machine paths", async () => {
   const room = createTestRoom({
     rules: [{ command: 'cat {cwd}/src/app.ts && "{cli}" table ask "why?" && ls {cwd}', reply: "looked" }],
+    settings: { budget: 4 },
   });
   try {
     room.engine.postHuman("look around");

@@ -713,7 +713,7 @@ export class AgoraDaemon {
             ...(typeof body.dir === "string" && body.dir.trim() ? { dir: resolveFolder(body.dir, this.env) } : {}),
             ...(body.worktree === true ? { worktree: true } : {}),
             ...(typeof body.base === "string" && body.base.trim() ? { base: body.base.trim() } : {}),
-            ...(typeof body.budget === "number" ? { budget: body.budget } : {}),
+            ...(typeof body.budget === "number" || body.budget === null ? { budget: body.budget } : {}),
             ...(typeof body.human === "string" ? { human: body.human } : {}),
             // Who sits in the room, as JSON (checked by createRoom); absent: the default roster.
             ...(body.agents !== undefined ? { agents: body.agents } : {}),

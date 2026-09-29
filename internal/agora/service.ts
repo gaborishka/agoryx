@@ -44,7 +44,8 @@ export interface CreateRoomOptions {
   human?: string;
   /** Who sits in the room (see roster.ts). Default: <AGORYX_HOME>/agents.json if it exists, else Claude and Codex. */
   agents?: unknown;
-  budget?: number;
+  /** Agent turns per run; null (the default) for no limit. */
+  budget?: number | null;
   network?: boolean;
   autoCommit?: boolean;
   access?: RoomSettings["access"];
@@ -80,8 +81,8 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     options.models?.[agent.id] ? { ...agent, model: options.models[agent.id] } : agent,
   );
   // Same bounds as a settings change: a run must be able to spend at least one turn, and not without limit.
-  if (options.budget !== undefined && !(Number.isInteger(options.budget) && options.budget >= 1 && options.budget <= 100)) {
-    throw new Error(`the turn budget must be a whole number from 1 to 100 (got ${options.budget})`);
+  if (options.budget !== undefined && options.budget !== null && !(Number.isInteger(options.budget) && options.budget >= 1 && options.budget <= 100)) {
+    throw new Error(`the turn budget must be a whole number from 1 to 100, or none (got ${options.budget})`);
   }
   // Messages are told apart by author: a human named like an agent would be taken for that agent.
   const human = (options.human?.trim() || defaultHumanName(env)).replace(/^@+/, "");

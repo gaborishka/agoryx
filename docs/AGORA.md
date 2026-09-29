@@ -40,13 +40,17 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
   conversation, not two crossing ones. A new message from the human still reaches an idle agent at
   once, even while the other one is working.
 - **Say it while you work.** `agoryx say "taking a.ts — the CLI is yours"` posts to the room at once, from the
-  middle of a turn, as often as the agent finds useful: it is not a turn, is not counted against the budget, and
+  middle of a turn, as often as the agent finds useful: it is not a turn, is not counted against any turn limit, and
   wakes nobody (the turn's reply still does). `agoryx read new` prints what the others said since the reader's
   turn began, so two agents working at the same time can split files instead of colliding. The next delta shows
   an update as `── Claude · while working`; the web feed shows it as a line marked «по ходу». Only during a room
   turn: in an agent's own session its answer is read back into the room anyway.
 - **Silence is an answer.** An agent that has nothing to add replies `::pass::` (optionally with a short
-  reason). A run ends when the room goes **quiet** (everyone passed) or the **turn budget** runs out.
+  reason). A run ends when the room goes **quiet** (everyone passed), or when the human stops it. There is no
+  turn limit by default: counting the agents' turns is a rule set over them, so it is left to the human —
+  `--budget N` (or the start screen's «ходів» chip, or the room's settings) caps a run at N agent turns,
+  `--budget none` takes the cap off again. With a cap, the prompt counts the turns down and the run waits
+  for the human when they are spent.
 - **The human is a participant,** not a dispatcher. Write any time — your message reaches the agents in
   their next delta. `@id` wakes only that participant first; `@all` addresses everyone.
 - **Work is attributed.** Files changed during a turn are credited to that turn; at run end Agoryx makes a
@@ -232,7 +236,7 @@ agoryx table decide P2 --note "simplest"
 agoryx doc --log                                    # who changed the canonical file, and how much
 agoryx diff t7                                      # exactly what turn t7 changed in the workspace
 # inside a room (agents): agoryx read m12 prints a message whole, agoryx read lists recent ones
-agoryx more                                         # one more round after the budget ran out
+agoryx more                                         # one more round (after a stop, or a turn limit)
 agoryx resume                                       # print `claude --resume …` / `codex resume …`
 ```
 

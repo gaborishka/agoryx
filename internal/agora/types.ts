@@ -24,8 +24,11 @@ export interface RoomAgent {
 export type SandboxAccess = "workspace" | "readonly";
 
 export interface RoomSettings {
-  /** Agent turns allowed per run (a run starts with a human message). */
-  budget: number;
+  /**
+   * Agent turns allowed per run (a run starts with a human message), or null: no limit — the run ends when
+   * everyone passes, or when the human stops it. Null unless the human sets one.
+   */
+  budget: number | null;
   turnTimeoutMs: number;
   /** Filesystem access for agents. Always sandboxed; "workspace" = write inside the room dir. */
   access: SandboxAccess;
@@ -41,7 +44,7 @@ export interface RoomSettings {
 }
 
 export const DEFAULT_SETTINGS: RoomSettings = {
-  budget: 8,
+  budget: null,
   turnTimeoutMs: 20 * 60 * 1000,
   access: "workspace",
   network: true,
@@ -251,7 +254,7 @@ export interface RoomCreatedEvent {
 export type RoomEventBody =
   | RoomCreatedEvent
   | { type: "message.posted"; message: RoomMessage }
-  | { type: "run.started"; runId: string; trigger: string | null; budget: number }
+  | { type: "run.started"; runId: string; trigger: string | null; budget: number | null }
   | { type: "run.extended"; runId: string; by: string; turns: number }
   | { type: "run.ended"; runId: string; reason: "quiet" | "budget" | "stopped"; turns: number }
   | {
@@ -383,7 +386,8 @@ export interface FileChange {
 export interface RunState {
   id: string;
   trigger: string | null;
-  budget: number;
+  /** Null: no limit on this run. */
+  budget: number | null;
   used: number;
   startedSeq: number;
   status: "active" | "ended";

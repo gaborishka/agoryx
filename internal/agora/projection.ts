@@ -69,7 +69,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       return;
     case "run.extended": {
       const run = findRun(state, event.runId);
-      if (run) run.budget += event.turns;
+      if (run && run.budget !== null) run.budget += event.turns;
       return;
     }
     case "run.ended": {

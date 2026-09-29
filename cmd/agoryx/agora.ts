@@ -47,7 +47,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx up [--port N] [-d]          Start the daemon (web UI + API). -d runs it in the background",
       "  agoryx down                        Stop the background daemon",
       "  agoryx open [room]                 Open the web UI (starts the daemon if needed)",
-      '  agoryx new ["name"] [--dir D [--worktree [--base BRANCH]]] [--budget N] [--doc PATH|none] [--agents FILE|JSON] [-m "first message"]   (no name: the message names it)',
+      '  agoryx new ["name"] [--dir D [--worktree [--base BRANCH]]] [--budget N|none] [--doc PATH|none] [--agents FILE|JSON] [-m "first message"]   (no name: the message names it)',
       "  agoryx rooms                       List rooms",
       '  agoryx say [-r room] "text"        Post to the room and follow the run until it goes quiet',
       "  agoryx tail [-r room] [-f] [-n N] [--trace]   Print the conversation (and follow it)",
@@ -58,7 +58,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx doc [-r room] [--log | --diff REV]   The room's canonical file: its text, its revisions, one revision's diff",
       "  agoryx diff [-r room] [TURN [PATH]]         What each turn changed: recent turns, or one turn's exact patch",
       "  agoryx profile [-r room]           Your profile (who you are, for the agents): where it is, and who in the room sees it",
-      "  agoryx settings [-r room] [--budget N] [--network on|off] [--autocommit on|off] [--access workspace|readonly] [--doc PATH|none]",
+      "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--autocommit on|off] [--access workspace|readonly] [--doc PATH|none]",
       "",
       "Table ops:",
       ...TABLE_USAGE.map((line) => `  ${line}`),
@@ -552,7 +552,7 @@ const runNew = async (argv: string[]): Promise<number> => {
     printAgoraUsage();
     return name ? 0 : 2;
   }
-  const budget = parsed.options.budget ? Number.parseInt(parsed.options.budget, 10) : undefined;
+  const budget = budgetOption(parsed.options.budget);
   const doc = docOption(parsed.options.doc);
   let agents: RoomAgent[] | undefined;
   try {
@@ -567,7 +567,7 @@ const runNew = async (argv: string[]): Promise<number> => {
     ...(parsed.options.dir ? { dir: resolve(parsed.options.dir) } : {}),
     ...(parsed.options.worktree ? { worktree: true } : {}),
     ...(parsed.options.base ? { base: parsed.options.base } : {}),
-    ...(budget ? { budget } : {}),
+    ...(budget !== undefined ? { budget } : {}),
     ...(doc !== undefined ? { doc } : {}),
   };
   const info = await findDaemon();
@@ -583,7 +583,7 @@ const runNew = async (argv: string[]): Promise<number> => {
   console.log(`  workspace  ${store.state.workspace}${store.state.createdWorkspace ? pc.dim(" (new git repo)") : ""}`);
   if (store.state.worktree) console.log(`  worktree   ${store.state.worktree.branch} ${pc.dim(`from ${store.state.worktree.base}, in ${store.state.worktree.repo}`)}`);
   console.log(`  here       ${store.state.agents.map((agent) => agent.label).join(", ")} and ${store.state.human}`);
-  console.log(`  budget     ${store.state.settings.budget} agent turns per run`);
+  console.log(`  budget     ${budgetLine(store.state.settings.budget)}`);
   if (store.state.settings.doc) console.log(`  doc        ${store.state.settings.doc} ${pc.dim("(the room's canonical file)")}`);
   if (parsed.options.message) {
     return say(roomId, parsed.options.message, { trace: true });
@@ -817,7 +817,8 @@ const runSettings = async (argv: string[]): Promise<number> => {
   const patch: Partial<RoomSettings> = {};
   const doc = docOption(parsed.options.doc);
   if (doc !== undefined) patch.doc = doc;
-  if (parsed.options.budget) patch.budget = Number.parseInt(parsed.options.budget, 10);
+  const budget = budgetOption(parsed.options.budget);
+  if (budget !== undefined) patch.budget = budget;
   const network = onOff(parsed.options.network);
   if (network !== undefined) patch.network = network;
   const autoCommit = onOff(parsed.options.autocommit);
@@ -835,7 +836,7 @@ const runSettings = async (argv: string[]): Promise<number> => {
       await conn.close();
     }
   }
-  console.log(`budget      ${settings.budget} agent turns per run`);
+  console.log(`budget      ${budgetLine(settings.budget)}`);
   console.log(`access      ${settings.access === "workspace" ? "agents can edit the workspace (sandboxed)" : "read-only"}`);
   console.log(`network     ${settings.network ? "on" : "off"}`);
   console.log(`autocommit  ${settings.autoCommit ? "on (checkpoint commit after each run)" : "off"}`);
@@ -843,6 +844,18 @@ const runSettings = async (argv: string[]): Promise<number> => {
   console.log(`doc         ${settings.doc ?? pc.dim("none")}`);
   return 0;
 };
+
+/** `--budget 12` → 12, `--budget none` → no limit (null), absent → undefined. */
+const budgetOption = (value: string | undefined): number | null | undefined => {
+  if (value === undefined) return undefined;
+  if (["none", "off", "unlimited"].includes(value.toLowerCase())) return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > 100) throw new CliUsageError(`--budget: a whole number from 1 to 100, or none (got ${value})`);
+  return n;
+};
+
+const budgetLine = (budget: number | null): string =>
+  budget === null ? "no limit — a run ends when everyone passes" : `${budget} agent turns per run`;
 
 /** `--doc none` (or an empty value) turns the canonical file off. */
 const docOption = (value: string | undefined): string | null | undefined => {

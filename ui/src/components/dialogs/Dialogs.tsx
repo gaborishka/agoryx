@@ -414,6 +414,7 @@ function SettingsDialog() {
   const post = useStore((s) => s.post);
   const openDialog = useStore((s) => s.openDialog);
   const s = room?.settings;
+  const [limited, setLimited] = useState(typeof s?.budget === "number");
   const [budget, setBudget] = useState(String(s?.budget ?? 8));
   const [access, setAccess] = useState<string>(s?.access ?? "workspace");
   const [network, setNetwork] = useState(s?.network ?? true);
@@ -430,7 +431,7 @@ function SettingsDialog() {
           setBusy(true);
           try {
             await post("/settings", {
-              budget: Math.max(1, Number.parseInt(budget, 10) || s.budget),
+              budget: limited ? Math.min(100, Math.max(1, Number.parseInt(budget, 10) || s.budget || 8)) : null,
               access,
               network,
               autoCommit,
@@ -445,9 +446,18 @@ function SettingsDialog() {
         }}
       >
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="s-budget">Ходів агентів на ваше повідомлення</Label>
-          <Input id="s-budget" type="number" min={1} max={100} value={budget} onChange={(e) => setBudget(e.target.value)} className="w-28" />
-          <Faint>Скільки ходів агенти роблять після вашого повідомлення, перш ніж зупинитися й чекати на вас.</Faint>
+          <label className="flex items-center justify-between gap-3 text-sm">
+            Ліміт ходів на ваше повідомлення
+            <Switch checked={limited} onCheckedChange={setLimited} />
+          </label>
+          {limited && (
+            <Input id="s-budget" aria-label="Ходів агентів на ваше повідомлення" type="number" min={1} max={100} value={budget} onChange={(e) => setBudget(e.target.value)} className="w-28" />
+          )}
+          <Faint>
+            {limited
+              ? "Скільки ходів агенти роблять після вашого повідомлення, перш ніж зупинитися й чекати на вас."
+              : "Без ліміту: агенти працюють, доки комусь є що додати, і кімната стихає, коли всі пасують. Зупинити можна будь-коли."}
+          </Faint>
         </div>
         <div className="flex flex-col gap-1.5">
           <Label>Доступ агентів</Label>

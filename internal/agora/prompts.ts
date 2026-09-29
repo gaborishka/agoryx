@@ -192,7 +192,9 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile }: Bri
     `  A turn that would only thank, acknowledge, sum up what is already said, or tidy the table is a pass: make the table moves, then reply ${PASS_TOKEN}.`,
     ...(norms ? ["- Disagree when you disagree, and say what would change your mind. An unresolved disagreement, stated clearly, is a valid outcome."] : []),
     `- Address someone with @name. ${state.human} is a participant, not a gatekeeper: you don't need permission to do the work being discussed.`,
-    "- Each run has a turn budget; the prompt says how many turns remain. Converge or leave a clear state before it runs out — once it is clear, pass: the room goes quiet when everyone passes, and unused turns are fine.",
+    state.settings.budget === null
+      ? "- There is no turn limit: the room goes on until everyone passes (or the human stops it). So pass as soon as you have nothing substantive to add — a finished job, a clear state, an agreement already stated are all reasons to pass."
+      : "- Each run has a turn budget; the prompt says how many turns remain. Converge or leave a clear state before it runs out — once it is clear, pass: the room goes quiet when everyone passes, and unused turns are fine.",
     "- Reply in the language the human writes in.",
     "",
     ...(profile ? [profile, ""] : []),
@@ -250,8 +252,8 @@ interface DeltaOptions {
   state: RoomState;
   events: RoomEvent[];
   agent: RoomAgent;
-  /** Turns left in the current run after this one. */
-  turnsLeft: number;
+  /** Turns left in the current run after this one; null when the run has no limit. */
+  turnsLeft: number | null;
   /**
    * The agent's session is new (rejoin): replay its own messages too, including
    * what was said in its previous native session, since this session has none of it.
@@ -426,11 +428,13 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
   const footer: string[] = [];
   const table = summarizeTable(state.table);
   if (table) footer.push(`The table now (\`agoryx table show\` for bodies and notes):\n${table}`);
-  footer.push(
-    turnsLeft <= 0
-      ? `This is the last agent turn of this run. If the room is not in a clear state yet, leave it clear; if it already is, ${PASS_TOKEN}.`
-      : `Turns left in this run after yours: ${turnsLeft}.`,
-  );
+  if (turnsLeft !== null) {
+    footer.push(
+      turnsLeft <= 0
+        ? `This is the last agent turn of this run. If the room is not in a clear state yet, leave it clear; if it already is, ${PASS_TOKEN}.`
+        : `Turns left in this run after yours: ${turnsLeft}.`,
+    );
+  }
   footer.push(`Reply to the room, or ${PASS_TOKEN} if you would only acknowledge, thank or repeat.`);
 
   return [`[agoryx · ${state.name} · new since your last turn]`, "", body || "(nothing new — you were asked to continue)", "", footer.join("\n")].join("\n");
@@ -446,7 +450,7 @@ const nativeWhere = (state: RoomState, source: string, author: string, reader: R
 };
 
 export const buildTurnPrompt = (
-  input: BriefingInput & { events: RoomEvent[]; turnsLeft: number; fresh: boolean; rejoin: boolean; doc?: string | null },
+  input: BriefingInput & { events: RoomEvent[]; turnsLeft: number | null; fresh: boolean; rejoin: boolean; doc?: string | null },
 ): string => {
   const delta = buildDelta({
     state: input.state,

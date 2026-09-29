@@ -183,14 +183,37 @@ Only `kind` is required: it selects the installed `claude` or `codex` CLI and ma
 starting with a letter and containing only letters, digits, `_` or `-`. `all`, `agoryx`
 and the human's name cannot be used. `label` (1–40 characters) defaults to the id with a
 capital letter, and no two agents may share one. `model` is optional and passed to the CLI
-as given (also when you resume the session); omitting it uses that CLI's default. Any other
-field is refused. A refused roster creates nothing: no room, no folder.
+as given (also when you resume the session); omitting it uses that CLI's default.
+`"profile": false` keeps your profile (below) from that agent. Any other field is refused. A refused roster creates nothing: no room, no folder.
 
 The resolved roster is stored in the room's event log. Editing or deleting the source
 JSON does not change existing rooms. Each participant has its own cursor and native
 session, even when several use the same CLI. `agoryx resume` lists their commands by
 handle. From a native session, use `agoryx table ... --as opus` if the provider hint is
 ambiguous because multiple Claude agents are active.
+
+### Your profile
+
+Write once who you are, how you work and what matters to you in `<AGORYX_HOME>/profile.md`. Agents in
+every room get it as context, marked as your own words about yourself — except agents whose roster entry
+says `"profile": false`. The room's history is seen by everyone in it; the profile only by those it is on for.
+
+- A fresh session gets it in its briefing. A running session gets it only when it is new to that session: never
+  had it, or you changed the file since. It is not repeated in every delta. If you delete or empty the file, a
+  session that had it is told once that it no longer applies.
+- Each `turn.started` records the **hash** of the version that agent now holds (a failed turn gives the version
+  back, like the cursor). That is how a restarted daemon knows who needs the new version; the text itself is
+  never written to the event log, the workspace, `.agoryx/` or a commit.
+- An agent it is off for gets no word of it: not in the briefing, not in a delta.
+- Over 4,000 characters, it is cut and agents are told that it was cut. No file, or an empty one: prompts are exactly
+  as they would be without this feature.
+- `agoryx profile [-r room]` prints the path, whether the file exists, and who in the room sees it (and who still
+  has an older version). In the web UI, each agent's tooltip in the room header says whether it sees the profile.
+
+Limits: the profile stays out of what Agoryx writes, but agents run with read access to your home directory, so a
+curious agent could read `profile.md` with its own tools. An agent that does see it is asked not to copy it into the
+room, files or commits; that is an instruction, not something Agoryx enforces. Existing sessions of rooms from before
+the profile get it once, on their next turn.
 
 ### As a daemon without UI
 
@@ -307,6 +330,7 @@ State lives in `$AGORYX_HOME` (default `~/.local/state/agoryx/agora`):
 | Path | What |
 |------|------|
 | `rooms/<id>/events.jsonl` | Append-only event log. Replaying it reproduces the room state. |
+| `profile.md` | Your profile, written by you (see "Your profile"). Agoryx only reads it. |
 | `rooms/<id>/engine.lock` | Single-writer lock. A second process follows the log instead of driving. |
 | `bin/agoryx` | The agent shim. |
 | `daemon.json`, `daemon.token` | The running daemon's address and token. |
@@ -327,8 +351,9 @@ Without `--dir`, a room's workspace is `~/agoryx/<slug>/` (git-initialised); `AG
 | `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim (`table`, `diff`) |
 | `internal/agora/store.ts`, `projection.ts` | JSONL event log and state projection |
 | `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |
+| `internal/agora/profile.ts` | The human's profile: reading and cutting it, the prompt blocks, who sees it |
 | `internal/agora/blocks.ts` | Live html/svg fences: finding a block in a message by the hash of its body |
-| `cmd/agoryx/agora.ts` | `agoryx up/new/say/tail/table/doc/diff/…` |
+| `cmd/agoryx/agora.ts` | `agoryx up/new/say/tail/table/doc/diff/profile/…` |
 | `ui/` | The web UI (React; `npm run build` builds it into `ui/dist`, which the daemon serves) |
 | `web/` | The older plain page, served only when `ui/dist` is not built |
 

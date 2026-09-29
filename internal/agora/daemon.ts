@@ -7,6 +7,7 @@ import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
 import { linkedMedia, markdownTexts } from "./media.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
+import { profilePath, readProfile } from "./profile.js";
 import { defaultRoster } from "./roster.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
@@ -875,6 +876,8 @@ export class AgoraDaemon {
       resume: resumeCommands(handle.store, this.runners),
       driven: Boolean(handle.engine),
       ...(handle.lockedBy ? { lockedBy: handle.lockedBy } : {}),
+      // Whether there is a profile at all, never what it says: the UI shows who is given it.
+      profile: { path: profilePath(this.env), exists: readProfile(profilePath(this.env)) !== null },
     };
   }
 

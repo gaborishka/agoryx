@@ -23,7 +23,7 @@ import {
 import { useNow } from "@/hooks/use-now";
 import { api, roomPath, Unauthorized } from "@/lib/api";
 import { baseName, names, secs, shortPath } from "@/lib/format";
-import { ink, participant, tableCount } from "@/lib/room";
+import { ink, participant, profileLine, tableCount } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -36,17 +36,20 @@ function Presence({ a }: { a: RoomAgent }) {
   );
   const room = useStore((s) => s.snap?.state);
   const openDialog = useStore((s) => s.openDialog);
+  const profile = useStore((s) => s.snap?.profile);
   const tick = useNow(now === "working" && Boolean(turn));
   const who = participant(room, a.id);
   const tone = who.tone;
   const working = now === "working" && turn;
-  const tip = working
+  const seen = profileLine(a, profile);
+  const state = working
     ? `${a.label} зараз робить хід у кімнаті`
     : now === "native"
       ? `З ${a.label} зараз розмовляють напряму, у власній сесії; хід у кімнаті почнеться після цього`
       : now === "queued"
         ? `${a.label} у черзі на хід`
         : `${a.label} чекає на нове в розмові`;
+  const tip = seen ? `${state}. ${seen}` : state;
   return (
     <Tip tip={tip}>
       <button

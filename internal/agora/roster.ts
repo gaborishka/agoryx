@@ -13,7 +13,8 @@ import type { AgentKind, RoomAgent } from "./types.js";
  *   ]
  *
  * `kind` picks the CLI (claude or codex); `id` is the @handle and defaults to the kind;
- * `label` is the display name and defaults to the id, capitalised; `model` is passed to the CLI.
+ * `label` is the display name and defaults to the id, capitalised; `model` is passed to the CLI;
+ * `"profile": false` keeps the human's profile (<AGORYX_HOME>/profile.md) from this agent — it is on otherwise.
  * The list may also come wrapped as { "agents": [...] }. A room keeps the roster it was
  * created with (it is in its event log): changing the file later changes only new rooms.
  */
@@ -32,7 +33,7 @@ export const rosterPath = (env: NodeJS.ProcessEnv = process.env): string => join
 const ID = /^[a-z][a-z0-9_-]{1,31}$/;
 /** Handles that already mean something in a room. */
 const RESERVED = new Set(["all", "agoryx"]);
-const KEYS = new Set(["id", "kind", "label", "model"]);
+const KEYS = new Set(["id", "kind", "label", "model", "profile"]);
 
 export class RosterError extends Error {}
 
@@ -48,7 +49,7 @@ export const parseAgents = (raw: unknown, source = "agents"): RoomAgent[] => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new RosterError(`${at}: expected an object like { "id": "opus", "kind": "claude" }`);
     const fields = entry as Record<string, unknown>;
     const unknown = Object.keys(fields).filter((key) => !KEYS.has(key));
-    if (unknown.length) throw new RosterError(`${at}: unknown field ${unknown.map((key) => `"${key}"`).join(", ")} (allowed: id, kind, label, model)`);
+    if (unknown.length) throw new RosterError(`${at}: unknown field ${unknown.map((key) => `"${key}"`).join(", ")} (allowed: id, kind, label, model, profile)`);
     const kind = fields.kind;
     if (typeof kind !== "string" || !AGENT_KINDS.includes(kind as AgentKind)) {
       throw new RosterError(`${at}: "kind" must be one of ${AGENT_KINDS.join(", ")}`);
@@ -64,13 +65,17 @@ export const parseAgents = (raw: unknown, source = "agents"): RoomAgent[] => {
     if (model !== undefined && (typeof model !== "string" || !model.trim() || model.trim().startsWith("-") || model.trim().length > 100)) {
       throw new RosterError(`${at}: "model" must be a model name for the ${kind} CLI`);
     }
+    const profile = fields.profile;
+    if (profile !== undefined && typeof profile !== "boolean") {
+      throw new RosterError(`${at}: "profile" must be true or false (false: this agent is not given your profile)`);
+    }
     if (agents.some((agent) => agent.id === id)) {
       throw new RosterError(`${at}: two agents are called "${id}" — give each its own "id" (messages and @mentions tell agents apart by it)`);
     }
     if (agents.some((agent) => agent.label.toLowerCase() === label.trim().toLowerCase())) {
       throw new RosterError(`${at}: two agents are labelled "${label.trim()}" — the others could not tell whose message is whose`);
     }
-    agents.push({ id, kind: kind as AgentKind, label: label.trim(), ...(model !== undefined ? { model: (model as string).trim() } : {}) });
+    agents.push({ id, kind: kind as AgentKind, label: label.trim(), ...(model !== undefined ? { model: (model as string).trim() } : {}), ...(profile === false ? { profile: false as const } : {}) });
   });
   return agents;
 };

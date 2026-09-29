@@ -17,6 +17,8 @@ export interface RoomAgent {
   /** Display name ("Claude", "Codex"). */
   label: string;
   model?: string;
+  /** false: this agent is not given the human's profile (<AGORYX_HOME>/profile.md). On when absent. */
+  profile?: false;
 }
 
 export type SandboxAccess = "workspace" | "readonly";
@@ -256,6 +258,11 @@ export type RoomEventBody =
       resume: boolean;
       sessionId: string | null;
       promptChars: number;
+      /**
+       * Hash of the human's profile as this agent's session holds it once it has read this prompt (absent: none).
+       * Only the hash: the profile itself is never written to the room.
+       */
+      profile?: string;
     }
   | { type: "turn.activity"; turnId: string; agent: string; activity: Activity }
   | {
@@ -338,6 +345,9 @@ export interface TurnState {
   cursor: number;
   /** The agent's cursor before this turn: restored if the turn never finished. */
   cursorBefore: number;
+  /** The profile hash this turn's prompt left the agent with, and the one it held before (restored like the cursor). */
+  profile?: string;
+  profileBefore?: string;
   seq: number;
   startedAt: string;
   endedAt?: string;
@@ -396,6 +406,8 @@ export interface RoomState {
   sessions: Record<string, { sessionId: string; boundAt: string }>;
   /** Highest seq each agent has seen (via prompt or authorship). */
   cursors: Record<string, number>;
+  /** Hash of the human's profile each agent's session holds ("" or absent: none). */
+  profiles: Record<string, string>;
   table: TableState;
   commits: Array<{ sha: string; subject: string; files: number; seq: number }>;
   /** Revisions of the canonical file (texts stay in the event log). */

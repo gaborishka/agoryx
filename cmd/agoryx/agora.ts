@@ -9,6 +9,7 @@ import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { type AgentLook, agentLook } from "../../internal/agora/look.js";
 import { activeRun } from "../../internal/agora/projection.js";
+import { describeProfile, profilePath, readProfile } from "../../internal/agora/profile.js";
 import { readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
 import { createRoom, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
@@ -35,6 +36,7 @@ export const AGORA_COMMANDS = new Set([
   "settings",
   "doc",
   "diff",
+  "profile",
 ]);
 
 export const printAgoraUsage = (write: OutputWriter = console.log): void => {
@@ -55,6 +57,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx resume [-r room]            Native session commands (claude --resume / codex resume)",
       "  agoryx doc [-r room] [--log | --diff REV]   The room's canonical file: its text, its revisions, one revision's diff",
       "  agoryx diff [-r room] [TURN [PATH]]         What each turn changed: recent turns, or one turn's exact patch",
+      "  agoryx profile [-r room]           Your profile (who you are, for the agents): where it is, and who in the room sees it",
       "  agoryx settings [-r room] [--budget N] [--network on|off] [--autocommit on|off] [--access workspace|readonly] [--doc PATH|none]",
       "",
       "Table ops:",
@@ -62,7 +65,8 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "",
       "The room defaults to the one whose workspace contains the current directory, else the most recent.",
       "Without a running daemon, say/table/more run the room in this process until it goes quiet.",
-      'Agents: a JSON list like [{"id":"opus","kind":"claude","model":"opus"},{"kind":"codex"}] (kind: claude|codex; id, label, model optional).',
+      'Agents: a JSON list like [{"id":"opus","kind":"claude","model":"opus"},{"kind":"codex"}] (kind: claude|codex; id, label, model optional;',
+      `  "profile": false keeps your profile, ${profilePath()}, from that agent).`,
       `New rooms seat the agents in ${rosterPath()} when it exists, else Claude and Codex; --agents seats others in one room.`,
       `State lives in ${agoraHome()} (override with AGORYX_HOME).`,
     ].join("\n"),
@@ -972,6 +976,20 @@ const runDiff = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+const runProfile = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, [ROOM_OPT]);
+  if (parsed.options.help) {
+    printAgoraUsage();
+    return 0;
+  }
+  const ref = parsed.options.room ?? parsed.positionals[0];
+  let room: RoomState | null = null;
+  if (ref || RoomStore.list(roomsDir()).length > 0) room = RoomStore.open(roomsDir(), resolveRoom(ref)).state;
+  const path = profilePath();
+  for (const line of describeProfile(path, readProfile(path), room)) console.log(line);
+  return 0;
+};
+
 export const runAgora = async (command: string, argv: string[]): Promise<number> => {
   switch (command) {
     case "up":
@@ -1003,6 +1021,8 @@ export const runAgora = async (command: string, argv: string[]): Promise<number>
       return runDoc(argv);
     case "diff":
       return runDiff(argv);
+    case "profile":
+      return runProfile(argv);
     default:
       throw new CliUsageError(`unknown room command '${command}'`, printAgoraUsage);
   }

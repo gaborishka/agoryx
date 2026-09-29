@@ -4,6 +4,7 @@ import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_T
 import { embed, mediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
+import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
 import { truncate, type AgentRunner, type TurnResult } from "./runners/types.js";
 import { RoomStore } from "./store.js";
@@ -57,6 +58,8 @@ export interface EngineOptions {
   /** Command agents are told to use for the table. */
   agentCli?: string;
   env?: NodeJS.ProcessEnv;
+  /** The human's profile (<AGORYX_HOME>/profile.md, see profile.ts). Without it no agent is given one. */
+  profilePath?: string;
   opsPollMs?: number;
   /** How often to read the agents' native sessions for turns taken outside the room (0 = never). */
   nativePollMs?: number;
@@ -222,6 +225,7 @@ export class RoomEngine {
   private readonly shimDir?: string;
   private readonly agentCli: string;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly profilePath?: string;
   private readonly opsPollMs: number;
   private readonly nativePollMs: number;
   private readonly native = new Map<string, NativeTracker>();
@@ -253,6 +257,7 @@ export class RoomEngine {
     this.shimDir = options.shimDir;
     this.agentCli = options.agentCli ?? "agoryx";
     this.env = options.env ?? process.env;
+    this.profilePath = options.profilePath;
     this.opsPollMs = options.opsPollMs ?? 250;
     this.nativePollMs = options.nativePollMs ?? 2000;
     this.log = options.log ?? (() => {});
@@ -743,6 +748,9 @@ export class RoomEngine {
     const cursor = this.state.seq;
     const sessionId = this.state.sessions[agent.id]?.sessionId ?? null;
     const turnsLeft = run.budget - run.used - 1;
+    // Read once per turn: the version given is the version recorded. An agent it is off for never gets a word of it.
+    const profile = seesProfile(agent) ? readProfile(this.profilePath) : null;
+    const held = this.state.profiles[agent.id] ?? "";
     const promptFor = (fresh: boolean, rejoin: boolean) =>
       buildTurnPrompt({
         state: this.state,
@@ -754,6 +762,7 @@ export class RoomEngine {
         fresh,
         rejoin,
         doc: this.docDelta(agent, fromSeq, fresh),
+        profile: fresh ? (profile ? profileBriefing(profile, this.state.human) : null) : profileUpdate(profile, held, this.state.human),
       });
     const prompt = promptFor(!sessionId, false);
 
@@ -766,6 +775,7 @@ export class RoomEngine {
       resume: Boolean(sessionId),
       sessionId,
       promptChars: prompt.length,
+      ...(profile ? { profile: profile.hash } : {}),
     });
 
     const controller = new AbortController();

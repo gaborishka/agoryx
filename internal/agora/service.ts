@@ -5,6 +5,7 @@ import { baselineRevision, docWritable, normalizeDocPath } from "./doc.js";
 import { createRoomWorktree, removeRoomWorktree } from "./folders.js";
 import { RoomEngine } from "./engine.js";
 import { defaultWorkspaceRoot, roomsDir, shimDir } from "./paths.js";
+import { profilePath } from "./profile.js";
 import { createClaudeRunner } from "./runners/claude.js";
 import { createCodexRunner } from "./runners/codex.js";
 import type { AgentRunner } from "./runners/types.js";
@@ -210,6 +211,7 @@ export const openEngine = (
     runners: options.runners ?? defaultRunners(env),
     shimDir: dir,
     env,
+    profilePath: profilePath(env),
     ...(options.log ? { log: options.log } : {}),
     ...(options.opsPollMs ? { opsPollMs: options.opsPollMs } : {}),
   });

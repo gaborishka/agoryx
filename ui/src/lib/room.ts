@@ -82,6 +82,14 @@ export const lastLine = (room: RoomState, m: Pick<MessageEntry, "author" | "text
   };
 };
 
+/** Whether an agent is given the human's profile — for its tooltip. Null when there is no profile to give. */
+export const profileLine = (agent: Pick<RoomAgent, "profile">, profile: { exists: boolean } | undefined): string | null =>
+  !profile?.exists
+    ? null
+    : agent.profile === false
+      ? "Ваш профіль цьому агентові вимкнено (\"profile\": false у ростері): з нього не надходить ані слова."
+      : "Бачить ваш профіль (profile.md) — як контекст про вас, не як частину розмови.";
+
 export const nameOf = (room: RoomState | undefined, handle: string) => {
   const p = participant(room, handle);
   return p.tone === "human" && handle === room?.human ? handle : p.label;

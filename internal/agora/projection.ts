@@ -17,6 +17,7 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   runs: [],
   sessions: {},
   cursors: Object.fromEntries(event.agents.map((agent) => [agent.id, 0])),
+  profiles: {},
   table: emptyTable(),
   commits: [],
   docRevisions: [],
@@ -93,8 +94,11 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         resume: event.resume,
         sessionId: event.sessionId,
         activity: [],
+        profile: event.profile ?? "",
+        profileBefore: state.profiles[event.agent] ?? "",
       });
       state.cursors[event.agent] = Math.max(state.cursors[event.agent] ?? 0, event.cursor);
+      state.profiles[event.agent] = event.profile ?? "";
       const run = findRun(state, event.runId);
       if (run) run.used += 1;
       return;
@@ -124,6 +128,10 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       // stopped keeps it: they stopped that work.)
       if ((event.status === "error" || event.unseen) && state.cursors[turn.agent] === turn.cursor) {
         state.cursors[turn.agent] = turn.cursorBefore;
+      }
+      // Likewise the profile: a version it never answered is given again.
+      if ((event.status === "error" || event.unseen) && state.profiles[turn.agent] === turn.profile && turn.profileBefore !== undefined) {
+        state.profiles[turn.agent] = turn.profileBefore;
       }
       for (const entry of turn.activity) {
         if (entry.status === "running") entry.status = event.status === "ok" || event.status === "pass" ? "ok" : "fail";

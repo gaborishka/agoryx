@@ -152,13 +152,18 @@ export interface BriefingInput {
   agentCli: { command: string; path?: string };
   /** The room's environment, for AGORYX_PROMPT_NORMS; the host's when not given. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * The human's profile block (profile.ts): in a fresh session's briefing, or, in a running one, only when it is new
+   * to that session. Null for an agent the profile is off for — it gets nothing of it.
+   */
+  profile?: string | null;
 }
 
 /**
  * First-turn context. Deliberately no role: who is here, where the work lives,
  * how turns and passing work, and how to use the table.
  */
-export const buildBriefing = ({ state, agent, agentCli: cli, env }: BriefingInput): string => {
+export const buildBriefing = ({ state, agent, agentCli: cli, env, profile }: BriefingInput): string => {
   const agentCli = cli.command;
   const norms = promptNorms(env);
   const others = state.agents.filter((entry) => entry.id !== agent.id);
@@ -189,6 +194,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env }: BriefingInpu
     "- Each run has a turn budget; the prompt says how many turns remain. Converge or leave a clear state before it runs out — once it is clear, pass: the room goes quiet when everyone passes, and unused turns are fine.",
     "- Reply in the language the human writes in.",
     "",
+    ...(profile ? [profile, ""] : []),
     ...(state.settings.doc
       ? [
           `The room's canonical file: ${state.settings.doc} (in the workspace)`,
@@ -252,6 +258,8 @@ interface DeltaOptions {
   replayOwn?: boolean;
   /** What changed in the canonical file since this agent last looked (built by the engine). */
   doc?: string | null;
+  /** The human's profile, when it is new to this agent's session (profileUpdate); null otherwise. */
+  profile?: string | null;
 }
 
 /**
@@ -302,7 +310,7 @@ const fitDelta = (input: string[], kept: Set<number>, stubs: Map<number, string>
 };
 
 /** Everything others did since this agent's last turn, rendered as a thin transcript. */
-export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false, doc = null }: DeltaOptions): string => {
+export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false, doc = null, profile = null }: DeltaOptions): string => {
   const blocks: string[] = [];
   /** Blocks the length bound never drops. */
   const kept = new Set<number>();
@@ -404,6 +412,8 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
   let body = fitDelta(blocks, kept, stubs);
   // The file's current state, not a moment in the transcript: it goes last.
   if (doc) body = body ? `${body}\n\n${doc}` : doc;
+  // Who the human is, before what they and the others said: given once per version, never repeated.
+  if (profile) body = body ? `${profile}\n\n${body}` : profile;
 
   const footer: string[] = [];
   const table = summarizeTable(state.table);
@@ -437,6 +447,8 @@ export const buildTurnPrompt = (
     turnsLeft: input.turnsLeft,
     replayOwn: input.rejoin,
     doc: input.doc ?? null,
+    // A fresh session has it in the briefing.
+    profile: input.fresh ? null : (input.profile ?? null),
   });
   if (!input.fresh) return delta;
   const intro = input.rejoin

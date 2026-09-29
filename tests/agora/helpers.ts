@@ -65,6 +65,8 @@ export const createTestRoom = (options: {
   agents?: RoomAgent[];
   name?: string;
   env?: NodeJS.ProcessEnv;
+  /** The human's profile file, as the daemon passes <AGORYX_HOME>/profile.md; none when not given. */
+  profilePath?: string;
 } = {}): TestRoom => {
   const home = mkdtempSync(join(tmpdir(), "agora-test-"));
   const roomsRoot = join(home, "rooms");
@@ -99,6 +101,7 @@ export const createTestRoom = (options: {
     runners: { claude: createClaudeRunner(fakeClaude), codex: createCodexRunner(fakeCodex) },
     shimDir,
     env,
+    ...(options.profilePath ? { profilePath: options.profilePath } : {}),
     opsPollMs: 50,
     nativePollMs: 50,
   });

@@ -36,6 +36,8 @@ export interface Snapshot {
   resume: Record<string, string>;
   driven: boolean;
   lockedBy?: string;
+  /** The human's profile: where it is and whether it exists (its text never reaches the UI). */
+  profile?: { path: string; exists: boolean };
 }
 
 export type DiffItem = { t: "+" | "-" | " "; s: string } | { skip: number };

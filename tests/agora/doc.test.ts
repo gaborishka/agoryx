@@ -216,6 +216,27 @@ test("an edit no one can be credited with during parallel turns is recorded as t
     assert.deepEqual(revision.among?.sort(), ["claude", "codex"]);
     assert.equal(revision.turnId, undefined);
     assert.equal(room.store.state.docRevisions.some((entry) => entry.by === room.store.state.human), false);
+    // Claude's reply woke Codex: that prompt says so too, rather than naming one of them.
+    assert.match(room.invocations("codex").at(-1)!.prompt!, /changed since your last turn — Claude or Codex \(parallel turns, whose is not known\) \+3 −0/);
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a big rewrite of the canonical file is cut in the prompt; the agent reads the file", async () => {
+  const room = createTestRoom({ settings: { doc: "README.md" } });
+  try {
+    const paragraph = (n: number) => `Paragraph ${n}: ${"time ".repeat(80)}`;
+    const text = `${Array.from({ length: 40 }, (_, i) => paragraph(i)).join("\n\n")}\n`;
+    // Both have sessions by now, so the next prompt is a delta, not a briefing.
+    room.engine.postHuman("Hello both");
+    await withTimeout(room.engine.waitIdle());
+    room.engine.writeDocument(text, docHash(""));
+    room.engine.postHuman("@claude thoughts?");
+    await withTimeout(room.engine.waitIdle());
+    const prompt = room.invocations("claude").at(-1)!.prompt!;
+    assert.match(prompt, /… the rest of this diff is cut \(\d+ chars in all\) — read README\.md for the whole file\n~~~~/);
+    assert.ok(prompt.length < 12_000, `the prompt stays thin (${prompt.length} chars)`);
   } finally {
     await room.cleanup();
   }

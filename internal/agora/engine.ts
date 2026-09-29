@@ -113,6 +113,9 @@ interface RunningTurn {
 
 const LOCK_FILE = "engine.lock";
 
+/** Past this, the canonical file's diff in a turn prompt is cut; the agent reads the file for the rest. */
+const MAX_DOC_DELTA_CHARS = 6_000;
+
 interface LockSnapshot {
   ino: number;
   text: string;
@@ -1064,23 +1067,30 @@ export class RoomEngine {
     if (changes.length === 0) return null;
     const authors = new Map<string, { added: number; removed: number; native: boolean }>();
     for (const change of changes) {
-      const entry = authors.get(change.by) ?? { added: 0, removed: 0, native: false };
+      const name = change.among ? `${change.among.map((id) => this.handleName(id)).join(" or ")} (parallel turns, whose is not known)` : this.handleName(change.by);
+      const entry = authors.get(name) ?? { added: 0, removed: 0, native: false };
       entry.added += change.added;
       entry.removed += change.removed;
       entry.native ||= Boolean(change.native);
-      authors.set(change.by, entry);
+      authors.set(name, entry);
     }
     const who = [...authors.entries()]
-      .map(([by, stats]) => `${this.handleName(by)}${stats.native ? " (in its own session)" : ""} +${stats.added} −${stats.removed}`)
+      .map(([name, stats]) => `${name}${stats.native ? " (in its own session)" : ""} +${stats.added} −${stats.removed}`)
       .join(", ");
     const header = `── ${path} (the room's canonical file) changed since your last turn — ${who}`;
     if (latest.deleted) return `${header}\nThe file was deleted.`;
     const before = base >= 0 && !revisions[base]!.deleted ? this.revisionText(revisions[base]!.seq) : "";
     const after = this.revisionText(latest.seq);
     if (before === undefined || after === undefined || after === null) return `${header}\n(too large to show here — read the file)`;
-    const diff = renderDiff(before ?? "", after);
+    let diff = renderDiff(before ?? "", after);
+    if (!diff) return null;
+    // The delta stays thin: a big rewrite is pointed at, and the agent reads the file itself.
+    if (diff.length > MAX_DOC_DELTA_CHARS) {
+      const cut = diff.lastIndexOf("\n", MAX_DOC_DELTA_CHARS);
+      diff = `${diff.slice(0, cut > 0 ? cut : MAX_DOC_DELTA_CHARS)}\n… the rest of this diff is cut (${diff.length} chars in all) — read ${path} for the whole file`;
+    }
     // A longer fence than any the file is likely to contain.
-    return diff ? `${header}\n~~~~diff\n${diff}\n~~~~` : null;
+    return `${header}\n~~~~diff\n${diff}\n~~~~`;
   }
 
   private handleName(handle: string): string {

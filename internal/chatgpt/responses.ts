@@ -125,6 +125,10 @@ export interface ResponseRequest {
   model: string;
   input: string;
   instructions?: string;
+  /** Structured output: the reply is JSON matching this schema (strict). */
+  format?: { name: string; schema: Record<string, unknown> };
+  /** reasoning.effort; the values a model takes vary ("none" is the quickest where it is supported). */
+  effort?: string;
   onDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
@@ -139,6 +143,8 @@ export const streamResponse = async (accessToken: string, request: ResponseReque
       model: request.model,
       ...(request.instructions ? { instructions: request.instructions } : {}),
       input: [{ role: "user", content: request.input }],
+      ...(request.format ? { text: { format: { type: "json_schema", name: request.format.name, schema: request.format.schema, strict: true } } } : {}),
+      ...(request.effort ? { reasoning: { effort: request.effort } } : {}),
       store: false,
       stream: true,
     }),

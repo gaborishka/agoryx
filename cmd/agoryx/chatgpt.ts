@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { AGENT_KEY_ENV } from "../../internal/agora/actor.js";
+import { JEV_CHATGPT_MODEL } from "../../internal/agora/jev.js";
 import { OAuthError } from "../../internal/chatgpt/auth.js";
 import { chatgptDir, hostId, planUsageOn, readAccounts, saveAccount, type ChatGptAccount } from "../../internal/chatgpt/credentials.js";
 import { explainPlanError, listModels, PlanError, streamResponse } from "../../internal/chatgpt/responses.js";
@@ -22,6 +23,8 @@ export const printChatGptUsage = (write: OutputWriter = console.log): void => {
       "                                  List the models on your plan and stream one request",
       "  agoryx logout chatgpt           End the session with OpenAI and clear the tokens here",
       "",
+      `With no Jev key, rooms ask ${JEV_CHATGPT_MODEL} on your plan who a message is for and whether a second look`,
+      "is worth a turn (AGORYX_JEV_MODEL picks another model, AGORYX_JEV=off turns it off; restart `agoryx up`).",
       "Usage counts toward your ChatGPT plan; review it and set a limit for Agoryx in ChatGPT → Settings → Usage.",
       `Tokens live in ${join(chatgptDir(), "accounts.json")} (owner-only); the agents Agoryx runs are never given them.`,
     ].join("\n"),
@@ -96,6 +99,9 @@ const runLogin = async (argv: string[]): Promise<number> => {
     console.log("You're using your ChatGPT plan.");
     console.log("Eligible usage in Agoryx uses your ChatGPT plan. Manage usage in your ChatGPT settings (Settings → Usage).");
     saveAccount(dir, { ...account, welcomedAt: new Date().toISOString() });
+    console.log("");
+    console.log(`With no Jev key, rooms now ask ${JEV_CHATGPT_MODEL} on your plan who a message is for and whether a second look is worth a turn`);
+    console.log("(from the next `agoryx up`; AGORYX_JEV=off turns it off).");
   }
   console.log("Check it with: agoryx chatgpt test");
   return 0;

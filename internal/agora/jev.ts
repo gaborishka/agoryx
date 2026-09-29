@@ -6,8 +6,13 @@
 //   still has to settle?
 // Without a key nothing is asked: the room goes by @names and its own word lists alone. Asking sends the
 // texts to TypeSafe (or OpenRouter), so it is on only where the daemon has a key.
+// With no key, but the human signed in with ChatGPT (`agoryx login chatgpt`, plan use granted), the same
+// questions go to a small model on their ChatGPT plan instead: slower (seconds, not milliseconds), no key.
 
 import { parseEnv } from "node:util";
+import { activeAccount, chatgptDir, planUsageOn } from "../chatgpt/credentials.js";
+import { PlanError, streamResponse } from "../chatgpt/responses.js";
+import { freshAccount } from "../chatgpt/session.js";
 
 export interface SecondLookCase {
   /** What the human asked, and of whom. */
@@ -25,6 +30,8 @@ export interface SecondLookVerdict {
   worth: Record<string, number>;
   ms: number;
   tokens: number;
+  /** Who answered, as the room is told ("Jev", or the ChatGPT model); Jev when not given. */
+  by?: string;
 }
 
 /** Asks whether each other agent should take a look; rejects when Jev cannot be reached. */
@@ -46,6 +53,8 @@ export interface MessageVerdict {
   stances: Array<number | null>;
   ms: number;
   tokens: number;
+  /** Who answered, as the room is told; Jev when not given. */
+  by?: string;
 }
 
 /** Reads one agent message: who it is meant for, and which paragraphs take a position; rejects when Jev cannot be reached. */
@@ -70,16 +79,97 @@ const clip = (text: string): string =>
 type Question = { type: "noul"; instructions: string; criteria: { true: string; false: string } };
 type Ask = (state: Record<string, string>, questions: Record<string, Question>) => Promise<{ answers: Record<string, number>; ms: number; tokens: number }>;
 
-/** Jev as the daemon's environment sets it up, or null: no key, or AGORYX_JEV=off. */
-function jevAsk(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch): Ask | null {
+/** The model asked on the human's ChatGPT plan: AGORYX_JEV_MODEL, else a small fast one. */
+export const JEV_CHATGPT_MODEL = "gpt-5.6-luna";
+const CHATGPT_TIMEOUT_MS = 20_000;
+
+export type JevProvider =
+  | { name: "typesafe" | "openrouter"; label: "Jev"; via: string }
+  | { name: "chatgpt"; label: string; via: string; model: string; dir: string };
+
+/**
+ * Who answers the room's questions, as the daemon's environment sets it up: a Jev key, else a ChatGPT sign-in
+ * that granted plan use. JEV_PROVIDER=typesafe|openrouter takes that key only, JEV_PROVIDER=chatgpt the sign-in
+ * only. Null: nobody to ask, or AGORYX_JEV=off.
+ */
+export function jevProvider(env: NodeJS.ProcessEnv): JevProvider | null {
   if (String(env.AGORYX_JEV ?? "").trim().toLowerCase() === "off") return null;
   const wanted = String(env.JEV_PROVIDER ?? "").trim().toLowerCase();
-  const names = (wanted in PROVIDERS ? [wanted] : Object.keys(PROVIDERS)) as Array<keyof typeof PROVIDERS>;
-  const name = names.find((candidate) => env[PROVIDERS[candidate].keyName]);
-  if (!name) return null;
-  const provider = PROVIDERS[name];
-  const apiKey = env[provider.keyName]!;
+  if (wanted !== "chatgpt") {
+    const names = (wanted in PROVIDERS ? [wanted] : Object.keys(PROVIDERS)) as Array<keyof typeof PROVIDERS>;
+    const keyed = names.find((candidate) => env[PROVIDERS[candidate].keyName]);
+    if (keyed) return { name: keyed, label: "Jev", via: PROVIDERS[keyed].keyName };
+    if (wanted in PROVIDERS) return null;
+  }
+  const dir = chatgptDir(env);
+  let account: ReturnType<typeof activeAccount>;
+  try {
+    account = activeAccount(dir);
+  } catch {
+    return null;
+  }
+  if (!account?.accessToken || !planUsageOn(account)) return null;
+  const model = env.AGORYX_JEV_MODEL?.trim() || JEV_CHATGPT_MODEL;
+  return { name: "chatgpt", label: model, via: `ChatGPT plan, ${account.email ?? account.clientId}`, model, dir };
+}
+
+const CHATGPT_INSTRUCTIONS =
+  "You answer small yes/no questions about a moment in a shared room, for the software that runs the room. " +
+  "For each question id, give the probability, from 0 to 1, that the answer is the question's \"yes\". " +
+  "Judge only from the texts given; when they do not settle it, stay near the middle. Reply with the JSON object alone.";
+
+/** The questions, put to a model on the human's ChatGPT plan: one request, a probability per question. */
+function chatgptAsk(provider: Extract<JevProvider, { name: "chatgpt" }>, fetchImpl: typeof fetch): Ask {
+  // "none" is the quickest where the model takes it; a model that does not is asked without it from then on.
+  let effort: string | undefined = "none";
   return async (state, questions) => {
+    const ids = Object.keys(questions);
+    const input = JSON.stringify({
+      situation: state,
+      questions: Object.fromEntries(ids.map((id) => [id, { question: questions[id]!.instructions, yes: questions[id]!.criteria.true, no: questions[id]!.criteria.false }])),
+    });
+    const format = {
+      name: "answers",
+      schema: { type: "object", properties: Object.fromEntries(ids.map((id) => [id, { type: "number" }])), required: ids, additionalProperties: false },
+    };
+    const account = await freshAccount(provider.dir, fetchImpl);
+    const send = () =>
+      streamResponse(
+        account.accessToken!,
+        { model: provider.model, instructions: CHATGPT_INSTRUCTIONS, input, format, ...(effort ? { effort } : {}), signal: AbortSignal.timeout(CHATGPT_TIMEOUT_MS) },
+        fetchImpl,
+      );
+    let done: Awaited<ReturnType<typeof streamResponse>>;
+    try {
+      done = await send();
+    } catch (error) {
+      if (!(effort && error instanceof PlanError && error.param === "reasoning.effort")) throw error;
+      effort = undefined;
+      done = await send();
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(done.text) as Record<string, unknown>;
+    } catch {
+      throw new Error(`${provider.model} did not answer in JSON: ${done.text.slice(0, 120)}`);
+    }
+    const answers: Record<string, number> = {};
+    for (const id of ids) {
+      const p = body[id];
+      if (typeof p === "number" && Number.isFinite(p)) answers[id] = Math.min(1, Math.max(0, p));
+    }
+    return { answers, ms: done.ms, tokens: done.usage?.input_tokens ?? 0 };
+  };
+}
+
+/** The room's questions as the daemon's environment sets them up (see jevProvider), or null: nobody to ask. */
+function jevAsk(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch): { ask: Ask; by: string } | null {
+  const chosen = jevProvider(env);
+  if (!chosen) return null;
+  if (chosen.name === "chatgpt") return { ask: chatgptAsk(chosen, fetchImpl), by: chosen.label };
+  const provider = PROVIDERS[chosen.name];
+  const apiKey = env[provider.keyName]!;
+  const ask: Ask = async (state, questions) => {
     const sentAt = Date.now();
     const response = await fetchImpl(provider.url, {
       method: "POST",
@@ -105,12 +195,14 @@ function jevAsk(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch): Ask | null {
     }
     return { answers, ms: Date.now() - sentAt, tokens: body.usage?.input_tokens ?? 0 };
   };
+  return { ask, by: chosen.label };
 }
 
-/** Jev's second look, or null: no key, or AGORYX_JEV=off. */
+/** Jev's second look, or null: nobody to ask (see jevProvider). */
 export function jevSecondLook(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch = fetch): SecondLook | null {
-  const ask = jevAsk(env, fetchImpl);
-  if (!ask) return null;
+  const asker = jevAsk(env, fetchImpl);
+  if (!asker) return null;
+  const { ask, by } = asker;
   return async (entry) => {
     const questions = Object.fromEntries(
       entry.others.map((other): [string, Question] => [
@@ -139,14 +231,15 @@ export function jevSecondLook(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch = 
       const p = answers[`look:${other.id}`];
       if (p !== undefined) worth[other.id] = p;
     }
-    return { worth, ms, tokens };
+    return { worth, ms, tokens, by };
   };
 }
 
-/** Jev's reading of agent messages, or null: no key, or AGORYX_JEV=off. */
+/** Jev's reading of agent messages, or null: nobody to ask (see jevProvider). */
 export function jevReadMessage(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch = fetch): ReadMessage | null {
-  const ask = jevAsk(env, fetchImpl);
-  if (!ask) return null;
+  const asker = jevAsk(env, fetchImpl);
+  if (!asker) return null;
+  const { ask, by } = asker;
   return async (entry) => {
     const asked = entry.paragraphs
       .map((text, index) => (text.trim().length >= MIN_PARAGRAPH ? index : -1))
@@ -180,7 +273,7 @@ export function jevReadMessage(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch =
       const p = answers[`to:${other.id}`];
       if (p !== undefined) addressed[other.id] = p;
     }
-    return { addressed, stances: entry.paragraphs.map((_, index) => answers[`p${index + 1}`] ?? null), ms, tokens };
+    return { addressed, stances: entry.paragraphs.map((_, index) => answers[`p${index + 1}`] ?? null), ms, tokens, by };
   };
 }
 

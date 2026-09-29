@@ -127,6 +127,32 @@ test("a long session is read from its end, and older pages continue exactly wher
   }
 });
 
+test("a call and its result on two pages: the older page shows the call settled, with its output", () => {
+  const dir = scratch();
+  try {
+    const text = (i: number) => ({ type: "assistant", uuid: `a${i}`, timestamp: TS, message: { id: `m${i}`, role: "assistant", content: [{ type: "text", text: `reply ${i}` }] } });
+    const call = { type: "assistant", uuid: "c", timestamp: TS, message: { id: "mc", role: "assistant", content: [{ type: "tool_use", id: "tu9", name: "Bash", input: { command: "make" } }] } };
+    const result = { type: "user", uuid: "r", timestamp: TS, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu9", content: "built" }] } };
+    const before = jsonl([...Array.from({ length: 5 }, (_, i) => text(i)), call]);
+    const file = join(dir, "split.jsonl");
+    writeFileSync(file, before + jsonl([text(90), result, text(91)]));
+    const older = readTranscript("claude", file, { end: Buffer.byteLength(before) });
+    const [tool] = tools(older.entries);
+    assert.equal(tool!.status, "ok");
+    assert.equal(tool!.output, "built");
+    assert.deepEqual(older.entries.map((e) => e.id).filter((id) => id.includes("#")).length, 5, "nothing from past the page's end is shown on it");
+
+    const codex = join(dir, "split-codex.jsonl");
+    const head = jsonl([{ timestamp: TS, type: "response_item", payload: { type: "function_call", name: "shell", call_id: "c1", arguments: JSON.stringify({ command: ["bash", "-lc", "make"] }) } }]);
+    writeFileSync(codex, head + jsonl([{ timestamp: TS, type: "response_item", payload: { type: "function_call_output", call_id: "c1", output: JSON.stringify({ output: "ok\n" }) } }]));
+    const [shell] = tools(readTranscript("codex", codex, { end: Buffer.byteLength(head) }).entries);
+    assert.equal(shell!.status, "ok");
+    assert.equal(shell!.output, "ok\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("lines the view skips, even one longer than the window, never leave a page empty or stuck", () => {
   const dir = scratch();
   try {

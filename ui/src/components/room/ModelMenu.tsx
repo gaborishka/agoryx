@@ -3,6 +3,7 @@ import { type KeyboardEvent, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { AgentModels, RoomAgent } from "@/lib/types";
+import { modelSwitch } from "@/lib/effort";
 import { ink, participant, type Seating } from "@/lib/room";
 import { cn } from "@/lib/utils";
 
@@ -47,13 +48,14 @@ export function ModelMenu({
     if ("effort" in change && (change.effort ?? undefined) === agent.effort) return;
     onSet(change);
   };
+  const setModel = (id: string | null) => set(modelSwitch(models, agent, id));
   // Like Claude Code's menu: a digit picks the model at that place.
   const byDigit = (event: KeyboardEvent<HTMLDivElement>) => {
     const n = Number(event.key);
     if (!Number.isInteger(n) || n < 1 || n > choices.length + 1) return;
     event.preventDefault();
     setOpen(false);
-    set({ model: n === 1 ? null : choices[n - 2]!.id });
+    setModel(n === 1 ? null : choices[n - 2]!.id);
   };
 
   return (
@@ -79,13 +81,13 @@ export function ModelMenu({
           Модель {agent.label}
           {working ? <span className="text-faint">з наступного ходу</span> : null}
         </DropdownMenuLabel>
-        <DropdownMenuItem onSelect={() => set({ model: null })} title="Та, що в налаштуваннях CLI">
+        <DropdownMenuItem onSelect={() => setModel(null)} title="Та, що в налаштуваннях CLI">
           Типова <span className="text-faint">з CLI</span>
           <MenuMark on={!agent.model} n={1} />
         </DropdownMenuItem>
         <div className="scroll-thin max-h-[40vh] overflow-y-auto">
           {choices.map((m, i) => (
-            <DropdownMenuItem key={m.id} onSelect={() => set({ model: m.id })} title={m.description}>
+            <DropdownMenuItem key={m.id} onSelect={() => setModel(m.id)} title={m.description}>
               <span className="truncate">{m.label}</span>
               <MenuMark on={agent.model === m.id} n={i + 2} />
             </DropdownMenuItem>

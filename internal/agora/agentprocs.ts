@@ -49,7 +49,15 @@ const processTable = async (): Promise<Map<number, Proc>> => {
 const peerPids = async (socket: Socket): Promise<number[]> => {
   const port = socket.remotePort;
   if (!port) return [];
-  const { stdout } = await run("lsof", ["-nP", `-iTCP@127.0.0.1:${port}`, "-Fp"]);
+  let stdout: string;
+  try {
+    ({ stdout } = await run("lsof", ["-nP", `-iTCP@127.0.0.1:${port}`, "-Fp"]));
+  } catch (error) {
+    // lsof exits 1 when nothing matches (the peer is gone): no process, not a failed lookup.
+    const failed = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+    if (failed.code === 1 && !String(failed.stdout ?? "").trim() && !String(failed.stderr ?? "").trim()) return [];
+    throw error;
+  }
   return stdout
     .split("\n")
     .filter((line) => line.startsWith("p"))
@@ -68,14 +76,21 @@ export const ownerOf = (pid: number, table: Map<number, Proc>): AgentProcessOwne
   return null;
 };
 
-const byConnection = new WeakMap<Socket, Promise<AgentProcessOwner | null>>();
+/** The lookup failed (no lsof or ps, or they errored) while agent processes run: whose request it is, unknown. */
+export interface UnknownOwner {
+  unknown: string;
+}
+
+const byConnection = new WeakMap<Socket, Promise<AgentProcessOwner | UnknownOwner | null>>();
 
 /**
  * The agent whose process sent this request, or null (the human's terminal or browser, the daemon
- * itself, or no agent process alive). When the lookup itself fails (no lsof), null: the human keeps
- * working, and the attribution rests on the agent's own key as before.
+ * itself, or no agent process alive). When the lookup itself fails while agent processes run, it
+ * says so ({unknown}) rather than guessing the human: the daemon then refuses the human's token
+ * (fails closed), since it cannot tell an agent's process from the human's. A failed lookup is not
+ * remembered for the connection; the next request asks again.
  */
-export const agentBehind = (socket: Socket): Promise<AgentProcessOwner | null> => {
+export const agentBehind = (socket: Socket): Promise<AgentProcessOwner | UnknownOwner | null> => {
   if (groups.size === 0) return Promise.resolve(null);
   const known = byConnection.get(socket);
   if (known) return known;
@@ -92,8 +107,9 @@ export const agentBehind = (socket: Socket): Promise<AgentProcessOwner | null> =
         if (owner) return owner;
       }
       return null;
-    } catch {
-      return null;
+    } catch (error) {
+      byConnection.delete(socket);
+      return { unknown: error instanceof Error ? error.message.split("\n")[0]! : String(error) };
     }
   })();
   byConnection.set(socket, lookup);

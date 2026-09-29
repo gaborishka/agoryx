@@ -37,6 +37,7 @@ import { ink, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { ActivityKind, AgentModels, RoomAgent, TranscriptDiff, TranscriptEntry, TranscriptImage, TranscriptTodo, TranscriptTool } from "@/lib/types";
 import { copyText } from "@/lib/copy";
+import { modelSwitch } from "@/lib/effort";
 import { useModels } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
@@ -203,7 +204,7 @@ function ModelPicker({ agent, models, disabled }: { agent: RoomAgent; models: Ag
     setQuery("");
     if ((model ?? undefined) === agent.model) return;
     try {
-      await post("/agent", { agent: agent.id, model });
+      await post("/agent", { agent: agent.id, ...modelSwitch(models, agent, model) });
     } catch (error) {
       if (!(error instanceof Unauthorized)) toast.error(errText(error));
     }

@@ -283,7 +283,7 @@ capital letter, and no two agents may share one. `model` is optional and passed 
 as given (also when you resume the session); omitting it uses that CLI's default.
 `effort` is optional too: how hard the model thinks on its room turns (`"xhigh"` → Claude's `--effort xhigh`,
 Codex's `-c model_reasoning_effort="xhigh"`); omitting it uses that CLI's default.
-`"profile": false` keeps your profile (below) from that agent. Any other field is refused. A refused roster creates nothing: no room, no folder.
+`"profile": false` keeps your profile (below) out of that agent's prompts — only its prompts: the agent can still read the file with its own tools (see the limits under "Your profile"). Any other field is refused. A refused roster creates nothing: no room, no folder.
 
 The resolved roster is stored in the room's event log. Editing or deleting the source
 JSON does not change existing rooms. Each participant has its own cursor and native
@@ -310,8 +310,10 @@ says `"profile": false`. The room's history is seen by everyone in it; the profi
   has an older version). In the web UI, each agent's tooltip in the room header says whether it sees the profile.
 
 Limits: the profile stays out of what Agoryx writes, but agents run with read access to your home directory, so a
-curious agent could read `profile.md` with its own tools. An agent that does see it is asked not to copy it into the
-room, files or commits; that is an instruction, not something Agoryx enforces. Existing sessions of rooms from before
+curious agent could read `profile.md` with its own tools — `"profile": false` included: it keeps the profile out of that
+agent's prompts, and is not a read boundary. Making it one would mean sandboxing the agent away from `AGORYX_HOME`,
+which is a choice about how agents run (they run as in your own terminal), not made here. An agent that does see it
+is asked not to copy it into the room, files or commits; that is an instruction, not something Agoryx enforces. Existing sessions of rooms from before
 the profile get it once, on their next turn.
 
 ### As a daemon without UI

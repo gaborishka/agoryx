@@ -14,7 +14,7 @@ import {
   SearchCodeIcon,
   UserIcon,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { FolderBar, useFolderGit } from "@/components/FolderPicker";
 import { Avatar } from "@/components/room/bits";
@@ -448,6 +448,8 @@ export function StartScreen() {
   const [busy, setBusy] = useState(false);
   // Who a new room seats: the daemon's roster (agents.json), Claude and Codex until it answers.
   const [agents, setAgents] = useState<RoomAgent[]>(DEFAULT_AGENTS);
+  // A broken roster file (agents.json): said here, and no room is started until it reads again.
+  const [rosterError, setRosterError] = useState<string | null>(null);
   const who = names(agents.map((a) => a.label));
   const models = useModels();
   const [picks, setPicks] = useState<Picks>(readPicks);
@@ -460,15 +462,25 @@ export function StartScreen() {
       local.set("start.models", JSON.stringify(next));
       return next;
     });
-  useEffect(() => {
-    document.title = "Нова кімната · Agoryx";
-    setTimeout(() => ta.current?.focus(), 30);
-    api<{ agents?: RoomAgent[] }>("GET", "/api/info")
+  const loadRoster = useCallback(() => {
+    api<{ agents?: RoomAgent[]; rosterError?: string }>("GET", "/api/info")
       .then((info) => {
+        setRosterError(info.rosterError ?? null);
         if (info.agents?.length) setAgents(info.agents);
       })
       .catch(() => {});
   }, []);
+  useEffect(() => {
+    document.title = "Нова кімната · Agoryx";
+    setTimeout(() => ta.current?.focus(), 30);
+    loadRoster();
+  }, [loadRoster]);
+  // Fixed in an editor meanwhile: read again when the window is back.
+  useEffect(() => {
+    if (!rosterError) return;
+    window.addEventListener("focus", loadRoster);
+    return () => window.removeEventListener("focus", loadRoster);
+  }, [rosterError, loadRoster]);
   useLayoutEffect(() => autosize(ta.current, 0.4), [text]);
   const change = (value: string) => {
     setText(value);
@@ -477,7 +489,7 @@ export function StartScreen() {
   const submit = async (event?: { preventDefault: () => void }) => {
     event?.preventDefault();
     const body = text.trim();
-    if (!body || busy) return;
+    if (!body || busy || rosterError) return;
     setBusy(true);
     try {
       const { room } = await api<{ room: { id: string } }>(
@@ -594,7 +606,7 @@ export function StartScreen() {
                   type="submit"
                   size="icon"
                   className="ml-auto size-9 rounded-full"
-                  disabled={busy || !text.trim()}
+                  disabled={busy || !text.trim() || Boolean(rosterError)}
                   aria-label="Почати"
                   title="Почати (Enter)"
                 >
@@ -602,6 +614,15 @@ export function StartScreen() {
                 </Button>
               </div>
             </form>
+            {rosterError ? (
+              <div role="alert" className="flex flex-col gap-1.5 rounded-2xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-[13px]">
+                <span className="font-semibold text-destructive">Склад агентів не читається — кімнату не почати, доки його не виправлено</span>
+                <span className="font-mono text-[12px] break-words whitespace-pre-wrap text-muted-foreground">{rosterError}</span>
+                <Button type="button" variant="outline" size="sm" className="self-start" onClick={loadRoster}>
+                  Перевірити знову
+                </Button>
+              </div>
+            ) : null}
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 text-[12px] text-faint">
               <span>
                 Назва кімнати — з першого рядка; змінити можна будь-коли

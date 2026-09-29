@@ -114,7 +114,7 @@ export const describeProfile = (
     const who = `${agent.label} (@${agent.id})`.padEnd(width);
     const what =
       status === "off"
-        ? 'does not see it ("profile": false in the roster)'
+        ? 'is not given it ("profile": false in the roster; its own tools could still read the file)'
         : !profile
           ? "would see it (none written)"
           : status === "has"

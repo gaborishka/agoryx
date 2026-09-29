@@ -90,7 +90,7 @@ export const profileLine = (agent: Pick<RoomAgent, "profile">, profile: { exists
   !profile?.exists
     ? null
     : agent.profile === false
-      ? "Ваш профіль цьому агентові вимкнено (\"profile\": false у ростері): з нього не надходить ані слова."
+      ? "Ваш профіль цьому агентові вимкнено (\"profile\": false у ростері): у його промпти з нього не надходить ані слова. Прочитати сам файл своїми інструментами агент усе ж може."
       : "Бачить ваш профіль (profile.md) — як контекст про вас, не як частину розмови.";
 
 export const nameOf = (room: RoomState | undefined, handle: string) => {

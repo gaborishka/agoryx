@@ -12,7 +12,7 @@ import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
 import { validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { RoomStore } from "./store.js";
-import { namesFile, shellWriteTargets } from "./shell-writes.js";
+import { namesFile, shellWriteTargets, shellWrites, type ShellCwd } from "./shell-writes.js";
 import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
 import type {
   Activity,
@@ -1133,9 +1133,12 @@ export class RoomEngine {
 
   /** What each running turn's shell commands named as written, read from the whole command before its label is clipped. */
   private shellWrites = new Map<string, Set<string>>();
+  /** Where a Claude turn's shell is after its last command: Claude Code keeps a `cd` for the commands after it; Codex starts each at the workspace. */
+  private shellCwds = new Map<string, ShellCwd>();
 
-  private noteShellWrites(turnId: string, command: string): void {
-    const targets = shellWriteTargets(this.tidyText(command));
+  private noteShellWrites(turnId: string, command: string, carriesCwd: boolean): void {
+    const { targets, cwd } = shellWrites(this.tidyText(command), carriesCwd ? (this.shellCwds.get(turnId) ?? "") : "");
+    if (carriesCwd) this.shellCwds.set(turnId, cwd);
     if (targets.length === 0) return;
     const known = this.shellWrites.get(turnId) ?? new Set<string>();
     for (const target of targets) known.add(target);
@@ -1231,7 +1234,7 @@ export class RoomEngine {
         this.store.emit({ type: "turn.stream", turnId, agent: agent.id, text, ...(reset ? { reset } : {}) });
       },
       onActivity: (activity: Activity) => {
-        if (activity.kind === "command") this.noteShellWrites(turnId, activity.command ?? activity.label);
+        if (activity.kind === "command") this.noteShellWrites(turnId, activity.command ?? activity.label, agent.kind === "claude");
         this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity: this.tidyActivity(activity) });
       },
     };
@@ -1329,7 +1332,10 @@ export class RoomEngine {
       self && this.claimsFile(self, file) ? [...new Set(this.overlapping(turnId).filter((entry) => this.claimsFile(entry, file)).map((entry) => entry.agent))] : [];
     const changed = this.turnChanges(agent, turnId, tree, after, files, handedOver.length && handoff?.tree ? { tree: handoff.tree, files: handedOver } : undefined, sharedWith);
     // Every parallel turn has ended: nothing needs their shell writes any more.
-    if (this.running.size === 0) this.shellWrites.clear();
+    if (this.running.size === 0) {
+      this.shellWrites.clear();
+      this.shellCwds.clear();
+    }
     // A file only touched (same content) is not a change.
     if (changed) files = files.filter((file) => changed.changes.some((change) => change.path === file));
     // Hand what the workspace looks like now to the turns still running, here and in the other rooms of this process.

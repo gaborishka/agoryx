@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { namesFile, shellWriteTargets } from "../../internal/agora/shell-writes.js";
+import { namesFile, shellWrites, shellWriteTargets } from "../../internal/agora/shell-writes.js";
 import { createTestRoom, withTimeout } from "./helpers.js";
 
 test("a shell command's written files are the ones it names: redirections, tee, sed -i, cp/mv/rm, a script's own writes", () => {
@@ -13,16 +13,28 @@ test("a shell command's written files are the ones it names: redirections, tee, 
     ["sed -i '' 's/a/b/;s/c/d/' src/b.ts", ["src/b.ts"]],
     ["sed -i -e 's/x/y/' a.ts b.ts", ["a.ts", "b.ts"]],
     ["echo hi | tee -a notes.md >/dev/null", ["notes.md"]],
-    ["cd sub && cp ../a.txt b.txt && rm -f old.txt", ["b.txt", "old.txt"]],
+    ["cd sub && cp ../a.txt b.txt && rm -f old.txt", ["sub/b.txt", "sub/old.txt"]],
+    ["(cd sub && echo x > b.txt); echo y > c.txt", ["sub/b.txt", "c.txt"]],
+    ["cd sub/deep && echo x > ../b.txt && echo y > ./c.txt", ["sub/b.txt", "sub/deep/c.txt"]],
+    ["cd lib && python3 -c \"open('out.json', 'w').write('{}')\"", ["lib/out.json"]],
+    ["cd $DIR && echo x > b.txt; echo y > /tmp/z.txt", ["/tmp/z.txt"]],
+    ["cd && touch b.txt", []],
     ["npm test > /dev/null 2>&1; echo done", []],
     ["git diff HEAD~1 -- src/x.ts", []],
     ["grep -n 'a > b' file.ts", []],
     ["for f in *.ts; do sed -i 's/a/b/' $f; done", []],
   ];
   for (const [command, written] of cases) assert.deepEqual(shellWriteTargets(command).sort(), written.sort(), command);
-  assert.ok(namesFile("./src/b.ts", "src/b.ts"));
-  assert.ok(namesFile("b.txt", "sub/b.txt"), "after a cd");
+  assert.ok(namesFile("src/b.ts", "src/b.ts"));
+  assert.ok(namesFile("src/b.ts", "./src/b.ts"));
+  assert.ok(!namesFile("b.txt", "sub/b.txt"), "a file at the root is not one of the same name in a folder");
   assert.ok(!namesFile("b.txt", "sub/ab.txt"));
+  // Claude Code keeps a `cd` for the commands after it: the next command starts where the last one left the shell.
+  const first = shellWrites("cd sub && ls", "");
+  assert.equal(first.cwd, "sub");
+  assert.deepEqual(shellWrites("echo x > b.txt", first.cwd).targets, ["sub/b.txt"]);
+  assert.equal(shellWrites("(cd sub && ls)", "").cwd, "", "a subshell's cd ends with it");
+  assert.equal(shellWrites("cd ~/x", "").cwd, null);
 });
 
 test("in parallel turns a file an agent's own shell command wrote is credited to it, not to nobody", async () => {

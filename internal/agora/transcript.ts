@@ -91,6 +91,50 @@ const readWindow = (file: string, end: number | undefined, window: number): { li
   }
 };
 
+/** Complete JSON lines from `from` on, a window's worth (more if one line is longer); `next` is where the next read starts. */
+const readForward = (file: string, from: number, window: number): { lines: Line[]; next: number } => {
+  const size = statSync(file).size;
+  let reach = window;
+  for (;;) {
+    const until = Math.min(size, from + reach);
+    const buffer = Buffer.alloc(Math.max(0, until - from));
+    const fd = openSync(file, "r");
+    try {
+      readSync(fd, buffer, 0, buffer.length, from);
+    } finally {
+      closeSync(fd);
+    }
+    const last = buffer.lastIndexOf(0x0a);
+    if (last < 0) {
+      if (until >= size) return { lines: [], next: from };
+      reach *= 2;
+      continue;
+    }
+    const lines: Line[] = [];
+    let cursor = 0;
+    while (cursor <= last) {
+      const newline = buffer.indexOf(0x0a, cursor);
+      const raw = buffer.subarray(cursor, newline).toString("utf8").trim();
+      if (raw) {
+        try {
+          const value = JSON.parse(raw);
+          if (value && typeof value === "object") lines.push({ start: from + cursor, value });
+        } catch {
+          // a corrupt line is skipped
+        }
+      }
+      cursor = newline + 1;
+    }
+    return { lines, next: from + last + 1 };
+  }
+};
+
+/** A line that only settles a tool call made earlier: Claude's tool_result, an older Codex build's call output. */
+const isToolResult = (kind: AgentKind, value: Json): boolean =>
+  kind === "claude"
+    ? value.type === "user" && Array.isArray(value.message?.content) && value.message.content.some((part: Json) => part?.type === "tool_result")
+    : value.type === "response_item" && (value.payload?.type === "function_call_output" || value.payload?.type === "custom_tool_call_output");
+
 const dataUrl = (media: string, base64: string): string | undefined =>
   base64.length * 0.75 <= MAX_IMAGE ? `data:${media};base64,${base64}` : undefined;
 
@@ -634,12 +678,22 @@ export const readTranscript = (kind: AgentKind, file: string, options: { end?: n
   const window = options.window ?? WINDOW;
   let { lines, start, size } = readWindow(file, options.end, window);
   const until = Math.min(options.end ?? size, size);
-  const parse = () => (kind === "claude" ? parseClaude(lines) : parseCodex(lines));
+  // Results written after the page's end, for its calls still open at that end (a call and its result can fall on two pages).
+  const settling: Line[] = [];
+  const parse = () => (kind === "claude" ? parseClaude([...lines, ...settling]) : parseCodex([...lines, ...settling]));
   let parsed = parse();
   while (parsed.length < MIN_ENTRIES && start > 0 && until - start < REACH) {
     const older = readWindow(file, start, window);
     lines = [...older.lines, ...lines];
     start = older.start;
+    parsed = parse();
+  }
+  const open = () => parsed.some((entry) => entry.kind === "tool" && entry.status === "running");
+  for (let from = until; from < size && from - until < REACH && open(); ) {
+    const later = readForward(file, from, window);
+    if (later.next <= from) break;
+    settling.push(...later.lines.filter(({ value }) => isToolResult(kind, value)));
+    from = later.next;
     parsed = parse();
   }
   const kept = parsed.length > MAX_ENTRIES ? parsed.slice(parsed.length - MAX_ENTRIES) : parsed;

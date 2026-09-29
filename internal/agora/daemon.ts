@@ -476,6 +476,12 @@ export class AgoraDaemon {
   private async refuseHumanTokenFromAgent(req: IncomingMessage): Promise<void> {
     const owner = await agentBehind(req.socket);
     if (!owner) return;
+    if ("unknown" in owner) {
+      throw new HttpError(
+        403,
+        `agent processes are running and Agoryx cannot tell whether this request comes from one of them (${owner.unknown}); the human's token is refused until it can — the daemon needs lsof and ps`,
+      );
+    }
     throw new HttpError(
       403,
       `this request comes from ${owner.agent}'s process (room ${owner.room}) with the human's token: an agent acts under its own key (${AGENT_KEY_ENV}), never as the human`,

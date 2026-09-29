@@ -70,7 +70,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "The room defaults to the one whose workspace contains the current directory, else the most recent.",
       "Without a running daemon, say/table/more run the room in this process until it goes quiet.",
       'Agents: a JSON list like [{"id":"opus","kind":"claude","model":"opus"},{"kind":"codex"}] (kind: claude|codex; id, label, model optional;',
-      `  "profile": false keeps your profile, ${profilePath()}, from that agent).`,
+      `  "profile": false keeps your profile, ${profilePath()}, out of that agent's prompts — not out of reach of its own tools).`,
       `New rooms seat the agents in ${rosterPath()} when it exists, else Claude and Codex; --agents seats others in one room.`,
       `State lives in ${agoraHome()} (override with AGORYX_HOME).`,
     ].join("\n"),

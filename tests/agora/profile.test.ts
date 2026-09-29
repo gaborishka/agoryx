@@ -229,7 +229,7 @@ test("who sees the profile: the CLI and the UI say it from the roster and the ro
     const text = describeProfile(path, profile, room).join("\n");
     assert.match(text, /Room "Store" \(r1\):/);
     assert.match(text, /Claude \(@claude\)\s+sees it — has this version/);
-    assert.match(text, /Codex \(@codex\)\s+does not see it \("profile": false in the roster\)/);
+    assert.match(text, /Codex \(@codex\)\s+is not given it \("profile": false in the roster; its own tools could still read the file\)/);
     assert.match(text, /Opus \(@opus\)\s+sees it — gets this version with its next turn/);
     assert.doesNotMatch(text, /I-AM-IVAN/, "the report never prints the profile itself");
 
@@ -269,7 +269,7 @@ test("`agoryx profile` names the file and, with a room, who in it sees the profi
     const withRoom = run();
     assert.equal(withRoom.status, 0, withRoom.stderr);
     assert.match(withRoom.stdout, /Claude \(@claude\)\s+sees it — gets this version with its next turn/);
-    assert.match(withRoom.stdout, /Codex \(@codex\)\s+does not see it/);
+    assert.match(withRoom.stdout, /Codex \(@codex\)\s+is not given it/);
     assert.doesNotMatch(withRoom.stdout, /I-AM-IVAN/);
   } finally {
     rmSync(home, { recursive: true, force: true });

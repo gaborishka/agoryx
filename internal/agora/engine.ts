@@ -1,5 +1,6 @@
 import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { clearTurnContext, TURN_FILE_ENV, turnContextPath, writeTurnContext } from "./turn-context.js";
 import { actorFields, actorLabel, AGENT_KEY_ENV, describeSettings, originName } from "./actor.js";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
 import { embed, mediaRefs } from "./media.js";
@@ -7,7 +8,7 @@ import { locateNativeSession, scanNativeSession, type NativeExchange } from "./n
 import { activeRun } from "./projection.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
 import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
-import { truncate, type AgentRunner, type TurnResult } from "./runners/types.js";
+import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
 import type {
@@ -71,7 +72,24 @@ export interface EngineOptions {
    * AGORYX_AGENT_KEY: the human's CLI in the agent's shell then acts as that agent, not as the human.
    */
   agentKey?: (agentId: string) => string | undefined;
+  /**
+   * Keep each agent's CLI process up between its turns (Claude `--input-format stream-json`, Codex
+   * `app-server`), so a turn does not wait for the CLI to start. Off unless given. `idleMs`: how long an
+   * unused process is kept (default 5 minutes). A runner without a live mode, and a process that fails to
+   * start, fall back to one process per turn without a word.
+   */
+  live?: boolean | { idleMs?: number };
 }
+
+/** A process kept up for an agent between turns. */
+interface LiveEntry {
+  proc: LiveProcess;
+  idleTimer?: NodeJS.Timeout;
+  /** Turns it has taken: one that has taken none is new, and its failure to start says something about live mode itself. */
+  turns: number;
+}
+
+export const DEFAULT_LIVE_IDLE_MS = 5 * 60 * 1000;
 
 /** Where the engine is in an agent's native session file. */
 interface NativeTracker {
@@ -259,6 +277,12 @@ export class RoomEngine {
   private closed = false;
   private lockHeld = false;
   private readonly agentKey: ((agentId: string) => string | undefined) | undefined;
+  private readonly liveIdleMs: number;
+  private readonly liveOn: boolean;
+  /** Live processes by agent: at most one each, used by one turn at a time. */
+  private readonly live = new Map<string, LiveEntry>();
+  /** Agents whose live process could not start: they run one process per turn from then on. */
+  private readonly liveOff = new Set<string>();
 
   constructor(options: EngineOptions) {
     this.store = options.store;
@@ -266,6 +290,8 @@ export class RoomEngine {
     this.shimDir = options.shimDir;
     this.agentCli = options.agentCli ?? "agoryx";
     this.agentKey = options.agentKey;
+    this.liveOn = Boolean(options.live);
+    this.liveIdleMs = typeof options.live === "object" && options.live.idleMs !== undefined ? options.live.idleMs : DEFAULT_LIVE_IDLE_MS;
     this.env = options.env ?? process.env;
     this.profilePath = options.profilePath;
     this.opsPollMs = options.opsPollMs ?? 250;
@@ -404,6 +430,7 @@ export class RoomEngine {
     if (this.closed) return;
     await this.stop("shutdown", by);
     this.closed = true;
+    this.closeAllLive();
     if (this.opsTimer) clearInterval(this.opsTimer);
     if (this.nativeTimer) clearInterval(this.nativeTimer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -785,26 +812,125 @@ export class RoomEngine {
   // Turns
   // -------------------------------------------------------------------------
 
-  private agentEnv(agent: RoomAgent, turnId: string): NodeJS.ProcessEnv {
+  /**
+   * The environment of an agent's turn. For a process started for the turn: this turn's id, the messages it
+   * has seen and the agent's key. For a live process, which keeps one environment across turns, none of those
+   * (a stale turn or key must not outlive its turn): the tools find the current turn in AGORYX_TURN_FILE.
+   */
+  private agentEnv(agent: RoomAgent, turnId: string, live = false): NodeJS.ProcessEnv {
     const path = this.env.PATH ?? process.env.PATH ?? "";
-    // Never another agent's key inherited from where Agoryx was started: this agent's own, or none.
-    const { [AGENT_KEY_ENV]: _inherited, ...env } = this.env;
+    // Never another agent's key (or turn) inherited from where Agoryx was started: this agent's own, or none.
+    const { [AGENT_KEY_ENV]: _inherited, [TURN_FILE_ENV]: _file, AGORYX_TURN: _turn, AGORYX_SEEN: _seen, ...env } = this.env;
     const key = this.agentKey?.(agent.id);
     return {
       ...env,
-      ...(key ? { [AGENT_KEY_ENV]: key } : {}),
+      ...(key && !live ? { [AGENT_KEY_ENV]: key } : {}),
       PATH: this.shimDir ? `${this.shimDir}:${path}` : path,
       AGORYX_ROOM: this.state.id,
       AGORYX_ROOM_NAME: this.state.name,
       AGORYX_AGENT: agent.id,
-      AGORYX_TURN: turnId,
-      // The last message this turn's delta covers: `agoryx read new` prints what was said after it.
-      AGORYX_SEEN: `m${this.state.counters.m ?? 0}`,
+      ...(live
+        ? { [TURN_FILE_ENV]: this.turnFile(agent.id) }
+        : {
+            AGORYX_TURN: turnId,
+            // The last message this turn's delta covers: `agoryx read new` prints what was said after it.
+            AGORYX_SEEN: `m${this.state.counters.m ?? 0}`,
+          }),
       AGORYX_OPS_DIR: this.ws.opsDir,
       AGORYX_TABLE: this.ws.tableFile,
       // Login shells may reorder PATH so another `agoryx` wins; env vars survive.
       ...(this.shimDir ? { AGORYX_CLI: join(this.shimDir, "agoryx") } : {}),
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Live processes
+  // -------------------------------------------------------------------------
+
+  private turnFile(agentId: string): string {
+    return turnContextPath(this.store.dir, agentId);
+  }
+
+  /** Take an agent's live process down (settings changed, a person spoke to its session, idle, closing). */
+  private closeLive(agentId: string, why?: string): void {
+    const entry = this.live.get(agentId);
+    if (!entry) return;
+    this.live.delete(agentId);
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    entry.proc.close();
+    clearTurnContext(this.turnFile(agentId));
+    if (why) this.log(`${agentId} live process closed (${why})`);
+  }
+
+  private closeAllLive(): void {
+    for (const agentId of [...this.live.keys()]) this.closeLive(agentId, "room closed");
+  }
+
+  /**
+   * One turn on the agent's live process, started (or restarted) as needed. `liveUnavailable` in the result
+   * means nothing ran: the caller runs the turn with a process of its own.
+   */
+  private async runLive(agent: RoomAgent, runner: AgentRunner, request: TurnRequest, turnId: string, callbacks: Parameters<AgentRunner["run"]>[1]): Promise<TurnResult> {
+    let entry = this.live.get(agent.id);
+    const fingerprint = runner.liveFingerprint!(request);
+    // Anything fixed when the process started that differs now, or another session than the one it holds.
+    if (entry && (!entry.proc.alive || entry.proc.fingerprint !== fingerprint || (entry.proc.sessionId ?? null) !== request.sessionId)) {
+      this.closeLive(agent.id, entry.proc.alive ? "settings or session changed" : "process gone");
+      entry = undefined;
+    }
+    if (!entry) {
+      try {
+        entry = { proc: runner.openLive!(request), turns: 0 };
+      } catch (error) {
+        return {
+          status: "error",
+          text: "",
+          sessionId: null,
+          error: { kind: "unknown", message: error instanceof Error ? error.message : String(error) },
+          liveUnavailable: true,
+        };
+      }
+      this.live.set(agent.id, entry);
+    }
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    entry.idleTimer = undefined;
+    const proc = entry.proc;
+    const file = this.turnFile(agent.id);
+    const key = this.agentKey?.(agent.id);
+    writeTurnContext(file, {
+      room: this.state.id,
+      agent: agent.id,
+      turn: turnId,
+      seen: `m${this.state.counters.m ?? 0}`,
+      ...(key ? { key } : {}),
+    });
+    const reused = entry.turns > 0;
+    entry.turns += 1;
+    let result: TurnResult;
+    try {
+      result = await proc.runTurn(request, callbacks);
+    } finally {
+      // The turn is over: what names it (and the agent's key) goes with it.
+      clearTurnContext(file);
+    }
+    if (result.liveUnavailable && reused && !request.signal.aborted && !this.closed) {
+      // A process that had served turns died between them: that says nothing about live mode. Start another.
+      this.closeLive(agent.id, "process died between turns");
+      return this.runLive(agent, runner, request, turnId, callbacks);
+    }
+    if (this.live.get(agent.id) !== entry) {
+      // Closed while the turn ran (the room is closing): nothing to keep.
+      proc.close();
+    } else if (result.status !== "ok" || !proc.alive) {
+      // Whatever went wrong, the process is in an unknown state: the next turn starts a clean one.
+      this.closeLive(agent.id);
+    } else if (this.liveIdleMs > 0) {
+      entry.idleTimer = setTimeout(() => this.closeLive(agent.id, "idle"), this.liveIdleMs);
+      entry.idleTimer.unref();
+    } else {
+      this.closeLive(agent.id);
+    }
+    return result;
   }
 
   /** Show the shim as plain `agoryx` in activity traces instead of its absolute path. */
@@ -912,10 +1038,23 @@ export class RoomEngine {
         env,
         signal: controller.signal,
       };
-      let result = await runner.run(request, callbacks);
+      const canLive = this.liveOn && !this.liveOff.has(agent.id) && Boolean(runner.openLive && runner.liveFingerprint);
+      const liveEnv = canLive ? this.agentEnv(agent, turnId, true) : env;
+      const runOnce = async (req: TurnRequest): Promise<TurnResult> => {
+        if (canLive && !this.liveOff.has(agent.id) && !this.closed) {
+          const result = await this.runLive(agent, runner, { ...req, env: liveEnv }, turnId, callbacks);
+          if (!result.liveUnavailable) return result;
+          // It could not take the turn (did not start, or died before the turn began): one process per turn from here on.
+          this.liveOff.add(agent.id);
+          this.closeLive(agent.id);
+          this.log(`${agent.id} live mode unavailable (${result.error?.message ?? "unknown"}); using one process per turn`);
+        }
+        return runner.run(req, callbacks);
+      };
+      let result = await runOnce(request);
       if (result.status === "error" && result.error?.kind === "session" && sessionId && !controller.signal.aborted) {
         callbacks.onActivity({ id: "session-rejoin", kind: "note", label: "previous native session could not be resumed — rejoining with a fresh one", status: "ok" });
-        result = await runner.run({ ...request, sessionId: null, prompt: promptFor(true, true) }, callbacks);
+        result = await runOnce({ ...request, sessionId: null, prompt: promptFor(true, true) });
       }
       return result;
     };
@@ -1339,7 +1478,11 @@ export class RoomEngine {
         tracker.offset = scan.offset;
         tracker.lastAgoryx = scan.lastAgoryx;
         tracker.openNative = scan.openNative;
-        if (scan.openNative || scan.exchanges.length > 0) tracker.nativeAt = Date.now();
+        if (scan.openNative || scan.exchanges.length > 0) {
+          tracker.nativeAt = Date.now();
+          // Someone talked to this session outside the room: a process that kept the session in memory no longer has all of it.
+          this.closeLive(agent.id, "the session was used outside the room");
+        }
         tracker.size = size;
         tracker.mtimeMs = mtimeMs;
         for (const exchange of scan.exchanges) this.importNative(agent, exchange);

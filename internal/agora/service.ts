@@ -201,6 +201,16 @@ export const defaultRunners = (env: NodeJS.ProcessEnv = process.env): Record<Age
   codex: createCodexRunner(env.AGORYX_CODEX_BIN || "codex"),
 });
 
+/**
+ * Live processes (see EngineOptions.live) are on unless AGORYX_LIVE is 0/off/false/no;
+ * AGORYX_LIVE_IDLE_MS sets how long an unused one is kept (default 5 minutes, 0 = close after every turn).
+ */
+export const liveSetting = (env: NodeJS.ProcessEnv): boolean | { idleMs: number } => {
+  if (/^(0|off|false|no)$/i.test(env.AGORYX_LIVE?.trim() ?? "")) return false;
+  const idle = Number(env.AGORYX_LIVE_IDLE_MS?.trim());
+  return env.AGORYX_LIVE_IDLE_MS?.trim() && Number.isFinite(idle) && idle >= 0 ? { idleMs: idle } : true;
+};
+
 export const openEngine = (
   store: RoomStore,
   options: {
@@ -222,6 +232,7 @@ export const openEngine = (
     env,
     profilePath: profilePath(env),
     agentKey: options.agentKey ?? ((agentId) => agentKey(loadOrCreateToken(env), store.id, agentId)),
+    live: liveSetting(env),
     ...(options.log ? { log: options.log } : {}),
     ...(options.opsPollMs ? { opsPollMs: options.opsPollMs } : {}),
   });

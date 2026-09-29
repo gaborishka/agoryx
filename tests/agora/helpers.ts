@@ -31,7 +31,12 @@ export interface FakeLogEntry {
   sessionId?: string;
   resumed?: boolean;
   env?: Record<string, string | undefined>;
+  /** Live mode: the pid of the (live) process and what it was started with, which no turn can change. */
+  live?: boolean;
+  pid?: number;
+  procEnv?: Record<string, string | undefined>;
   tableOutputs?: string[];
+  backgroundPid?: number;
 }
 
 export interface TestRoom {
@@ -67,6 +72,10 @@ export const createTestRoom = (options: {
   env?: NodeJS.ProcessEnv;
   /** The human's profile file, as the daemon passes <AGORYX_HOME>/profile.md; none when not given. */
   profilePath?: string;
+  /** Keep the agents' CLI processes up between turns (see EngineOptions.live). */
+  live?: boolean | { idleMs?: number };
+  /** Issues the agents' keys, as the daemon does. */
+  agentKey?: (agentId: string) => string | undefined;
 } = {}): TestRoom => {
   const home = mkdtempSync(join(tmpdir(), "agora-test-"));
   const roomsRoot = join(home, "rooms");
@@ -102,6 +111,8 @@ export const createTestRoom = (options: {
     shimDir,
     env,
     ...(options.profilePath ? { profilePath: options.profilePath } : {}),
+    ...(options.live !== undefined ? { live: options.live } : {}),
+    ...(options.agentKey ? { agentKey: options.agentKey } : {}),
     opsPollMs: 50,
     nativePollMs: 50,
   });

@@ -16,6 +16,34 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+// Under a live agent (one CLI kept up across the agent's turns) the turn is not in the environment, which was
+// fixed when the process started: the room rewrites the file AGORYX_TURN_FILE names at the start of each turn
+// and removes it at the end. Same rules as applyTurnContext in internal/agora/turn-context.ts.
+if (process.env.AGORYX_TURN_FILE) {
+  let context = null;
+  try {
+    context = JSON.parse(readFileSync(process.env.AGORYX_TURN_FILE, "utf8"));
+  } catch {
+    // no turn in progress
+  }
+  const valid =
+    context &&
+    typeof context.turn === "string" &&
+    typeof context.seen === "string" &&
+    context.agent === process.env.AGORYX_AGENT &&
+    context.room === process.env.AGORYX_ROOM;
+  if (valid) {
+    process.env.AGORYX_TURN = context.turn;
+    process.env.AGORYX_SEEN = context.seen;
+    if (typeof context.key === "string" && context.key) process.env.AGORYX_AGENT_KEY = context.key;
+    else delete process.env.AGORYX_AGENT_KEY;
+  } else {
+    delete process.env.AGORYX_TURN;
+    delete process.env.AGORYX_SEEN;
+    delete process.env.AGORYX_AGENT_KEY;
+  }
+}
+
 const USAGE = `agoryx — room tools for agents
 
   agoryx say "what I am doing"   post to the room now, while you work (not a turn; wakes only an idle agent you @mention)

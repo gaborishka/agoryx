@@ -69,6 +69,31 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
   they did (no `by` means what it always did). A turn without a key of its own (a runner that gave it
   none) is refused by the CLI rather than sent with the human's token: it would be recorded as theirs.
 
+## Fast turns: a CLI kept up between turns
+
+A CLI is slow to start (Claude ~8 s of hooks, plugins and MCP on some machines, Codex 1–3 s) and slow to exit
+(~3 s after its answer). Two things keep a room from waiting on that:
+
+- **A turn ends when the CLI says the answer is ready** — Codex `turn.completed`, Claude `result` — not when the
+  process exits. The process (its whole group, so tools it started too) is then taken down at once, before the
+  turn's changes are counted: nothing it might still write while shutting down is credited to the turn, and
+  nothing is left running.
+- **A live process per agent.** Claude runs as `claude -p --input-format stream-json --output-format stream-json`,
+  Codex as `codex app-server` (JSON-RPC over stdio; the same sandbox, network and effort as `codex exec`). Each
+  turn is a new message into the same process, so the second turn onwards pays no startup. The session is the
+  same native session, so the human's own `claude --resume` / `codex resume` still works.
+  - **The turn is not in the process's environment** — that was fixed when it started. The room writes
+    `rooms/<id>/live/<agent>.json` (`AGORYX_TURN_FILE`, mode 0600: turn, delta cursor, the agent's key) at the
+    start of every turn and removes it at its end; `agoryx say`, `read new`, `table` and the full CLI read it each
+    time they run. Between turns there is no turn and no key, so a command is refused rather than sent under a
+    stale turn or as the human.
+  - **Restarted** when the model, effort, access or network setting changes, when the session is not the one the
+    process holds (rejoin), when the human wrote into the same native session (see "In the agents' own apps"),
+    after a failed or stopped turn, and after `AGORYX_LIVE_IDLE_MS` without a turn (default 5 minutes; `0` closes
+    it after every turn). Closed with the room and with the daemon. Stop kills the process and ends the turn.
+  - **Falls back silently** to a process per turn if the live one cannot start (a CLI without the flags, a failed
+    handshake), for that agent, for as long as the room is open. `AGORYX_LIVE=0` turns live processes off.
+
 ## The table (Стіл)
 
 The conversation and the table are not two chats. The conversation is the talk — reasoning, questions,
@@ -375,6 +400,7 @@ State lives in `$AGORYX_HOME` (default `~/.local/state/agoryx/agora`):
 | `profile.md` | Your profile, written by you (see "Your profile"). Agoryx only reads it. |
 | `rooms/<id>/engine.lock` | Single-writer lock. A second process follows the log instead of driving. |
 | `bin/agoryx` | The agent shim. |
+| `rooms/<id>/live/<agent>.json` | The current turn of an agent kept live (`AGORYX_TURN_FILE`); exists only during its turn. |
 | `daemon.json`, `daemon.token` | The running daemon's address and token. |
 | `workspaces/<slug>/` | Room workspaces, only when `AGORYX_HOME` is set. |
 
@@ -387,7 +413,8 @@ Without `--dir`, a room's workspace is `~/agoryx/<slug>/` (git-initialised); `AG
 | `internal/agora/engine.ts` | Room engine: wake rules, deltas, blind rounds, pass, budget, table inbox, attribution, per-turn changes, checkpoints |
 | `internal/agora/workspace.ts` | Workspace git helpers: dirty snapshots, tree snapshots and turn patches, checkpoints, safe paths |
 | `internal/agora/prompts.ts` | Briefing (first turn) and delta prompts |
-| `internal/agora/runners/{claude,codex}.ts` | Native CLI runners: session ids, stream parsing, activity traces |
+| `internal/agora/runners/{claude,codex}.ts` | Native CLI runners: session ids, stream parsing, activity traces; the live Claude / Codex (app-server) processes; `process.ts` spawns and ends CLI processes |
+| `internal/agora/turn-context.ts` | The turn file a live agent's tools read instead of the environment |
 | `internal/agora/native.ts` | Finds and reads the agents' native session files; imports turns taken outside the room |
 | `internal/agora/doc.ts` | The canonical file: path rules, reading, line diff, baseline revision |
 | `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim (`say`, `table`, `read`, `diff`; the rest goes to the full CLI) |

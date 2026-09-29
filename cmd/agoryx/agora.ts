@@ -16,6 +16,7 @@ import { createRoom, openEngine, resumeCommands, roomNameFrom } from "../../inte
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
 import { changeStats, patchSection } from "../../internal/agora/workspace.js";
 import { RoomStore } from "../../internal/agora/store.js";
+import { applyTurnContext, TURN_FILE_ENV } from "../../internal/agora/turn-context.js";
 import { parseTableCommand, TABLE_USAGE } from "../../internal/agora/table-cli.js";
 import { describeTableOp, renderTableMarkdown } from "../../internal/agora/table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
@@ -249,6 +250,9 @@ export class TranscriptPrinter {
 // Room access: through the daemon when it runs, otherwise in this process
 // ---------------------------------------------------------------------------
 
+// Under a live agent the turn is not in the environment: take the current one from its file (or none, between turns).
+applyTurnContext();
+
 /** No room named: inside an agent's room turn, that room; else the one this directory is in (or the latest). */
 const resolveRoom = (ref: string | undefined): string => {
   const turnRoom = process.env.AGORYX_TURN ? process.env.AGORYX_ROOM : undefined;
@@ -257,7 +261,9 @@ const resolveRoom = (ref: string | undefined): string => {
 };
 
 /** In an agent's room turn: the run it would follow cannot end while this command holds the turn open. */
-const inAgentTurn = (): boolean => Boolean(process.env.AGORYX_TURN && process.env.AGORYX_AGENT);
+// A live agent's shell has no turn of its own in its environment, only the file that names the current one:
+// with the file named but the turn over, this is still "an agent's" command, and it must not be sent as the human's.
+const inAgentTurn = (): boolean => Boolean(process.env.AGORYX_AGENT && (process.env.AGORYX_TURN || process.env[TURN_FILE_ENV]));
 
 /**
  * The daemon, as whoever is running this: in an agent's turn, with the agent's own key (so what it does
@@ -299,7 +305,7 @@ const localAgent = (): ActorOrigin | null => {
 const daemonEnv = (): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = { ...process.env };
   const agent = localAgentOrNull();
-  for (const key of ["AGORYX_ROOM", "AGORYX_ROOM_NAME", "AGORYX_AGENT", "AGORYX_TURN", "AGORYX_SEEN", "AGORYX_OPS_DIR", "AGORYX_TABLE", AGENT_KEY_ENV]) {
+  for (const key of [TURN_FILE_ENV, "AGORYX_ROOM", "AGORYX_ROOM_NAME", "AGORYX_AGENT", "AGORYX_TURN", "AGORYX_SEEN", "AGORYX_OPS_DIR", "AGORYX_TABLE", AGENT_KEY_ENV]) {
     delete env[key];
   }
   if (agent) env.AGORYX_UP_BY = originName(agent);

@@ -127,6 +127,25 @@ export function PassLine({ m, turn, ops, docs }: { m: MessageEntry; turn?: TurnS
   );
 }
 
+/** What an agent said while it worked (`agoryx say`): a line in the flow, not a turn's reply. */
+export function UpdateLine({ m }: { m: MessageEntry }) {
+  return (
+    <div className="flex items-start gap-2 text-[13.5px]">
+      <Avatar handle={m.author} size={20} className="mt-0.5" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <Name handle={m.author} />
+          <Tip tip="Написано під час роботи — це ще не відповідь за хід">
+            <span className="text-xs text-muted-foreground">по ходу</span>
+          </Tip>
+          <Time iso={m.ts} />
+        </div>
+        <Markdown text={m.text} className="text-[13.5px] leading-relaxed text-muted-foreground" />
+      </div>
+    </div>
+  );
+}
+
 export function SystemLine({ m }: { m: MessageEntry }) {
   const err = isSysError(m.text);
   const Icon = err ? TriangleAlertIcon : InfoIcon;

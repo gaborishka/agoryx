@@ -7,11 +7,16 @@
 // agent's environment, and the room reads it from the same inbox.
 // `agoryx diff` reads what each turn changed (.agoryx/rooms/<room>/turns/<turn>.patch).
 // `agoryx read` reads what was said, in full (.agoryx/messages/<room>/<id>.md).
+// `agoryx say` posts what the agent is doing while it works, through the same inbox as table ops.
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 
 const USAGE = `agoryx — room tools for agents
+
+  agoryx say "what I am doing"   post to the room now, while you work (not a turn; wakes nobody)
+                   e.g. agoryx say "taking internal/x.ts — leaving the CLI to you"
+  agoryx read new          what the others said since your turn began
 
   agoryx table show
   agoryx table ask "question"
@@ -41,6 +46,7 @@ const USAGE = `agoryx — room tools for agents
 Outside a room turn (someone talking to you directly in your own session), run it
 from the room's workspace and sign it: agoryx table … --as <your id in the room>.
 If several rooms share the workspace, name yours too: --room <room id> (table, diff, read).
+'say' works only during a room turn.
 `;
 
 const cleanRoom = (value) => String(value).replace(/[^\w.-]/g, "");
@@ -290,9 +296,33 @@ const messagesDir = (agoryxDir, flagRoom) => {
   return join(root, rooms[0].name);
 };
 
+/**
+ * Messages after the last one this turn's delta covered (AGORYX_SEEN), in full, but not the reader's own:
+ * what the others said while this turn was running — their updates, a reply, the human.
+ */
+const readNew = (dir) => {
+  const seen = /^m(\d+)$/.exec(process.env.AGORYX_SEEN ?? "");
+  if (!seen) fail("'read new' works during a room turn — outside one, 'agoryx read' lists recent messages");
+  const me = process.env.AGORYX_AGENT;
+  const fresh = existsSync(dir)
+    ? readdirSync(dir)
+        .filter((name) => /^m\d+\.md$/.test(name))
+        .map((name) => Number(name.slice(1, -".md".length)))
+        .filter((n) => n > Number(seen[1]))
+        .sort((a, b) => a - b)
+        .map((n) => readFileSync(join(dir, `m${n}.md`), "utf8"))
+        .filter((text) => text.split("\n", 1)[0].split(" · ")[1] !== me)
+    : [];
+  process.stdout.write(fresh.length ? fresh.join("\n") : "Nothing new since your turn began.\n");
+};
+
 const runRead = (agoryxDir, argv) => {
   const { positional: refs, flags } = parseArgs(argv);
   const dir = messagesDir(agoryxDir, flags.room);
+  if (refs.length === 1 && refs[0] === "new") {
+    readNew(dir);
+    return;
+  }
   if (refs.length === 0) {
     const all = existsSync(dir)
       ? readdirSync(dir)
@@ -330,8 +360,8 @@ const main = async () => {
     process.stdout.write(USAGE);
     return;
   }
-  if (command !== "table" && command !== "diff" && command !== "read") {
-    fail(`inside a room only 'agoryx table …', 'agoryx diff …' and 'agoryx read …' are available\n\n${USAGE}`);
+  if (command !== "table" && command !== "diff" && command !== "read" && command !== "say") {
+    fail(`inside a room only 'agoryx say …', 'agoryx table …', 'agoryx diff …' and 'agoryx read …' are available\n\n${USAGE}`);
   }
 
   const agoryxDir = findAgoryxDir();
@@ -344,6 +374,15 @@ const main = async () => {
   const room = roomDir(agoryxDir, flags.room);
   if (command === "diff") {
     runDiff(agoryxDir, room, positional[0], positional[1]);
+    return;
+  }
+
+  if (command === "say") {
+    const text = positional.length === 1 && positional[0] === "-" ? readFileSync(0, "utf8") : positional.join(" ");
+    if (!text.trim()) fail(`'say' needs text, e.g. agoryx say "taking internal/x.ts"`);
+    const unknown = Object.keys(flags).filter((flag) => flag !== "as" && flag !== "room");
+    if (unknown.length) fail(`'say' does not take ${unknown.map((flag) => `--${flag}`).join(", ")}`);
+    await send(room, signer(flags), { op: "say", text });
     return;
   }
 
@@ -370,6 +409,11 @@ const main = async () => {
   }
   const op = buildOp(verb, positional, flags);
   for (const key of Object.keys(op)) if (op[key] === undefined) delete op[key];
+  await send(room, agent, op);
+};
+
+/** Queue an op in the room's inbox and wait briefly for the room to ack it. */
+const send = async (room, agent, op) => {
   const nonce = randomBytes(6).toString("hex");
   const opsDir = join(room, "ops");
   mkdirSync(opsDir, { recursive: true });

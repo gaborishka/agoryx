@@ -49,7 +49,11 @@ export const DEFAULT_SETTINGS: RoomSettings = {
   doc: null,
 };
 
-export type MessageKind = "human" | "agent" | "pass" | "system" | "decision";
+/**
+ * "update" is what an agent says while it works (`agoryx say`): posted at once, not a turn, not counted
+ * against the budget, and it wakes nobody — the turn's reply is still its "agent" (or "pass") message.
+ */
+export type MessageKind = "human" | "agent" | "pass" | "system" | "decision" | "update";
 
 export interface RoomMessage {
   id: string;
@@ -70,6 +74,8 @@ export interface RoomMessage {
    * room. That agent already has it; everyone else gets it in their next turn.
    */
   native?: NativeOrigin;
+  /** The agent tool's nonce for an update, so an inbox replayed after a crash does not post it twice. */
+  nonce?: string;
 }
 
 export interface NativeOrigin {

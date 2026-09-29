@@ -700,6 +700,8 @@ export class RoomEngine {
       AGORYX_ROOM_NAME: this.state.name,
       AGORYX_AGENT: agent.id,
       AGORYX_TURN: turnId,
+      // The last message this turn's delta covers: `agoryx read new` prints what was said after it.
+      AGORYX_SEEN: `m${this.state.counters.m ?? 0}`,
       AGORYX_OPS_DIR: this.ws.opsDir,
       AGORYX_TABLE: this.ws.tableFile,
       // Login shells may reorder PATH so another `agoryx` wins; env vars survive.
@@ -1459,6 +1461,10 @@ export class RoomEngine {
       }
       const by = member.id;
       const turnId = this.running.get(member.id)?.turnId;
+      if (raw.op === "say") {
+        this.postUpdate(inbox, member, raw, nonce, turnId);
+        return;
+      }
       // An inbox file recovered after a crash may hold ops already applied: the nonce in the log says so.
       const applied = nonce ? this.appliedOp(nonce) : undefined;
       if (applied) {
@@ -1475,6 +1481,45 @@ export class RoomEngine {
         this.log(`rejected table op from ${agent}: ${message}`);
       }
     });
+  }
+
+  /**
+   * `agoryx say`: what an agent is doing, posted while it works. As many as it likes — not a turn, not
+   * counted against the budget, and it wakes nobody (the turn's reply does that). Only during a room turn:
+   * in its own session an agent's answer is read back into the room anyway.
+   */
+  private postUpdate(inbox: WorkspacePaths, member: RoomAgent, raw: Record<string, unknown>, nonce: string | undefined, turnId: string | undefined): void {
+    const ack = (result: { ok: true; id: string; text: string } | { ok: false; error: string }) => {
+      if (nonce) writeAck(inbox, nonce, result);
+    };
+    const posted = nonce ? this.state.messages.find((entry) => entry.nonce === nonce) : undefined;
+    if (posted) {
+      ack({ ok: true, id: posted.id, text: `${posted.id} · posted` });
+      return;
+    }
+    const text = typeof raw.text === "string" ? raw.text.trim() : "";
+    if (!text) {
+      ack({ ok: false, error: "'say' needs text" });
+      return;
+    }
+    if (!turnId) {
+      ack({ ok: false, error: "'say' is for while you work in a room turn — outside one, just answer here: your reply is read back into the room" });
+      this.log(`rejected update from ${member.id}: not in a room turn`);
+      return;
+    }
+    const handles = [...this.state.agents.map((entry) => entry.id), this.state.human.toLowerCase()];
+    const runId = this.state.turns.find((turn) => turn.id === turnId)?.runId;
+    const message = this.postMessage({
+      author: member.id,
+      kind: "update",
+      text,
+      mentions: parseMentions(text, handles),
+      wakes: false,
+      turnId,
+      ...(runId ? { runId } : {}),
+      ...(nonce ? { nonce } : {}),
+    });
+    ack({ ok: true, id: message.id, text: `${message.id} · posted to the room` });
   }
 
   private checkpoint(run: RunState): void {

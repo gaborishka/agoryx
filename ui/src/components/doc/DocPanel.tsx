@@ -259,7 +259,7 @@ export function DocPanel() {
       else if (rev.text === null) body = <Muted>У цій версії файл видалено.</Muted>;
       else body = rev.diff?.some((i) => "t" in i && i.t !== " ") ? <DocDiff items={rev.diff} /> : <Muted>Текст не змінився.</Muted>;
     }
-    const message = r?.turnId ? room.messages.find((m) => m.turnId === r.turnId) : undefined;
+    const message = r?.turnId ? room.messages.find((m) => m.turnId === r.turnId && m.kind !== "update") : undefined;
     return (
       <div className="px-4 pb-6">
         <Bar>

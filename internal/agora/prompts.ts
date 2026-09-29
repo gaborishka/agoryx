@@ -180,6 +180,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile }: Bri
     `Workspace: ${state.workspace}`,
     `  A shared git directory — everyone works here. ${access}`,
     "  Others may edit files at the same time: check `git status` / `git diff` before overwriting, and say which files you touched.",
+    `  Say what you are doing while you do it: \`${agentCli} say "taking internal/x.ts — leaving the CLI to you"\` posts to the room at once, as often as is useful (it is not a turn and wakes nobody). \`${agentCli} read new\` shows what the others said since your turn began — look before you take a file someone may be on.`,
     `  Every turn's exact change is kept. Your delta lists what others changed with +/− counts and the turn id; \`${agentCli} diff t7\` prints that turn's patch (add a path to narrow it, or no id to list recent ones). What was done is in the diff, not only in what was said about it.`,
     "",
     "How the room works:",
@@ -368,8 +369,15 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
           ? `── Agoryx · ${clock(event.ts)}`
           : message.kind === "decision"
             ? `── ${who} · decision · ${clock(event.ts)}`
-            : `── ${who}${where} · ${clock(event.ts)}`;
+            : message.kind === "update"
+              ? `── ${who} · while working · ${clock(event.ts)}`
+              : `── ${who}${where} · ${clock(event.ts)}`;
       const lines = [header, messageGist(message, agent, state.human)];
+      if (message.kind === "update") {
+        // Said mid-turn: the turn's moves and files go with its reply, which comes later.
+        blocks.push(lines.join("\n"));
+        continue;
+      }
       const ops = message.turnId ? opsByTurn.get(message.turnId) : undefined;
       if (ops) {
         for (const op of ops) lines.push(`   ↳ table: ${deltaTableOp(op, state)}`);

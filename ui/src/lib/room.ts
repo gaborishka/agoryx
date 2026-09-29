@@ -129,7 +129,7 @@ const replyTurn = (item: FeedItem | undefined, turns: Map<string, TurnState>) =>
 
 export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   const turns = new Map(st.turns.map((t) => [t.id, t]));
-  const withMessage = new Set(st.messages.filter((m) => m.turnId).map((m) => m.turnId!));
+  const withMessage = new Set(st.messages.filter((m) => m.turnId && m.kind !== "update").map((m) => m.turnId!));
   const opsByTurn = new Map<string, TableOp[]>();
   const items: FeedItem[] = [];
   for (const entry of ops) {
@@ -165,19 +165,24 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
     if (first && item.type === "msg") {
       // Replies written at the same moment: none of them saw the others.
       const group: Array<Extract<FeedItem, { type: "msg" }>> = [item];
+      // What someone said while still working does not end the moment: it goes just before the group.
+      const said: FeedItem[] = [];
       const agents = new Set([item.m.author]);
       let j = i + 1;
-      for (;;) {
-        const next = items[j];
+      for (let k = j; ; k += 1) {
+        const next = items[k];
+        if (next?.type === "msg" && next.m.kind === "update") continue;
         const t = replyTurn(next, turns);
         if (!t || next?.type !== "msg" || t.cursor >= item.m.seq || agents.has(next.m.author)) break;
         agents.add(next.m.author);
+        said.push(...items.slice(j, k));
         group.push(next);
-        j += 1;
+        j = k + 1;
       }
       if (group.length > 1 && group.some((g) => g.m.kind === "agent")) {
-        const prev = st.messages.filter((m) => m.seq < item.m.seq && m.kind !== "system").at(-1);
+        const prev = st.messages.filter((m) => m.seq < item.m.seq && m.kind !== "system" && m.kind !== "update").at(-1);
         const names = nameList(group.map((g) => name(g.m.author)));
+        rows.push(...said);
         rows.push(
           prev?.kind === "human"
             ? {
@@ -206,7 +211,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   const live = st.turns.filter((turn) => turn.status === "running");
   let liveDivider: string | null = null;
   if (live.length > 1) {
-    const prev = st.messages.filter((m) => m.kind !== "system").at(-1);
+    const prev = st.messages.filter((m) => m.kind !== "system" && m.kind !== "update").at(-1);
     if (prev?.kind === "human") liveDivider = `${nameList(live.map((t) => name(t.agent)))} відповідають, не бачачи одне одного`;
   }
   return { turns, opsByTurn, docByTurn, rows, live, liveDivider };

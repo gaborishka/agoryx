@@ -12,7 +12,7 @@ import { useStore } from "@/lib/store";
 import type { TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Name, Tip } from "./bits";
-import { AgentMessage, CommitLine, DecisionLine, DocLine, Fresh, HumanMessage, PassLine, StandaloneOp, SystemLine } from "./Messages";
+import { AgentMessage, CommitLine, DecisionLine, DocLine, Fresh, HumanMessage, PassLine, StandaloneOp, SystemLine, UpdateLine } from "./Messages";
 import { ActivityList } from "./Trace";
 
 function Hello() {
@@ -79,6 +79,7 @@ function Item({ item, model, fresh, card, clamp }: { item: FeedItem; model: Feed
   if (m.kind === "pass") body = <PassLine m={m} turn={turn} ops={ops} docs={docs} />;
   else if (m.kind === "system") body = <SystemLine m={m} />;
   else if (m.kind === "decision") body = <DecisionLine m={m} />;
+  else if (m.kind === "update") body = <UpdateLine m={m} />;
   else if (m.kind === "human") body = <HumanMessage m={m} />;
   else body = <AgentMessage m={m} turn={turn} ops={ops} docs={docs} card={card} clamp={clamp} />;
   return (

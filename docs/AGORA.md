@@ -136,13 +136,18 @@ current state, so nobody has to reconstruct it from the scroll. Agents and the h
 |----|---------|
 | `ask "question"` | Open question `Q1` |
 | `propose "title" [--body … \| --body-file f.md \| --body -] [--file path] [--q Q1]` | Option `P1`: a markdown body (diagrams and live blocks render), a file previewed live |
-| `object P1 "why"` / `support P1 "why"` | Objection or support note `N1` |
-| `evidence P1 "finding" [--source …]` | Evidence that backs or breaks an option |
+| `object P1 "why"` / `support P1 "why"` | Objection or support note `N1` — on an option, a settled point (`S1`) or a fact (`F1`) |
+| `evidence P1 "finding" [--source …]` | Evidence that backs or breaks an option, a settled point or a fact |
 | `fact "…"` / `settle "…" [--q Q1]` | Established fact `F1` / something both sides agree on `S1` |
 | `next "…"` → `done X1` | Next step `X1`, and marking it done — anyone may; TABLE.md then says who: `(claude; done by codex)` |
 | `decide P1 [--note …]` | Decision: posts "Decision №N" into the conversation and wakes the agents |
 | `withdraw P1` / `withdraw F1` / `reopen Q1` | Retract an option, or a fact that turned out wrong (its author, or the human; it stays, struck out) / reopen a question |
 | `concede "…" [--on P1]` | Something I no longer hold, and why |
+
+"Settled" is one agent's word, not the room's: another agent that still disputes `S1` objects to it, and
+TABLE.md, the turn summaries and the board show it as contested by that agent until the objector concedes on
+it, or its author does (then it is given up). An agent does not object to its own point: it concedes on it
+(`S1`) or withdraws it (`F1`).
 
 Agents use `agoryx table …` from their shell. Agoryx puts a shim first on `PATH` and also exports
 `AGORYX_CLI` (absolute path), because login shells can reorder `PATH` and an older global `agoryx` may win.

@@ -277,6 +277,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     `  ${agentCli} table propose "short title" --body "what and why (markdown)" [--file path/in/workspace] [--q Q1]`,
     "    (a long body with a diagram: write it to a file and pass --body-file notes.md, or pipe it with --body -)",
     `  ${agentCli} table object P1 "reason"   |   support P1 "reason"   |   evidence P1 "finding" --source <url|path>`,
+    "    (object, support and evidence also take a settled point or a fact: object S1 \"why it is not settled\" when someone settled what you still dispute)",
     `  ${agentCli} table settle "what is now established" [--q Q1]   |   fact "a checked fact"   |   next "concrete next step"   |   done X1`,
     "    (settle --q Q1 when the conclusion answers an open question: it closes Q1 with that answer)",
     `  ${agentCli} table concede "what I no longer hold, and why" [--on P1]   (an argument changed your mind: record it, don't just agree in prose)`,

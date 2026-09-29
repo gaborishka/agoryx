@@ -18,6 +18,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { FolderBar, useFolderGit } from "@/components/FolderPicker";
 import { Avatar } from "@/components/room/bits";
+import { type ModelChange, ModelMenu } from "@/components/room/ModelMenu";
 import { autosize } from "@/components/room/Composer";
 import { NavButton } from "@/components/room/RoomHeader";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ import {
 } from "@/components/ui/popover";
 import { api, local, Unauthorized } from "@/lib/api";
 import { names, plural } from "@/lib/format";
+import { useModels } from "@/lib/models";
 import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
@@ -57,6 +59,43 @@ const EXAMPLES = [
 const DEFAULT_BUDGET: number | null = null;
 const BUDGETS = [4, 8, 16, 32];
 const DOCS = ["README.md", "PLAN.md", "DESIGN.md"];
+
+/** Model and effort chosen here for each agent, by id; a key that is present overrides the roster (null: the CLI's default). */
+type Picks = Record<string, ModelChange>;
+
+const readPicks = (): Picks => {
+  try {
+    const value: unknown = JSON.parse(local.get("start.models") ?? "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Picks) : {};
+  } catch {
+    return {};
+  }
+};
+
+/** The roster's agent with what was picked for it here. */
+const withPick = (agent: RoomAgent, pick: ModelChange | undefined): RoomAgent => {
+  if (!pick) return agent;
+  const next = { ...agent };
+  if ("model" in pick) {
+    if (pick.model) next.model = pick.model;
+    else delete next.model;
+  }
+  if ("effort" in pick) {
+    if (pick.effort) next.effort = pick.effort;
+    else delete next.effort;
+  }
+  return next;
+};
+
+/** An agent as the roster JSON the daemon checks: only the fields it takes. */
+const rosterEntry = ({ id, kind, label, model, effort, profile }: RoomAgent) => ({
+  id,
+  kind,
+  label,
+  ...(model ? { model } : {}),
+  ...(effort ? { effort } : {}),
+  ...(profile === false ? { profile } : {}),
+});
 
 const footChip =
   "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] text-muted-foreground transition hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground";
@@ -410,6 +449,17 @@ export function StartScreen() {
   // Who a new room seats: the daemon's roster (agents.json), Claude and Codex until it answers.
   const [agents, setAgents] = useState<RoomAgent[]>(DEFAULT_AGENTS);
   const who = names(agents.map((a) => a.label));
+  const models = useModels();
+  const [picks, setPicks] = useState<Picks>(readPicks);
+  const seated = agents.map((agent) => withPick(agent, picks[agent.id]));
+  // The roster goes with the new room only when a model or effort here differs from it.
+  const picked = seated.some((agent, i) => agent.model !== agents[i]!.model || agent.effort !== agents[i]!.effort);
+  const pick = (id: string, change: ModelChange) =>
+    setPicks((prev) => {
+      const next = { ...prev, [id]: { ...prev[id], ...change } };
+      local.set("start.models", JSON.stringify(next));
+      return next;
+    });
   useEffect(() => {
     document.title = "Нова кімната · Agoryx";
     setTimeout(() => ta.current?.focus(), 30);
@@ -439,6 +489,7 @@ export function StartScreen() {
           ...(inWorktree ? { worktree: true, ...(base ? { base } : {}) } : {}),
           ...(budget !== DEFAULT_BUDGET ? { budget } : {}),
           ...(doc !== undefined ? { doc } : {}),
+          ...(picked ? { agents: seated.map(rosterEntry) } : {}),
         },
       );
       local.set("draft.new", null);
@@ -521,6 +572,18 @@ export function StartScreen() {
                 className="scroll-thin block min-h-[108px] w-full resize-none bg-transparent px-5 pt-4 text-[16px] leading-relaxed outline-none placeholder:text-faint"
               />
               <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2.5">
+                {seated.map((agent) => (
+                  <ModelMenu
+                    key={agent.id}
+                    agent={agent}
+                    seating={{ agents: seated }}
+                    models={models}
+                    side="bottom"
+                    className="h-8 rounded-full px-2.5 text-[12.5px] text-muted-foreground hover:text-foreground"
+                    onSet={(change) => pick(agent.id, change)}
+                  />
+                ))}
+                <span aria-hidden className="mx-0.5 h-4 w-px bg-border" />
                 <DocChip
                   doc={doc}
                   onDoc={setDoc}

@@ -2,7 +2,6 @@ import {
   ArrowUpIcon,
   CheckIcon,
   ChevronDownIcon,
-  ChevronRightIcon,
   CornerDownLeftIcon,
   EyeIcon,
   FileIcon,
@@ -27,6 +26,7 @@ import { local, Unauthorized } from "@/lib/api";
 import { baseName, names as nameList, plural } from "@/lib/format";
 import type { AgentModels, RoomAgent, RoomState } from "@/lib/types";
 import { useModels } from "@/lib/models";
+import { ModelMenu } from "@/components/room/ModelMenu";
 import { ink, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -424,105 +424,17 @@ function AgentModel({ agent, models, disabled, working }: { agent: RoomAgent; mo
   const room = useStore((s) => s.snap?.state);
   const post = useStore((s) => s.post);
   const openSession = useStore((s) => s.openSession);
-  const [open, setOpen] = useState(false);
   if (!room) return null;
-  const kind = models?.[agent.kind];
-  const choices = kind?.models ?? [];
-  const model = choices.find((m) => m.id === agent.model);
-  const levels = model?.efforts ?? kind?.efforts ?? [];
-  const defaultEffort = model?.defaultEffort;
-  const effort = agent.effort ?? defaultEffort;
-  const who = participant(room, agent.id);
-  const set = (change: { model?: string | null; effort?: string | null }) => {
-    if ("model" in change && (change.model ?? undefined) === agent.model) return;
-    if ("effort" in change && (change.effort ?? undefined) === agent.effort) return;
-    post("/agent", { agent: agent.id, ...change }).catch(fail);
-  };
-  // Like Claude Code's menu: a digit picks the model at that place.
-  const byDigit = (event: KeyboardEvent<HTMLDivElement>) => {
-    const n = Number(event.key);
-    if (!Number.isInteger(n) || n < 1 || n > choices.length + 1) return;
-    event.preventDefault();
-    setOpen(false);
-    set({ model: n === 1 ? null : choices[n - 2]!.id });
-  };
-
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={disabled}
-          className={cn(quietButton, "shrink-0 gap-1.5 data-[state=open]:bg-accent data-[state=open]:text-foreground")}
-          title={`${agent.label}: модель і effort`}
-        >
-          <span className={cn("size-1.5 shrink-0 rounded-full", who.tone === "codex" ? "bg-codex" : "bg-claude", working && "animate-breathe")} style={ink(who)} />
-          <span className="text-foreground/85">{agent.label}</span>
-          {model || agent.model ? <span className="max-w-[9rem] truncate">{model?.label ?? agent.model}</span> : null}
-          {effort ? <span className={cn(agent.effort ? "" : "text-faint")}>{effort}</span> : null}
-          <ChevronDownIcon className="size-3 opacity-50" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" side="top" className="w-[260px]" onKeyDown={byDigit}>
-        <DropdownMenuLabel className="flex items-baseline justify-between text-[11.5px] font-normal text-muted-foreground">
-          Модель {agent.label}
-          {working ? <span className="text-faint">з наступного ходу</span> : null}
-        </DropdownMenuLabel>
-        <DropdownMenuItem onSelect={() => set({ model: null })} title="Та, що в налаштуваннях CLI">
-          Типова <span className="text-faint">з CLI</span>
-          <MenuMark on={!agent.model} n={1} />
-        </DropdownMenuItem>
-        <div className="scroll-thin max-h-[40vh] overflow-y-auto">
-          {choices.map((m, i) => (
-            <DropdownMenuItem key={m.id} onSelect={() => set({ model: m.id })} title={m.description}>
-              <span className="truncate">{m.label}</span>
-              <MenuMark on={agent.model === m.id} n={i + 2} />
-            </DropdownMenuItem>
-          ))}
-          {agent.model && !model ? (
-            <DropdownMenuItem disabled>
-              <span className="truncate font-mono text-[12px]">{agent.model}</span>
-              <MenuMark on />
-            </DropdownMenuItem>
-          ) : null}
-        </div>
-        {levels.length ? (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-[11.5px] font-normal text-muted-foreground">Effort — наскільки глибоко думати</DropdownMenuLabel>
-            <div className="flex flex-wrap gap-1 px-2 pb-1.5">
-              {[null, ...levels].map((level) => {
-                const on = (agent.effort ?? null) === level;
-                return (
-                  <button
-                    key={level ?? "__default"}
-                    type="button"
-                    onClick={() => set({ effort: level })}
-                    title={level ? undefined : `Типово${defaultEffort ? `: ${defaultEffort}` : ""}`}
-                    className={cn(
-                      "h-6 rounded-md border px-2 text-[12px] transition",
-                      on ? "border-primary/50 bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
-                    )}
-                  >
-                    {level ?? "типово"}
-                  </button>
-                );
-              })}
-            </div>
-          </>
-        ) : null}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => openSession(agent.id)}>
-          Сесія {agent.label}, інша модель…
-          <ChevronRightIcon className="ml-auto size-4 opacity-60" />
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ModelMenu
+      agent={agent}
+      seating={room}
+      models={models}
+      disabled={disabled}
+      working={working}
+      className={quietButton}
+      onSet={(change) => post("/agent", { agent: agent.id, ...change }).catch(fail)}
+      onSession={() => openSession(agent.id)}
+    />
   );
-}
-/** The right edge of a menu row: a check on the current choice, otherwise the digit that picks it. */
-function MenuMark({ on, n }: { on: boolean; n?: number }) {
-  if (on) return <CheckIcon className="ml-auto size-4 text-primary" />;
-  return n ? <span className="tabular ml-auto text-[12px] text-faint">{n}</span> : <span className="ml-auto" />;
 }

@@ -37,6 +37,7 @@ import { ink, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { ActivityKind, AgentModels, RoomAgent, TranscriptDiff, TranscriptEntry, TranscriptImage, TranscriptTodo, TranscriptTool } from "@/lib/types";
 import { copyText } from "@/lib/copy";
+import { useModels } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
 /**
@@ -152,29 +153,6 @@ function useSession(roomId: string, agent: string, sessionId: string | undefined
   }, [roomId, agent]);
 
   return { view, loadOlder };
-}
-
-let modelsCache: Promise<AgentModels> | null = null;
-const loadModels = () => {
-  modelsCache ??= api<AgentModels>("GET", "/api/models").catch((error) => {
-    modelsCache = null;
-    throw error;
-  });
-  return modelsCache;
-};
-
-function useModels() {
-  const [models, setModels] = useState<AgentModels | null>(null);
-  useEffect(() => {
-    let alive = true;
-    loadModels()
-      .then((m) => alive && setModels(m))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
-  return models;
 }
 
 // --- header: whose session, model and effort -----------------------------------------------

@@ -17,6 +17,8 @@ export interface RoomAgent {
   /** Display name ("Claude", "Codex"). */
   label: string;
   model?: string;
+  /** How hard the model thinks ("high", "xhigh", …): Claude's --effort, Codex's model_reasoning_effort. The CLI's own default when absent. */
+  effort?: string;
   /** false: this agent is not given the human's profile (<AGORYX_HOME>/profile.md). On when absent. */
   profile?: false;
 }

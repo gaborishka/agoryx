@@ -815,6 +815,7 @@ export class RoomEngine {
         sessionId,
         roomName: this.state.name,
         ...(agent.model ? { model: agent.model } : {}),
+        ...(agent.effort ? { effort: agent.effort } : {}),
         settings: this.state.settings,
         env,
         signal: controller.signal,

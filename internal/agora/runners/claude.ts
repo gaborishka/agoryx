@@ -62,6 +62,7 @@ export const buildClaudeArgs = (request: TurnRequest, sessionId: string, fresh: 
     "WebFetch",
   ];
   if (request.model) args.push("--model", request.model);
+  if (request.effort) args.push("--effort", request.effort);
   if (fresh) args.push("--session-id", sessionId, "--name", `agoryx · ${request.roomName}`);
   else args.push("--resume", sessionId);
   return args;

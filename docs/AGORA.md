@@ -194,6 +194,8 @@ starting with a letter and containing only letters, digits, `_` or `-`. `all`, `
 and the human's name cannot be used. `label` (1–40 characters) defaults to the id with a
 capital letter, and no two agents may share one. `model` is optional and passed to the CLI
 as given (also when you resume the session); omitting it uses that CLI's default.
+`effort` is optional too: how hard the model thinks on its room turns (`"xhigh"` → Claude's `--effort xhigh`,
+Codex's `-c model_reasoning_effort="xhigh"`); omitting it uses that CLI's default.
 `"profile": false` keeps your profile (below) from that agent. Any other field is refused. A refused roster creates nothing: no room, no folder.
 
 The resolved roster is stored in the room's event log. Editing or deleting the source

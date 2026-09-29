@@ -65,7 +65,7 @@ test('the roster switches the profile off per agent with "profile": false; it is
   assert.throws(() => parseAgents([{ kind: "codex", profile: "no" }]), (error: unknown) => error instanceof RosterError && /"profile" must be true or false/.test(error.message));
   assert.throws(
     () => parseAgents([{ kind: "codex", bio: false }]),
-    (error: unknown) => error instanceof RosterError && /unknown field "bio" \(allowed: id, kind, label, model, profile\)/.test(error.message),
+    (error: unknown) => error instanceof RosterError && /unknown field "bio" \(allowed: id, kind, label, model, effort, profile\)/.test(error.message),
   );
 });
 

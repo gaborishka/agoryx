@@ -27,6 +27,7 @@ export const buildCodexArgs = (request: TurnRequest): string[] => {
   const sandbox = request.settings.access === "readonly" ? "read-only" : "workspace-write";
   const common = ["--json", "--skip-git-repo-check"];
   if (request.model) common.push("-m", request.model);
+  if (request.effort) common.push("-c", `model_reasoning_effort="${request.effort}"`);
   if (request.settings.network && sandbox === "workspace-write") {
     common.push("-c", "sandbox_workspace_write.network_access=true");
   }

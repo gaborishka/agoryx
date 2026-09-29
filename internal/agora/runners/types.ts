@@ -7,6 +7,7 @@ export interface TurnRequest {
   sessionId: string | null;
   roomName: string;
   model?: string;
+  effort?: string;
   settings: RoomSettings;
   env: NodeJS.ProcessEnv;
   signal: AbortSignal;

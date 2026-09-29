@@ -8,10 +8,11 @@ import { test } from "node:test";
 import { AgoraDaemon } from "../../internal/agora/daemon.js";
 import { locateNativeSession } from "../../internal/agora/native.js";
 import { DEFAULT_AGENTS, parseAgents, readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
-import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
-import { createCodexRunner } from "../../internal/agora/runners/codex.js";
+import { buildClaudeArgs, createClaudeRunner } from "../../internal/agora/runners/claude.js";
+import { buildCodexArgs, createCodexRunner } from "../../internal/agora/runners/codex.js";
 import { createRoom, resumeCommands } from "../../internal/agora/service.js";
 import { RoomStore } from "../../internal/agora/store.js";
+import { DEFAULT_SETTINGS } from "../../internal/agora/types.js";
 import { agentCliScript } from "../../internal/agora/workspace.js";
 import { names, roomPreview } from "../../ui/src/lib/format.js";
 import { buildFeed } from "../../ui/src/lib/room.js";
@@ -71,6 +72,8 @@ test("a roster the room could not work with is refused, naming the entry", () =>
   refused([{ id: "agoryx", kind: "claude" }], /reserved/);
   refused([{ id: "opus", kind: "claude", label: "Claude" }, { id: "claude", kind: "claude" }], /two agents are labelled "Claude"/);
   refused([{ kind: "claude", model: "--dangerously-skip-permissions" }], /"model" must be a model name/);
+  refused([{ kind: "codex", effort: 'xhigh" -c sandbox_mode="danger-full-access' }], /"effort" must be a level name/);
+  refused([{ kind: "claude", effort: "--max" }], /"effort" must be a level name/);
   assert.throws(() => readRoster("[{"), /not valid JSON/);
   assert.throws(() => readRoster("missing-roster.json", scratch()), /cannot read .*missing-roster\.json/);
 });
@@ -394,4 +397,21 @@ test("the daemon shows the default roster and creates a room with its own", asyn
     await daemon.close();
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test("a roster entry's effort reaches its CLI: --effort for Claude, model_reasoning_effort for Codex", () => {
+  const [opus, astra] = parseAgents([
+    { id: "opus", kind: "claude", model: "claude-opus-5-5", effort: " xhigh " },
+    { id: "astra", kind: "codex", model: "gpt-6-astra", effort: "xhigh" },
+  ]);
+  assert.equal(opus!.effort, "xhigh");
+  const base = { prompt: "hi", cwd: "/tmp/ws", sessionId: null, roomName: "R", settings: DEFAULT_SETTINGS, env: {}, signal: new AbortController().signal };
+  const claudeArgs = buildClaudeArgs({ ...base, model: opus!.model!, effort: opus!.effort! }, "00000000-0000-4000-8000-000000000000", true);
+  assert.deepEqual(claudeArgs.slice(claudeArgs.indexOf("--effort"), claudeArgs.indexOf("--effort") + 2), ["--effort", "xhigh"]);
+  const codexArgs = buildCodexArgs({ ...base, model: astra!.model!, effort: astra!.effort! });
+  assert.ok(codexArgs.join(" ").includes('-c model_reasoning_effort="xhigh"'));
+  // Resumed turns keep it too.
+  assert.ok(buildCodexArgs({ ...base, sessionId: "s1", effort: "xhigh" }).join(" ").includes('model_reasoning_effort="xhigh"'));
+  // No effort: nothing is passed, the CLI's own default applies.
+  assert.ok(!buildCodexArgs(base).join(" ").includes("model_reasoning_effort"));
 });

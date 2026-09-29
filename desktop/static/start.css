@@ -1,0 +1,402 @@
+/*
+ * The start page wears the room UI's colours (ui/src/index.css): stone ground, olive-sage ink,
+ * amber for a warning, fired clay for a failure. System fonts: the UI's own ship inside its bundle.
+ */
+:root {
+  color-scheme: light;
+  --background: #f3f4ef;
+  --foreground: #1b211d;
+  --card: #ffffff;
+  --primary: #2e5a48;
+  --primary-foreground: #ffffff;
+  --muted-foreground: #5d675f;
+  --faint: #8c948d;
+  --accent: #e3e9e1;
+  --border: #dde1d7;
+  --input: #d3d8cd;
+  --ring: #2e5a48;
+  --code: #f5f6f1;
+  --ok: #2e5a48;
+  --ok-soft: #e2ebe4;
+  --amber: #b9851f;
+  --amber-soft: #fbf3df;
+  --destructive: #b4533a;
+  --destructive-soft: #fbefea;
+  --shadow-soft: 0 1px 2px rgb(30 40 30 / 0.05), 0 8px 24px rgb(30 40 30 / 0.06);
+  --radius: 0.7rem;
+  --font-sans: "Onest Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --background: #111411;
+    --foreground: #e7ebe5;
+    --card: #181c18;
+    --primary: #86c0a2;
+    --primary-foreground: #0e1a13;
+    --muted-foreground: #a0a9a1;
+    --faint: #6f7870;
+    --accent: #222922;
+    --border: #283028;
+    --input: #323b32;
+    --ring: #86c0a2;
+    --code: #131713;
+    --ok: #86c0a2;
+    --ok-soft: #1b2a21;
+    --amber: #e0ae4e;
+    --amber-soft: #2a2415;
+    --destructive: #f08f74;
+    --destructive-soft: #2d1d17;
+    --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--primary) 22%, transparent);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.start {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 12vh 24px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/* ---------- heading ---------- */
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.mark {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  margin-top: 1px;
+  fill: var(--primary);
+}
+
+.head-text {
+  min-width: 0;
+}
+
+h1 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  text-wrap: balance;
+}
+
+.note {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  text-wrap: pretty;
+}
+
+/* ---------- steps ---------- */
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.step {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--muted-foreground);
+}
+
+.step[data-status="run"] {
+  color: var(--foreground);
+}
+
+.step[data-status="wait"] {
+  color: var(--faint);
+}
+
+.step-icon {
+  flex: none;
+  position: relative;
+  top: 2px;
+  width: 14px;
+  height: 14px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.step[data-status="wait"] .step-icon::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--faint);
+  opacity: 0.6;
+}
+
+.step[data-status="done"] .step-icon {
+  color: var(--ok);
+}
+
+.step[data-status="fail"] .step-icon {
+  color: var(--destructive);
+}
+
+.step-detail {
+  color: var(--faint);
+  font-size: 13.5px;
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in oklab, var(--primary) 25%, transparent);
+  border-top-color: var(--primary);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+/* ---------- a failure: message and the end of the daemon log ---------- */
+
+.problem {
+  border: 1px solid color-mix(in oklab, var(--destructive) 30%, var(--border));
+  background: var(--destructive-soft);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.problem-message {
+  margin: 0;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+
+.problem-log {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: calc(var(--radius) - 4px);
+  background: var(--card);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.problem-path {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- checks ---------- */
+
+.checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+
+.check {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  column-gap: 12px;
+  padding: 11px 16px;
+}
+
+.check + .check {
+  border-top: 1px solid var(--border);
+}
+
+.check-mark {
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.check[data-status="ok"] .check-mark {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.check[data-status="warn"] .check-mark {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.check[data-status="fail"] .check-mark {
+  color: var(--destructive);
+  background: var(--destructive-soft);
+}
+
+.check-body {
+  min-width: 0;
+}
+
+.check-label {
+  font-weight: 560;
+}
+
+.check-detail {
+  color: var(--muted-foreground);
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+
+.check-label + .check-detail::before {
+  content: " · ";
+  color: var(--faint);
+}
+
+.fix {
+  margin-top: 7px;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.fix code {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  border-radius: calc(var(--radius) - 4px);
+  background: var(--code);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+/* ---------- buttons ---------- */
+
+/* Under a long check list the buttons stay in sight at the window's bottom edge. */
+.actions {
+  position: sticky;
+  bottom: 0;
+  margin-top: -12px;
+  padding: 12px 0 16px;
+  background: linear-gradient(to bottom, transparent, var(--background) 12px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.actions:empty {
+  display: none;
+}
+
+button {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 1;
+  padding: 9px 14px;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid var(--input);
+  background: var(--card);
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+button.primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--primary) 88%, black);
+}
+
+button.copy {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 0 10px;
+  color: var(--muted-foreground);
+}

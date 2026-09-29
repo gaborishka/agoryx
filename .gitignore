@@ -19,6 +19,13 @@ node_modules/
 dist/
 coverage/
 
+# Desktop app (desktop/): dependencies, build output, packaged app, staged core deps, generated icon
+desktop/node_modules/
+desktop/dist/
+desktop/release/
+desktop/.stage/
+desktop/build/
+
 # Agoryx runtime artifacts
 .agoryx/
 

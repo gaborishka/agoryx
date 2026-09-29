@@ -3,7 +3,7 @@ _agoryx_complete() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="chat sessions config completion man help"
+  local commands="chat sessions config completion doctor man help"
   if [[ $cword -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "$commands --help --version" -- "$cur") )
     return
@@ -18,6 +18,9 @@ _agoryx_complete() {
       ;;
     completion)
       COMPREPLY=( $(compgen -W "bash zsh fish --help" -- "$cur") )
+      ;;
+    doctor)
+      COMPREPLY=( $(compgen -W "--probe --json --help" -- "$cur") )
       ;;
     chat|"")
       COMPREPLY=( $(compgen -W "--help --agents --mode --config --db --adapter-mode --quiet-system --plain-ui --no-color --resume --room-name" -- "$cur") )

@@ -16,6 +16,7 @@ import {
 } from "./session-export.js";
 import { runInkChat } from "./ink-chat.js";
 import { AGORA_COMMANDS, printAgoraUsage, runAgora } from "./agora.js";
+import { printDoctorUsage, runDoctorCommand } from "./doctor.js";
 import { createDefaultAdapterConfig, type ChatRuntimeConfig } from "../../internal/config/default.js";
 import { loadConfig, toRuntimeConfig, type AgoryxConfig } from "../../internal/config/index.js";
 import {
@@ -67,6 +68,7 @@ const ROOT_COMMANDS = [
   "completion",
   "man",
   "help",
+  "doctor",
   "up",
   "down",
   "open",
@@ -362,6 +364,8 @@ async function main(): Promise<void> {
         printConfigUsage();
       } else if (rest[0] === "completion") {
         printCompletionUsage();
+      } else if (rest[0] === "doctor") {
+        printDoctorUsage();
       } else {
         printUsage();
       }
@@ -381,6 +385,11 @@ async function main(): Promise<void> {
     case "man":
       printManPage();
       return;
+    case "doctor": {
+      const code = await runDoctorCommand(rest);
+      if (code !== 0) process.exitCode = code;
+      return;
+    }
     default:
       throw new CliUsageError(
         renderUnknownCommandMessage(command, ROOT_COMMANDS),
@@ -2025,6 +2034,7 @@ const printUsage = (write: OutputWriter = console.log): void => {
     "  agoryx sessions <list|export> [options]",
     "  agoryx config explain [--config <path>] [--db <path>]",
     "  agoryx completion <bash|zsh|fish>",
+    "  agoryx doctor [--probe] [--json]",
     "  agoryx man",
     "",
     "Rooms (see `agoryx help rooms`):",
@@ -2041,6 +2051,7 @@ const printUsage = (write: OutputWriter = console.log): void => {
     "  sessions     List and export saved sessions",
     "  config       Explain resolved configuration and path precedence",
     "  completion   Print shell completion script",
+    "  doctor       Check what Agoryx needs on this machine (node, agents, logins, git)",
     "  man          Print manual page",
     "  help         Show command help",
     "",
@@ -2194,9 +2205,15 @@ const printManPage = (write: OutputWriter = console.log): void => {
     "  agoryx sessions <list|export> [options]",
     "  agoryx config explain [--config <path>] [--db <path>]",
     "  agoryx completion <bash|zsh|fish>",
+    "  agoryx doctor [--probe] [--json]",
     "",
     "DESCRIPTION",
     "  Agoryx runs Codex and Claude in one shared local session with SQLite persistence.",
+    "",
+    "COMMANDS",
+    "  doctor   Check Node.js, this install, better-sqlite3, Claude Code and Codex (installed, logged in),",
+    "           git, the state folder and the daemon; print a fix for each problem. --probe also sends each",
+    "           logged-in agent one short prompt; --json prints the checks as JSON. Exits 1 when Agoryx cannot run.",
     "",
     "FILES",
     "  $XDG_CONFIG_HOME/agoryx/config.json",
@@ -2368,7 +2385,7 @@ _agoryx_complete() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="chat sessions config completion man help"
+  local commands="chat sessions config completion doctor man help"
   if [[ $cword -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "$commands --help --version" -- "$cur") )
     return
@@ -2383,6 +2400,9 @@ _agoryx_complete() {
       ;;
     completion)
       COMPREPLY=( $(compgen -W "bash zsh fish --help" -- "$cur") )
+      ;;
+    doctor)
+      COMPREPLY=( $(compgen -W "--probe --json --help" -- "$cur") )
       ;;
     chat|"")
       COMPREPLY=( $(compgen -W "--help --agents --mode --config --db --adapter-mode --quiet-system --plain-ui --no-color --resume --room-name" -- "$cur") )
@@ -2402,6 +2422,7 @@ _agoryx() {
     'sessions:Session management'
     'config:Configuration diagnostics'
     'completion:Shell completion'
+    'doctor:Check what Agoryx needs'
     'man:Manual page'
     'help:Help'
   )
@@ -2424,6 +2445,9 @@ _agoryx() {
         completion)
           _values 'shell' bash zsh fish
           ;;
+        doctor)
+          _arguments '--probe[Also send each logged-in agent one short prompt]' '--json[Print the checks as JSON]'
+          ;;
       esac
       ;;
   esac
@@ -2431,11 +2455,13 @@ _agoryx() {
 _agoryx "$@"`;
 
 const renderFishCompletion = (): string => `# fish completion for agoryx
-complete -c agoryx -f -n '__fish_use_subcommand' -a "chat sessions config completion man help"
+complete -c agoryx -f -n '__fish_use_subcommand' -a "chat sessions config completion doctor man help"
 complete -c agoryx -l help -s h -d "Show help"
 complete -c agoryx -l version -s V -d "Show version"
 complete -c agoryx -n '__fish_seen_subcommand_from completion' -a "bash zsh fish"
 complete -c agoryx -n '__fish_seen_subcommand_from sessions' -a "list export"
+complete -c agoryx -n '__fish_seen_subcommand_from doctor' -l probe -d "Also send each logged-in agent one short prompt"
+complete -c agoryx -n '__fish_seen_subcommand_from doctor' -l json -d "Print the checks as JSON"
 complete -c agoryx -n '__fish_seen_subcommand_from chat' -l agents -r
 complete -c agoryx -n '__fish_seen_subcommand_from chat' -l mode -r
 complete -c agoryx -n '__fish_seen_subcommand_from chat' -l db -r

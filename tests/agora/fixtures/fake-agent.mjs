@@ -5,7 +5,7 @@
 // optional), `id` (the room's agent id, $AGORYX_AGENT, optional) and `match` (substring of
 // the prompt, optional) fit is used:
 //   { agent, id, match, reply, table: [[...argv]], write: {path, content, via?: "shell"} (or a list),
-//     command: "shown as the tool call; {cwd} and {cli} expand", sleepMs,
+//     command: "shown as the tool call; {cwd} and {cli} expand", sleepMs, afterTableMs (a pause after the table ops),
 //     streamSleepMs (claude: pause after streaming the reply, before finishing),
 //     error: "text", exitCode, once: true }
 // Without a matching rule: first turn replies "<agent id> here", later turns pass.
@@ -159,6 +159,7 @@ const main = async () => {
     }
   }
   if (tableOutputs.length) appendFileSync(process.env.FAKE_LOG, `${JSON.stringify({ kind, turn, tableOutputs })}\n`);
+  if (rule?.afterTableMs) await sleep(rule.afterTableMs);
 
   // Written with the agent's own edit tool (reported, as the real CLIs do), unless `via: "shell"`.
   let editIndex = 0;

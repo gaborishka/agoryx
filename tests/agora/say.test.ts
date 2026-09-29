@@ -139,3 +139,55 @@ test("inside a room turn the human's agoryx hands say/read/table to the agent's 
     await room.cleanup();
   }
 });
+
+test("an agent asks an idle one mid-turn: the asked agent starts at once, beside the asker, and sees the question", async () => {
+  const room = createTestRoom({
+    rules: [
+      // Codex is done first; then Claude, still working, asks it something and keeps going.
+      { agent: "codex", once: true, reply: "codex first" },
+      { agent: "claude", once: true, sleepMs: 800, table: [["say", "@codex can you run the daemon tests?"]], afterTableMs: 4000, reply: "claude done" },
+      { agent: "codex", match: "can you run the daemon tests?", once: true, reply: "daemon tests pass" },
+    ],
+    settings: { budget: 6 },
+  });
+  try {
+    room.engine.postHuman("Split the work");
+    await withTimeout(room.engine.waitIdle());
+    const state = room.store.state;
+    const ask = state.messages.find((message) => message.kind === "update")!;
+    assert.equal(ask.wakes, true, "a question to an idle agent wakes it");
+    const claudeTurn = state.turns.find((turn) => turn.agent === "claude")!;
+    const [codexFirst, codexAsked] = state.turns.filter((turn) => turn.agent === "codex");
+    assert.ok(codexFirst!.endSeq! < ask.seq, "Codex had finished when it was asked");
+    assert.ok(codexAsked, "the asked agent got a turn");
+    assert.ok(codexAsked!.seq < claudeTurn.endSeq!, "it started while the asker was still working, not after");
+    const answer = state.messages.find((message) => message.id === codexAsked!.messageId)!;
+    assert.equal(answer.text, "daemon tests pass");
+    assert.ok(answer.seq < claudeTurn.endSeq!, "the answer is in the room before the asker's turn ends: it can read it with read new");
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a say that addresses no idle agent wakes nobody", async () => {
+  const room = createTestRoom({
+    rules: [
+      { agent: "codex", once: true, reply: "codex first" },
+      { agent: "claude", once: true, sleepMs: 800, table: [["say", "taking a.ts"], ["say", "@Ivan fyi, a.ts is mine"]], reply: "claude done" },
+    ],
+    settings: { budget: 6 },
+  });
+  try {
+    room.engine.postHuman("Split the work");
+    await withTimeout(room.engine.waitIdle());
+    const state = room.store.state;
+    const updates = state.messages.filter((message) => message.kind === "update");
+    assert.equal(updates.length, 2);
+    for (const update of updates) assert.equal(update.wakes, false);
+    // Codex's only other turn is the one Claude's reply woke (it then passes): nothing started mid-turn.
+    const claudeTurn = state.turns.find((turn) => turn.agent === "claude")!;
+    assert.ok(state.turns.filter((turn) => turn.agent === "codex").every((turn) => turn.seq < updates[0]!.seq || turn.seq > claudeTurn.endSeq!));
+  } finally {
+    await room.cleanup();
+  }
+});

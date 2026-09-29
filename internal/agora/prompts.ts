@@ -180,7 +180,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile }: Bri
     `Workspace: ${state.workspace}`,
     `  A shared git directory — everyone works here. ${access}`,
     "  Others may edit files at the same time: check `git status` / `git diff` before overwriting, and say which files you touched.",
-    `  Say what you are doing while you do it: \`${agentCli} say "taking internal/x.ts — leaving the CLI to you"\` posts to the room at once, as often as is useful (it is not a turn and wakes nobody). \`${agentCli} read new\` shows what the others said since your turn began — look before you take a file someone may be on.`,
+    `  Say what you are doing while you do it: \`${agentCli} say "taking internal/x.ts — leaving the CLI to you"\` posts to the room at once, as often as is useful (it is not a turn; it wakes only an agent you @mention that is not working now — that one starts at once, so \`say "@<agent> can you run the daemon tests?"\` gets an answer while you keep going; see it with \`read new\`). \`${agentCli} read new\` shows what the others said since your turn began — look before you take a file someone may be on.`,
     `  Every turn's exact change is kept. Your delta lists what others changed with +/− counts and the turn id; \`${agentCli} diff t7\` prints that turn's patch (add a path to narrow it, or no id to list recent ones). What was done is in the diff, not only in what was said about it.`,
     "",
     "How the room works:",

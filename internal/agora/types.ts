@@ -360,6 +360,8 @@ export interface TurnState {
   profile?: string;
   profileBefore?: string;
   seq: number;
+  /** The seq of its turn.ended event: what was posted before it, the turn was there for. */
+  endSeq?: number;
   startedAt: string;
   endedAt?: string;
   status: TurnStatus;

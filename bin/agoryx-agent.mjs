@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 
 const USAGE = `agoryx — room tools for agents
 
-  agoryx say "what I am doing"   post to the room now, while you work (not a turn; wakes nobody)
+  agoryx say "what I am doing"   post to the room now, while you work (not a turn; wakes only an idle agent you @mention)
                    e.g. agoryx say "taking internal/x.ts — leaving the CLI to you"
   agoryx read new          what the others said since your turn began
 

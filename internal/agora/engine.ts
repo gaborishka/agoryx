@@ -572,6 +572,10 @@ export class RoomEngine {
     if (event.type === "message.posted") {
       const message = event.message;
       if (message.author === agent.id || !message.wakes) return false;
+      // Said while working: wakes only who it addresses, and only one that was not in a turn to read it then.
+      if (message.kind === "update") {
+        return (message.mentions.includes("all") || message.mentions.includes(agent.id)) && !this.inTurnAt(agent.id, event.seq);
+      }
       // Said in someone's own session: wakes only who it explicitly addresses, never that session's agent.
       if (message.native) {
         return message.native.agent !== agent.id && (message.mentions.includes("all") || message.mentions.includes(agent.id));
@@ -586,6 +590,19 @@ export class RoomEngine {
       return event.op.by === this.state.human && !event.op.turnId;
     }
     return false;
+  }
+
+  /** Whether this agent was in a turn when event `seq` was posted (and so could read it with `read new`). */
+  private inTurnAt(agentId: string, seq: number): boolean {
+    return this.state.turns.some((turn) => turn.agent === agentId && turn.seq < seq && (turn.endSeq === undefined || turn.endSeq > seq));
+  }
+
+  /** Whether an agent at work asked this one something while it sat idle: it answers now, not after. */
+  private askedMidTurn(agent: RoomAgent): boolean {
+    const cursor = this.state.cursors[agent.id] ?? 0;
+    return this.store
+      .since(cursor)
+      .some((event) => event.type === "message.posted" && event.message.kind === "update" && this.wakes(event, agent));
   }
 
   private pending(agent: RoomAgent): boolean {
@@ -627,7 +644,7 @@ export class RoomEngine {
     let blockedByBudget = false;
     let waitingOnNative = false;
     // One conversation, not two: the human's message is answered by everyone at once
-    // (blind, so the views stay independent); after that the agents take the floor one
+    // (in parallel, from the same point); after that the agents take the floor one
     // at a time, and each sees what the other just said. Whoever has waited longest goes first.
     const candidates = this.state.agents
       .filter((agent) => !this.running.has(agent.id) && !this.benched.has(agent.id) && this.runners[agent.kind])
@@ -635,7 +652,7 @@ export class RoomEngine {
       .filter((entry): entry is { agent: RoomAgent; wake: RoomEvent } => entry.wake !== null)
       .sort((a, b) => a.wake.seq - b.wake.seq);
     for (const { agent } of candidates) {
-      if (this.running.size > 0 && !this.humanWaiting(agent)) continue;
+      if (this.running.size > 0 && !this.humanWaiting(agent) && !this.askedMidTurn(agent)) continue;
       if (run.budget !== null && run.used >= run.budget) {
         blockedByBudget = true;
         continue;
@@ -1491,9 +1508,11 @@ export class RoomEngine {
   }
 
   /**
-   * `agoryx say`: what an agent is doing, posted while it works. As many as it likes — not a turn, not
-   * counted against the budget, and it wakes nobody (the turn's reply does that). Only during a room turn:
-   * in its own session an agent's answer is read back into the room anyway.
+   * `agoryx say`: what an agent is doing, posted while it works. As many as it likes — not a turn, and not
+   * counted against the budget. It wakes nobody (the turn's reply does that), except an agent it @addresses
+   * that is not in a turn: a question asked mid-turn must not wait for a reply that is waiting on it. That
+   * agent starts at once, beside the one that asked. Only during a room turn: in its own session an
+   * agent's answer is read back into the room anyway.
    */
   private postUpdate(inbox: WorkspacePaths, member: RoomAgent, raw: Record<string, unknown>, nonce: string | undefined, turnId: string | undefined): void {
     const ack = (result: { ok: true; id: string; text: string } | { ok: false; error: string }) => {
@@ -1516,17 +1535,23 @@ export class RoomEngine {
     }
     const handles = [...this.state.agents.map((entry) => entry.id), this.state.human.toLowerCase()];
     const runId = this.state.turns.find((turn) => turn.id === turnId)?.runId;
+    const mentions = parseMentions(text, handles);
+    // Those at work read it with `read new`; only an addressed agent sitting idle needs waking.
+    const wakes = this.state.agents.some(
+      (entry) => entry.id !== member.id && (mentions.includes("all") || mentions.includes(entry.id)) && !this.running.has(entry.id),
+    );
     const message = this.postMessage({
       author: member.id,
       kind: "update",
       text,
-      mentions: parseMentions(text, handles),
-      wakes: false,
+      mentions,
+      wakes,
       turnId,
       ...(runId ? { runId } : {}),
       ...(nonce ? { nonce } : {}),
     });
     ack({ ok: true, id: message.id, text: `${message.id} · posted to the room` });
+    if (wakes) this.requestSchedule();
   }
 
   private checkpoint(run: RunState): void {

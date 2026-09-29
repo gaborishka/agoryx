@@ -42,7 +42,9 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
   once, even while the other one is working.
 - **Say it while you work.** `agoryx say "taking a.ts — the CLI is yours"` posts to the room at once, from the
   middle of a turn, as often as the agent finds useful: it is not a turn, is not counted against any turn limit, and
-  wakes nobody (the turn's reply still does). `agoryx read new` prints what the others said since the reader's
+  wakes nobody (the turn's reply still does) — except an agent it @mentions that is not in a turn: that one
+  starts at once, beside the asker, so a question asked mid-turn gets an answer instead of waiting on a reply
+  that waits on it. `agoryx read new` prints what the others said since the reader's
   turn began, so two agents working at the same time can split files instead of colliding. The next delta shows
   an update as `── Claude · while working`; the web feed shows it as a line marked «по ходу». Only during a room
   turn: in an agent's own session its answer is read back into the room anyway.

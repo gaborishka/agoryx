@@ -115,6 +115,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       const turn = findTurn(state, event.turnId);
       if (!turn) return;
       turn.status = event.status;
+      turn.endSeq = event.seq;
       turn.endedAt = event.ts;
       turn.sessionId = event.sessionId ?? turn.sessionId;
       turn.durationMs = event.durationMs;

@@ -114,8 +114,8 @@ export type SystemNote =
   | { code: "agent.changed"; by: string; agent: string; model?: string | null; effort?: string | null }
   | { code: "turn.failed"; agent: string; cli: AgentKind; error: TurnError["kind"]; message: string }
   | { code: "agent.busy"; agent: string }
-  | { code: "jev.second_look"; agent: string; readers: JevShare[] }
-  | { code: "jev.meant_for"; agent: string; message: string; readers: JevShare[] }
+  | { code: "jev.second_look"; agent: string; readers: JevShare[]; by?: string }
+  | { code: "jev.meant_for"; agent: string; message: string; readers: JevShare[]; by?: string }
   | { code: "decision"; n: number; option: string; title: string; note?: string; by: string };
 
 export type SystemCode = SystemNote["code"];

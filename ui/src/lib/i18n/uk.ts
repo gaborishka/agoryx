@@ -101,11 +101,11 @@ const sys: Say = {
   "agent.busy": (n) => `${n.agent} зараз говорить у своїй сесії — хід у кімнаті почнеться після цього.`,
   "jev.second_look": (n) => {
     const who = names(n.readers.map((r) => r.label));
-    return `Jev: відповідь ${n.agent} варто переглянути ще раз (${shares(n.readers)}) — ${who} ${n.readers.length === 1 ? "дивиться" : "дивляться"}.`;
+    return `${n.by ?? "Jev"}: відповідь ${n.agent} варто переглянути ще раз (${shares(n.readers)}) — ${who} ${n.readers.length === 1 ? "дивиться" : "дивляться"}.`;
   },
   "jev.meant_for": (n) => {
     const who = names(n.readers.map((r) => r.label));
-    return `Jev: ${n.message} від ${n.agent} звернене до ${who} (${shares(n.readers)}), хоч і без @ — ${who} ${n.readers.length === 1 ? "відповідає" : "відповідають"}.`;
+    return `${n.by ?? "Jev"}: ${n.message} від ${n.agent} звернене до ${who} (${shares(n.readers)}), хоч і без @ — ${who} ${n.readers.length === 1 ? "відповідає" : "відповідають"}.`;
   },
   decision: (n) => `Рішення №${n.n}: ${n.option} «${n.title}»${n.note ? ` — ${n.note}` : ""} (вирішує ${n.by})`,
 };

@@ -83,6 +83,13 @@ table ┘   (JSONL, replayable)└── Codex   (native session, its own worksp
   word lists find. The author's next turn waits the fraction of a second the reading takes. Jev only adds: a wake
   it misses is left to `@names` as before, and a failed call changes nothing. About 0.3–0.7 s and 450–750 tokens
   a message; each reading is kept as a `message.read` event and in the daemon log.
+- **Or your ChatGPT plan, with no key.** After `agoryx login chatgpt` (Plus or Pro, plan use granted), a daemon
+  with no Jev key asks the same questions of `gpt-5.6-luna` on the human's plan: one structured request per
+  moment, not stored, about 2 s and 300 tokens, counted toward the plan's usage. The notes then name the model —
+  «gpt-5.6-luna: a second look at Claude's answer…» — and the daemon log says «Jev on (gpt-5.6-luna, ChatGPT
+  plan, …)». `AGORYX_JEV_MODEL` picks another model on the plan, `JEV_PROVIDER=chatgpt` prefers the plan over a
+  key, `AGORYX_JEV=off` turns both off. The daemon reads the sign-in at `agoryx up`; the agents never get its
+  tokens, and an agent's `agoryx login|logout|chatgpt` is refused.
 - **Work is attributed.** Files changed during a turn are credited to that turn; at run end Agoryx makes a
   checkpoint commit (in workspaces it created, or when `autocommit` is on).
 - **So are actions.** Each agent's turn carries its own key to the daemon (`AGORYX_AGENT_KEY`). The human's own

@@ -31,6 +31,9 @@ orchestrator and assigns no roles. Every new message wakes the agents that haven
 ends when the room goes quiet. Use it headless (`agoryx new`, `say`, `tail -f`, `table`) or through the
 local web UI (`agoryx up -d && agoryx open`). See [docs/AGORA.md](docs/AGORA.md).
 
+`agoryx login chatgpt` signs in with your ChatGPT plan (Plus or Pro, no API key). With it, a room with no Jev
+key asks a model on your plan whether a second look is worth a turn and who a message is for.
+
 ## macOS app
 
 `Agoryx.app` is the daemon and its room UI in one window, and it works like `agoryx up -d && agoryx open`

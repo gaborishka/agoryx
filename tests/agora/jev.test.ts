@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { jevEnvFrom, jevReadMessage, jevSecondLook, jevThreshold, type MessageCase, type ReadMessage, type SecondLookCase } from "../../internal/agora/jev.js";
 import { createTestRoom, withTimeout } from "./helpers.js";
+
+/** An Agoryx home with nobody signed in with ChatGPT: never the human's own. */
+const nobody = (): NodeJS.ProcessEnv => ({ AGORYX_HOME: join(mkdtempSync(join(tmpdir(), "agoryx-jev-")), "agora") });
 
 test("Jev judges a second look worth a turn: Agoryx says so, and only that agent is woken", async () => {
   const asked: SecondLookCase[] = [];
@@ -81,7 +87,7 @@ test("Jev is not asked when the answer already names someone, or the human asked
 });
 
 test("Jev is set up from the daemon's environment: a key turns it on, AGORYX_JEV=off keeps it off", async () => {
-  assert.equal(jevSecondLook({}), null);
+  assert.equal(jevSecondLook(nobody()), null);
   assert.equal(jevSecondLook({ TYPESAFE_API_KEY: "k", AGORYX_JEV: "off" }), null);
   assert.deepEqual([jevThreshold({}), jevThreshold({ AGORYX_JEV_THRESHOLD: "0.7" }), jevThreshold({ AGORYX_JEV_THRESHOLD: "7" })], [0.5, 0.7, 0.5]);
 
@@ -221,7 +227,7 @@ test("a position Jev finds in a reply the word lists miss is quoted back to its 
 });
 
 test("Jev's reading sends the message by paragraph and asks who it is meant for", async () => {
-  assert.equal(jevReadMessage({}), null);
+  assert.equal(jevReadMessage(nobody()), null);
   assert.equal(jevReadMessage({ TYPESAFE_API_KEY: "k", AGORYX_JEV: "off" }), null);
   const sent: Array<{ state: Record<string, string>; questions: Record<string, { instructions: string }> }> = [];
   const fakeFetch = (async (_url: string, init: RequestInit) => {

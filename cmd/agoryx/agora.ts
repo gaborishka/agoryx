@@ -12,7 +12,7 @@ import { deviceLabel, DeviceRegistry, type DeviceInfo } from "../../internal/ago
 import { isExposed, readExposure, writeExposure, type Exposure } from "../../internal/agora/exposure.js";
 import { qrTerminal } from "../../internal/agora/qr.js";
 import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
-import { jevEnvFrom, JEV_ENV } from "../../internal/agora/jev.js";
+import { jevEnvFrom, jevProvider } from "../../internal/agora/jev.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { type AgentLook, agentLook } from "../../internal/agora/look.js";
 import { activeRun } from "../../internal/agora/projection.js";
@@ -691,9 +691,9 @@ const runUp = async (argv: string[]): Promise<number> => {
   const info = await daemon.start();
   if (startedBy) stamp(`started by ${startedBy}`);
   if (!chosen && isExposed(exposure)) stamp("reachable from other devices as saved (`agoryx up --local` closes it to this computer)");
-  const jevKey = JEV_ENV.slice(0, 2).find((name) => env[name]);
+  const jev = jevProvider(env);
   const jevOff = String(env.AGORYX_JEV ?? "").trim().toLowerCase() === "off";
-  stamp(jevOff ? "Jev off (AGORYX_JEV=off)" : jevKey ? `Jev on (${jevKey})` : "Jev off: no key");
+  stamp(jevOff ? "Jev off (AGORYX_JEV=off)" : jev ? `Jev on (${jev.name === "chatgpt" ? `${jev.model}, ${jev.via}` : jev.via})` : "Jev off: no key, no ChatGPT sign-in");
   console.log(`agoryx daemon at ${pc.bold(info.url)}  ·  UI: agoryx open  ·  Ctrl-C to stop`);
   if (parsed.options.tailscale) console.log(pc.dim(`for the phone over HTTPS, run once: tailscale serve --bg ${info.port}   (then: agoryx pair)`));
   if (parsed.options.open) openUrl(`${info.url}/?t=${encodeURIComponent(info.token)}`);

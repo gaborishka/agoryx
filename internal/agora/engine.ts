@@ -917,7 +917,7 @@ export class RoomEngine {
       .then((verdict) => {
         const worth = others.filter((entry) => (verdict.worth[entry.id] ?? 0) >= this.secondLookThreshold);
         const said = others.map((entry) => `${entry.id} ${verdict.worth[entry.id]?.toFixed(2) ?? "?"}`).join(", ");
-        this.log(`${turnId} second look: ${said} (${verdict.ms} ms, ${verdict.tokens} tokens)${worth.length ? "" : " — nobody woken"}`);
+        this.log(`${turnId} second look by ${verdict.by ?? "Jev"}: ${said} (${verdict.ms} ms, ${verdict.tokens} tokens)${worth.length ? "" : " — nobody woken"}`);
         // The run it was for has ended (stopped): what it says no longer has a run to join.
         if (!worth.length || this.closed || this.stopping || activeRun(this.state)?.id !== runId) return;
         const names = worth.map((entry) => entry.label);
@@ -926,8 +926,8 @@ export class RoomEngine {
         this.postMessage({
           author: "agoryx",
           kind: "system",
-          text: `Jev: a second look at ${agent.label}'s answer seems worth a turn (${sure}) — ${names.join(" and ")} ${names.length === 1 ? "takes" : "take"} a look.`,
-          sys: { code: "jev.second_look", agent: agent.label, readers },
+          text: `${verdict.by ?? "Jev"}: a second look at ${agent.label}'s answer seems worth a turn (${sure}) — ${names.join(" and ")} ${names.length === 1 ? "takes" : "take"} a look.`,
+          sys: { code: "jev.second_look", agent: agent.label, readers, ...(verdict.by ? { by: verdict.by } : {}) },
           mentions: worth.map((entry) => entry.id),
           wakes: true,
           turnId,
@@ -961,7 +961,7 @@ export class RoomEngine {
         this.store.append({ type: "message.read", messageId: message.id, by: "jev", addressed: verdict.addressed, stances: verdict.stances });
         const said = others.map((entry) => `${entry.id} ${verdict.addressed[entry.id]?.toFixed(2) ?? "?"}`).join(", ");
         const stances = verdict.stances.map((p) => (p === null ? "-" : p.toFixed(2))).join(" ");
-        this.log(`${message.id} read: meant for ${said}; stances ${stances || "-"} (${verdict.ms} ms, ${verdict.tokens} tokens)`);
+        this.log(`${message.id} read by ${verdict.by ?? "Jev"}: meant for ${said}; stances ${stances || "-"} (${verdict.ms} ms, ${verdict.tokens} tokens)`);
         const posted: RoomEvent = { type: "message.posted", message, seq: message.seq, ts: message.ts };
         const meant = others.filter(
           (entry) =>
@@ -980,8 +980,8 @@ export class RoomEngine {
         const note = this.postMessage({
           author: "agoryx",
           kind: "system",
-          text: `Jev: ${author.label}'s ${message.id} reads as meant for ${names.join(" and ")} (${sure}), with no @ — ${names.join(" and ")} ${names.length === 1 ? "is" : "are"} woken to answer it.`,
-          sys: { code: "jev.meant_for", agent: author.label, message: message.id, readers },
+          text: `${verdict.by ?? "Jev"}: ${author.label}'s ${message.id} reads as meant for ${names.join(" and ")} (${sure}), with no @ — ${names.join(" and ")} ${names.length === 1 ? "is" : "are"} woken to answer it.`,
+          sys: { code: "jev.meant_for", agent: author.label, message: message.id, readers, ...(verdict.by ? { by: verdict.by } : {}) },
           mentions: meant.map((entry) => entry.id),
           wakes: true,
           ...(message.turnId ? { turnId: message.turnId } : {}),

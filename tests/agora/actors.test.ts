@@ -229,6 +229,33 @@ test("an agent's turn without a key of its own is refused, not sent as the human
   assert.ok(!events(room).some((event) => event.type === "settings.changed"), "nothing was done in the human's name");
 });
 
+/** Posts to a room with the human's token read from daemon.json, as any process that can read the file could. */
+const postAsHuman = (room: string, text: string) => [
+  process.execPath,
+  "-e",
+  `const info = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+fetch(info.url + "/api/rooms/${room}/messages", { method: "POST", headers: { "x-agoryx-token": info.token, "content-type": "application/json" }, body: JSON.stringify({ text: ${JSON.stringify(text)} }) })
+  .then(async (reply) => console.log(reply.status, await reply.text()));`,
+  join(home, "agora", "daemon.json"),
+];
+
+test("the human's token from an agent's process is refused: an agent that reads the token file still cannot act as the human", async () => {
+  const room = await newRoom("Borrowed token");
+  setRules([{ id: "claude", match: "Borrowed token", once: true, run: [postAsHuman(room, "posted with the human's token")], reply: "tried" }, { id: "codex", match: "Borrowed token", once: true, reply: "ok" }]);
+  await call("POST", `/api/rooms/${room}/messages`, { body: { text: "Borrowed token" } });
+  await idle(room);
+  const ran = logLines().find((line) => line.runOutputs && String(line.runOutputs).includes("human's token"))?.runOutputs as string[] | undefined;
+  assert.ok(ran, JSON.stringify(logLines().filter((line) => line.runOutputs)));
+  assert.match(ran[0]!, /^403 .*claude's process .*own key/);
+  assert.ok(!(await state(room)).messages.some((message) => message.text === "posted with the human's token"), "nothing was posted as the human");
+
+  // The same thing from a process of the human's own (not under an agent) is the human's, as before.
+  const [bin, ...args] = postAsHuman(room, "the human's own script");
+  const out = await new Promise<string>((done) => execFile(bin!, args, { encoding: "utf8" }, (_error, stdout) => done(stdout)));
+  assert.match(out, /^20\d /);
+  assert.ok((await state(room)).messages.some((message) => message.text === "the human's own script" && message.author === "Ivan"));
+});
+
 test("a key used in another room signs as that agent from its room; a bad key gets a clear refusal", async () => {
   setRules([]);
   const home = await newRoom("Home room");

@@ -3,7 +3,8 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
-import { actorIn, agentKey, isAgentKey, loadOrCreateToken, originName, originOf, readAgentKey } from "./actor.js";
+import { agentBehind } from "./agentprocs.js";
+import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, originName, originOf, readAgentKey } from "./actor.js";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
 import { linkedMedia, markdownTexts } from "./media.js";
@@ -463,6 +464,20 @@ export class AgoraDaemon {
   }
 
   /**
+   * The human's token, sent from an agent's process (its CLI or anything under it), is refused: agents
+   * can read the token file as the human can, but what they do is signed with their own key, never as
+   * the human (see agentprocs.ts).
+   */
+  private async refuseHumanTokenFromAgent(req: IncomingMessage): Promise<void> {
+    const owner = await agentBehind(req.socket);
+    if (!owner) return;
+    throw new HttpError(
+      403,
+      `this request comes from ${owner.agent}'s process (room ${owner.room}) with the human's token: an agent acts under its own key (${AGENT_KEY_ENV}), never as the human`,
+    );
+  }
+
+  /**
    * The agent a key names — checked, never trusted: signed with this daemon's token, for a room that
    * exists and an agent seated in it now. A key for another room still works anywhere (see actorIn):
    * what it does there is signed as that agent, from that room.
@@ -500,6 +515,7 @@ export class AgoraDaemon {
     }
     if (path.startsWith("/api/")) {
       const caller = this.checkToken(req, url);
+      if (!caller.agent) await this.refuseHumanTokenFromAgent(req);
       await this.api(req, res, url, caller);
       return;
     }

@@ -355,6 +355,12 @@ It works both ways. Whatever you say to an agent there comes back into the room:
   only. It is checked, not stored: signed by this token, for a room that exists and an agent seated in it —
   otherwise a 401 that says why. It survives daemon restarts; a new `daemon.token` revokes every key. It is
   attribution, not a sandbox: agents keep the access they had (they can still read `daemon.token`).
+- The human's token is refused from an agent's process: the daemon looks up who holds the other end of the
+  connection (`lsof`) and walks its parents; under an agent's CLI (or in its process group, e.g. a server the
+  agent started) the request gets a 403 naming the agent. Agents read the token file as the human can, but
+  it signs nothing for them — the one restriction that protects Agoryx itself (who did what). The lookup runs
+  only while agent processes live, once per connection; without `lsof` it lets the request through
+  (`internal/agora/agentprocs.ts`). An agent that detaches into a new session (`setsid`) escapes it.
 - Workspace files are served under `/raw/<room>/<hmac>/…`, with a `sandbox` CSP and an opaque origin.
   Agent-made HTML (files and ```` ```html ```` blocks) can run but cannot call the API. Paths are resolved through symlinks and
   must stay inside the workspace. `.git` is never served.

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { trackAgentProcess } from "../agentprocs.js";
 
 export interface JsonlProcessOptions {
   bin: string;
@@ -48,6 +49,7 @@ export const runJsonlProcess = (options: JsonlProcessOptions): Promise<JsonlProc
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
     });
+    trackAgentProcess(child.pid, options.env);
 
     const killTree = (sig: NodeJS.Signals) => {
       if (child.pid === undefined) return;

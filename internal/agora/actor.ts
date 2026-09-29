@@ -16,6 +16,8 @@ import type { Actor, ActorOrigin, RoomSettings, RoomState } from "./types.js";
  *
  * It is attribution, not a sandbox: an agent can still read the human's token file, as the human
  * decided (agents work like ordinary Claude Code and Codex, without prohibitions the human does not have).
+ * What guards the human's name is the daemon: it refuses the human's token from an agent's process
+ * (agentprocs.ts), so the token read from the file signs nothing.
  */
 export const AGENT_KEY_ENV = "AGORYX_AGENT_KEY";
 

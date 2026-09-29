@@ -249,7 +249,10 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
       return;
     case "done": {
       const step = table.next.find((entry) => entry.id === op.target);
-      if (step) step.done = true;
+      if (step) {
+        step.done = true;
+        step.doneBy = op.by;
+      }
       return;
     }
     case "withdraw": {
@@ -413,7 +416,7 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
     lines.push(`## ${title}`);
     for (const entry of items) {
       const about = entry.q ? ` [answers ${entry.q}]` : entry.target ? ` [on ${entry.target}]` : "";
-      lines.push(`- ${entry.done ? "~~" : ""}${entry.id}: ${entry.text}${entry.done ? "~~" : ""}${about} (${entry.by})`);
+      lines.push(`- ${entry.done ? "~~" : ""}${entry.id}: ${entry.text}${entry.done ? "~~" : ""}${about} (${entry.by}${entry.doneBy && entry.doneBy !== entry.by ? `; done by ${entry.doneBy}` : ""})`);
     }
     lines.push("");
   };

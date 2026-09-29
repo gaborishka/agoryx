@@ -224,6 +224,8 @@ export interface TableItem {
   by: string;
   seq: number;
   done?: boolean;
+  /** Who marked this step done — not always who put it on the table. */
+  doneBy?: string;
   /** A settled item that answers a question: the question's id. */
   q?: string;
   /** A concession about a specific table item (P2, S1, Q1). */

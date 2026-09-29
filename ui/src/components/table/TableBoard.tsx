@@ -798,7 +798,10 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                 </button>
                 <div className="min-w-0">
                   <Markdown text={n.text} className={cn("text-[13.5px]", n.done && "line-through decoration-faint")} />
-                  <div className="text-[11.5px] text-faint">{participant(room, n.by).label}</div>
+                  <div className="text-[11.5px] text-faint">
+                    {participant(room, n.by).label}
+                    {n.doneBy && n.doneBy !== n.by ? ` · виконано: ${participant(room, n.doneBy).label}` : ""}
+                  </div>
                 </div>
               </li>
             ))}

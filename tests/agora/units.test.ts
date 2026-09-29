@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { passNote } from "../../internal/agora/prompts.js";
 import { unwrapShellCommand } from "../../internal/agora/runners/codex.js";
 import { parseTableCommand, TableCommandError } from "../../internal/agora/table-cli.js";
+import { applyTableOp, emptyTable, renderTableMarkdown } from "../../internal/agora/table.js";
 import { createRoom } from "../../internal/agora/service.js";
 import { drainOpsInbox, resolveInside, workspacePaths, type InboxOp } from "../../internal/agora/workspace.js";
 
@@ -118,4 +119,16 @@ test("an empty directory the human names stays theirs: no git init, no default d
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test("a step marked done by someone else says who did it — the table never reads as if its author closed it", () => {
+  const table = emptyTable();
+  applyTableOp(table, { op: "next", text: "write down the chosen semantics", by: "claude", id: "X1" }, 1);
+  applyTableOp(table, { op: "next", text: "run the suite", by: "codex", id: "X2" }, 2);
+  applyTableOp(table, { op: "done", target: "X1", by: "codex" }, 3);
+  applyTableOp(table, { op: "done", target: "X2", by: "codex" }, 4);
+  assert.equal(table.next[0]!.doneBy, "codex");
+  const md = renderTableMarkdown(table, "room");
+  assert.match(md, /- ~~X1: write down the chosen semantics~~ \(claude; done by codex\)/);
+  assert.match(md, /- ~~X2: run the suite~~ \(codex\)$/m);
 });

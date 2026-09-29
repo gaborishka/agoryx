@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { roomTurnPatch } from "../../internal/agora/engine.js";
 import {
   MAX_TURN_PATCH,
+  markTurnLive,
   patchSection,
   prepareWorkspace,
   readTurnPatch,
@@ -154,6 +155,24 @@ test("every turn's exact change is kept; the others see +/− and pull the patch
     assert.equal(roomTurnPatch(room.store, "t999"), null);
   } finally {
     await room.cleanup();
+  }
+});
+
+test("agoryx diff on a turn still running says so, instead of that it changed no files", () => {
+  const ws = mkdtempSync(join(tmpdir(), "agora-running-diff-"));
+  try {
+    mkdirSync(join(ws, ".agoryx", "rooms", "r1", "turns"), { recursive: true });
+    const shim = (turn: string) =>
+      spawnSync(process.execPath, [SHIM, "diff", turn], { cwd: ws, env: { PATH: process.env.PATH!, AGORYX_ROOM: "r1" }, encoding: "utf8" });
+    markTurnLive(ws, { room: "r1", turn: "t2", pid: process.pid, startedAt: Date.now() });
+    const running = shim("t2");
+    assert.notEqual(running.status, 0);
+    assert.match(running.stderr, /turn t2 is still running — what it changed is recorded when it ends/);
+    markTurnLive(ws, { room: "r1", turn: "t2", pid: process.pid, startedAt: Date.now(), endedAt: Date.now() });
+    assert.match(shim("t2").stderr, /turn t2 changed no files/, "once it has ended, no patch means no change");
+    assert.match(shim("t3").stderr, /turn t3 changed no files/);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
   }
 });
 

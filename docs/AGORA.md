@@ -203,7 +203,9 @@ So Agoryx keeps **the exact change of every turn**, and the other agents see it.
   holds what was actually done.
 - **`agoryx diff`** works inside the sandbox, from the agent shim. It needs no daemon.
   `agoryx diff` lists recent turns with their files, `agoryx diff t7` prints that turn's patch, and
-  `agoryx diff t7 src/clock.ts` prints one file of it. The human CLI has the same command,
+  `agoryx diff t7 src/clock.ts` prints one file of it. A turn still running (a parallel agent's, say) has
+  no patch yet: `agoryx diff` says it is running and that its patch comes when it ends, instead of
+  "changed no files". The human CLI has the same command,
   with `-r room` to use it from anywhere.
 - **In the UI,** the files a turn changed are chips with `+/−` counts. A chip opens a dialog with every
   file of the turn and the patch.

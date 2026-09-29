@@ -11,7 +11,7 @@
 // Every other command is the human's own `agoryx` (bin/agoryx.js), run as is: in a turn it carries the
 // agent's key, so what it does is recorded as the agent's — the same commands, no fewer.
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -259,6 +259,19 @@ const splitPatch = (text) => {
   return { header, body: lines.join("\n") };
 };
 
+/** Whether a turn of this room is running now: its marker in .agoryx/live/ has not ended and its process lives. */
+const stillRunning = (agoryxDir, room, id) => {
+  if (room === agoryxDir) return false;
+  try {
+    const entry = JSON.parse(readFileSync(join(agoryxDir, "live", `${basename(room)}.${id}.json`), "utf8"));
+    if (entry.endedAt !== undefined) return false;
+    process.kill(entry.pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+};
+
 /**
  * A room's turn patches; a room that opened before rooms had their own directories keeps its older
  * ones in .agoryx/turns/, read too while it is the only room in the workspace.
@@ -291,6 +304,9 @@ const runDiff = (agoryxDir, room, ref, path) => {
   const id = /^t?\d+$/.test(ref) ? `t${ref.replace(/^t/, "")}` : null;
   if (!id) fail(`'${ref}' is not a turn id (like t7) — agoryx diff lists them`);
   const file = found.get(Number(id.slice(1)));
+  if (!file && stillRunning(agoryxDir, room, id)) {
+    fail(`turn ${id} is still running — what it changed is recorded when it ends (agoryx diff ${id} then); until then the files as they are now are in the workspace`);
+  }
   if (!file) fail(`turn ${id} changed no files (or its patch is gone) — agoryx diff lists the ones that did`);
   const { header, body } = splitPatch(readFileSync(file, "utf8"));
   if (!path) {

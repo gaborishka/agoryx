@@ -7,6 +7,8 @@
 // Without a key nothing is asked: the room goes by @names and its own word lists alone. Asking sends the
 // texts to TypeSafe (or OpenRouter), so it is on only where the daemon has a key.
 
+import { parseEnv } from "node:util";
+
 export interface SecondLookCase {
   /** What the human asked, and of whom. */
   question: string;
@@ -180,6 +182,23 @@ export function jevReadMessage(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch =
     }
     return { addressed, stances: entry.paragraphs.map((_, index) => answers[`p${index + 1}`] ?? null), ms, tokens };
   };
+}
+
+/** The daemon's own Jev settings: never passed on to the agents it runs. */
+export const JEV_ENV = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "JEV_PROVIDER"] as const;
+
+/**
+ * Jev's settings from a `.env` file's text, into `env`: these names only, and never over what the environment
+ * already sets. Returns the names taken.
+ */
+export function jevEnvFrom(text: string, env: NodeJS.ProcessEnv): string[] {
+  const values = parseEnv(text);
+  return JEV_ENV.filter((name) => {
+    const value = values[name]?.trim();
+    if (!value || env[name]) return false;
+    env[name] = value;
+    return true;
+  });
 }
 
 /** How sure Jev must be before another agent is woken (AGORYX_JEV_THRESHOLD, 0–1; default one half). */

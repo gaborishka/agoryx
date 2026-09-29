@@ -4,6 +4,9 @@ bridge/LOG.md
 bridge/CLAUDE_PROMPT.md
 bridge/CODEX_PROMPT.md
 
+# Local secrets (the daemon's Jev key)
+.env
+
 # Runtime
 agoryx.db
 agoryx.test.db

@@ -64,7 +64,9 @@ table ┘   (JSONL, replayable)└── Codex   (native session, its own worksp
   read it in their next turn, and are woken by it only if it names them (`@codex, check this`). `@all`, or no
   name at all, addresses everyone.
 - **A second look, when Jev says it is worth it.** With a key for [Jev](https://typesafe.ai) in the daemon's
-  environment (`TYPESAFE_API_KEY`, or `OPENROUTER_API_KEY`; `JEV_PROVIDER` picks one when both are set), such an
+  environment (`TYPESAFE_API_KEY`, or `OPENROUTER_API_KEY`; `JEV_PROVIDER` picks one when both are set — `agoryx up` also
+  takes these three from a `.env` in the Agoryx checkout, never over the environment, and never passes them on to
+  the agents; the daemon log says «Jev on» or «Jev off» at start), such an
   answer that names no one is weighed: the human's question, the answer (a long one as its start and end) and the
   files it changed go to Jev, which gives each other agent a probability that its look is worth a turn. At
   `AGORYX_JEV_THRESHOLD` (default 0.5) or above, Agoryx says so in the room — «Jev: a second look at Claude's

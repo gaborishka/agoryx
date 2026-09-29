@@ -2,11 +2,13 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import pc from "picocolors";
 import { actorIn, AGENT_KEY_ENV, loadOrCreateToken, originName, originOf, readAgentKey } from "../../internal/agora/actor.js";
 import { DaemonClient, DaemonRequestError, type DaemonStreamItem } from "../../internal/agora/client.js";
 import { AgoraDaemon, findDaemon, readDaemonInfo, type DaemonInfo } from "../../internal/agora/daemon.js";
 import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
+import { jevEnvFrom, JEV_ENV } from "../../internal/agora/jev.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { type AgentLook, agentLook } from "../../internal/agora/look.js";
 import { activeRun } from "../../internal/agora/projection.js";
@@ -301,9 +303,30 @@ const localAgent = (): ActorOrigin | null => {
   }
 };
 
+/**
+ * `.env` files the daemon's Jev key may sit in: this install's, and, when it runs from a git worktree, the main
+ * checkout's.
+ */
+const dotenvFiles = (): string[] => {
+  let root = dirname(fileURLToPath(import.meta.url));
+  while (!existsSync(join(root, "package.json")) && dirname(root) !== root) root = dirname(root);
+  const files = [join(root, ".env")];
+  try {
+    const gitdir = /^gitdir:\s*(.+)$/m.exec(readFileSync(join(root, ".git"), "utf8"))?.[1]?.trim();
+    const main = gitdir && /[\\/]\.git[\\/]worktrees[\\/][^\\/]+$/.test(gitdir) ? resolve(gitdir, "../../..") : undefined;
+    if (main) files.push(join(main, ".env"));
+  } catch {
+    // Not a worktree (or not git at all): the install's own .env only.
+  }
+  return files;
+};
+
 /** Environment for a daemon started from here: never an agent turn's (its room, its key). */
 const daemonEnv = (): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const file of dotenvFiles()) {
+    if (existsSync(file)) jevEnvFrom(readFileSync(file, "utf8"), env);
+  }
   const agent = localAgentOrNull();
   for (const key of [TURN_FILE_ENV, "AGORYX_ROOM", "AGORYX_ROOM_NAME", "AGORYX_AGENT", "AGORYX_TURN", "AGORYX_SEEN", "AGORYX_OPS_DIR", "AGORYX_TABLE", AGENT_KEY_ENV]) {
     delete env[key];
@@ -566,6 +589,9 @@ const runUp = async (argv: string[]): Promise<number> => {
   });
   const info = await daemon.start();
   if (startedBy) stamp(`started by ${startedBy}`);
+  const jevKey = JEV_ENV.slice(0, 2).find((name) => env[name]);
+  const jevOff = String(env.AGORYX_JEV ?? "").trim().toLowerCase() === "off";
+  stamp(jevOff ? "Jev off (AGORYX_JEV=off)" : jevKey ? `Jev on (${jevKey})` : "Jev off: no key");
   console.log(`agoryx daemon at ${pc.bold(info.url)}  ·  UI: agoryx open  ·  Ctrl-C to stop`);
   if (parsed.options.open) openUrl(`${info.url}/?t=${encodeURIComponent(info.token)}`);
   await new Promise<void>((resolveUp) => {

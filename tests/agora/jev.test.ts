@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { jevReadMessage, jevSecondLook, jevThreshold, type MessageCase, type ReadMessage, type SecondLookCase } from "../../internal/agora/jev.js";
+import { jevEnvFrom, jevReadMessage, jevSecondLook, jevThreshold, type MessageCase, type ReadMessage, type SecondLookCase } from "../../internal/agora/jev.js";
 import { createTestRoom, withTimeout } from "./helpers.js";
 
 test("Jev judges a second look worth a turn: Agoryx says so, and only that agent is woken", async () => {
@@ -232,4 +232,22 @@ test("Jev's reading sends the message by paragraph and asks who it is meant for"
   assert.deepEqual(Object.keys(sent[0]!.questions), ["to:codex", "p2"], "a two-letter paragraph is not asked about");
   assert.equal(sent[0]!.state.paragraph_2, "Codex, I'd rather refuse sub-unit prices than round them.");
   assert.match(sent[0]!.questions["to:codex"]!.instructions, /whether or not it writes @codex/);
+});
+
+test("the daemon's Jev key comes from a .env file (these names only, never over the environment) and never reaches an agent", async () => {
+  const env: NodeJS.ProcessEnv = { OPENROUTER_API_KEY: "already" };
+  const taken = jevEnvFrom("# keys\nTYPESAFE_API_KEY=ts-key\nOPENROUTER_API_KEY=other\nSOMETHING_ELSE=x\nJEV_PROVIDER=\n", env);
+  assert.deepEqual(taken, ["TYPESAFE_API_KEY"]);
+  assert.deepEqual(env, { OPENROUTER_API_KEY: "already", TYPESAFE_API_KEY: "ts-key" });
+
+  const room = createTestRoom({ env: { TYPESAFE_API_KEY: "ts-key" }, rules: [{ agent: "claude", reply: "hi" }] });
+  try {
+    room.engine.postHuman("@claude hello");
+    await withTimeout(room.engine.waitIdle());
+    const turn = room.invocations("claude")[0]!;
+    assert.equal(turn.env!.AGORYX_AGENT, "claude");
+    assert.equal(turn.env!.TYPESAFE_API_KEY, undefined, "the key is the daemon's alone");
+  } finally {
+    await room.cleanup();
+  }
 });

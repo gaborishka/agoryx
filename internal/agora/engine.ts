@@ -8,7 +8,7 @@ import { locateNativeSession, scanNativeSession, type NativeExchange } from "./n
 import { activeRun } from "./projection.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
 import { buildTurnPrompt, paragraphs, parseMentions, passNote } from "./prompts.js";
-import type { ReadMessage, SecondLook } from "./jev.js";
+import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
 import { validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { RoomStore } from "./store.js";
@@ -1012,6 +1012,8 @@ export class RoomEngine {
     const path = this.env.PATH ?? process.env.PATH ?? "";
     // Never another agent's key (or turn) inherited from where Agoryx was started: this agent's own, or none.
     const { [AGENT_KEY_ENV]: _inherited, [TURN_FILE_ENV]: _file, AGORYX_TURN: _turn, AGORYX_SEEN: _seen, ...env } = this.env;
+    // Nor the daemon's Jev key: it is the daemon's, not something an agent's commands get to use.
+    for (const name of JEV_ENV) delete env[name];
     const key = this.agentKey?.(agent.id);
     return {
       ...env,

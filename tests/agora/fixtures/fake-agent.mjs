@@ -137,6 +137,7 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
         PATH_HEAD: (env.PATH || "").split(":")[0],
         CLAUDECODE: env.CLAUDECODE,
         AGORYX_AGENT_KEY: env.AGORYX_AGENT_KEY,
+        TYPESAFE_API_KEY: env.TYPESAFE_API_KEY,
       },
       // What the live process itself was started with: fixed, whatever turn it is.
       procEnv: { AGORYX_TURN: process.env.AGORYX_TURN, AGORYX_SEEN: process.env.AGORYX_SEEN, AGORYX_AGENT_KEY: process.env.AGORYX_AGENT_KEY, AGORYX_TURN_FILE: process.env.AGORYX_TURN_FILE },

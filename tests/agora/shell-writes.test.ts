@@ -52,3 +52,31 @@ test("in parallel turns a file an agent's own shell command wrote is credited to
     await room.cleanup();
   }
 });
+
+test("a file a turn wrote itself before and after a parallel turn ended is its whole change, not just the part after", async () => {
+  const room = createTestRoom({
+    rules: [
+      {
+        agent: "claude",
+        match: "semver",
+        earlyWrite: { path: "semver.ts", content: "a\nb\nc\n" },
+        sleepMs: 1500,
+        write: { path: "semver.ts", content: "a\nB\nc\nd\n" },
+        reply: "Wrote semver.ts.",
+        once: true,
+      },
+      { agent: "codex", match: "semver", sleepMs: 200, write: { path: "semver.test.ts", content: "t\n" }, reply: "Tests in.", once: true },
+      { reply: "::pass::" },
+    ],
+  });
+  try {
+    room.engine.postHuman("Implement semver");
+    await withTimeout(room.engine.waitIdle());
+    const turn = (agent: string) => room.store.state.turns.find((entry) => entry.agent === agent)!;
+    assert.ok(turn("codex").endedAt! < turn("claude").endedAt!, "Claude changed it again after Codex had ended");
+    assert.deepEqual(turn("claude").changes, [{ path: "semver.ts", status: "A", added: 4, removed: 0 }]);
+    assert.deepEqual(turn("codex").changes, [{ path: "semver.test.ts", status: "A", added: 1, removed: 0 }]);
+  } finally {
+    await room.cleanup();
+  }
+});

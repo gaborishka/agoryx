@@ -5,7 +5,7 @@
 // optional), `id` (the room's agent id, $AGORYX_AGENT, optional) and `match` (substring of
 // the prompt, optional) fit is used:
 //   { agent, id, match, reply, table: [[...argv]], run: [[command, ...argv]] (outputs logged as runOutputs),
-//     write: {path, content, via?: "shell"} (or a list),
+//     write: {path, content, via?: "shell"} (or a list), earlyWrite: {path, content} (with the edit tool, before sleepMs),
 //     command: "shown as the tool call; {cwd} and {cli} expand", sleepMs, afterTableMs (a pause after the table ops),
 //     streamSleepMs (claude: pause after streaming the reply, before finishing),
 //     error: "text", exitCode, once: true }
@@ -183,6 +183,18 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
     out({ type: "turn.started" });
   }
 
+  // Written with the edit tool before the pause (sleepMs): a first draft the turn goes on changing.
+  if (rule?.earlyWrite) {
+    const full = join(process.cwd(), rule.earlyWrite.path);
+    mkdirSync(dirname(full), { recursive: true });
+    writeFileSync(full, rule.earlyWrite.content);
+    if (kind === "claude") {
+      out({ type: "assistant", session_id: sessionId, message: { content: [{ type: "tool_use", id: `tw${turn}-early`, name: "Write", input: { file_path: full, content: "" } }] } });
+      out({ type: "user", session_id: sessionId, message: { content: [{ type: "tool_result", tool_use_id: `tw${turn}-early`, content: "ok", is_error: false }] } });
+    } else {
+      out({ type: "item.completed", item: { id: "edit_early", type: "file_change", changes: [{ path: full, kind: "add" }], status: "completed" } });
+    }
+  }
   if (rule?.sleepMs) await sleep(rule.sleepMs);
 
   const tableOutputs = [];

@@ -1234,8 +1234,15 @@ export class RoomEngine {
     // did is this turn's, whatever tool changed it. Its patch starts from where that turn left the file.
     const late = handoff && handoff.dirty && dirty && alone ? seen.filter((file) => handoff.dirty!.get(file) !== dirty.get(file)) : [];
     let files = this.attributeFiles(turnId, seen, late, foreign.map((entry) => `${entry.room}/${entry.turn}`));
-    this.shellWrites.delete(turnId);
-    const changed = this.turnChanges(agent, turnId, tree, after, files, late.length && handoff?.tree ? { tree: handoff.tree, files: late } : undefined);
+    // A late file this turn wrote itself all along, and no parallel turn claims, is its whole change from the turn's start;
+    // only one another turn may have shaped too starts from where the last of them left it.
+    const self = this.state.turns.find((entry) => entry.id === turnId);
+    const handedOver = late.filter(
+      (file) => foreign.length > 0 || !self || !this.claimsFile(self, file) || this.overlapping(turnId).some((entry) => this.claimsFile(entry, file)),
+    );
+    const changed = this.turnChanges(agent, turnId, tree, after, files, handedOver.length && handoff?.tree ? { tree: handoff.tree, files: handedOver } : undefined);
+    // Every parallel turn has ended: nothing needs their shell writes any more.
+    if (this.running.size === 0) this.shellWrites.clear();
     // A file only touched (same content) is not a change.
     if (changed) files = files.filter((file) => changed.changes.some((change) => change.path === file));
     // Hand what the workspace looks like now to the turns still running, here and in the other rooms of this process.
@@ -1356,14 +1363,7 @@ export class RoomEngine {
     if (files.length === 0) return files;
     const turn = this.state.turns.find((entry) => entry.id === turnId);
     if (!turn) return files;
-    const claims = (entry: TurnState, file: string) =>
-      entry.activity.some(
-        (activity) =>
-          (activity.kind === "edit" && activity.label.includes(file)) ||
-          (activity.kind === "command" && shellWriteTargets(activity.label).some((target) => namesFile(target, file))),
-      ) ||
-      [...(this.shellWrites.get(entry.id) ?? [])].some((target) => namesFile(target, file)) ||
-      this.state.docRevisions.some((revision) => revision.turnId === entry.id && revision.path === file);
+    const claims = (entry: TurnState, file: string) => this.claimsFile(entry, file);
     if (this.overlapping(turnId).length === 0 && foreign.length === 0) return files;
     // Another turn — of this room or of another room sharing the workspace — ran at the same time: a file this turn's own edit tool
     // touched, or its own shell command named as written (`> file`, `sed -i … file`, `open('file', 'w')`), is its (both, if both did),
@@ -1372,6 +1372,19 @@ export class RoomEngine {
     const unclaimed = files.filter((file) => !mine.includes(file));
     if (unclaimed.length > 0) this.log(`${turnId}: not credited (parallel turns${foreign.length ? `, other rooms: ${foreign.join(", ")}` : ""}): ${unclaimed.join(", ")}`);
     return mine;
+  }
+
+  /** Whether a turn's own trace says it wrote the file: its edit tool, a shell command naming it as written, or a doc revision. */
+  private claimsFile(entry: TurnState, file: string): boolean {
+    return (
+      entry.activity.some(
+        (activity) =>
+          (activity.kind === "edit" && activity.label.includes(file)) ||
+          (activity.kind === "command" && shellWriteTargets(activity.label).some((target) => namesFile(target, file))),
+      ) ||
+      [...(this.shellWrites.get(entry.id) ?? [])].some((target) => namesFile(target, file)) ||
+      this.state.docRevisions.some((revision) => revision.turnId === entry.id && revision.path === file)
+    );
   }
 
   /** The other turns that ran at some point while this one did. */

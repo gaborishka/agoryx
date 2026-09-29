@@ -41,7 +41,7 @@ function LiveTurn({ turn, ops }: { turn: TurnState; ops?: TableOp[] }) {
   const elapsed = secs(now - new Date(turn.startedAt).getTime());
   const last = turn.activity.slice(-4);
   const current = turn.activity.at(-1);
-  const label = current?.kind === "thinking" ? "міркує" : current?.kind === "command" ? "виконує команду" : current?.kind === "edit" ? "пише файл" : current?.kind === "read" ? "читає" : current?.kind === "web" ? "шукає в мережі" : "працює";
+  const label = current?.kind === "thinking" ? "міркує" : current?.kind === "command" ? "виконує команду" : current?.kind === "edit" ? "пише файл" : current?.kind === "read" ? "читає" : current?.kind === "web" ? "шукає в мережі" : current?.kind === "browser" ? "працює в браузері" : "працює";
   return (
     <article className="relative min-w-0 rounded-2xl border border-border bg-card/80 p-4 shadow-soft sm:p-5">
       <header className="flex items-center gap-2">

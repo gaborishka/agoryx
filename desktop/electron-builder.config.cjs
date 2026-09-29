@@ -31,8 +31,9 @@ module.exports = {
     ],
     category: "public.app-category.developer-tools",
     icon: "build/icon.icns",
-    // A local build: no signing identity (macOS asks once on first open: right-click → Open).
-    identity: null,
+    // A local build: no signing identity (macOS asks once on first open: right-click → Open), unless
+    // AGORYX_SIGN_IDENTITY names one from the keychain; only a signed app shows notification banners.
+    identity: process.env.AGORYX_SIGN_IDENTITY || null,
   },
   dmg: {
     title: "Agoryx",

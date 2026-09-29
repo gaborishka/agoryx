@@ -412,6 +412,9 @@ const main = async () => {
     process.stdout.write(USAGE);
     return;
   }
+  // The room's browser, as an MCP server the room hands the agent's CLI (bin/agoryx-mcp.mjs). Not in USAGE:
+  // agents never run it by hand.
+  if (command === "mcp") { const { serve } = await import("./agoryx-mcp.mjs"); await serve(); return; }
   if (command !== "table" && command !== "diff" && command !== "read" && command !== "say") {
     const full = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "agoryx.js"), command, ...(verb === undefined ? [] : [verb]), ...args], {
       stdio: "inherit",

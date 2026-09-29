@@ -1,11 +1,12 @@
 import { toast } from "sonner";
 import { create } from "zustand";
 import { api, ApiError, local, roomPath, setUnauthorizedHandler, Unauthorized } from "./api";
+import { startAttention } from "./attention";
 import { lastLine } from "./room";
 import type { AgentPresence, OpEntry, RoomEvent, RoomSummary, RunState, Snapshot, TurnState } from "./types";
 
-/** The right-hand panel: the shared document, or an agent's own session; the table is a view of its own. */
-export type PanelTab = "doc" | "session";
+/** The right-hand panel: the shared document, an agent's own session, or the room's browser (in the app); the table is a view of its own. */
+export type PanelTab = "doc" | "session" | "browser";
 
 /** What the room's main area shows: the conversation, or the table laid out as a board. */
 export type RoomView = "chat" | "table";
@@ -379,6 +380,13 @@ export const boot = async () => {
   syncRoute();
   window.addEventListener("popstate", syncRoute);
   window.addEventListener("hashchange", syncRoute);
+  startAttention(
+    () => {
+      const s = useStore.getState();
+      return s.route.kind === "room" ? (s.snap?.state.id ?? s.route.id) : null;
+    },
+    (fn) => useStore.subscribe(fn),
+  );
   setInterval(() => void useStore.getState().loadRooms(), 5000);
 };
 

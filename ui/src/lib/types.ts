@@ -1,5 +1,5 @@
 import type { AgentLook } from "@agora/look";
-import type { AgentPresence, RoomState, TableOp } from "@agora/types";
+import type { AgentPresence, AttentionItem, RoomState, TableOp } from "@agora/types";
 
 export type * from "@agora/types";
 
@@ -14,6 +14,8 @@ export interface RoomSummary {
   lastMessage?: { author: string; text: string; label?: string; look?: AgentLook };
   running: boolean;
   driven?: boolean;
+  /** The room waits for the human (the daemon sends it to the human only). */
+  waiting?: AttentionItem;
 }
 
 export interface StreamBuffer {

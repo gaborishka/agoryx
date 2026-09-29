@@ -13,6 +13,7 @@ import {
   type TurnResult,
 } from "./types.js";
 import type { Activity, TurnUsage } from "../types.js";
+import { BROWSER_SERVER, codexMcpArgs, describeBrowserTool } from "../browsertools.js";
 
 type Json = Record<string, unknown>;
 
@@ -27,6 +28,8 @@ const str = (value: unknown): string | undefined => (typeof value === "string" ?
  * to leave the sandbox goes to Codex's own automatic review (what `--approve-for-me` does) instead
  * of being refused unseen; when the human turns the network off or makes the room read-only, it is
  * refused as before.
+ *
+ * With the shim the room also hands Codex its browser, the MCP server `agoryx mcp` (`-c mcp_servers.agoryx_browser.*`).
  */
 export const buildCodexArgs = (request: TurnRequest): string[] => {
   const sandbox = request.settings.access === "readonly" ? "read-only" : "workspace-write";
@@ -37,6 +40,7 @@ export const buildCodexArgs = (request: TurnRequest): string[] => {
     common.push("-c", "sandbox_workspace_write.network_access=true");
     common.push("-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"');
   }
+  common.push(...codexMcpArgs(request.env));
   if (request.sessionId) {
     return ["exec", "resume", request.sessionId, ...common, "-c", `sandbox_mode="${sandbox}"`, "-"];
   }
@@ -78,12 +82,13 @@ export const describeCodexItem = (item: Json): Omit<Activity, "id"> | null => {
         status: str(item.status) === "failed" ? "fail" : "ok",
       };
     }
-    case "mcp_tool_call":
-      return {
-        kind: "tool",
-        label: `${str(item.server) ?? "mcp"}.${str(item.tool) ?? "tool"}`,
-        status: str(item.status) === "in_progress" ? "running" : str(item.status) === "failed" ? "fail" : "ok",
-      };
+    case "mcp_tool_call": {
+      const status = str(item.status) === "in_progress" ? "running" : str(item.status) === "failed" ? "fail" : "ok";
+      // The room's browser: a value-free step; the arguments are read for it, never kept.
+      const browser = item.server === BROWSER_SERVER ? describeBrowserTool(str(item.tool) ?? "", item.arguments) : null;
+      if (browser) return { ...browser, status };
+      return { kind: "tool", label: `${str(item.server) ?? "mcp"}.${str(item.tool) ?? "tool"}`, status };
+    }
     case "web_search":
       return { kind: "web", label: truncate(str(item.query) ?? "web search", 160), status: "ok" };
     case "todo_list": {
@@ -178,7 +183,7 @@ export const execShapedItem = (item: Json): Json | null => {
       };
     }
     case "mcpToolCall":
-      return { type: "mcp_tool_call", server: item.server, tool: item.tool, status: status(item.status) };
+      return { type: "mcp_tool_call", server: item.server, tool: item.tool, arguments: item.arguments, status: status(item.status) };
     case "webSearch":
       return { type: "web_search", query: item.query };
     case "plan":
@@ -229,7 +234,8 @@ class CodexLiveProcess implements LiveProcess {
     this.codexHome = request.env.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), ".codex");
     this.child = spawnJsonlChild({
       bin,
-      args: ["app-server"],
+      // The room's browser, as `codex exec` gets it; the fingerprint has request.env, which these come from.
+      args: ["app-server", ...codexMcpArgs(request.env)],
       cwd: request.cwd,
       env: request.env,
       onJson: (message) => this.onMessage(message),

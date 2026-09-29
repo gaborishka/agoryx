@@ -123,6 +123,7 @@ export type ActivityKind =
   | "read"
   | "search"
   | "web"
+  | "browser"
   | "tool"
   | "thinking"
   | "note"
@@ -566,3 +567,25 @@ export interface KindModels {
 }
 
 export type AgentModels = Record<AgentKind, KindModels>;
+
+// ---------------------------------------------------------------------------
+// Attention: a room that waits for the human (internal/agora/attention.ts)
+// ---------------------------------------------------------------------------
+
+export type AttentionReason = "done" | "budget" | "stopped" | "error" | "mention";
+
+/** A room that waits for the human: at most one per room, until the human sees it. */
+export interface AttentionItem {
+  /** The room's id. */
+  room: string;
+  /** The room's current name, read when the item is read, so a rename shows. */
+  name: string;
+  /** The event that needs the human; stable across restarts, so (room, seq) is the key. */
+  seq: number;
+  ts: string;
+  reason: AttentionReason;
+  /** Who mentioned, stopped or failed: an agent's label, or "<agent>@<room>" for a guest. */
+  by?: string;
+  /** One line, whitespace collapsed, at most 160 characters with "…". */
+  text: string;
+}

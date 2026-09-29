@@ -1,8 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, session, shell } from "electron";
-import type { BrowserWindowConstructorOptions, IpcMainInvokeEvent, Rectangle, WebContents, WebPreferences } from "electron";
+import type { BrowserWindowConstructorOptions, IpcMainEvent, IpcMainInvokeEvent, Rectangle, WebContents, WebPreferences } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createAttention, type AttentionCore } from "./attention.js";
+import { BrowserPanes } from "./browserpane.js";
 
 /**
  * Agoryx for macOS: one window over the local daemon.
@@ -67,7 +69,7 @@ interface Supervisor {
   removeAllListeners(): unknown;
 }
 
-interface DesktopCore {
+interface DesktopCore extends AttentionCore {
   desktopEnv(base?: NodeJS.ProcessEnv): Promise<{ env: NodeJS.ProcessEnv; source: "login-shell" | "fallback" }>;
   findExecutable(name: string, env: NodeJS.ProcessEnv): string | null;
   runDoctor(options: { env: NodeJS.ProcessEnv; root: string; probe?: boolean }): Promise<DoctorCheck[]>;
@@ -292,6 +294,8 @@ let pendingWarnings: string | null = null;
 /** A start sequence (or a doctor run) is under way: buttons wait, menu items that would race it do nothing. */
 let busy = false;
 let stopping = false;
+/** The tray, the Dock badge and banners for rooms that wait (attention.ts); made in ready(). */
+let attention: ReturnType<typeof createAttention> | null = null;
 
 const show = (next: Omit<StartState, "rev">): void => {
   state = { ...next, rev: state.rev + 1 };
@@ -317,6 +321,9 @@ const showDaemon = (info: DaemonInfo): void => {
   daemon = info;
   // Also with the window closed: the one the Dock opens next shows the daemon, not the start page's last state.
   view = "daemon";
+  // Also with the window closed. Neither throws, and both are no-ops for the same daemon (render() calls this again).
+  attention?.setDaemon(info);
+  panes.connect(info);
   if (!win || win.isDestroyed()) return;
   win.loadURL(`${info.url}/?t=${encodeURIComponent(info.token)}`).catch(() => {});
 };
@@ -476,12 +483,14 @@ const startError = (error: unknown): StartState["error"] => {
 const onDown = (): void => {
   if (stopping) return;
   daemon = null;
+  attention?.setDaemon(null);
   show({ title: "Agoryx зупинився — перезапускаю…", steps: daemonStep("run"), checks: [], actions: ["log"], busy: true });
 };
 
 const onFailed = (failure: SupervisorFailure): void => {
   if (stopping) return;
   daemon = null;
+  attention?.setDaemon(null);
   show({
     title: "Agoryx зупинився й не піднявся",
     note: "Кілька спроб поспіль запустити його знову не вдалися. Зазвичай журнал каже чому.",
@@ -760,6 +769,7 @@ const createWindow = (): BrowserWindow => {
     });
   });
   win = next;
+  panes.attachWindow(next);
   render(next);
   return next;
 };
@@ -778,6 +788,23 @@ const focusWindow = (): void => {
 const fromStartPage = (event: IpcMainInvokeEvent): void => {
   if (!isStartPage(event.senderFrame?.url ?? "")) throw new Error("only the start page may ask this");
 };
+
+/** The daemon's UI in the main window's main frame, not a preview: the only page that may use the room's browser. */
+const trustedUi = (event: IpcMainEvent | IpcMainInvokeEvent): boolean =>
+  win !== null &&
+  !win.isDestroyed() &&
+  event.sender === win.webContents &&
+  event.senderFrame === win.webContents.mainFrame &&
+  isDaemonUrl(event.senderFrame?.url ?? "") &&
+  !isPreviewUrl(event.senderFrame?.url ?? "");
+
+/** The room's browser (browserpane.ts): one pane per room, inside the main window. */
+const panes = new BrowserPanes({
+  root: agoryxRoot(),
+  trustedUi,
+  userGesture: (contents) => takeGesture(contents),
+  log: (line) => console.log(`[browser] ${line}`),
+});
 
 const listen = (): void => {
   ipcMain.handle("agoryx:state", (event) => {
@@ -800,11 +827,22 @@ const listen = (): void => {
     fromStartPage(event);
     return runChecks(probe === true).then(() => checks);
   });
+  panes.listen();
 };
 
 // ---------------------------------------------------------------------------
 // Menu and lifecycle
 // ---------------------------------------------------------------------------
+
+/**
+ * «Вигляд» acts on the focused window's own page (the UI, or a daemon child window), never on the focused
+ * contents: with the room's browser focused, the roles would reload it, zoom it (moving the agents' coordinates)
+ * or open its DevTools.
+ */
+const onPage = (act: (page: WebContents) => void): void => {
+  const target = BrowserWindow.getFocusedWindow() ?? win;
+  if (target && !target.isDestroyed()) act(target.webContents);
+};
 
 /** The standard menus spelled out, so that they speak Ukrainian like the rest (Electron's role menus are English). */
 const buildMenu = (): Menu =>
@@ -860,13 +898,13 @@ const buildMenu = (): Menu =>
     {
       label: "Вигляд",
       submenu: [
-        { role: "reload", label: "Оновити" },
-        { role: "forceReload", label: "Оновити повністю" },
-        { role: "toggleDevTools", label: "Інструменти розробника" },
+        { label: "Оновити", accelerator: "CmdOrCtrl+R", click: () => onPage((page) => page.reload()) },
+        { label: "Оновити повністю", accelerator: "Shift+CmdOrCtrl+R", click: () => onPage((page) => page.reloadIgnoringCache()) },
+        { label: "Інструменти розробника", accelerator: "Alt+CmdOrCtrl+I", click: () => onPage((page) => page.toggleDevTools()) },
         { type: "separator" },
-        { role: "resetZoom", label: "Справжній розмір" },
-        { role: "zoomIn", label: "Збільшити" },
-        { role: "zoomOut", label: "Зменшити" },
+        { label: "Справжній розмір", accelerator: "CmdOrCtrl+0", click: () => onPage((page) => page.setZoomLevel(0)) },
+        { label: "Збільшити", accelerator: "CmdOrCtrl+Plus", click: () => onPage((page) => page.setZoomLevel(page.getZoomLevel() + 0.5)) },
+        { label: "Зменшити", accelerator: "CmdOrCtrl+-", click: () => onPage((page) => page.setZoomLevel(page.getZoomLevel() - 0.5)) },
         { type: "separator" },
         { role: "togglefullscreen", label: "На весь екран" },
       ],
@@ -890,6 +928,7 @@ const ready = (): void => {
   listen();
   Menu.setApplicationMenu(buildMenu());
   createWindow();
+  attention = createAttention({ core: () => core, window: () => win, focusWindow, isDaemonUrl, daemonOrigin, log: (message) => console.log(`[attention] ${message}`) });
   void boot();
 };
 
@@ -897,7 +936,10 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", focusWindow);
-  app.on("web-contents-created", (_event, contents) => guard(contents));
+  // A pane of the room's browser has its own rules (browserpane.ts); every other page gets guard().
+  app.on("web-contents-created", (_event, contents) => {
+    if (!panes.owns(contents)) guard(contents);
+  });
   // Closing the window keeps the app (and its watch over the daemon) in the Dock, as macOS apps do.
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
@@ -907,6 +949,8 @@ if (!app.requestSingleInstanceLock()) {
   });
   // Quit leaves the daemon running: rooms keep going. Only "Зупинити демона й вийти" stops it.
   app.on("before-quit", () => {
+    attention?.dispose();
+    panes.close();
     supervisor?.removeAllListeners();
     void supervisor?.dispose();
   });

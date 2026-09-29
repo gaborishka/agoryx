@@ -4,6 +4,8 @@ import { chmodSync, closeSync, createReadStream, existsSync, mkdirSync, openSync
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { agentBehind } from "./agentprocs.js";
+import { AttentionBoard, parseView } from "./attention.js";
+import { BrowserFailure, BrowserRelay, sseHost } from "./browser.js";
 import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, originName, originOf, readAgentKey } from "./actor.js";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
@@ -51,6 +53,8 @@ class HttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The response also closes the connection (the request's body was not read to its end). */
+    readonly closeConnection = false,
   ) {
     super(message);
   }
@@ -144,20 +148,28 @@ const inGitDir = (workspace: string, full: string): boolean => {
   return full === gitDir || full.startsWith(`${gitDir}${sep}`);
 };
 
-const readBody = (req: IncomingMessage): Promise<unknown> =>
+const readBody = (req: IncomingMessage, limit = MAX_BODY): Promise<unknown> =>
   new Promise((resolveBody, reject) => {
     let size = 0;
+    let over = false;
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => {
+    const onData = (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_BODY) {
-        reject(new HttpError(413, "request body too large"));
-        req.destroy();
+      if (size > limit) {
+        // Keep nothing more, but let the rest drain instead of resetting the socket, so the client reads the
+        // 413; the error response closes the connection.
+        over = true;
+        chunks.length = 0;
+        req.off("data", onData);
+        req.resume();
+        reject(new HttpError(413, "request body too large", true));
         return;
       }
       chunks.push(chunk);
-    });
+    };
+    req.on("data", onData);
     req.on("end", () => {
+      if (over) return;
       const text = Buffer.concat(chunks).toString("utf8").trim();
       if (!text) return resolveBody({});
       try {
@@ -169,12 +181,13 @@ const readBody = (req: IncomingMessage): Promise<unknown> =>
     req.on("error", reject);
   });
 
-const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
+const sendJson = (res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}): void => {
   const text = JSON.stringify(body);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "content-length": Buffer.byteLength(text),
+    ...extra,
   });
   res.end(text);
 };
@@ -246,6 +259,10 @@ export class AgoraDaemon {
   private server: Server | null = null;
   private sseClients = new Set<ServerResponse>();
   private heartbeat?: NodeJS.Timeout;
+  /** Which rooms wait for the human (attention.ts). */
+  private readonly attention: AttentionBoard;
+  /** The room's browser: agents' commands to the app's pane (browser.ts). */
+  private readonly browser: BrowserRelay;
   port = 0;
 
   constructor(options: DaemonOptions = {}) {
@@ -253,6 +270,8 @@ export class AgoraDaemon {
     this.env = options.env ?? process.env;
     this.token = loadOrCreateToken(this.env);
     this.log = options.log ?? (() => {});
+    this.attention = new AttentionBoard({ env: this.env, log: this.log });
+    this.browser = new BrowserRelay({ log: (line) => this.log(line) });
     this.runners = options.runners ?? defaultRunners(this.env);
     this.webDir = options.webDir ?? findWebDir();
   }
@@ -268,7 +287,8 @@ export class AgoraDaemon {
         const status = error instanceof HttpError ? error.status : error instanceof TableOpError ? 400 : 500;
         const message = error instanceof Error ? error.message : String(error);
         if (status >= 500) this.log(`error: ${error instanceof Error ? (error.stack ?? message) : message}`);
-        if (!res.headersSent) sendJson(res, status, { error: message });
+        const close: Record<string, string> = error instanceof HttpError && error.closeConnection ? { connection: "close" } : {};
+        if (!res.headersSent) sendJson(res, status, { error: message }, close);
         else res.end();
       });
     });
@@ -339,6 +359,8 @@ export class AgoraDaemon {
     if (this.heartbeat) clearInterval(this.heartbeat);
     for (const client of this.sseClients) client.end();
     this.sseClients.clear();
+    // The app's browser host stream is not in sseClients: end it here, or server.close() waits for it.
+    this.browser.close();
     await Promise.all(
       [...this.rooms.values()].map(async (handle) => {
         if (handle.followTimer) clearInterval(handle.followTimer);
@@ -348,6 +370,7 @@ export class AgoraDaemon {
         await handle.engine.close(actor);
       }),
     );
+    this.attention.close();
     this.rooms.clear();
     await new Promise<void>((resolveClose) => (this.server ? this.server.close(() => resolveClose()) : resolveClose()));
     this.server?.closeAllConnections?.();
@@ -383,6 +406,7 @@ export class AgoraDaemon {
     const handle: RoomHandle = { store, streams: new Map(), followers: 0, listeners: new Set() };
     relay(handle);
     this.rooms.set(id, handle);
+    this.attention.track(id, () => handle.store, handle.listeners);
     this.tryDrive(handle);
     return handle;
   }
@@ -426,6 +450,11 @@ export class AgoraDaemon {
       handle.streams.set(event.turnId, buffer);
     } else if (event.type === "turn.ended") {
       handle.streams.delete(event.turnId);
+      // What the turn left in the room's browser is withdrawn: the pane never runs it after the turn.
+      this.browser.endTurn(handle.store.id, event.agent);
+    } else if (event.type === "settings.changed" && event.patch.network === false) {
+      // The room's network went off, and its browser with it.
+      this.browser.closeRoom(handle.store.id);
     }
   }
 
@@ -506,6 +535,8 @@ export class AgoraDaemon {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // The room's browser pane marks every request it makes: no page it opens reaches Agoryx.
+    if (req.headers["x-agoryx-pane"] !== undefined) throw new HttpError(403, "the room's browser cannot open Agoryx itself");
     this.checkHost(req);
     const url = new URL(req.url ?? "/", this.url);
     const path = url.pathname;
@@ -748,13 +779,18 @@ export class AgoraDaemon {
       return;
     }
 
+    if (parts[0] === "attention") return this.attentionApi(req, res, parts.slice(1), method, caller);
+    if (parts[0] === "browser") return this.browserApi(req, res, parts.slice(1), method, caller);
+
     if (parts[0] !== "rooms") throw new HttpError(404, "unknown endpoint");
 
     if (parts.length === 1) {
       if (method === "GET") {
         const rooms = RoomStore.list(roomsDir(this.env)).map((summary) => {
           const handle = this.rooms.get(summary.id);
-          return handle ? { ...handle.store.summary(), driven: Boolean(handle.engine) } : summary;
+          if (!handle) return summary;
+          // What the human has not seen is the human's: an agent key never learns it.
+          return { ...handle.store.summary(), driven: Boolean(handle.engine), ...(caller.agent ? {} : { waiting: this.attention.item(summary.id) }) };
         });
         sendJson(res, 200, { rooms });
         return;
@@ -869,6 +905,8 @@ export class AgoraDaemon {
     const body = (await readBody(req)) as Record<string, unknown>;
     const engine = this.engineFor(handle);
     const actor = this.actorFor(caller, engine.state);
+    // The human acting in a room has seen it.
+    if (!caller.agent) this.attention.markSeen(handle.store.id);
 
     switch (action) {
       case "messages": {
@@ -1124,6 +1162,85 @@ export class AgoraDaemon {
         delete handle.followTimer;
       }
     });
+  }
+
+  /** /api/attention: which rooms wait for the human, and where the human looks. The human's only; no stream. */
+  private async attentionApi(req: IncomingMessage, res: ServerResponse, parts: string[], method: string, caller: Caller): Promise<void> {
+    if (caller.agent) throw new HttpError(403, "attention is the human's");
+    const [what, ...rest] = parts;
+    if (rest.length > 0 || (what !== undefined && what !== "view" && what !== "seen")) throw new HttpError(404, "unknown endpoint");
+    if (what === undefined) {
+      if (method !== "GET") throw new HttpError(405, "method not allowed");
+    } else {
+      if (method !== "POST") throw new HttpError(405, "method not allowed");
+      const body = await readBody(req);
+      const fields = (body && typeof body === "object" && !Array.isArray(body) ? body : {}) as Record<string, unknown>;
+      if (what === "view") {
+        const view = parseView(body);
+        if (typeof view === "string") throw new HttpError(400, view);
+        this.attention.view(view);
+      } else if (fields.all === true) {
+        this.attention.markAllSeen();
+      } else if (typeof fields.room === "string" && fields.room) {
+        this.attention.markSeen(fields.room);
+      } else {
+        throw new HttpError(400, "send { room } or { all: true }");
+      }
+    }
+    sendJson(res, 200, { rooms: this.attention.items() });
+  }
+
+  /** /api/browser: agents' commands to the room's browser, and the app that hosts it. */
+  private async browserApi(req: IncomingMessage, res: ServerResponse, parts: string[], method: string, caller: Caller): Promise<void> {
+    try {
+      if (parts.length === 0) {
+        if (method !== "POST") throw new HttpError(405, "method not allowed");
+        const origin = caller.agent;
+        if (!origin) throw new HttpError(403, "browser commands come from agents, under their own key; the human uses the pane itself");
+        const turnAndNetwork = () => {
+          const engine = this.rooms.get(origin.room)?.engine;
+          if (!engine || engine.presence()[origin.agent] !== "working") throw new HttpError(409, "The room's browser works only while your turn runs.");
+          if (!engine.state.settings.network) {
+            throw new HttpError(403, "This room's network is off, so its browser is off too. The human can turn the network on in the room settings.");
+          }
+        };
+        turnAndNetwork();
+        // Any agent can compute any key from daemon.token: the command must come from this agent's own turn.
+        const owner = await agentBehind(req.socket);
+        if (!owner || "unknown" in owner || owner.room !== origin.room || owner.agent !== origin.agent) {
+          throw new HttpError(403, "Browser commands must come from your own turn: your CLI, or a process it started.");
+        }
+        const body = await readBody(req);
+        // The turn may have ended, or the network gone off, during the two awaits. Check again in the tick that
+        // registers the command, so a later turn end or closeRoom finds it in flight.
+        turnAndNetwork();
+        // The agent gave up (its call was cancelled or timed out, or its process ended): the command is withdrawn.
+        const gone = new AbortController();
+        res.on("close", () => {
+          if (!res.writableEnded) gone.abort();
+        });
+        const result = await this.browser.command(origin, body, gone.signal);
+        sendJson(res, 200, { ok: true, result });
+        return;
+      }
+      if (caller.agent) throw new HttpError(403, "only the Agoryx app hosts the room's browser");
+      if (parts[0] === "host" && parts.length === 1) {
+        if (method !== "GET") throw new HttpError(405, "method not allowed");
+        const detach = this.browser.attach(sseHost(res));
+        req.on("close", detach);
+        return;
+      }
+      if (parts[0] === "answer" && parts.length === 2) {
+        if (method !== "POST") throw new HttpError(405, "method not allowed");
+        this.browser.answer(parts[1]!, await readBody(req, 8 * 1024 * 1024));
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      throw new HttpError(404, "unknown endpoint");
+    } catch (error) {
+      if (error instanceof BrowserFailure) throw new HttpError(error.status, error.message);
+      throw error;
+    }
   }
 }
 

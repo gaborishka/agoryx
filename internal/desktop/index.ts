@@ -34,3 +34,4 @@ export {
   type SupervisorFailure,
 } from "./supervisor.js";
 export { findDaemon, readDaemonInfo, type DaemonInfo } from "../agora/daemoninfo.js";
+export { AttentionFollower, bannerFor, lookingAt, nextBannerAt, roomsWord, trayLabel, type AttentionFollowerEvents, type AttentionFollowerOptions, type Banner, type Looking, type LookingInput } from "./attention.js";

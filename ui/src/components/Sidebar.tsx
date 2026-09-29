@@ -2,6 +2,7 @@ import { CircleHelpIcon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SunIcon } 
 import { AgoraGlyph, Tip } from "@/components/room/bits";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
+import { waitingTip } from "@/lib/attention";
 import { ago, roomPreviewParts } from "@/lib/format";
 import { ink, toneText } from "@/lib/room";
 import { useStore } from "@/lib/store";
@@ -22,7 +23,11 @@ function RoomRow({ room, on }: { room: RoomSummary; on: boolean }) {
       )}
     >
       <span className={cn("truncate text-[13.5px] font-medium", on ? "text-foreground" : "text-foreground")}>{room.name}</span>
-      {room.running ? (
+      {room.waiting && !on ? (
+        <Tip tip={waitingTip(room.waiting, room.running)} side="right">
+          <span className="mt-1.5 size-2 rounded-full bg-amber" />
+        </Tip>
+      ) : room.running ? (
         <Tip tip="Агенти працюють" side="right">
           <span className="mt-1.5 size-2 animate-breathe rounded-full bg-primary" />
         </Tip>

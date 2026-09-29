@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { BrowserToggle } from "@/components/browser/BrowserToggle";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -187,22 +188,24 @@ function ViewSwitch() {
         type="button"
         role="tab"
         aria-selected={view === "chat"}
+        aria-label="Розмова"
         className={tab(view === "chat")}
         onClick={() => setView("chat")}
       >
         <MessagesSquareIcon className="size-4" />
-        <span className="hidden sm:inline">Розмова</span>
+        <span className="hidden @md:inline">Розмова</span>
       </button>
       <Tip tip="Стіл: питання, варіанти, аргументи й рішення — вибір, розкладений по поличках">
         <button
           type="button"
           role="tab"
           aria-selected={view === "table"}
+          aria-label={count ? `Стіл, відкритих: ${count}` : "Стіл"}
           className={tab(view === "table")}
           onClick={() => setView("table")}
         >
           <ScaleIcon className="size-4" />
-          <span className="hidden sm:inline">Стіл</span>
+          <span className="hidden @md:inline">Стіл</span>
           {count ? (
             <span className="tabular grid h-4.5 min-w-4.5 place-items-center rounded-full bg-amber px-1 text-[10.5px] font-semibold text-white dark:text-background">
               {count}
@@ -285,19 +288,20 @@ export function RoomHeader() {
       on && "bg-secondary text-secondary-foreground hover:bg-secondary",
     );
   return (
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 bg-background/85 px-3 backdrop-blur sm:px-4">
+    <header className="@container flex h-14 shrink-0 items-center gap-2 border-b border-border/70 bg-background/85 px-3 backdrop-blur sm:px-4">
       <NavButton />
       <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight">
         <Title />
         <Place />
       </div>
       <ViewSwitch />
-      <div className="hidden items-center gap-1.5 md:flex">
+      <div className="hidden items-center gap-1.5 @min-[40rem]:flex">
         {room.agents.map((a) => (
           <Presence key={a.id} a={a} />
         ))}
       </div>
-      <span className="mx-1 hidden h-5 w-px bg-border md:block" />
+      <span className="mx-1 hidden h-5 w-px bg-border @min-[40rem]:block" />
+      <BrowserToggle className={toggle(panel === "browser")} />
       <Tip
         tip={
           room.settings.doc
@@ -313,7 +317,7 @@ export function RoomHeader() {
           onClick={() => togglePanel("doc")}
         >
           <FileTextIcon className="size-4" />
-          <span className="hidden md:inline">Документ</span>
+          <span className="hidden @3xl:inline">Документ</span>
         </Button>
       </Tip>
       <DropdownMenu>

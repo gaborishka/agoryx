@@ -9,8 +9,18 @@
   - It starts the daemon on the user's own `node`, or attaches to the one already running for that `AGORYX_HOME`, and follows it: restarted from a terminal, gone, back.
   - Quitting leaves the daemon running. The menu item «Зупинити демона й вийти» (Stop Daemon and Quit) stops it through its API.
   - Its start page and menu are in Ukrainian, like the room UI.
-  - Run it from the checkout with `npm run desktop`. Build it with `npm --prefix desktop run dist` (unsigned, arm64 `.app` + `.dmg`). See [docs/DESKTOP.md](docs/DESKTOP.md).
+  - Run it from the checkout with `npm run desktop`. Build it with `npm --prefix desktop run dist` (arm64 `.app` + `.dmg`, unsigned unless `AGORYX_SIGN_IDENTITY` is set). See [docs/DESKTOP.md](docs/DESKTOP.md).
 - **`agoryx doctor [--probe] [--json]`:** checks what a room needs here: Node and its sqlite module, the `claude` / `codex` CLIs and their logins, git, the state folder and the daemon. Each problem comes with the command that fixes it. `--probe` also makes one short real call to each logged-in agent.
+- **When a room waits for you:** the daemon knows which rooms need the human: an agent's `@<you>`, a run that ended (done, budget spent, stopped by an agent or cut short, or an agent's turn that failed). Seeing a room clears it.
+  - The macOS app shows them in a menu-bar icon (a dot, and the rooms to open), as a Dock badge, and as notification banners (at most one per 10 s). The room on screen never counts.
+  - Banners are expected to need a signed build (`AGORYX_SIGN_IDENTITY` for `npm --prefix desktop run dist`); this is not verified yet and is left to Ivan (the signed-build banner spike). An unsigned one has the menu-bar icon, the badge and the sidebar dot only.
+  - The room UI marks a waiting room with a dot in the sidebar, and a browser tab reports the room it shows, like the app.
+  - `GET /api/attention`, `POST /api/attention/view` and `POST /api/attention/seen` are the human's only: an agent's key gets a 403, and `GET /api/rooms` carries `waiting` for the human only. Seen cursors live in `<AGORYX_HOME>/attention.json`.
+- **The room's browser (macOS app):** Agents open and use a real page in the room's panel over the room's own MCP server, and the human watches live.
+  - Seven tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`, `browser_screenshot`, `browser_eval`) come from `agoryx mcp`, a zero-dependency MCP server the room hands both CLIs (Claude `--mcp-config`, Codex `-c mcp_servers.agoryx_browser.*`). Verified with the real CLIs: Claude per turn and live, `codex exec`, and Codex live (`app-server`), each with no permission prompt, and both agents on one page in the same round.
+  - A command runs only from the agent's own running turn, with its agent key, and only while the app is connected to the daemon. When the turn ends or the call is cancelled, its commands still in flight are withdrawn (409 / 499) and the app skips any it has not started.
+  - A room with the network off has no browser, for the agents and for the human's address bar alike.
+  - The trace shows each step without its values: no typed text, script, query string or sign-in.
 
 ---
 

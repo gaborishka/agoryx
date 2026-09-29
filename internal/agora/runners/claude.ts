@@ -11,6 +11,7 @@ import {
   type TurnResult,
 } from "./types.js";
 import type { Activity, ActivityKind, TurnUsage } from "../types.js";
+import { BROWSER_SERVER, claudeMcpConfig, describeBrowserTool } from "../browsertools.js";
 
 type Json = Record<string, unknown>;
 
@@ -30,7 +31,8 @@ const str = (value: unknown): string | undefined => (typeof value === "string" ?
  *
  * The room's shim (table, diff, read, say) is allowed by name, so the room's own tools work in -p
  * mode whatever the permission mode (Claude Code otherwise refuses commands it cannot statically
- * analyse, e.g. an evidence note quoting `===`).
+ * analyse, e.g. an evidence note quoting `===`). With the shim the room also hands Claude its browser, the MCP server
+ * `agoryx mcp` (`--mcp-config`), and allows its tools, so they run without a prompt.
  */
 export const restrictedRoom = (settings: TurnRequest["settings"]): boolean => settings.access === "readonly" || !settings.network;
 
@@ -50,13 +52,14 @@ export const buildClaudeSettings = (request: Pick<TurnRequest, "settings"> & { e
         }
       : {}),
     permissions: {
-      allow: tools,
+      allow: [...tools, ...(shim ? [`mcp__${BROWSER_SERVER}__*`] : [])],
       ...(readonly ? { deny: ["Edit", "Write", "MultiEdit", "NotebookEdit"] } : {}),
     },
   };
 };
 
 export const buildClaudeArgs = (request: TurnRequest, sessionId: string, fresh: boolean): string[] => {
+  const mcp = claudeMcpConfig(request.env);
   const args = [
     "-p",
     "--output-format",
@@ -64,6 +67,8 @@ export const buildClaudeArgs = (request: TurnRequest, sessionId: string, fresh: 
     "--verbose",
     "--include-partial-messages",
     ...(restrictedRoom(request.settings) ? ["--permission-mode", request.settings.access === "readonly" ? "default" : "acceptEdits"] : []),
+    // --mcp-config takes several values: --settings right after it ends the list.
+    ...(mcp ? ["--mcp-config", mcp] : []),
     "--settings",
     JSON.stringify(buildClaudeSettings(request)),
     "--allowedTools",
@@ -104,6 +109,9 @@ const TOOL_KINDS: Record<string, ActivityKind> = {
 };
 
 export const describeClaudeTool = (name: string, input: Json | undefined): { kind: ActivityKind; label: string; detail?: string; command?: string } => {
+  // The room's browser: a value-free step, before the default case would keep the JSON input (typed text included).
+  const browserPrefix = `mcp__${BROWSER_SERVER}__`;
+  if (name.startsWith(browserPrefix)) return describeBrowserTool(name.slice(browserPrefix.length), input) ?? { kind: "tool", label: name };
   const kind = TOOL_KINDS[name] ?? "tool";
   const pick = (...keys: string[]) => {
     for (const key of keys) {
@@ -218,7 +226,8 @@ class ClaudeTurn {
         callbacks.onActivity({
           ...pending,
           status: failed ? "fail" : "ok",
-          ...(failed && output ? { detail: truncate(output, 240) } : {}),
+          // A browser error can quote a URL's query or a script's exception: its step stays value-free.
+          ...(failed && output && pending.kind !== "browser" ? { detail: truncate(output, 240) } : {}),
         });
         this.pendingTools.delete(id!);
       }

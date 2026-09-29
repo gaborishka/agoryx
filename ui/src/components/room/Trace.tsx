@@ -34,6 +34,7 @@ const ICON: Record<Activity["kind"], LucideIcon> = {
   read: FileSearchIcon,
   search: SearchIcon,
   web: GlobeIcon,
+  browser: GlobeIcon,
   tool: WrenchIcon,
   thinking: BrainIcon,
   note: DotIcon,

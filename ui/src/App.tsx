@@ -1,4 +1,4 @@
-import { FileTextIcon, Maximize2Icon, Minimize2Icon, SquareTerminalIcon, XIcon } from "lucide-react";
+import { FileTextIcon, GlobeIcon, Maximize2Icon, Minimize2Icon, SquareTerminalIcon, XIcon } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Palette } from "@/components/Palette";
 import { AgoraGlyph } from "@/components/room/bits";
@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { browserBridge } from "@/lib/desktop";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -20,9 +21,11 @@ import { cn } from "@/lib/utils";
 const loadDialogs = () => import("@/components/dialogs/Dialogs");
 const loadDocPanel = () => import("@/components/doc/DocPanel");
 const loadSessionPanel = () => import("@/components/session/SessionPanel");
+const loadBrowserPanel = () => import("@/components/browser/BrowserPanel");
 const Dialogs = lazy(() => loadDialogs().then((m) => ({ default: m.Dialogs })));
 const DocPanel = lazy(() => loadDocPanel().then((m) => ({ default: m.DocPanel })));
 const SessionPanel = lazy(() => loadSessionPanel().then((m) => ({ default: m.SessionPanel })));
+const BrowserPanel = lazy(() => loadBrowserPanel().then((m) => ({ default: m.BrowserPanel })));
 
 function PanelLoading() {
   return (
@@ -67,8 +70,10 @@ function SidePanel({ overlay }: { overlay: boolean }) {
   const setWide = useStore((s) => s.setWide);
   const setPanel = useStore((s) => s.setPanel);
   if (!panel) return null;
-  const title = panel === "session" ? "Сесія агента" : "Документ";
-  const TitleIcon = panel === "session" ? SquareTerminalIcon : FileTextIcon;
+  const title = panel === "session" ? "Сесія агента" : panel === "browser" ? "Браузер" : "Документ";
+  const TitleIcon = panel === "session" ? SquareTerminalIcon : panel === "browser" ? GlobeIcon : FileTextIcon;
+  // The room's page is laid out 1280 px wide and scaled in, so docked it always takes the wide width.
+  const browser = panel === "browser";
   return (
     <>
       {overlay ? <button type="button" aria-label="Закрити панель" className="fixed inset-0 z-30 bg-black/25 backdrop-blur-[1px]" onClick={() => setPanel(null)} /> : null}
@@ -76,7 +81,7 @@ function SidePanel({ overlay }: { overlay: boolean }) {
         aria-label={title}
         className={cn(
           "flex min-h-0 flex-col border-l border-border bg-background animate-in duration-200 fade-in-0 slide-in-from-right-8",
-          overlay ? "fixed inset-y-0 right-0 z-40 w-[min(560px,100vw)] shadow-lift" : wide ? "w-[min(760px,52vw)]" : "w-[440px] xl:w-[480px]",
+          overlay ? "fixed inset-y-0 right-0 z-40 w-[min(560px,100vw)] shadow-lift" : wide || browser ? "w-[min(760px,52vw)]" : "w-[440px] xl:w-[480px]",
         )}
       >
         <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 px-3">
@@ -85,7 +90,7 @@ function SidePanel({ overlay }: { overlay: boolean }) {
             {title}
           </span>
           <div className="ml-auto flex items-center">
-            {!overlay ? (
+            {!overlay && !browser ? (
               <Button variant="ghost" size="icon" className="size-8" onClick={() => setWide(!wide)} aria-label={wide ? "Вужче" : "Ширше"} title={wide ? "Вужче" : "Ширше"}>
                 {wide ? <Minimize2Icon className="size-4" /> : <Maximize2Icon className="size-4" />}
               </Button>
@@ -98,6 +103,10 @@ function SidePanel({ overlay }: { overlay: boolean }) {
         {panel === "session" ? (
           <Suspense fallback={<PanelLoading />}>
             <SessionPanel />
+          </Suspense>
+        ) : browser ? (
+          <Suspense fallback={<PanelLoading />}>
+            <BrowserPanel />
           </Suspense>
         ) : (
           <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
@@ -183,9 +192,11 @@ export function App() {
   const gate = useStore((s) => s.gate);
   const bootError = useStore((s) => s.bootError);
   const dialogOpen = useStore((s) => s.dialog !== null);
+  // Toasts stay in the room's column: over the browser they would be drawn under the page.
+  const browserOpen = useStore((s) => s.panel === "browser");
   useEffect(() => {
     // Warm the lazy chunks while the page is idle, so the first dialog opens without a wait.
-    const warm = () => void Promise.all([loadDialogs(), loadDocPanel(), loadSessionPanel()]).catch(() => {});
+    const warm = () => void Promise.all([loadDialogs(), loadDocPanel(), loadSessionPanel(), ...(browserBridge() ? [loadBrowserPanel()] : [])]).catch(() => {});
     if ("requestIdleCallback" in window) {
       const id = window.requestIdleCallback(warm, { timeout: 4000 });
       return () => window.cancelIdleCallback(id);
@@ -233,7 +244,7 @@ export function App() {
         </Suspense>
       ) : null}
       <Palette />
-      <Toaster position="bottom-center" />
+      <Toaster position={browserOpen ? "bottom-left" : "bottom-center"} />
     </TooltipProvider>
   );
 }

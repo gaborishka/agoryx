@@ -371,6 +371,10 @@ agoryx open         # opens the browser with a login link (it becomes a 30-day c
   items and next steps; the canonical file with its history, diffs and an editor.
 - Table ids in messages (`P1`, `X1` …) open the table at that item. The header shows each agent's
   state and holds the workspace files, the native sessions and the room settings.
+- **A dot in the sidebar** marks a room that waits for you: an agent's `@<you>`, a run that ended or was
+  stopped by an agent, or a failed turn. Its tip says why. Looking at the room (a visible, focused tab on it)
+  or acting in it clears the dot. The macOS app also shows these in its menu-bar icon, Dock badge and
+  banners ([DESKTOP.md](DESKTOP.md), "When a room waits for you").
 
 ### Rich content
 
@@ -386,6 +390,54 @@ rather than only tell:
 - ```` ```svg ```` fences render as images; other fences are highlighted with a copy button.
 - `![caption](path)` embeds a workspace file: images inline, `.html/.svg/.pdf` live, anything else as a
   file link. Markdown tables (with alignment), task lists and strikethrough render too.
+
+### The room's browser
+
+In the macOS app ([DESKTOP.md](DESKTOP.md)) each room has one real browser page. Its agents drive it, and
+the human watches it live in the room's «Браузер» panel.
+
+Whenever the room has its shim, it hands both CLIs its own MCP server, `agoryx mcp` (`bin/agoryx-mcp.mjs`,
+zero dependencies). Claude gets it through `--mcp-config`, with its tools allowed by name
+(`mcp__agoryx_browser__*`). Codex gets it through `-c mcp_servers.agoryx_browser.*`, with its calls
+approved and 90 s per call. The human's own MCP servers stay. `mcp` exists only in the agents' shim, not in
+the human's `agoryx`. Verified with the real CLIs (2026-09-29): Claude per turn (`claude -p`) and live,
+`codex exec`, and Codex live (`app-server` takes the `-c` flags, so no `thread/start` fallback is needed).
+Each ran navigate, snapshot, click, type, press and screenshot with no permission or approval prompt, and
+the screenshot reached the model. Claude and Codex also drove one page in the same round.
+
+| Tool | Input | What it does |
+|------|-------|--------------|
+| `browser_navigate` | `url`, or `go`: `back` / `forward` / `reload` | Loads a page and waits for it, up to 30 s |
+| `browser_snapshot` | `waitForText?`, `timeoutMs?` (up to 30 000) | The page as an outline with refs (`e12`), and the latest console errors and warnings |
+| `browser_click` | `ref`, or `x` and `y` (CSS px) | Clicks an element or a point |
+| `browser_type` | `ref`, `text`, `clear?` (default true), `submit?` | Types into a field, or chooses a `<select>` option by its label |
+| `browser_press` | `key` (`Enter`, `PageDown`, `Meta+a` …) | Key strokes to the focused element |
+| `browser_screenshot` | `ref?` | A PNG of the viewport, or of one element |
+| `browser_eval` | `expression` | Runs JavaScript in the page and returns its value as JSON |
+
+Each result starts with the page's title, URL and viewport (a fixed 1280 CSS px layout), then notes, such
+as what another agent did in the page since this agent's last command.
+
+- **It needs the app.** The daemon relays each command to the app's pane. A daemon without the app has
+  the tools, but a call answers that the room's browser needs the Agoryx desktop app, and nothing is opened.
+- **Only during the agent's own turn.** A command carries the agent's key. It must come from that agent's
+  CLI, or a process the CLI started, while its turn runs; anything else is refused. A native session the
+  human opens (`claude --resume …`) does not get the tools.
+- **Network off, browser off.** A room with the network off refuses every command, and turning the network
+  off closes the room's page. Read-only rooms keep the browser: it writes no files.
+- **One page per room, shared.** The pane runs one command at a time, in arrival order across the room's
+  agents; the notes say what the others did in between. Refs stay valid while their element lives. A
+  command waits at most 60 s in the room, with at most 20 in flight.
+- **Nothing runs after the agent gave up.** When the agent's turn ends, its commands still in flight fail
+  with 409 («Your turn ended while this command was in the room's browser…»); a call the agent cancelled
+  (its request closed) fails with 499. The daemon tells the app (`event: cancel`), and the pane skips such a
+  command if it has not started; one already running runs to its end, and its late answer gets 404.
+  `POST /api/browser` checks the running turn and the network again after reading the body, in the tick
+  that hands the command on.
+- **What is kept.** The trace shows each step without its values, like a command: `browser navigate
+  http://localhost:5173/settings`, `browser type e5 (12 characters)`, `browser eval (340 characters)`. The
+  daemon log line holds the agent, the room, the op, the outcome and the time. Agoryx keeps no screenshots,
+  page text or typed values, and never acts in the page by itself.
 
 ### In the agents' own apps
 
@@ -452,6 +504,18 @@ It works both ways. Whatever you say to an agent there comes back into the room:
 - Workspace files are served under `/raw/<room>/<hmac>/…`, with a `sandbox` CSP and an opaque origin.
   Agent-made HTML (files and ```` ```html ```` blocks) can run but cannot call the API. Paths are resolved through symlinks and
   must stay inside the workspace. `.git` is never served.
+- Which rooms wait for the human is the human's: `/api/attention` (the list, `view` for where a client looks,
+  `seen`) answers 403 to an agent's key, `GET /api/rooms` carries `waiting` for the human's token only, and
+  agents' calls never mark a room seen. The seen cursors in `attention.json` (mode 0600) can be read by any
+  process of the user, like `daemon.json`: the 403 keeps them out of the API and is not a confidentiality boundary.
+- The room's browser (`POST /api/browser`) takes an agent's key only, never the human's token, and only
+  from that agent's own processes while its turn runs: the same process lookup, but fail-closed here, so a
+  process left from an earlier turn, a key computed for another agent, or a failed lookup is refused. Hosting
+  the browser and answering its commands (`/api/browser/host`, `/api/browser/answer`) take the human's
+  token only. The MCP server reads only `url` from `daemon.json`.
+- Every daemon refuses any request that carries the pane's `x-agoryx-pane` header, before its Host, token and
+  `?t=` checks, so a page in the room's browser cannot open Agoryx itself. The app's pane sends it on every
+  request.
 
 ## Storage
 
@@ -465,6 +529,7 @@ State lives in `$AGORYX_HOME` (default `~/.local/state/agoryx/agora`):
 | `bin/agoryx` | The agent shim. |
 | `rooms/<id>/live/<agent>.json` | The current turn of an agent kept live (`AGORYX_TURN_FILE`); exists only during its turn. |
 | `daemon.json`, `daemon.token` | The running daemon's address and token. |
+| `attention.json` | The human's seen cursor per room (`{ "version": 1, "seen": { "<room>": <seq> } }`, mode 0600). What waits is derived from each room's log after it. |
 | `workspaces/<slug>/` | Room workspaces, only when `AGORYX_HOME` is set. |
 
 Without `--dir`, a room's workspace is `~/agoryx/<slug>/` (git-initialised); `AGORYX_WORKSPACES` overrides it.
@@ -485,7 +550,10 @@ Without `--dir`, a room's workspace is `~/agoryx/<slug>/` (git-initialised); `AG
 | `internal/agora/actor.ts` | Agents' keys to the daemon, and who did what (`by`, guests from other rooms) |
 | `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |
 | `internal/agora/daemoninfo.ts` | Finding the running daemon (`daemon.json` + `/api/health`) without loading it |
-| `internal/desktop/` | Dependency-free core for the macOS app and `agoryx doctor`: login-shell environment (`shellenv.ts`), setup checks (`doctor.ts`), daemon supervisor (`supervisor.ts`) |
+| `internal/agora/attention.ts` | Rooms that wait for the human: what counts, what was seen (`attention.json`), where the human looks; `/api/attention` |
+| `internal/agora/browser.ts` | The room's browser: agents' commands relayed to the app's pane over `/api/browser` |
+| `internal/agora/browsertools.ts`, `bin/agoryx-mcp.mjs` | The MCP flags both CLIs get and the browser's trace labels; the zero-dependency MCP server the room hands them (`agoryx mcp` in the shim) |
+| `internal/desktop/` | Dependency-free core for the macOS app and `agoryx doctor`: login-shell environment (`shellenv.ts`), setup checks (`doctor.ts`), daemon supervisor (`supervisor.ts`), the attention follower (`attention.ts`), the room browser's host link and page helpers (`browserlink.ts`, `browserpage.ts`) |
 | `internal/agora/profile.ts` | The human's profile: reading and cutting it, the prompt blocks, who sees it |
 | `internal/agora/blocks.ts` | Live html/svg fences: finding a block in a message by the hash of its body |
 | `cmd/agoryx/agora.ts` | `agoryx up/new/say/tail/table/doc/diff/profile/…` |

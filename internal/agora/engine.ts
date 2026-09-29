@@ -7,8 +7,8 @@ import { embed, mediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
-import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
-import type { SecondLook } from "./jev.js";
+import { buildTurnPrompt, paragraphs, parseMentions, passNote } from "./prompts.js";
+import type { ReadMessage, SecondLook } from "./jev.js";
 import { validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { RoomStore } from "./store.js";
@@ -88,8 +88,13 @@ export interface EngineOptions {
    * agent should take a look (see jev.ts). Without it such an answer wakes nobody else.
    */
   secondLook?: SecondLook | null;
-  /** How sure secondLook must be before it wakes an agent (default one half). */
+  /** How sure secondLook must be before it wakes an agent (default one half); readMessage wakes at the same mark. */
   secondLookThreshold?: number;
+  /**
+   * Reads each agent's message (see jev.ts): who it is meant for, @name or not, and which paragraphs take a
+   * position. Without it the room goes by @names and its word lists alone.
+   */
+  readMessage?: ReadMessage | null;
 }
 
 /** A process kept up for an agent between turns. */
@@ -285,8 +290,11 @@ export class RoomEngine {
   private scheduleQueued = false;
   private readonly secondLook: SecondLook | null;
   private readonly secondLookThreshold: number;
-  /** Turns whose answer is being weighed for a second look: the run stays open until it is. */
+  private readonly readMessage: ReadMessage | null;
+  /** Turns whose answer is being weighed for a second look, and messages Jev is reading: the run stays open until they are. */
   private readonly consulting = new Set<string>();
+  /** Agents whose message Jev is reading, with how many: each waits for it before its next turn, whose delta uses it. */
+  private readonly beingRead = new Map<string, number>();
   private stopping = false;
   private heldWork: { trigger: string | null; minTurns: number | undefined; actor: Actor | undefined } | null = null;
   private closed = false;
@@ -310,6 +318,7 @@ export class RoomEngine {
     this.env = options.env ?? process.env;
     this.secondLook = options.secondLook ?? null;
     this.secondLookThreshold = options.secondLookThreshold ?? 0.5;
+    this.readMessage = options.readMessage ?? null;
     this.profilePath = options.profilePath;
     this.opsPollMs = options.opsPollMs ?? 250;
     this.nativePollMs = options.nativePollMs ?? 2000;
@@ -796,6 +805,70 @@ export class RoomEngine {
       .finally(done);
   }
 
+  /**
+   * Jev reads what an agent said: who it is meant for, @name or not, and which paragraphs take a position.
+   * The reading is kept in the room (message.read) for the author's next delta and the others' gists. An agent
+   * it is meant for that the message did not wake and that has not read it — an update or a reply in its own
+   * session without @name, an answer that went back to the human — is woken by a note that says so. It only
+   * ever adds wakes. When it wakes nobody, or Jev is out of reach, an answer to the human alone still gets
+   * `then`, its second look.
+   */
+  private readPosted(message: MessageEntry, author: RoomAgent, then?: () => void): void {
+    const others = this.state.agents.filter((entry) => entry.id !== author.id);
+    if (!this.readMessage || !others.length) {
+      then?.();
+      return;
+    }
+    const key = `read:${message.id}`;
+    this.consulting.add(key);
+    this.beingRead.set(author.id, (this.beingRead.get(author.id) ?? 0) + 1);
+    let woke = false;
+    this.readMessage({ author: author.label, paragraphs: paragraphs(message.text), others: others.map((entry) => ({ id: entry.id, label: entry.label })) })
+      .then((verdict) => {
+        if (this.closed) return;
+        this.store.append({ type: "message.read", messageId: message.id, by: "jev", addressed: verdict.addressed, stances: verdict.stances });
+        const said = others.map((entry) => `${entry.id} ${verdict.addressed[entry.id]?.toFixed(2) ?? "?"}`).join(", ");
+        const stances = verdict.stances.map((p) => (p === null ? "-" : p.toFixed(2))).join(" ");
+        this.log(`${message.id} read: meant for ${said}; stances ${stances || "-"} (${verdict.ms} ms, ${verdict.tokens} tokens)`);
+        const posted: RoomEvent = { type: "message.posted", message, seq: message.seq, ts: message.ts };
+        const meant = others.filter(
+          (entry) =>
+            (verdict.addressed[entry.id] ?? 0) >= this.secondLookThreshold &&
+            !this.benched.has(entry.id) &&
+            this.runners[entry.kind] &&
+            !this.wakes(posted, entry) &&
+            (this.state.cursors[entry.id] ?? 0) < message.seq &&
+            !(message.kind === "update" && this.inTurnAt(entry.id, message.seq)),
+        );
+        // The run the message was said in has ended (stopped): what it asked no longer has a run to join.
+        if (!meant.length || this.stopping || (message.runId && activeRun(this.state)?.id !== message.runId)) return;
+        const names = meant.map((entry) => entry.label);
+        const sure = meant.map((entry) => `${entry.label} ${Math.round(verdict.addressed[entry.id]! * 100)}%`).join(", ");
+        const note = this.postMessage({
+          author: "agoryx",
+          kind: "system",
+          text: `Jev: ${author.label}'s ${message.id} reads as meant for ${names.join(" and ")} (${sure}), with no @ — ${names.join(" and ")} ${names.length === 1 ? "is" : "are"} woken to answer it.`,
+          mentions: meant.map((entry) => entry.id),
+          wakes: true,
+          ...(message.turnId ? { turnId: message.turnId } : {}),
+        });
+        woke = true;
+        if (!activeRun(this.state)) {
+          this.benched.clear();
+          this.ensureRun(note.id, undefined, { by: author.id });
+        }
+      })
+      .catch((error: unknown) => this.log(`${message.id} read unavailable: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => {
+        if (!woke && !this.closed) then?.();
+        this.consulting.delete(key);
+        const left = (this.beingRead.get(author.id) ?? 1) - 1;
+        if (left > 0) this.beingRead.set(author.id, left);
+        else this.beingRead.delete(author.id);
+        this.requestSchedule();
+      });
+  }
+
   private addressesOthers(mentions: string[], agent: RoomAgent): boolean {
     return mentions.some((handle) => handle === "all" || (handle !== agent.id && this.state.agents.some((entry) => entry.id === handle)));
   }
@@ -805,12 +878,18 @@ export class RoomEngine {
     return this.state.turns.some((turn) => turn.agent === agentId && turn.seq < seq && (turn.endSeq === undefined || turn.endSeq > seq));
   }
 
-  /** Whether an agent at work asked this one something while it sat idle: it answers now, not after. */
+  /**
+   * Whether an agent at work asked this one something while it sat idle — by @name, or so Jev reads it (its
+   * note names the turn, still running): it answers now, not after.
+   */
   private askedMidTurn(agent: RoomAgent): boolean {
     const cursor = this.state.cursors[agent.id] ?? 0;
-    return this.store
-      .since(cursor)
-      .some((event) => event.type === "message.posted" && event.message.kind === "update" && this.wakes(event, agent));
+    return this.store.since(cursor).some((event) => {
+      if (event.type !== "message.posted" || !this.wakes(event, agent)) return false;
+      const { message } = event;
+      if (message.kind === "update") return true;
+      return message.author === "agoryx" && message.kind === "system" && Boolean(message.turnId) && this.state.turns.some((turn) => turn.id === message.turnId && turn.status === "running");
+    });
   }
 
   private pending(agent: RoomAgent): boolean {
@@ -855,7 +934,7 @@ export class RoomEngine {
     // (in parallel, from the same point); after that the agents take the floor one
     // at a time, and each sees what the other just said. Whoever has waited longest goes first.
     const candidates = this.state.agents
-      .filter((agent) => !this.running.has(agent.id) && !this.benched.has(agent.id) && this.runners[agent.kind])
+      .filter((agent) => !this.running.has(agent.id) && !this.beingRead.has(agent.id) && !this.benched.has(agent.id) && this.runners[agent.kind])
       .map((agent) => ({ agent, wake: this.firstWake(agent) }))
       .filter((entry): entry is { agent: RoomAgent; wake: RoomEvent } => entry.wake !== null)
       .sort((a, b) => a.wake.seq - b.wake.seq);
@@ -1289,7 +1368,8 @@ export class RoomEngine {
           runId,
         });
         messageId = message.id;
-        if (asked && !message.wakes) this.weighSecondLook(agent, turnId, runId, asked, message, changed?.changes ?? []);
+        const secondLook = asked && !message.wakes ? () => this.weighSecondLook(agent, turnId, runId, asked, message, changed?.changes ?? []) : undefined;
+        this.readPosted(message, agent, secondLook);
       }
     } else if (result.status === "error") {
       const error = result.error ?? { kind: "unknown", message: "failed" };
@@ -1708,6 +1788,7 @@ export class RoomEngine {
       const mentions = parseMentions(exchange.reply, handles);
       const wakes = this.addressesOthers(mentions, agent);
       const message = this.postMessage({ author: agent.id, kind: "agent", text: exchange.reply.trim(), mentions, wakes, native });
+      this.readPosted(message, agent);
       if (wakes && !trigger) {
         trigger = message.id;
         triggeredBy = { by: agent.id };
@@ -1943,6 +2024,7 @@ export class RoomEngine {
     });
     ack({ ok: true, id: message.id, text: `${message.id} · posted to the room` });
     if (wakes) this.requestSchedule();
+    this.readPosted(message, member);
   }
 
   private checkpoint(run: RunState): void {

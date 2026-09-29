@@ -55,7 +55,7 @@ const protectedStance = (text: string, reader: { id: string }): boolean =>
   DISSENT.test(text) || parseMentions(text, [reader.id]).length > 0;
 
 /** Paragraphs, with a fenced block (```…```) kept as one piece. */
-const paragraphs = (text: string): string[] => {
+export const paragraphs = (text: string): string[] => {
   const out: string[] = [];
   let current: string[] = [];
   let fenced = false;
@@ -73,20 +73,31 @@ const paragraphs = (text: string): string[] => {
 /** A question left open or a preference put to someone else — with an @name, it is a position the room may lose. Not every "?": most are coordination. */
 const OPEN_ASK = /\b(open question|question for|i'?d rather|would rather)\b|відкрите питання|питання до|я б (?:краще|волів|воліла)/iu;
 
+/** Jev's readings of messages (message.read), by message id. */
+type Reading = Extract<RoomEvent, { type: "message.read" }>;
+const readings = (events: RoomEvent[]): Map<string, Reading> =>
+  new Map(events.flatMap((event) => (event.type === "message.read" ? [[event.messageId, event] as const] : [])));
+/** How sure Jev must be that a paragraph holds an open position, or that a message is meant for someone. */
+const JEV_STANCE = 0.8;
+const JEV_ADDRESSED = 0.5;
+const jevStance = (reading: Reading | undefined, index: number): boolean => (reading?.stances[index] ?? 0) >= JEV_STANCE;
+
 /**
  * The paragraph of the reader's own last reply that took a stance or put a question to someone, when that turn
  * made no table move: said only in prose, it is gone from the room in a few turns, and nobody has to answer it.
+ * Found by the word lists, or by Jev's reading of the message when there is one.
  */
 const unrecordedStance = (events: RoomEvent[], state: RoomState, agent: { id: string }): { turnId: string; text: string } | null => {
   const moved = new Set(events.flatMap((event) => (event.type === "table.op" && event.op.by === agent.id && event.op.turnId ? [event.op.turnId] : [])));
   const others = [state.human, ...state.agents.map((entry) => entry.id)].filter((id) => id !== agent.id);
+  const read = readings(events);
   let found: { turnId: string; text: string } | null = null;
   for (const event of events) {
     if (event.type !== "message.posted") continue;
     const { message } = event;
     if (message.author !== agent.id || (message.kind !== "agent" && message.kind !== "update") || !message.turnId || moved.has(message.turnId)) continue;
     const stance = paragraphs(message.text).find(
-      (part) => DISSENT.test(part) || (OPEN_ASK.test(part) && parseMentions(part, others).length > 0),
+      (part, index) => DISSENT.test(part) || (OPEN_ASK.test(part) && parseMentions(part, others).length > 0) || jevStance(read.get(message.id), index),
     );
     if (stance) found = { turnId: message.turnId, text: stance };
   }
@@ -109,20 +120,22 @@ const cutTail = (text: string, max: number): string => {
  * What of a colleague's message goes into the delta. Short messages, and whatever the reader cannot afford to
  * get wrong, arrive whole: the human's words, Agoryx notices and decisions. A long agent message arrives as its
  * start, its end (where the conclusion usually is), and, whole, every paragraph that addresses the reader by
- * @name or takes a stance against something — so an objection or a question to the reader is never cut to a
- * fragment. The rest is one `agoryx read` away.
+ * @name or takes a stance against something (by the word lists, or by Jev's reading when there is one) — so an
+ * objection or a question to the reader is never cut to a fragment. The rest is one `agoryx read` away.
  */
 export const messageGist = (
   message: { id: string; author: string; kind: RoomMessage["kind"]; text: string },
   reader: { id: string },
   human: string,
+  reading?: Reading,
 ): string => {
   const text = message.text.trim();
   const whole = message.kind === "human" || message.kind === "system" || message.kind === "decision" || message.author === human;
   if (whole || text.length <= AGENT_MESSAGE_FULL_CHARS) return text;
 
   const parts = paragraphs(text);
-  const keep = parts.map((part, index) => index === 0 || index === parts.length - 1 || protectedStance(part, reader));
+  const kept = (part: string, index: number): boolean => protectedStance(part, reader) || jevStance(reading, index);
+  const keep = parts.map((part, index) => index === 0 || index === parts.length - 1 || kept(part, index));
   const pieces: string[] = [];
   let gap = false;
   parts.forEach((part, index) => {
@@ -133,7 +146,7 @@ export const messageGist = (
     if (gap && pieces.length) pieces.push("[…]");
     gap = false;
     // A paragraph kept for what it says is kept whole; the start and the end are only cut to size.
-    if (protectedStance(part, reader)) pieces.push(part);
+    if (kept(part, index)) pieces.push(part);
     // Omit a large code block as a unit rather than emitting an unclosed fence.
     else if (/^\s*(```|~~~)/m.test(part)) pieces.push("[code block omitted — read the full message]");
     else if (parts.length === 1) pieces.push(`${cutHead(part, GIST_HEAD_CHARS)}\n[…]\n${cutTail(part, GIST_TAIL_CHARS)}`);
@@ -268,6 +281,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     "    (settle --q Q1 when the conclusion answers an open question: it closes Q1 with that answer)",
     `  ${agentCli} table concede "what I no longer hold, and why" [--on P1]   (an argument changed your mind: record it, don't just agree in prose)`,
     `  ${agentCli} table decide P1 --note "why"   (when the room has actually converged, or the human asked you to decide)`,
+    `  ${agentCli} table withdraw P1|F1   (take back your own option, or a fact of yours that turned out wrong — it stays, struck out)`,
     `  ${agentCli} table show`,
     "  One op per command, not chained with && or ; — each runs without an approval prompt that way.",
     ...(cli.path
@@ -281,7 +295,6 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     "- ```mermaid fences render as diagrams (flowchart, sequence, class, state, gantt, pie, …).",
     "- ```html fences render live in a sandbox: a whole self-contained page — inline CSS/JS, CDN scripts are fine — for",
     "  charts, interactive prototypes, visual comparisons. ```svg fences render as pictures.",
-    `  ${agentCli} table withdraw P1|F1   (take back your own option, or a fact of yours that turned out wrong — it stays, struck out)`,
     "- Code fences with a language are highlighted. Tables in markdown render as tables.",
     "- ![caption](path/in/workspace) embeds a workspace file: images show inline, .html/.svg/.pdf render live, video and",
     "  audio play, .csv/.tsv show as tables, anything else opens as a file. Make the artifact with your own tools (a script",
@@ -368,6 +381,7 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
   const opsByTurn = new Map<string, TableOp[]>();
   const filesByTurn = new Map<string, TurnFiles>();
   const passes: string[] = [];
+  const read = readings(events);
 
   for (const event of events) {
     if (event.type === "table.op" && event.op.by !== agent.id && event.op.turnId) {
@@ -420,7 +434,8 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
             : message.kind === "update"
               ? `── ${who} · while working · ${clock(event.ts)}`
               : `── ${who}${where} · ${clock(event.ts)}`;
-      const lines = [header, messageGist(message, agent, state.human)];
+      const reading = read.get(message.id);
+      const lines = [header, messageGist(message, agent, state.human, reading)];
       if (message.kind === "update") {
         // Said mid-turn: the turn's moves and files go with its reply, which comes later.
         blocks.push(lines.join("\n"));
@@ -439,8 +454,12 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
       if (message.kind !== "agent" || message.author === state.human) kept.add(blocks.length);
       else {
         const why = [
-          ...(parseMentions(message.text, [agent.id]).length ? ["addressed you"] : []),
-          ...(DISSENT.test(message.text) ? ["took a stance against something"] : []),
+          ...(parseMentions(message.text, [agent.id]).length || (reading?.addressed[agent.id] ?? 0) >= JEV_ADDRESSED ? ["addressed you"] : []),
+          ...(DISSENT.test(message.text)
+            ? ["took a stance against something"]
+            : reading?.stances.some((_, index) => jevStance(reading, index))
+              ? ["left a position open"]
+              : []),
         ];
         if (why.length || ops?.length) {
           const said = why.length ? ` · ${why.join(", ")}` : "";

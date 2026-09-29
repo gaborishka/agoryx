@@ -348,6 +348,12 @@ export type RoomEventBody =
   /** An agent's model or effort changed; null: back to the CLI's own default. Its next turn uses them. */
   | { type: "agent.changed"; agent: string; model?: string | null; effort?: string | null; by?: string; from?: ActorOrigin }
   | { type: "commit.created"; sha: string; subject: string; files: number }
+  /**
+   * Jev's reading of an agent's message (see jev.ts): each other agent's probability that it is meant for them,
+   * and, per paragraph (as prompts' paragraphs() splits it), the probability it holds a position the room still
+   * has to settle — null where not asked.
+   */
+  | { type: "message.read"; messageId: string; by: "jev"; addressed: Record<string, number>; stances: Array<number | null> }
   | DocRevisedEvent;
 
 /** The canonical file changed. `text` is the whole new version (omitted past MAX_DOC_TEXT). */

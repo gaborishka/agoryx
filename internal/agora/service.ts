@@ -14,7 +14,7 @@ import { defaultRoster, parseAgents } from "./roster.js";
 import { newRoomId, RoomStore, slugify } from "./store.js";
 import { DEFAULT_SETTINGS, type ActorOrigin, type AgentKind, type RoomAgent, type RoomSettings, type RoomWorktree } from "./types.js";
 import { ensureAgentShim, prepareWorkspace } from "./workspace.js";
-import { jevSecondLook, jevThreshold } from "./jev.js";
+import { jevReadMessage, jevSecondLook, jevThreshold } from "./jev.js";
 
 export { DEFAULT_AGENTS } from "./roster.js";
 
@@ -236,6 +236,7 @@ export const openEngine = (
     live: liveSetting(env),
     secondLook: jevSecondLook(env),
     secondLookThreshold: jevThreshold(env),
+    readMessage: jevReadMessage(env),
     ...(options.log ? { log: options.log } : {}),
     ...(options.opsPollMs ? { opsPollMs: options.opsPollMs } : {}),
   });

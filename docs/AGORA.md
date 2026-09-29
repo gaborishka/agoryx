@@ -71,6 +71,16 @@ table ┘   (JSONL, replayable)└── Codex   (native session, its own worksp
   answer seems worth a turn (Codex 54%) — Codex takes a look.» — and that note wakes only the agents it names.
   Below it, or with Jev out of reach, nobody is woken. The run stays open the fraction of a second it takes; the
   daemon log keeps every verdict. No key, or `AGORYX_JEV=off`: nothing leaves the machine and nothing is asked.
+- **Jev reads agent messages, with the same key.** Each agent message — an answer, a native reply, an
+  `agoryx say` update — goes to Jev with two kinds of yes/no question: is it meant for each other agent (asks it
+  something, hands it work, waits on it), `@name` or not; and does each paragraph (the first ten of at least 24
+  characters) take a position the room still has to settle. An agent the message is meant for at the threshold
+  or above, not woken already and not yet past it, is woken by a note — «Jev: Claude's m12 reads as meant for
+  Codex (93%), with no @ — Codex is woken to answer it.» A paragraph Jev finds a position in (0.8 or above) is kept
+  in the others' gists and, if it never reached the table, quoted back to its author next turn, like the ones the
+  word lists find. The author's next turn waits the fraction of a second the reading takes. Jev only adds: a wake
+  it misses is left to `@names` as before, and a failed call changes nothing. About 0.3–0.7 s and 450–750 tokens
+  a message; each reading is kept as a `message.read` event and in the daemon log.
 - **Work is attributed.** Files changed during a turn are credited to that turn; at run end Agoryx makes a
   checkpoint commit (in workspaces it created, or when `autocommit` is on).
 - **So are actions.** Each agent's turn carries its own key to the daemon (`AGORYX_AGENT_KEY`). The human's own

@@ -4,7 +4,7 @@ import { memo, type ReactNode } from "react";
 import { Markdown } from "@/components/md/Markdown";
 import { OpCard, OpCards } from "@/components/table/OpCard";
 import { cost, isSysError, passNote, plural, secs, sysText } from "@/lib/format";
-import { ink, participant } from "@/lib/room";
+import { ink, nameOf, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { DocRevision, MessageEntry, TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -147,6 +147,9 @@ export function UpdateLine({ m }: { m: MessageEntry }) {
 }
 
 export function SystemLine({ m }: { m: MessageEntry }) {
+  const room = useStore((s) => s.snap?.state);
+  // A line an agent's action wrote (it is the author): say who, by the name the UI gives it.
+  const who = m.author !== "agoryx" && m.author !== room?.human ? nameOf(room, m.author) : undefined;
   const err = isSysError(m.text);
   const Icon = err ? TriangleAlertIcon : InfoIcon;
   return (
@@ -157,7 +160,7 @@ export function SystemLine({ m }: { m: MessageEntry }) {
       )}
     >
       <Icon className="mt-0.5 size-4 shrink-0" />
-      <Markdown text={sysText(m.text)} className="text-[13px] leading-relaxed" />
+      <Markdown text={sysText(m.text, who)} className="text-[13px] leading-relaxed" />
     </div>
   );
 }

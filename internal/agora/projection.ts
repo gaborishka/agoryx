@@ -1,5 +1,6 @@
+import { guestHandle } from "./actor.js";
 import { applyTableOp, emptyTable } from "./table.js";
-import type { RoomCreatedEvent, RoomEvent, RoomState, RunState, TurnState } from "./types.js";
+import type { ActorOrigin, RoomCreatedEvent, RoomEvent, RoomState, RunState, TurnState } from "./types.js";
 
 export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string }): RoomState => ({
   id: event.id,
@@ -22,7 +23,27 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   commits: [],
   docRevisions: [],
   counters: { m: 0, t: 0, r: 0 },
+  guests: event.createdBy ? { [guestHandle(event.createdBy)]: event.createdBy } : {},
+  ...(event.createdBy ? { createdBy: event.createdBy } : {}),
 });
+
+/** The agent of another room an event names, if any: remembered so its handle can be named later. */
+const eventOrigin = (event: RoomEvent): ActorOrigin | undefined => {
+  switch (event.type) {
+    case "message.posted":
+      return event.message.from;
+    case "table.op":
+      return event.op.from;
+    case "run.extended":
+    case "run.ended":
+    case "settings.changed":
+    case "room.renamed":
+    case "doc.revised":
+      return event.from;
+    default:
+      return undefined;
+  }
+};
 
 const findTurn = (state: RoomState, turnId: string): TurnState | undefined => {
   for (let i = state.turns.length - 1; i >= 0; i -= 1) {
@@ -46,6 +67,8 @@ export const activeRun = (state: RoomState): RunState | undefined => {
 /** Mutating reducer. Events are applied in seq order exactly once. */
 export const applyEvent = (state: RoomState, event: RoomEvent): void => {
   state.seq = Math.max(state.seq, event.seq);
+  const origin = eventOrigin(event);
+  if (origin) state.guests[guestHandle(origin)] = origin;
   switch (event.type) {
     case "room.created":
       return;

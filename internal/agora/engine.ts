@@ -1,5 +1,6 @@
 import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { actorFields, actorLabel, AGENT_KEY_ENV, describeSettings, originName } from "./actor.js";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
 import { embed, mediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
@@ -11,6 +12,7 @@ import { RoomStore } from "./store.js";
 import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
 import type {
   Activity,
+  Actor,
   AgentKind,
   AgentPresence,
   DocRevision,
@@ -64,6 +66,11 @@ export interface EngineOptions {
   /** How often to read the agents' native sessions for turns taken outside the room (0 = never). */
   nativePollMs?: number;
   log?: (message: string) => void;
+  /**
+   * Issues an agent's key to the daemon (see actor.ts), put in its turns' environment as
+   * AGORYX_AGENT_KEY: the human's CLI in the agent's shell then acts as that agent, not as the human.
+   */
+  agentKey?: (agentId: string) => string | undefined;
 }
 
 /** Where the engine is in an agent's native session file. */
@@ -248,15 +255,17 @@ export class RoomEngine {
   private opsTimer: NodeJS.Timeout | undefined;
   private scheduleQueued = false;
   private stopping = false;
-  private heldWork: { trigger: string | null; minTurns: number | undefined } | null = null;
+  private heldWork: { trigger: string | null; minTurns: number | undefined; actor: Actor | undefined } | null = null;
   private closed = false;
   private lockHeld = false;
+  private readonly agentKey: ((agentId: string) => string | undefined) | undefined;
 
   constructor(options: EngineOptions) {
     this.store = options.store;
     this.runners = options.runners;
     this.shimDir = options.shimDir;
     this.agentCli = options.agentCli ?? "agoryx";
+    this.agentKey = options.agentKey;
     this.env = options.env ?? process.env;
     this.profilePath = options.profilePath;
     this.opsPollMs = options.opsPollMs ?? 250;
@@ -390,9 +399,10 @@ export class RoomEngine {
     }
   }
 
-  async close(): Promise<void> {
+  /** `by`: who stopped the daemon (so the run stopped with it is credited to them). */
+  async close(by?: Actor): Promise<void> {
     if (this.closed) return;
-    await this.stop("shutdown");
+    await this.stop("shutdown", by);
     this.closed = true;
     if (this.opsTimer) clearInterval(this.opsTimer);
     if (this.nativeTimer) clearInterval(this.nativeTimer);
@@ -434,6 +444,22 @@ export class RoomEngine {
   // Human actions
   // -------------------------------------------------------------------------
 
+  /** Someone acting: the human by default; an agent id; or an Actor (an agent of another room). */
+  private actor(by?: string | Actor): Actor {
+    if (by === undefined) return { by: this.state.human };
+    return typeof by === "string" ? { by } : by;
+  }
+
+  /** Whether the room's human did this (not one of its agents, not an agent of another room). */
+  private byHuman(actor: Actor): boolean {
+    return !actor.from && !this.state.agents.some((agent) => agent.id === actor.by);
+  }
+
+  /** A line in the transcript saying what someone did. It wakes nobody. */
+  private postNote(actor: Actor, text: string): MessageEntry {
+    return this.postMessage({ author: actor.by, kind: "system", text, mentions: [], wakes: false, ...(actor.from ? { from: actor.from } : {}) });
+  }
+
   postHuman(text: string, author = this.state.human): MessageEntry {
     const body = text.trim();
     if (!body) throw new Error("empty message");
@@ -450,44 +476,75 @@ export class RoomEngine {
     return message;
   }
 
-  /** "One more round": every agent gets another turn even with nothing new. */
-  continueRun(by = this.state.human): void {
-    this.benched.clear();
+  /**
+   * A message from whoever sent it: the human's is the human's; one of this room's agents, or an agent
+   * of another room, posts as itself (kind "agent", never "human") and it wakes the others like any reply.
+   */
+  post(text: string, by?: string | Actor): MessageEntry {
+    const actor = this.actor(by);
+    if (this.byHuman(actor)) return this.postHuman(text, actor.by);
+    const body = text.trim();
+    if (!body) throw new Error("empty message");
+    const handles = [...this.state.agents.map((agent) => agent.id), this.state.human.toLowerCase()];
     const message = this.postMessage({
-      author: by,
-      kind: "system",
-      text: `${by} asked for another round.`,
-      mentions: [],
+      author: actor.by,
+      kind: "agent",
+      text: body,
+      mentions: parseMentions(body, handles),
       wakes: true,
+      ...(actor.from ? { from: actor.from } : {}),
     });
-    this.startWork(message.id, this.state.agents.length);
+    this.startWork(message.id, undefined, actor);
+    return message;
   }
 
-  tableOp(raw: unknown, by = this.state.human): TableOp {
-    const isHuman = !this.state.agents.some((agent) => agent.id === by);
-    const op = this.applyTableOp(raw, by, isHuman, undefined);
-    if (isHuman) {
-      this.benched.clear();
-      this.startWork(null);
+  /** "One more round": every agent gets another turn even with nothing new. */
+  continueRun(by?: string | Actor): void {
+    const actor = this.actor(by);
+    this.benched.clear();
+    const message = this.postMessage({
+      author: actor.by,
+      kind: "system",
+      text: `${actorLabel(this.state, actor.by)} asked for another round.`,
+      mentions: [],
+      wakes: true,
+      ...(actor.from ? { from: actor.from } : {}),
+    });
+    this.startWork(message.id, this.state.agents.length, actor);
+  }
+
+  tableOp(raw: unknown, by?: string | Actor): TableOp {
+    const actor = this.actor(by);
+    const isHuman = this.byHuman(actor);
+    const op = this.applyTableOp(raw, actor, isHuman, undefined);
+    // The human's move, or one from another room (it has no reply here to ride on), is news for the agents.
+    if (isHuman || actor.from) {
+      if (isHuman) this.benched.clear();
+      this.startWork(null, undefined, actor);
     }
     return op;
   }
 
   /**
-   * Starts or extends the run for something the human did. While a stop is under way the run being
+   * Starts or extends the run for something someone did (the human, by default). While a stop is under way the run being
    * stopped must not absorb it, so the work is held and started as a fresh run once the stop is done.
    */
-  private startWork(trigger: string | null, minTurns?: number): void {
+  private startWork(trigger: string | null, minTurns?: number, actor?: Actor): void {
     if (this.stopping) {
       const held = this.heldWork;
-      this.heldWork = { trigger: held?.trigger ?? trigger, minTurns: Math.max(held?.minTurns ?? 0, minTurns ?? 0) || undefined };
+      this.heldWork = {
+        trigger: held?.trigger ?? trigger,
+        minTurns: Math.max(held?.minTurns ?? 0, minTurns ?? 0) || undefined,
+        actor: held?.actor ?? actor,
+      };
       return;
     }
-    this.ensureRun(trigger, minTurns);
+    this.ensureRun(trigger, minTurns, actor);
     this.requestSchedule();
   }
 
-  updateSettings(patch: Partial<RoomSettings>): void {
+  updateSettings(patch: Partial<RoomSettings>, by?: string | Actor): void {
+    const actor = this.actor(by);
     const clean: Partial<RoomSettings> = {};
     if (patch.budget === null || (typeof patch.budget === "number" && patch.budget >= 1 && patch.budget <= 100)) {
       clean.budget = patch.budget === null ? null : Math.round(patch.budget);
@@ -509,37 +566,51 @@ export class RoomEngine {
       if (doc !== (this.state.settings.doc ?? null)) clean.doc = doc;
     }
     if (Object.keys(clean).length === 0) return;
-    this.store.append({ type: "settings.changed", patch: clean });
-    if (clean.doc !== undefined) {
-      this.recordDocBaseline();
+    this.store.append({ type: "settings.changed", patch: clean, ...actorFields(actor) });
+    if (clean.doc !== undefined) this.recordDocBaseline();
+    // The human sees what they changed; an agent's change is said in the transcript, by name.
+    if (!this.byHuman(actor)) this.postNote(actor, `${actorLabel(this.state, actor.by)} changed the settings: ${describeSettings(clean).join(", ")}.`);
+    else if (clean.doc !== undefined) {
       this.postSystem(clean.doc ? `The room's canonical file is now ${clean.doc}.` : "The room no longer has a canonical file.", false);
     }
   }
 
   /** A new name for the room; it wakes nobody. */
-  rename(name: string): void {
+  rename(name: string, by?: string | Actor): void {
+    const actor = this.actor(by);
     const clean = name.replace(/\s+/g, " ").trim().slice(0, 120);
     if (!clean) throw new Error("a room needs a name");
     if (clean === this.state.name) return;
-    this.store.append({ type: "room.renamed", name: clean });
+    this.store.append({ type: "room.renamed", name: clean, ...actorFields(actor) });
+    if (!this.byHuman(actor)) this.postNote(actor, `${actorLabel(this.state, actor.by)} renamed the room to "${clean}".`);
   }
 
-  async stop(reason: "human" | "shutdown" = "human"): Promise<void> {
+  /**
+   * "human": someone stopped the run (`by`, the human by default); "shutdown": Agoryx is closing the
+   * room — with `by` when someone stopped the daemon.
+   */
+  async stop(reason: "human" | "shutdown" = "human", by?: string | Actor): Promise<void> {
+    const actor = by === undefined && reason === "shutdown" ? undefined : this.actor(by);
     this.stopping = true;
     const turns = [...this.running.values()];
     for (const turn of turns) turn.controller.abort();
     await Promise.all(turns.map((turn) => turn.done));
     const run = activeRun(this.state);
     if (run) {
-      this.store.append({ type: "run.ended", runId: run.id, reason: "stopped", turns: run.used });
-      if (reason === "human") this.postSystem(`${this.state.human} stopped the run.`, false);
+      this.store.append({ type: "run.ended", runId: run.id, reason: "stopped", turns: run.used, ...(actor ? actorFields(actor) : {}) });
+      if (actor && this.byHuman(actor)) {
+        if (reason === "human") this.postSystem(`${actor.by} stopped the run.`, false);
+      } else if (actor) {
+        const who = actorLabel(this.state, actor.by);
+        this.postNote(actor, reason === "human" ? `${who} stopped the run.` : `${who} stopped the daemon, so the run was stopped.`);
+      }
       this.checkpoint(run);
     }
     this.stopping = false;
     const held = this.heldWork;
     this.heldWork = null;
     if (held && reason === "human" && !this.closed) {
-      this.startWork(held.trigger, held.minTurns);
+      this.startWork(held.trigger, held.minTurns, held.actor);
       return;
     }
     this.notifyIdle();
@@ -549,7 +620,7 @@ export class RoomEngine {
   // Scheduling
   // -------------------------------------------------------------------------
 
-  private ensureRun(trigger: string | null, minTurns?: number): RunState {
+  private ensureRun(trigger: string | null, minTurns?: number, actor?: Actor): RunState {
     const budget = this.state.settings.budget;
     const wanted = minTurns ?? budget;
     const run = activeRun(this.state);
@@ -558,7 +629,7 @@ export class RoomEngine {
       if (run.budget === null || wanted === null) return run;
       const remaining = run.budget - run.used;
       if (remaining < wanted) {
-        this.store.append({ type: "run.extended", runId: run.id, by: this.state.human, turns: wanted - remaining });
+        this.store.append({ type: "run.extended", runId: run.id, ...actorFields(actor ?? this.actor()), turns: wanted - remaining });
       }
       return run;
     }
@@ -587,7 +658,7 @@ export class RoomEngine {
       return true;
     }
     if (event.type === "table.op") {
-      return event.op.by === this.state.human && !event.op.turnId;
+      return (event.op.by === this.state.human || Boolean(event.op.from)) && !event.op.turnId;
     }
     return false;
   }
@@ -716,8 +787,12 @@ export class RoomEngine {
 
   private agentEnv(agent: RoomAgent, turnId: string): NodeJS.ProcessEnv {
     const path = this.env.PATH ?? process.env.PATH ?? "";
+    // Never another agent's key inherited from where Agoryx was started: this agent's own, or none.
+    const { [AGENT_KEY_ENV]: _inherited, ...env } = this.env;
+    const key = this.agentKey?.(agent.id);
     return {
-      ...this.env,
+      ...env,
+      ...(key ? { [AGENT_KEY_ENV]: key } : {}),
       PATH: this.shimDir ? `${this.shimDir}:${path}` : path,
       AGORYX_ROOM: this.state.id,
       AGORYX_ROOM_NAME: this.state.name,
@@ -1051,7 +1126,7 @@ export class RoomEngine {
    * Record the file as it is now, if it differs from the last revision.
    * `by` is who changed it; "agoryx" marks the version the room started from.
    */
-  private recordDoc(by: string, extra: { turnId?: string; native?: boolean; among?: string[] } = {}): boolean {
+  private recordDoc(by: string, extra: { turnId?: string; native?: boolean; among?: string[]; from?: Actor["from"] } = {}): boolean {
     const path = this.state.settings.doc;
     if (!path) return false;
     const now = readDoc(this.state.workspace, path);
@@ -1144,7 +1219,8 @@ export class RoomEngine {
    * if the file moved on meanwhile, nothing is written and the current version is returned in the error.
    * Like a side conversation, an edit wakes nobody: agents see the diff in their next turn.
    */
-  writeDocument(text: string, base: string, author = this.state.human): DocRevision | null {
+  writeDocument(text: string, base: string, author?: string | Actor): DocRevision | null {
+    const actor = this.actor(author);
     const path = this.state.settings.doc;
     if (!path) throw new Error("this room has no canonical file");
     const current = readDoc(this.state.workspace, path);
@@ -1164,7 +1240,7 @@ export class RoomEngine {
     // Turns running now will see this file changed; it must not be credited to them.
     const saved = readDoc(this.state.workspace, path)?.hash;
     for (const turn of this.running.values()) turn.outsideDoc = saved;
-    return this.recordDoc(author) ? (this.docRevisions(path).at(-1) ?? null) : null;
+    return this.recordDoc(actor.by, actor.from ? { from: actor.from } : {}) ? (this.docRevisions(path).at(-1) ?? null) : null;
   }
 
   /** What changed in the canonical file since this agent last looked, as a delta block. */
@@ -1216,7 +1292,9 @@ export class RoomEngine {
   private handleName(handle: string): string {
     const agent = this.state.agents.find((entry) => entry.id === handle);
     if (agent) return agent.label;
-    return handle === this.state.human ? `${handle} (human)` : handle;
+    if (handle === this.state.human) return `${handle} (human)`;
+    const guest = this.state.guests[handle];
+    return guest ? originName(guest) : handle;
   }
 
   // -------------------------------------------------------------------------
@@ -1311,26 +1389,33 @@ export class RoomEngine {
       return true;
     };
     let trigger: string | null = null;
+    let triggeredBy: Actor | undefined;
     let imported = false;
     if (exchange.prompt && fresh("human")) {
       const mentions = parseMentions(exchange.prompt, handles);
       const wakes = addressesOthers(mentions);
       const message = this.postMessage({ author: this.state.human, kind: "human", text: exchange.prompt, mentions, wakes, native });
-      if (wakes) trigger ??= message.id;
+      if (wakes && !trigger) {
+        trigger = message.id;
+        triggeredBy = { by: this.state.human };
+      }
       imported = true;
     }
     if (exchange.reply && passNote(exchange.reply) === null && fresh("agent")) {
       const mentions = parseMentions(exchange.reply, handles);
       const wakes = addressesOthers(mentions);
       const message = this.postMessage({ author: agent.id, kind: "agent", text: exchange.reply.trim(), mentions, wakes, native });
-      if (wakes) trigger ??= message.id;
+      if (wakes && !trigger) {
+        trigger = message.id;
+        triggeredBy = { by: agent.id };
+      }
       imported = true;
     }
     if (!imported) return;
     this.log(`imported ${agent.id} native exchange ${exchange.key}`);
     if (trigger) {
       this.benched.clear();
-      this.ensureRun(trigger);
+      this.ensureRun(trigger, undefined, triggeredBy);
       this.requestSchedule();
     }
   }
@@ -1359,22 +1444,25 @@ export class RoomEngine {
     return this.postMessage({ author: "agoryx", kind: "system", text, mentions: [], wakes, ...(turnId ? { turnId } : {}) });
   }
 
-  private applyTableOp(raw: unknown, by: string, isHuman: boolean, turnId: string | undefined): TableOp {
+  private applyTableOp(raw: unknown, actor: Actor, isHuman: boolean, turnId: string | undefined): TableOp {
+    const by = actor.by;
     const prepared = prepareTableOp(this.state.table, raw, by, isHuman);
-    const op: TableOp = { ...prepared, ...(turnId ? { turnId } : {}) };
+    const op: TableOp = { ...prepared, ...(turnId ? { turnId } : {}), ...(actor.from ? { from: actor.from } : {}) };
     this.store.append({ type: "table.op", op });
     this.writeTableFile();
     if (op.op === "decide") {
       const decision = this.state.table.decisions[this.state.table.decisions.length - 1]!;
       const option = this.state.table.options.find((entry) => entry.id === decision.option);
-      const who = this.state.agents.find((agent) => agent.id === by)?.label ?? by;
+      const who = actorLabel(this.state, by);
       this.postMessage({
         author: by,
         kind: "decision",
         text: `Decision №${decision.n}: ${option?.id} «${option?.title}»${decision.note ? ` — ${decision.note}` : ""} (decided by ${who})`,
         mentions: [],
-        // A human decision is news for the agents; an agent's decision rides on its own reply.
-        wakes: isHuman,
+        // A human decision is news for the agents; an agent's decision rides on its own reply
+        // (one from another room has none here).
+        wakes: isHuman || Boolean(actor.from),
+        ...(actor.from ? { from: actor.from } : {}),
         refs: [decision.id, decision.option],
         ...(turnId ? { turnId } : {}),
       });
@@ -1497,7 +1585,7 @@ export class RoomEngine {
         return;
       }
       try {
-        const op = this.applyTableOp(raw, by, false, turnId);
+        const op = this.applyTableOp(raw, { by }, false, turnId);
         if (nonce) writeAck(inbox, nonce, { ok: true, id: op.id ?? op.op, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, this.state.table)}` });
       } catch (error) {
         const message = error instanceof TableOpError ? error.message : error instanceof Error ? error.message : String(error);

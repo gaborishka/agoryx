@@ -4,7 +4,8 @@
 // Behaviour comes from $FAKE_RULES (JSON array). The first rule whose `agent` (the kind,
 // optional), `id` (the room's agent id, $AGORYX_AGENT, optional) and `match` (substring of
 // the prompt, optional) fit is used:
-//   { agent, id, match, reply, table: [[...argv]], write: {path, content, via?: "shell"} (or a list),
+//   { agent, id, match, reply, table: [[...argv]], run: [[command, ...argv]] (outputs logged as runOutputs),
+//     write: {path, content, via?: "shell"} (or a list),
 //     command: "shown as the tool call; {cwd} and {cli} expand", sleepMs, afterTableMs (a pause after the table ops),
 //     streamSleepMs (claude: pause after streaming the reply, before finishing),
 //     error: "text", exitCode, once: true }
@@ -111,6 +112,7 @@ const main = async () => {
         AGORYX_TURN: process.env.AGORYX_TURN,
         PATH_HEAD: (process.env.PATH || "").split(":")[0],
         CLAUDECODE: process.env.CLAUDECODE,
+        AGORYX_AGENT_KEY: process.env.AGORYX_AGENT_KEY,
       },
     })}\n`,
   );
@@ -160,6 +162,17 @@ const main = async () => {
   }
   if (tableOutputs.length) appendFileSync(process.env.FAKE_LOG, `${JSON.stringify({ kind, turn, tableOutputs })}\n`);
   if (rule?.afterTableMs) await sleep(rule.afterTableMs);
+
+  // Any command, as an agent's shell would run it (the human's own CLI, say), with the turn's environment.
+  const runOutputs = [];
+  for (const [command, ...argv] of rule?.run ?? []) {
+    try {
+      runOutputs.push(execFileSync(command, argv, { encoding: "utf8", env: process.env, stdio: ["ignore", "pipe", "pipe"] }).trim());
+    } catch (error) {
+      runOutputs.push(`ERR ${String(error.stderr || error.message).trim()}`);
+    }
+  }
+  if (runOutputs.length) appendFileSync(process.env.FAKE_LOG, `${JSON.stringify({ kind, turn, runOutputs })}\n`);
 
   // Written with the agent's own edit tool (reported, as the real CLIs do), unless `via: "shell"`.
   let editIndex = 0;

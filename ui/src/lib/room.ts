@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { type AgentLook, agentLook } from "../../../internal/agora/look";
 import { names as nameList } from "./format";
-import type { DocRevision, MessageEntry, RoomAgent, RoomState, RoomSummary, TableOp, TurnState } from "./types";
+import type { ActorOrigin, DocRevision, MessageEntry, RoomAgent, RoomState, RoomSummary, TableOp, TurnState } from "./types";
 import type { OpEntry } from "./types";
 
 export type Tone = "claude" | "codex" | "human" | "sys";
@@ -25,7 +25,7 @@ export const DEFAULT_AGENTS: RoomAgent[] = [
 ];
 
 /** What a handle is looked up in: a room, or just a roster (the start screen, before there is a room). */
-export type Seating = { agents: RoomAgent[]; human?: string };
+export type Seating = { agents: RoomAgent[]; human?: string; guests?: Record<string, ActorOrigin> };
 
 /**
  * An agent is whoever the room's roster says it is — never a kind. "claude" or "codex" is an agent
@@ -45,6 +45,9 @@ export const participant = (room: Seating | undefined, handle: string): Particip
     };
   }
   if (handle === "agoryx") return { id: handle, label: "Agoryx", tone: "sys", agent: false };
+  // An agent of another room that acted here with its own key: named with its room, never taken for one of ours.
+  const guest = room?.guests?.[handle];
+  if (guest) return { id: handle, label: `${guest.label} (з кімнати «${guest.roomName}»)`, tone: guest.kind, agent: false, kind: guest.kind };
   // Another room sharing the directory, named in a revision whose author is not known (room "B").
   const other = /^room "(.+)"$/.exec(handle);
   if (other) return { id: handle, label: `кімната «${other[1]}»`, tone: "sys", agent: false };

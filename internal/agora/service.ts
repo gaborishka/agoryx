@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { agentKey, loadOrCreateToken } from "./actor.js";
 import { baselineRevision, docWritable, normalizeDocPath } from "./doc.js";
 import { createRoomWorktree, removeRoomWorktree } from "./folders.js";
 import { RoomEngine } from "./engine.js";
@@ -11,7 +12,7 @@ import { createCodexRunner } from "./runners/codex.js";
 import type { AgentRunner } from "./runners/types.js";
 import { defaultRoster, parseAgents } from "./roster.js";
 import { newRoomId, RoomStore, slugify } from "./store.js";
-import { DEFAULT_SETTINGS, type AgentKind, type RoomAgent, type RoomSettings, type RoomWorktree } from "./types.js";
+import { DEFAULT_SETTINGS, type ActorOrigin, type AgentKind, type RoomAgent, type RoomSettings, type RoomWorktree } from "./types.js";
 import { ensureAgentShim, prepareWorkspace } from "./workspace.js";
 
 export { DEFAULT_AGENTS } from "./roster.js";
@@ -53,6 +54,8 @@ export interface CreateRoomOptions {
   doc?: string | null;
   models?: Partial<Record<string, string>>;
   env?: NodeJS.ProcessEnv;
+  /** An agent opened the room from another room's turn (the room's human is still the human). */
+  createdBy?: ActorOrigin;
 }
 
 /**
@@ -137,7 +140,7 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     if (options.autoCommit === undefined) settings.autoCommit = true;
   }
   try {
-    return finishRoom({ id, name, workspace, createdWorkspace, worktree, human, agents, settings, doc, env });
+    return finishRoom({ id, name, workspace, createdWorkspace, worktree, human, agents, settings, doc, env, createdBy: options.createdBy });
   } catch (error) {
     if (worktree) removeRoomWorktree(worktree);
     throw error;
@@ -155,6 +158,7 @@ const finishRoom = ({
   settings,
   doc,
   env,
+  createdBy,
 }: {
   id: string;
   name: string;
@@ -166,6 +170,7 @@ const finishRoom = ({
   settings: RoomSettings;
   doc: string | null;
   env: NodeJS.ProcessEnv;
+  createdBy: ActorOrigin | undefined;
 }): RoomStore => {
   prepareWorkspace(workspace, { initGit: createdWorkspace });
   if (doc && !lstatSync(join(workspace, doc), { throwIfNoEntry: false })) {
@@ -184,6 +189,7 @@ const finishRoom = ({
     human,
     agents,
     settings,
+    ...(createdBy ? { createdBy } : {}),
   });
   const baseline = doc ? baselineRevision(workspace, doc) : null;
   if (baseline) store.append(baseline);
@@ -202,6 +208,8 @@ export const openEngine = (
     runners?: Partial<Record<AgentKind, AgentRunner>>;
     log?: (message: string) => void;
     opsPollMs?: number;
+    /** Issues each agent's key (see actor.ts). Default: signed with <AGORYX_HOME>/daemon.token, as the daemon does. */
+    agentKey?: (agentId: string) => string | undefined;
   } = {},
 ): RoomEngine => {
   const env = options.env ?? process.env;
@@ -213,6 +221,7 @@ export const openEngine = (
     shimDir: dir,
     env,
     profilePath: profilePath(env),
+    agentKey: options.agentKey ?? ((agentId) => agentKey(loadOrCreateToken(env), store.id, agentId)),
     ...(options.log ? { log: options.log } : {}),
     ...(options.opsPollMs ? { opsPollMs: options.opsPollMs } : {}),
   });

@@ -95,6 +95,7 @@ function Presence({ a }: { a: RoomAgent }) {
 
 function Title() {
   const name = useStore((s) => s.snap?.state.name ?? "");
+  const createdBy = useStore((s) => s.snap?.state.createdBy);
   const post = useStore((s) => s.post);
   const [editing, setEditing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -139,7 +140,7 @@ function Title() {
     <button
       type="button"
       onClick={() => setEditing(true)}
-      title="Перейменувати"
+      title={createdBy ? `Перейменувати. Кімнату відкрито з кімнати «${createdBy.roomName}»: ${createdBy.label}` : "Перейменувати"}
       className="-mx-1.5 min-w-0 truncate rounded-lg px-1.5 py-0.5 text-left text-[15px] font-semibold tracking-tight hover:bg-accent"
     >
       {name}

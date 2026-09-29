@@ -3,6 +3,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { actorIn, agentKey, isAgentKey, loadOrCreateToken, originName, originOf, readAgentKey } from "./actor.js";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
 import { linkedMedia, markdownTexts } from "./media.js";
@@ -15,7 +16,7 @@ import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js
 import { createRoom, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
-import type { AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings } from "./types.js";
+import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
 import { listWorkspaceFiles, repoRoot, resolveInside, workspacePaths } from "./workspace.js";
 
@@ -39,7 +40,15 @@ export interface DaemonOptions {
   opsPollMs?: number;
   /** Rooms active within this many days are opened at start, so their native sessions are watched (default 14; 0 = lazily only). */
   watchDays?: number;
+  /**
+   * POST /api/down: what stops the daemon (the process running it exits). Default: the daemon closes.
+   * `by` is who asked, recorded in each room whose run it stops.
+   */
+  onDown?: (by: ActorOrigin | null) => void;
 }
+
+/** Who is calling the API: the human (the daemon's token), or an agent with its key (see actor.ts). */
+type Caller = { agent: null } | { agent: ActorOrigin };
 
 class HttpError extends Error {
   constructor(
@@ -179,24 +188,7 @@ const safeEqual = (a: string, b: string): boolean => {
   return left.length === right.length && timingSafeEqual(left, right);
 };
 
-const TOKEN_FILE = "daemon.token";
 const COOKIE = "agoryx_token";
-
-/** The token survives daemon restarts so an open browser tab keeps working. */
-export const loadOrCreateToken = (env: NodeJS.ProcessEnv = process.env): string => {
-  const path = join(agoraHome(env), TOKEN_FILE);
-  try {
-    const existing = readFileSync(path, "utf8").trim();
-    if (existing.length >= 32) return existing;
-  } catch {
-    // create below
-  }
-  const token = randomBytes(24).toString("base64url");
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, token, { mode: 0o600 });
-  chmodSync(path, 0o600);
-  return token;
-};
 
 const cookieValue = (req: IncomingMessage, name: string): string | undefined => {
   const header = req.headers.cookie;
@@ -343,14 +335,18 @@ export class AgoraDaemon {
     }
   }
 
-  async close(): Promise<void> {
+  /** `by`: the agent that stopped the daemon, so each room records that its run was stopped by it. */
+  async close(by?: ActorOrigin | { human: true }): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
     for (const client of this.sseClients) client.end();
     this.sseClients.clear();
     await Promise.all(
       [...this.rooms.values()].map(async (handle) => {
         if (handle.followTimer) clearInterval(handle.followTimer);
-        if (handle.engine) await handle.engine.close();
+        if (!handle.engine) return;
+        const state = handle.engine.state;
+        const actor: Actor | undefined = !by ? undefined : "human" in by ? { by: state.human } : actorIn(state, by);
+        await handle.engine.close(actor);
       }),
     );
     this.rooms.clear();
@@ -399,6 +395,8 @@ export class AgoraDaemon {
       const fresh = RoomStore.open(roomsDir(this.env), handle.store.id);
       const engine = openEngine(fresh, {
         env: this.env,
+        // Each agent's own key, signed with this daemon's token: what it does through the API is its own.
+        agentKey: (agentId) => agentKey(this.token, fresh.id, agentId),
         runners: this.runners,
         log: (message) => this.log(`[${fresh.id}] ${message}`),
         ...(this.options.opsPollMs ? { opsPollMs: this.options.opsPollMs } : {}),
@@ -454,10 +452,38 @@ export class AgoraDaemon {
     }
   }
 
-  private checkToken(req: IncomingMessage, url: URL): void {
+  private checkToken(req: IncomingMessage, url: URL): Caller {
     const header = req.headers["x-agoryx-token"];
-    const given = (Array.isArray(header) ? header[0] : header) ?? cookieValue(req, COOKIE) ?? url.searchParams.get("token") ?? "";
+    const sent = Array.isArray(header) ? header[0] : header;
+    // An agent's key comes in the header only (the agent's CLI sends it); never as a browser login.
+    if (sent && isAgentKey(sent)) return { agent: this.agentOrigin(sent) };
+    const given = sent ?? cookieValue(req, COOKIE) ?? url.searchParams.get("token") ?? "";
     if (!given || !safeEqual(given, this.token)) throw new HttpError(401, "missing or wrong agoryx token (see daemon.json)");
+    return { agent: null };
+  }
+
+  /**
+   * The agent a key names — checked, never trusted: signed with this daemon's token, for a room that
+   * exists and an agent seated in it now. A key for another room still works anywhere (see actorIn):
+   * what it does there is signed as that agent, from that room.
+   */
+  private agentOrigin(key: string): ActorOrigin {
+    const named = readAgentKey(this.token, key);
+    if (!named) throw new HttpError(401, "this agent key was not issued by this daemon (a stale key, or a different daemon token)");
+    let state: RoomState;
+    try {
+      state = this.rooms.get(named.room)?.store.state ?? RoomStore.open(roomsDir(this.env), named.room).state;
+    } catch {
+      throw new HttpError(401, `this agent key is for room ${named.room}, which does not exist`);
+    }
+    const origin = originOf(state, named.agent);
+    if (!origin) throw new HttpError(401, `this agent key is for ${named.agent}, who is no longer in room "${state.name}"`);
+    return origin;
+  }
+
+  /** Who the caller is in a room: the human, one of its agents, or an agent of another room. */
+  private actorFor(caller: Caller, state: RoomState): Actor {
+    return caller.agent ? actorIn(state, caller.agent) : { by: state.human };
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -473,8 +499,8 @@ export class AgoraDaemon {
       return;
     }
     if (path.startsWith("/api/")) {
-      this.checkToken(req, url);
-      await this.api(req, res, url);
+      const caller = this.checkToken(req, url);
+      await this.api(req, res, url, caller);
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method not allowed");
@@ -638,7 +664,7 @@ export class AgoraDaemon {
     }
   }
 
-  private async api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  private async api(req: IncomingMessage, res: ServerResponse, url: URL, caller: Caller = { agent: null }): Promise<void> {
     const parts = url.pathname.split("/").filter(Boolean).slice(1); // drop "api"
     const method = req.method ?? "GET";
 
@@ -686,6 +712,17 @@ export class AgoraDaemon {
       return;
     }
 
+    if (parts[0] === "down" && parts.length === 1 && method === "POST") {
+      this.log(`stopping: asked by ${caller.agent ? originName(caller.agent) : "the human"}`);
+      sendJson(res, 200, { ok: true });
+      const by = caller.agent;
+      setImmediate(() => {
+        if (this.options.onDown) this.options.onDown(by);
+        else void this.close(by ?? { human: true });
+      });
+      return;
+    }
+
     if (parts[0] !== "rooms") throw new HttpError(404, "unknown endpoint");
 
     if (parts.length === 1) {
@@ -719,13 +756,15 @@ export class AgoraDaemon {
             ...(body.agents !== undefined ? { agents: body.agents } : {}),
             // `agoryx new --doc none` sends null: no canonical file.
             ...(typeof body.doc === "string" ? { doc: body.doc.trim() || null } : body.doc === null ? { doc: null } : {}),
+            // Opened from an agent's turn: the room says so; its human is still the human.
+            ...(caller.agent ? { createdBy: caller.agent } : {}),
             env: this.env,
           });
         } catch (error) {
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
         }
         const handle = this.room(store.id);
-        if (text.trim()) this.engineFor(handle).postHuman(text);
+        if (text.trim()) this.engineFor(handle).post(text, this.actorFor(caller, handle.store.state));
         sendJson(res, 201, { room: handle.store.summary() });
         return;
       }
@@ -799,30 +838,31 @@ export class AgoraDaemon {
     if (method !== "POST") throw new HttpError(405, "method not allowed");
     const body = (await readBody(req)) as Record<string, unknown>;
     const engine = this.engineFor(handle);
+    const actor = this.actorFor(caller, engine.state);
 
     switch (action) {
       case "messages": {
         const text = typeof body.text === "string" ? body.text : "";
         if (!text.trim()) throw new HttpError(400, "text is required");
-        const message = engine.postHuman(text);
+        const message = engine.post(text, actor);
         sendJson(res, 201, { message });
         return;
       }
       case "table": {
         const seq = engine.state.seq + 1;
-        const op = engine.tableOp(body);
+        const op = engine.tableOp(body, actor);
         sendJson(res, 201, { op, seq, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, engine.state.table)}` });
         return;
       }
       case "continue": {
         const seq = engine.state.seq + 1;
-        engine.continueRun();
+        engine.continueRun(actor);
         sendJson(res, 200, { ok: true, seq });
         return;
       }
       case "rename": {
         try {
-          engine.rename(typeof body.name === "string" ? body.name : "");
+          engine.rename(typeof body.name === "string" ? body.name : "", actor);
         } catch (error) {
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
         }
@@ -830,13 +870,13 @@ export class AgoraDaemon {
         return;
       }
       case "stop": {
-        await engine.stop("human");
+        await engine.stop("human", actor);
         sendJson(res, 200, { ok: true });
         return;
       }
       case "settings": {
         try {
-          engine.updateSettings(body as Partial<RoomSettings>);
+          engine.updateSettings(body as Partial<RoomSettings>, actor);
         } catch (error) {
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
         }
@@ -847,7 +887,7 @@ export class AgoraDaemon {
         if (typeof body.text !== "string" || typeof body.base !== "string") throw new HttpError(400, "text and base are required");
         if (body.text.length > MAX_DOC_TEXT) throw new HttpError(413, "the text is too large");
         try {
-          const revision = engine.writeDocument(body.text, body.base);
+          const revision = engine.writeDocument(body.text, body.base, actor);
           sendJson(res, 200, { revision, ...this.docNow(handle) });
         } catch (error) {
           if (error instanceof DocConflictError) {

@@ -226,6 +226,7 @@ type Patch = {
   name?: string;
   commits?: Snapshot["state"]["commits"];
   docRevisions?: Snapshot["state"]["docRevisions"];
+  guests?: Snapshot["state"]["guests"];
   activity?: { turnId: string; activity: TurnState["activity"][number] };
 };
 
@@ -245,6 +246,7 @@ const applyPatch = (event: RoomEvent, patch: Patch) => {
   if (patch.settings) st.settings = patch.settings;
   if (patch.commits) st.commits = patch.commits;
   if (patch.docRevisions) st.docRevisions = patch.docRevisions;
+  if (patch.guests) st.guests = patch.guests;
   if (patch.name) {
     st.name = patch.name;
     document.title = `${patch.name} · Agoryx`;

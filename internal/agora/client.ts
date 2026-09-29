@@ -91,6 +91,11 @@ export class DaemonClient {
     return this.request("POST", `/api/rooms/${encodeURIComponent(room)}/stop`, {});
   }
 
+  /** Stop the daemon (it records who asked in the rooms whose runs it stops). */
+  down(): Promise<{ ok: true }> {
+    return this.request("POST", "/api/down", {});
+  }
+
   settings(room: string, patch: Partial<RoomSettings>): Promise<{ settings: RoomSettings }> {
     return this.request("POST", `/api/rooms/${encodeURIComponent(room)}/settings`, patch);
   }

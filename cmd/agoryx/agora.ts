@@ -3,7 +3,8 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import pc from "picocolors";
-import { DaemonClient, type DaemonStreamItem } from "../../internal/agora/client.js";
+import { actorIn, AGENT_KEY_ENV, loadOrCreateToken, originName, originOf, readAgentKey } from "../../internal/agora/actor.js";
+import { DaemonClient, DaemonRequestError, type DaemonStreamItem } from "../../internal/agora/client.js";
 import { AgoraDaemon, findDaemon, readDaemonInfo, type DaemonInfo } from "../../internal/agora/daemon.js";
 import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
@@ -17,7 +18,7 @@ import { changeStats, patchSection } from "../../internal/agora/workspace.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { parseTableCommand, TABLE_USAGE } from "../../internal/agora/table-cli.js";
 import { describeTableOp, renderTableMarkdown } from "../../internal/agora/table.js";
-import type { AgentKind, AgentPresence, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
+import type { Actor, ActorOrigin, AgentKind, AgentPresence, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
 import { CliUsageError, parseCliArgsOrThrow, type OptionSpec, type OutputWriter } from "./cli-args.js";
 
 export const AGORA_COMMANDS = new Set([
@@ -118,6 +119,8 @@ export const terminalInk = (look: AgentLook, colors: Colors = pc): ((text: strin
 /** Prints room events as a readable transcript. */
 export class TranscriptPrinter {
   private readonly seenActivities = new Set<string>();
+  /** Agents of other rooms that acted here, learned from the events that name them. */
+  private readonly guests = new Map<string, ActorOrigin>();
   private readonly announced = new Set<string>();
   private readonly directNow = new Set<string>();
 
@@ -141,11 +144,14 @@ export class TranscriptPrinter {
     const look = agent ? agentLook(this.agents, agent.id) : undefined;
     if (agent && look) return terminalInk(look, c)(c.bold(agent.label));
     if (author === "agoryx") return c.dim("agoryx");
+    const guest = this.guests.get(author);
+    if (guest) return c.bold(originName(guest));
     return author === this.human ? c.magenta(c.bold(author)) : c.bold(author);
   }
 
   private plainName(author: string): string {
-    return this.agents.find((entry) => entry.id === author)?.label ?? author;
+    const guest = this.guests.get(author);
+    return this.agents.find((entry) => entry.id === author)?.label ?? (guest ? originName(guest) : author);
   }
 
   /** Someone started talking to an agent in its own app: say so once, since its room turn now waits. */
@@ -162,6 +168,8 @@ export class TranscriptPrinter {
   }
 
   event(event: RoomEvent): void {
+    const from = event.type === "message.posted" ? event.message.from : event.type === "table.op" ? event.op.from : "from" in event ? event.from : undefined;
+    if (from) this.guests.set(`${from.agent}@${from.room}`, from);
     const width = Math.max(40, Math.min(process.stdout.columns ?? 100, 140) - 12);
     switch (event.type) {
       case "message.posted": {
@@ -241,7 +249,70 @@ export class TranscriptPrinter {
 // Room access: through the daemon when it runs, otherwise in this process
 // ---------------------------------------------------------------------------
 
-const resolveRoom = (ref: string | undefined): string => RoomStore.resolveId(roomsDir(), ref, process.cwd());
+/** No room named: inside an agent's room turn, that room; else the one this directory is in (or the latest). */
+const resolveRoom = (ref: string | undefined): string => {
+  const turnRoom = process.env.AGORYX_TURN ? process.env.AGORYX_ROOM : undefined;
+  if (!ref && turnRoom && existsSync(join(roomsDir(), turnRoom))) return turnRoom;
+  return RoomStore.resolveId(roomsDir(), ref, process.cwd());
+};
+
+/** In an agent's room turn: the run it would follow cannot end while this command holds the turn open. */
+const inAgentTurn = (): boolean => Boolean(process.env.AGORYX_TURN && process.env.AGORYX_AGENT);
+
+/**
+ * The daemon, as whoever is running this: in an agent's turn, with the agent's own key (so what it does
+ * is recorded as that agent's, not the human's); otherwise with the human's token.
+ */
+const daemonClient = (info: DaemonInfo): DaemonClient => {
+  const key = process.env[AGENT_KEY_ENV]?.trim();
+  // A turn without a key of its own would act with the human's token: what it did would be recorded as theirs.
+  if (!key && inAgentTurn()) {
+    throw new Error(
+      `this is ${process.env.AGORYX_AGENT}'s turn, but it has no ${AGENT_KEY_ENV}: the daemon would record this as the human's doing, so it was not sent`,
+    );
+  }
+  return new DaemonClient({ url: info.url, token: key || info.token });
+};
+
+/**
+ * Without a daemon, the agent this process runs for, if any: named by its key (checked against the
+ * token it was signed with), or — for a turn from before keys — by its turn's environment.
+ */
+const localAgent = (): ActorOrigin | null => {
+  const key = process.env[AGENT_KEY_ENV]?.trim();
+  let named: { room: string; agent: string } | null = null;
+  if (key) {
+    named = readAgentKey(loadOrCreateToken(), key);
+    if (!named) throw new Error(`${AGENT_KEY_ENV} was not issued for ${agoraHome()} (a stale key, or another Agoryx home)`);
+  } else if (inAgentTurn() && process.env.AGORYX_ROOM) {
+    named = { room: process.env.AGORYX_ROOM, agent: process.env.AGORYX_AGENT! };
+  }
+  if (!named) return null;
+  try {
+    return originOf(RoomStore.open(roomsDir(), named.room).state, named.agent);
+  } catch {
+    return null;
+  }
+};
+
+/** Environment for a daemon started from here: never an agent turn's (its room, its key). */
+const daemonEnv = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  const agent = localAgentOrNull();
+  for (const key of ["AGORYX_ROOM", "AGORYX_ROOM_NAME", "AGORYX_AGENT", "AGORYX_TURN", "AGORYX_SEEN", "AGORYX_OPS_DIR", "AGORYX_TABLE", AGENT_KEY_ENV]) {
+    delete env[key];
+  }
+  if (agent) env.AGORYX_UP_BY = originName(agent);
+  return env;
+};
+
+const localAgentOrNull = (): ActorOrigin | null => {
+  try {
+    return localAgent();
+  } catch {
+    return null;
+  }
+};
 
 interface Conn {
   roomId: string;
@@ -258,7 +329,7 @@ interface Conn {
 }
 
 const daemonConn = async (info: DaemonInfo, ref: string | undefined): Promise<Conn> => {
-  const client = new DaemonClient(info);
+  const client = daemonClient(info);
   const roomId = resolveRoom(ref);
   const snapshot = await client.snapshot(roomId);
   return {
@@ -314,6 +385,9 @@ const daemonConn = async (info: DaemonInfo, ref: string | undefined): Promise<Co
 const localConn = (ref: string | undefined): Conn => {
   const roomId = resolveRoom(ref);
   const store = RoomStore.open(roomsDir(), roomId);
+  // An agent's command is its own here too, as through the daemon.
+  const agent = localAgent();
+  const actor: Actor | undefined = agent ? actorIn(store.state, agent) : undefined;
   let engine: RoomEngine | null = null;
   const drive = (): RoomEngine => {
     if (engine) return engine;
@@ -331,25 +405,25 @@ const localConn = (ref: string | undefined): Conn => {
     roomId,
     state: store.state,
     async say(text) {
-      return drive().postHuman(text).seq;
+      return drive().post(text, actor).seq;
     },
     async table(op) {
       const live = drive();
       const seq = store.state.seq + 1;
-      const applied = live.tableOp(op);
+      const applied = live.tableOp(op, actor);
       return { text: `${applied.id ? `${applied.id} · ` : ""}${describeTableOp(applied, store.state.table)}`, seq };
     },
     async more() {
       const live = drive();
       const seq = store.state.seq + 1;
-      live.continueRun();
+      live.continueRun(actor);
       return seq;
     },
     async stop() {
-      await drive().stop("human");
+      await drive().stop("human", actor);
     },
     async settings(patch) {
-      drive().updateSettings(patch);
+      drive().updateSettings(patch, actor);
       return store.state.settings;
     },
     async follow(after, printer, options) {
@@ -416,7 +490,7 @@ const startDaemonDetached = async (port?: number): Promise<DaemonInfo> => {
   const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "up", ...(port ? ["--port", String(port)] : [])], {
     detached: true,
     stdio: ["ignore", fd, fd],
-    env: process.env,
+    env: daemonEnv(),
   });
   child.unref();
   closeSync(fd);
@@ -465,21 +539,31 @@ const runUp = async (argv: string[]): Promise<number> => {
     console.log(`agoryx daemon already running at ${existing.url} (pid ${existing.pid})`);
     return 0;
   }
+  const stamp = (message: string) => console.log(`${pc.dim(new Date().toISOString().slice(11, 19))} ${message}`);
+  let closing = false;
+  let finish: () => void = () => {};
+  const shutdown = (reason: string, by?: ActorOrigin | { human: true }) => {
+    if (closing) process.exit(130);
+    closing = true;
+    console.log(pc.dim(`\n${reason}: stopping running turns and closing rooms…`));
+    void daemon.close(by).finally(() => finish());
+  };
+  const env = daemonEnv();
+  const startedBy = process.env.AGORYX_UP_BY ?? (localAgentOrNull() ? originName(localAgentOrNull()!) : undefined);
+  delete env.AGORYX_UP_BY;
   const daemon = new AgoraDaemon({
+    env,
     port: port ?? DEFAULT_PORT,
-    log: (message) => console.log(`${pc.dim(new Date().toISOString().slice(11, 19))} ${message}`),
+    log: stamp,
+    // `agoryx down`: whoever asked (an agent with its key, or the human) is recorded in the rooms it stops.
+    onDown: (by) => shutdown(`agoryx down by ${by ? originName(by) : "the human"}`, by ?? { human: true }),
   });
   const info = await daemon.start();
+  if (startedBy) stamp(`started by ${startedBy}`);
   console.log(`agoryx daemon at ${pc.bold(info.url)}  ·  UI: agoryx open  ·  Ctrl-C to stop`);
   if (parsed.options.open) openUrl(`${info.url}/?t=${encodeURIComponent(info.token)}`);
-  let closing = false;
   await new Promise<void>((resolveUp) => {
-    const shutdown = (signal: string) => {
-      if (closing) process.exit(130);
-      closing = true;
-      console.log(pc.dim(`\n${signal}: stopping running turns and closing rooms…`));
-      daemon.close().finally(resolveUp);
-    };
+    finish = resolveUp;
     process.on("SIGINT", () => shutdown("SIGINT"));
     process.on("SIGTERM", () => shutdown("SIGTERM"));
   });
@@ -503,7 +587,14 @@ const runDown = async (): Promise<number> => {
     );
     return 0;
   }
-  process.kill(info.pid, "SIGTERM");
+  // Asked through the API, the daemon records who stopped it (an agent's key names the agent);
+  // a daemon too old to have /api/down is signalled as before.
+  try {
+    await daemonClient(info).down();
+  } catch (error) {
+    if (!(error instanceof DaemonRequestError) || error.status !== 404) throw error;
+    process.kill(info.pid, "SIGTERM");
+  }
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     await new Promise((resolveWait) => setTimeout(resolveWait, 200));
@@ -573,10 +664,12 @@ const runNew = async (argv: string[]): Promise<number> => {
   const info = await findDaemon();
   let roomId: string;
   if (info) {
-    const { room } = await new DaemonClient(info).createRoom(input);
+    const { room } = await daemonClient(info).createRoom(input);
     roomId = room.id;
   } else {
-    roomId = createRoom(input).id;
+    // Opened from an agent's turn: the room says which agent, from which room.
+    const agent = localAgent();
+    roomId = createRoom({ ...input, ...(agent ? { createdBy: agent } : {}) }).id;
   }
   const store = RoomStore.open(roomsDir(), roomId);
   console.log(`${pc.bold(store.state.name)} ${pc.dim(`(${roomId})`)}`);
@@ -621,7 +714,7 @@ const say = async (ref: string | undefined, text: string, options: { trace: bool
   }
   try {
     const after = await conn.say(text);
-    if (options.noWait) return 0;
+    if (options.noWait || inAgentTurn()) return 0;
     const printer = new TranscriptPrinter(conn.state.agents, conn.state.human, { trace: options.trace });
     await conn.follow(after, printer, {});
     return 0;
@@ -741,6 +834,7 @@ const runTable = async (argv: string[]): Promise<number> => {
   try {
     const result = await conn.table(op);
     console.log(pc.green(result.text));
+    if (inAgentTurn()) return 0;
     // A human move on the table is news for the agents: follow their answers.
     const printer = new TranscriptPrinter(conn.state.agents, conn.state.human, { trace: true });
     await conn.follow(result.seq, printer, {});
@@ -755,6 +849,10 @@ const runMore = async (argv: string[]): Promise<number> => {
   const conn = await connect(parsed.options.room ?? parsed.positionals[0]);
   try {
     const after = await conn.more();
+    if (inAgentTurn()) {
+      console.log("asked for another round — the others answer after this turn");
+      return 0;
+    }
     await conn.follow(after, new TranscriptPrinter(conn.state.agents, conn.state.human, { trace: true }), {});
     return 0;
   } finally {
@@ -767,7 +865,7 @@ const runStop = async (argv: string[]): Promise<number> => {
   const info = await findDaemon();
   const roomId = resolveRoom(parsed.options.room ?? parsed.positionals[0]);
   if (info) {
-    await new DaemonClient(info).stop(roomId);
+    await daemonClient(info).stop(roomId);
     console.log("stopped");
     return 0;
   }

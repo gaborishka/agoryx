@@ -81,6 +81,31 @@ export interface RoomMessage {
   native?: NativeOrigin;
   /** The agent tool's nonce for an update, so an inbox replayed after a crash does not post it twice. */
   nonce?: string;
+  /** The author is an agent of another room (its key used here). */
+  from?: ActorOrigin;
+}
+
+/**
+ * An agent of another room acting here with its own room's key (see actor.ts): the room records
+ * who it is and where it came from, and never takes it for one of its own agents or for the human.
+ */
+export interface ActorOrigin {
+  /** The room whose key it used. */
+  room: string;
+  roomName: string;
+  /** Its id and label in that room. */
+  agent: string;
+  label: string;
+  kind: AgentKind;
+}
+
+/**
+ * Who did something the room records. `by` is the human's name, one of the room's agent ids, or —
+ * for an agent of another room — "<agent>@<room>", with `from` saying who that is.
+ */
+export interface Actor {
+  by: string;
+  from?: ActorOrigin;
 }
 
 export interface NativeOrigin {
@@ -154,6 +179,8 @@ export type TableOp = TableOpInput & {
   turnId?: string;
   /** Client nonce, echoed back so the agent-side CLI can learn the assigned id. */
   nonce?: string;
+  /** Made by an agent of another room (its key used here). */
+  from?: ActorOrigin;
 };
 
 export interface TableQuestion {
@@ -251,14 +278,27 @@ export interface RoomCreatedEvent {
   human: string;
   agents: RoomAgent[];
   settings: RoomSettings;
+  /**
+   * An agent opened this room from another room's turn (its key, or its turn's environment). The room's
+   * human is still `human`; absent for rooms the human opened.
+   */
+  createdBy?: ActorOrigin;
 }
 
 export type RoomEventBody =
   | RoomCreatedEvent
   | { type: "message.posted"; message: RoomMessage }
   | { type: "run.started"; runId: string; trigger: string | null; budget: number | null }
-  | { type: "run.extended"; runId: string; by: string; turns: number }
-  | { type: "run.ended"; runId: string; reason: "quiet" | "budget" | "stopped"; turns: number }
+  | { type: "run.extended"; runId: string; by: string; from?: ActorOrigin; turns: number }
+  | {
+      type: "run.ended";
+      runId: string;
+      reason: "quiet" | "budget" | "stopped";
+      turns: number;
+      /** Who stopped it (reason "stopped"); absent in logs from before, and when Agoryx itself stopped it. */
+      by?: string;
+      from?: ActorOrigin;
+    }
   | {
       type: "turn.started";
       turnId: string;
@@ -296,8 +336,9 @@ export type RoomEventBody =
     }
   | { type: "session.bound"; agent: string; sessionId: string }
   | { type: "table.op"; op: TableOp }
-  | { type: "settings.changed"; patch: Partial<RoomSettings> }
-  | { type: "room.renamed"; name: string }
+  /** `by`: who changed them (absent in logs from before authors were recorded). */
+  | { type: "settings.changed"; patch: Partial<RoomSettings>; by?: string; from?: ActorOrigin }
+  | { type: "room.renamed"; name: string; by?: string; from?: ActorOrigin }
   | { type: "commit.created"; sha: string; subject: string; files: number }
   | DocRevisedEvent;
 
@@ -305,8 +346,9 @@ export type RoomEventBody =
 export interface DocRevisedEvent {
   type: "doc.revised";
   path: string;
-  /** Agent id or the human's name. */
+  /** Agent id or the human's name ("<agent>@<room>" for an agent of another room). */
   by: string;
+  from?: ActorOrigin;
   /** The room turn that made the change; absent for edits made outside a turn. */
   turnId?: string;
   /** Made by an agent in its own session, outside the room. */
@@ -427,4 +469,8 @@ export interface RoomState {
   /** Revisions of the canonical file (texts stay in the event log). */
   docRevisions: DocRevision[];
   counters: Record<string, number>;
+  /** Agents of other rooms that acted here, by their handle here ("<agent>@<room>"). */
+  guests: Record<string, ActorOrigin>;
+  /** The agent that opened this room from another room, if one did. */
+  createdBy?: ActorOrigin;
 }

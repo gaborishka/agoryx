@@ -1,3 +1,4 @@
+import { originName } from "./actor.js";
 import { PASS_RESPONSE_TOKEN } from "../events/pass-token.js";
 import { describeTableOp, summarizeTable } from "./table.js";
 import type { FileChange, RoomAgent, RoomEvent, RoomMessage, RoomState, TableOp } from "./types.js";
@@ -28,7 +29,8 @@ const displayName = (state: RoomState, handle: string): string => {
   const agent = state.agents.find((entry) => entry.id === handle);
   if (agent) return agent.label;
   if (handle === state.human) return `${state.human} (human)`;
-  return handle;
+  const guest = state.guests?.[handle];
+  return guest ? originName(guest) : handle;
 };
 
 /** An excerpt is not the author's position: what was cut may qualify or reverse what was kept. */

@@ -58,6 +58,16 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
   their next delta. `@id` wakes only that participant first; `@all` addresses everyone.
 - **Work is attributed.** Files changed during a turn are credited to that turn; at run end Agoryx makes a
   checkpoint commit (in workspaces it created, or when `autocommit` is on).
+- **So are actions.** Each agent's turn carries its own key to the daemon (`AGORYX_AGENT_KEY`). The human's own
+  `agoryx` in an agent's shell works as usual — `more`, `stop`, `settings`, `new`, `down`, room messages —
+  but the daemon records what it does as that agent's: `run.extended`, `run.ended` (a stop),
+  `settings.changed`, `room.renamed`, `doc.revised` and table ops carry `by`, and the transcript says it
+  («Codex зупиняє розмову», «Claude змінює налаштування: …»). An agent's message is kind `agent`, never
+  `human`. A room an agent opens records `createdBy` (the agent and the room it came from); its human is
+  still the human. A key used in another room works there too, signed as a guest — `codex@<room>`, named
+  «Codex (з кімнати «…»)» — never as that room's own agent or its human. Logs from before keep reading as
+  they did (no `by` means what it always did). A turn without a key of its own (a runner that gave it
+  none) is refused by the CLI rather than sent with the human's token: it would be recorded as theirs.
 
 ## The table (Стіл)
 
@@ -334,6 +344,10 @@ It works both ways. Whatever you say to an agent there comes back into the room:
   cross-origin writes.
 - Every `/api/*` call except `/api/health` needs the token from `daemon.json` (mode 0600). The token arrives as a header,
   or as an HttpOnly, SameSite=Strict cookie set by the `agoryx open` login link.
+- An agent's key (`agx1.<room>.<agent>.<hmac>`, the HMAC under the daemon's token) is accepted in the header
+  only. It is checked, not stored: signed by this token, for a room that exists and an agent seated in it —
+  otherwise a 401 that says why. It survives daemon restarts; a new `daemon.token` revokes every key. It is
+  attribution, not a sandbox: agents keep the access they had (they can still read `daemon.token`).
 - Workspace files are served under `/raw/<room>/<hmac>/…`, with a `sandbox` CSP and an opaque origin.
   Agent-made HTML (files and ```` ```html ```` blocks) can run but cannot call the API. Paths are resolved through symlinks and
   must stay inside the workspace. `.git` is never served.
@@ -365,6 +379,7 @@ Without `--dir`, a room's workspace is `~/agoryx/<slug>/` (git-initialised); `AG
 | `internal/agora/doc.ts` | The canonical file: path rules, reading, line diff, baseline revision |
 | `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim (`table`, `diff`) |
 | `internal/agora/store.ts`, `projection.ts` | JSONL event log and state projection |
+| `internal/agora/actor.ts` | Agents' keys to the daemon, and who did what (`by`, guests from other rooms) |
 | `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |
 | `internal/agora/profile.ts` | The human's profile: reading and cutting it, the prompt blocks, who sees it |
 | `internal/agora/blocks.ts` | Live html/svg fences: finding a block in a message by the hash of its body |

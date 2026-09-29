@@ -114,14 +114,52 @@ const SYS_TEXT: Array<[RegExp, (...m: string[]) => string]> = [
   [/^The room no longer has a canonical file\.$/, () => "У кімнати більше немає спільного документа."],
   [/^(.+) stopped the run\.$/, () => "Розмову зупинено."],
   [/^(.+) asked for another round\.$/, (_, who) => `${who} просить ще один раунд.`],
+  [/^(.+) stopped the daemon, so the run was stopped\.$/, (_, who) => `${who} зупиняє Agoryx, тож розмову зупинено.`],
+  [/^(.+?) changed the settings: (.+)\.$/s, (_, who, what) => `${who} змінює налаштування: ${settingsText(what)}.`],
+  [/^(.+?) renamed the room to "(.+)"\.$/s, (_, who, name) => `${who} перейменовує кімнату на «${name}».`],
   [/^(.+?) could not finish its turn: (.*)$/s, (_, who, why) => `${who}: хід не вдалося завершити — ${why}`],
   [/^(.+?) is busy in its own session.*$/s, (_, who) => `${who} зараз говорить у своїй сесії — хід у кімнаті почнеться після цього.`],
 ];
 
-export const sysText = (text: string) => {
+/** What an agent's settings change says ("budget 5 turns per run, network off", see describeSettings), in Ukrainian. */
+const SETTING_TEXT: Array<[RegExp, (...m: string[]) => string]> = [
+  [/^budget (\d+) turns per run$/, (_, n) => `ліміт ${plural(Number(n), "хід", "ходи", "ходів")} на розмову`],
+  [/^no turn budget$/, () => "без ліміту ходів"],
+  [/^access workspace$/, () => "агенти можуть редагувати теку"],
+  [/^access readonly$/, () => "лише читання"],
+  [/^network (on|off)$/, (_, v) => `мережа ${v === "on" ? "увімкнена" : "вимкнена"}`],
+  [/^autocommit (on|off)$/, (_, v) => `автокоміти ${v === "on" ? "увімкнені" : "вимкнені"}`],
+  [/^turn limit (\d+) min$/, (_, n) => `ліміт ходу ${n} хв`],
+  [/^canonical file (.+)$/, (_, path) => `спільний документ \`${path}\``],
+  [/^no canonical file$/, () => "без спільного документа"],
+];
+
+const settingsText = (what: string) =>
+  what
+    .split(", ")
+    .map((item) => {
+      for (const [pattern, say] of SETTING_TEXT) {
+        const m = pattern.exec(item);
+        if (m) return say(...m);
+      }
+      return item;
+    })
+    .join(", ");
+
+/**
+ * A system line in Ukrainian. `who`: how the UI names the one who did it, when an agent did (its own
+ * or another room's): the line says so by that name, and "stopped the run" is no longer anonymous.
+ */
+export const sysText = (text: string, who?: string) => {
+  if (who) {
+    const stopped = /^(.+) stopped the run\.$/.exec(text);
+    if (stopped) return `${who} зупиняє розмову.`;
+    const round = /^(.+) asked for another round\.$/.exec(text);
+    if (round) return `${who} просить ще один раунд.`;
+  }
   for (const [pattern, say] of SYS_TEXT) {
     const m = pattern.exec(text);
-    if (m) return say(...m);
+    if (m) return who && m.length > 1 ? say(m[0]!, who, ...m.slice(2)) : say(...m);
   }
   return text;
 };

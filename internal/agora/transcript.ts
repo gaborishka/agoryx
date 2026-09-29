@@ -471,7 +471,7 @@ const codexItem = (item: Json, id: string, at: string | undefined, cwd: string |
       if (kind.startsWith("web")) {
         const results = Array.isArray(item.results) ? item.results : [];
         const output = results
-          .map((result: Json) => [str(result?.title), str(result?.url)].filter(Boolean).join(" — "))
+          .map((result: Json) => [str(result?.title), str(result?.url) ?? str(result?.snippet)].filter(Boolean).join(" — "))
           .filter(Boolean)
           .join("\n");
         const action = obj(item.action);
@@ -482,7 +482,7 @@ const codexItem = (item: Json, id: string, at: string | undefined, cwd: string |
           kind: "tool",
           tool: action?.type === "findInPage" ? "find in page" : opened ? "open page" : kind,
           category: "web",
-          title: str(item.query) || str(action?.query) || str(action?.url) || str(results[0]?.url) || "",
+          title: str(item.query) || str(action?.query) || str(action?.url) || str(results[0]?.url) || str(results[0]?.title) || "",
           ...(output ? { output: cap(output, MAX_OUTPUT) } : {}),
           status: "ok",
         };

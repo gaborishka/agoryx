@@ -224,11 +224,12 @@ test("tools without a view of their own say what they are about; a generated ima
         item({ type: "Extension", kind: "clock.sleep", id: "s1", durationMs: 20000 }),
         item({ type: "Extension", kind: "web.search", id: "w1", query: "https://example.com/a", action: { type: "openPage", url: "https://example.com/a" }, results: [{ title: "A", url: "https://example.com/a" }] }),
         item({ type: "Extension", kind: "web.search", id: "w2", query: "", action: { type: "other" }, results: [{ title: "B", url: "https://example.com/b.pdf" }] }),
+        item({ type: "Extension", kind: "web.search", id: "w3", query: "", action: { type: "other" }, results: [{ title: "Internal Error", snippet: "Unable to resolve click call" }] }),
         item({ type: "McpToolCall", id: "m1", server: "cua", tool: "repl", arguments: { code: "open()", title: "Open the review map" }, status: "completed", result: { content: [] } }),
       ]),
     );
     const tools = readTranscript("codex", codex).entries as TranscriptTool[];
-    const [made, failed, sleep, opened, other, mcp] = tools;
+    const [made, failed, sleep, opened, other, click, mcp] = tools;
     assert.equal(made!.tool, "image");
     assert.equal(made!.title, "ig_1.png");
     assert.equal(made!.status, "ok");
@@ -239,6 +240,7 @@ test("tools without a view of their own say what they are about; a generated ima
     assert.deepEqual([sleep!.tool, sleep!.title], ["sleep", "20 s"]);
     assert.deepEqual([opened!.tool, opened!.title], ["open page", "https://example.com/a"]);
     assert.equal(other!.title, "https://example.com/b.pdf");
+    assert.deepEqual([click!.title, click!.output], ["Internal Error", "Internal Error — Unable to resolve click call"]);
     assert.deepEqual([mcp!.tool, mcp!.title], ["cua.repl", "Open the review map"]);
 
     const claude = join(dir, "claude.jsonl");

@@ -122,7 +122,7 @@ current state, so nobody has to reconstruct it from the scroll. Agents and the h
 | `object P1 "why"` / `support P1 "why"` | Objection or support note `N1` |
 | `evidence P1 "finding" [--source …]` | Evidence that backs or breaks an option |
 | `fact "…"` / `settle "…" [--q Q1]` | Established fact `F1` / something both sides agree on `S1` |
-| `next "…"` → `done X1` | Next step `X1`, and marking it done |
+| `next "…"` → `done X1` | Next step `X1`, and marking it done — anyone may; TABLE.md then says who: `(claude; done by codex)` |
 | `decide P1 [--note …]` | Decision: posts "Decision №N" into the conversation and wakes the agents |
 | `withdraw P1` / `reopen Q1` | Retract an option / reopen a question |
 | `concede "…" [--on P1]` | Something I no longer hold, and why |

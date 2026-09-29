@@ -121,7 +121,22 @@ export const prepareTableOp = (
     case "support":
     case "evidence": {
       const target = normalizeRef(input.target);
-      option(target);
+      // A settled point or a fact is a claim too: one agent's "settled" can still be disputed by another.
+      const point = table.settled.find((item) => item.id === target) ?? table.facts.find((item) => item.id === target);
+      if (point) {
+        if (point.withdrawn) throw new TableOpError(`${target} is withdrawn`);
+        if (op === "object" && point.by === by) {
+          throw new TableOpError(
+            target.startsWith("F")
+              ? `${target} is your own fact — withdraw ${target} if it turned out wrong`
+              : `${target} is your own — concede "what you no longer hold" --on ${target} instead`,
+          );
+        }
+      } else if (/^P\d+$/.test(target)) {
+        option(target);
+      } else {
+        throw new TableOpError(`no ${target} on the table to ${op === "evidence" ? "add evidence to" : op} — it takes an option (P1), a settled point (S1) or a fact (F1)`);
+      }
       const source = cleanText(input.source, "source", false);
       return {
         ...base,
@@ -156,11 +171,21 @@ export const prepareTableOp = (
       return { ...base, op, text: cleanText(input.text, "text")!, id: `X${table.next.length + 1}` };
     case "done": {
       const target = normalizeRef(input.target);
-      if (!table.next.some((item) => item.id === target)) throw new TableOpError(`no next step ${target}`);
+      if (!table.next.some((item) => item.id === target)) {
+        const fact = table.facts.some((item) => item.id === target);
+        throw new TableOpError(`no next step ${target}${fact ? ` — ${target} is a fact; to take it back: withdraw ${target}` : ""}`);
+      }
       return { ...base, op, target };
     }
     case "withdraw": {
       const target = normalizeRef(input.target);
+      if (target.startsWith("F")) {
+        const fact = table.facts.find((item) => item.id === target);
+        if (!fact) throw new TableOpError(`no fact ${target} on the table`);
+        if (!isHuman && fact.by !== by) throw new TableOpError(`${target} was noted by ${fact.by}; only they can withdraw it`);
+        if (fact.withdrawn) throw new TableOpError(`${target} is already withdrawn`);
+        return { ...base, op, target };
+      }
       const found = option(target);
       if (!isHuman && found.by !== by) throw new TableOpError(`${target} was proposed by ${found.by}; only they can withdraw it`);
       if (found.status !== "open") throw new TableOpError(`${target} is already ${found.status}`);
@@ -249,10 +274,15 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
       return;
     case "done": {
       const step = table.next.find((entry) => entry.id === op.target);
-      if (step) step.done = true;
+      if (step) {
+        step.done = true;
+        step.doneBy = op.by;
+      }
       return;
     }
     case "withdraw": {
+      const fact = table.facts.find((entry) => entry.id === op.target);
+      if (fact) fact.withdrawn = true;
       const option = table.options.find((entry) => entry.id === op.target);
       if (option) option.status = "withdrawn";
       return;
@@ -313,11 +343,18 @@ const quote = (text: string, max = 140): string => {
   return `"${flat.length > max ? `${flat.slice(0, max)}…` : flat}"`;
 };
 
-/** One-line human description of an op, used in deltas and system lines. */
-export const describeTableOp = (op: TableOp, table?: TableState): string => {
+/**
+ * One-line human description of an op, used in deltas and system lines. `wholeDissent` keeps an
+ * objection's or a concession's reason unshortened (a turn prompt): a clipped objection can read as a
+ * quibble, and a clipped concession as more than was given up.
+ */
+export const describeTableOp = (op: TableOp, table?: TableState, options: { wholeDissent?: boolean } = {}): string => {
+  const dissent = (text: string) => (options.wholeDissent ? quote(text, Infinity) : quote(text));
   const titleOf = (ref: string) => {
     const option = table?.options.find((entry) => entry.id === ref);
-    return option ? ` ${quote(option.title, 60)}` : "";
+    if (option) return ` ${quote(option.title, 60)}`;
+    const point = table?.settled.find((entry) => entry.id === ref) ?? table?.facts.find((entry) => entry.id === ref);
+    return point ? ` ${quote(point.text, 60)}` : "";
   };
   switch (op.op) {
     case "ask":
@@ -325,23 +362,25 @@ export const describeTableOp = (op: TableOp, table?: TableState): string => {
     case "propose":
       return `proposed ${op.id} ${quote(op.title, 80)}${op.q ? ` for ${op.q}` : ""}${op.file ? ` (preview: ${op.file})` : ""}`;
     case "object":
-      return `objected to ${op.target}${titleOf(op.target)}: ${quote(op.text)}`;
+      return `objected to ${op.target}${titleOf(op.target)}: ${dissent(op.text)}`;
     case "support":
       return `supported ${op.target}${titleOf(op.target)}: ${quote(op.text)}`;
     case "evidence":
-      return `added evidence to ${op.target}: ${quote(op.text)}${op.source ? ` [${op.source}]` : ""}`;
+      return `added evidence to ${op.target}${titleOf(op.target)}: ${quote(op.text)}${op.source ? ` [${op.source}]` : ""}`;
     case "fact":
       return `noted fact ${op.id}: ${quote(op.text)}`;
     case "settle":
       return op.q ? `answered ${op.q} (${op.id}): ${quote(op.text)}` : `marked settled: ${quote(op.text)}`;
     case "concede":
-      return `conceded${op.target ? ` on ${op.target}` : ""} (${op.id}): ${quote(op.text)}`;
+      return `conceded${op.target ? ` on ${op.target}` : ""} (${op.id}): ${dissent(op.text)}`;
     case "next":
       return `added next step ${op.id}: ${quote(op.text)}`;
     case "done":
       return `marked ${op.target} done`;
-    case "withdraw":
-      return `withdrew ${op.target}${titleOf(op.target)}`;
+    case "withdraw": {
+      const fact = table?.facts.find((entry) => entry.id === op.target);
+      return `withdrew ${op.target}${fact ? ` ${quote(fact.text, 60)}` : titleOf(op.target)}`;
+    }
     case "decide":
       return `decided ${op.target}${titleOf(op.target)} (${op.id})${op.note ? `: ${quote(op.note)}` : ""}`;
     case "reopen":
@@ -349,7 +388,7 @@ export const describeTableOp = (op: TableOp, table?: TableState): string => {
   }
 };
 
-/** Markdown snapshot of the table, written to <workspace>/.agoryx/TABLE.md for agents. */
+/** Markdown snapshot of the table, written to <workspace>/.agoryx/rooms/<room>/TABLE.md for agents. */
 export const renderTableMarkdown = (table: TableState, roomName: string): string => {
   const lines: string[] = [`# Table — ${roomName}`, ""];
   const isEmpty =
@@ -364,16 +403,19 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
     return `${lines.join("\n")}\n`;
   }
 
+  const renderNotes = (ref: string) => {
+    for (const note of table.notes.filter((entry) => entry.target === ref)) {
+      const sign = note.kind === "object" ? "✗ objection" : note.kind === "support" ? "✓ support" : "◆ evidence";
+      lines.push(`  - ${sign} (${note.by}): ${note.text}${note.source ? ` [${note.source}]` : ""}`);
+    }
+  };
   const renderOption = (optionId: string) => {
     const option = table.options.find((entry) => entry.id === optionId)!;
     const mark = option.status === "chosen" ? " ✓ CHOSEN" : option.status === "withdrawn" ? " (withdrawn)" : "";
     lines.push(`- **${option.id}** ${option.title} — by ${option.by}${mark}`);
     if (option.body) lines.push(`  ${option.body.replace(/\n/g, "\n  ")}`);
     if (option.file) lines.push(`  preview: ${option.file}`);
-    for (const note of table.notes.filter((entry) => entry.target === option.id)) {
-      const sign = note.kind === "object" ? "✗ objection" : note.kind === "support" ? "✓ support" : "◆ evidence";
-      lines.push(`  - ${sign} (${note.by}): ${note.text}${note.source ? ` [${note.source}]` : ""}`);
-    }
+    renderNotes(option.id);
   };
 
   for (const question of table.questions) {
@@ -403,20 +445,37 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
     }
     lines.push("");
   }
-  const section = (title: string, items: TableItem[]) => {
+  const section = (title: string, items: TableItem[], disputes = false) => {
     if (items.length === 0) return;
     lines.push(`## ${title}`);
     for (const entry of items) {
       const about = entry.q ? ` [answers ${entry.q}]` : entry.target ? ` [on ${entry.target}]` : "";
-      lines.push(`- ${entry.done ? "~~" : ""}${entry.id}: ${entry.text}${entry.done ? "~~" : ""}${about} (${entry.by})`);
+      const struck = entry.done || entry.withdrawn ? "~~" : "";
+      const disputed = disputes ? disputeOf(table, entry) : [];
+      lines.push(`- ${struck}${entry.id}: ${entry.text}${struck}${about} (${entry.by}${entry.doneBy && entry.doneBy !== entry.by ? `; done by ${entry.doneBy}` : ""}${entry.withdrawn ? "; withdrawn" : ""})${disputed.length ? ` — contested by ${disputed.join(", ")}` : ""}`);
+      renderNotes(entry.id);
     }
     lines.push("");
   };
-  section("Facts", table.facts);
-  section("Settled", table.settled);
+  section("Facts", table.facts, true);
+  section("Settled", table.settled, true);
   section("Changed minds", table.shifts);
   section("Next", table.next);
   return `${lines.join("\n")}\n`;
+};
+
+/**
+ * Who still disputes a settled point or a fact: everyone who objected to it and has not conceded on it
+ * since. Empty once its author concedes on it after the objections — then it is given up, not contested.
+ */
+export const disputeOf = (table: Pick<TableState, "notes" | "shifts">, item: Pick<TableItem, "id" | "by" | "withdrawn">): string[] => {
+  if (item.withdrawn) return [];
+  const conceded = (who: string, after: number) => (table.shifts ?? []).some((shift) => shift.by === who && shift.target === item.id && shift.seq > after);
+  const objections = table.notes.filter((note) => note.target === item.id && note.kind === "object");
+  if (!objections.length || conceded(item.by, Math.max(...objections.map((note) => note.seq)))) return [];
+  const last = new Map<string, number>();
+  for (const note of objections) last.set(note.by, Math.max(last.get(note.by) ?? 0, note.seq));
+  return [...last].filter(([who, seq]) => !conceded(who, seq)).map(([who]) => who);
 };
 
 /** Options still waiting for a decision: open, and not under a question that is already closed. */
@@ -425,11 +484,12 @@ const liveOptionsOf = (table: TableState) => {
   return table.options.filter((option) => option.status === "open" && !(option.q && closed.has(option.q)));
 };
 
-/** What the table still holds open: questions without an answer, undecided options, steps not done. */
-export const openOnTable = (table: TableState): { questions: number; options: number; steps: number } => ({
+/** What the table still holds open: questions without an answer, undecided options, steps not done, disputed points. */
+export const openOnTable = (table: TableState): { questions: number; options: number; steps: number; disputes: number } => ({
   questions: table.questions.filter((question) => question.status === "open").length,
   options: liveOptionsOf(table).length,
   steps: table.next.filter((step) => !step.done).length,
+  disputes: [...table.settled, ...table.facts].filter((item) => disputeOf(table, item).length > 0).length,
 });
 
 /**
@@ -470,9 +530,21 @@ export const summarizeTable = (table: TableState): string | null => {
     const option = table.options.find((entry) => entry.id === decision.option);
     lines.push(`  decided: ${decision.option}${option ? ` ${quote(option.title, 70)}` : ""}${decision.q ? ` for ${decision.q}` : ""}`);
   }
-  if (table.facts.length > 0) lines.push(`  facts: ${table.facts.slice(-4).map((item) => `${item.id} ${quote(item.text, 70)}`).join("; ")}`);
+  // A point someone objected to is not common ground: it stays in view, with who disputes it, however old it is.
+  const contested = (item: TableItem) => {
+    const by = disputeOf(table, item);
+    return by.length ? ` — contested by ${by.join(", ")}` : "";
+  };
+  const recentOrDisputed = (items: TableItem[], keep: number) =>
+    items.filter((item, index) => index >= items.length - keep || disputeOf(table, item).length > 0);
+  const facts = table.facts.filter((item) => !item.withdrawn);
+  if (facts.length > 0) {
+    lines.push(`  facts: ${recentOrDisputed(facts, 4).map((item) => `${item.id} ${quote(item.text, 70)}${contested(item)}`).join("; ")}`);
+  }
   if (table.settled.length > 0) {
-    const settled = table.settled.slice(-4).map((item) => `${item.id}${item.q ? ` (answers ${item.q})` : ""} ${quote(item.text, 70)}`);
+    const settled = recentOrDisputed(table.settled, 4).map(
+      (item) => `${item.id}${item.q ? ` (answers ${item.q})` : ""} ${quote(item.text, 70)}${contested(item)}`,
+    );
     lines.push(`  settled: ${settled.join("; ")}`);
   }
   if (table.shifts.length > 0) {

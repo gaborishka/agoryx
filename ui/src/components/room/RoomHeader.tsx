@@ -22,8 +22,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useNow } from "@/hooks/use-now";
 import { api, roomPath, Unauthorized } from "@/lib/api";
-import { baseName, secs, shortPath } from "@/lib/format";
-import { participant, tableCount } from "@/lib/room";
+import { baseName, names, secs, shortPath } from "@/lib/format";
+import { ink, participant, profileLine, tableCount } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -35,22 +35,27 @@ function Presence({ a }: { a: RoomAgent }) {
     s.snap?.state.turns.find((t) => t.agent === a.id && t.status === "running"),
   );
   const room = useStore((s) => s.snap?.state);
-  const openDialog = useStore((s) => s.openDialog);
+  const openSession = useStore((s) => s.openSession);
+  const profile = useStore((s) => s.snap?.profile);
   const tick = useNow(now === "working" && Boolean(turn));
-  const tone = participant(room, a.id).tone;
+  const who = participant(room, a.id);
+  const tone = who.tone;
   const working = now === "working" && turn;
-  const tip = working
+  const seen = profileLine(a, profile);
+  const state = working
     ? `${a.label} зараз робить хід у кімнаті`
     : now === "native"
       ? `З ${a.label} зараз розмовляють напряму, у власній сесії; хід у кімнаті почнеться після цього`
       : now === "queued"
         ? `${a.label} у черзі на хід`
         : `${a.label} чекає на нове в розмові`;
+  const tip = `${seen ? `${state}. ${seen}` : state}. Натисніть — сесія збоку.`;
   return (
     <Tip tip={tip}>
       <button
         type="button"
-        onClick={() => openDialog({ kind: "sessions" })}
+        onClick={() => openSession(a.id, true)}
+        style={ink(who)}
         className={cn(
           "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12.5px] transition",
           now === "idle"
@@ -90,6 +95,7 @@ function Presence({ a }: { a: RoomAgent }) {
 
 function Title() {
   const name = useStore((s) => s.snap?.state.name ?? "");
+  const createdBy = useStore((s) => s.snap?.state.createdBy);
   const post = useStore((s) => s.post);
   const [editing, setEditing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -134,7 +140,7 @@ function Title() {
     <button
       type="button"
       onClick={() => setEditing(true)}
-      title="Перейменувати"
+      title={createdBy ? `Перейменувати. Кімнату відкрито з кімнати «${createdBy.roomName}»: ${createdBy.label}` : "Перейменувати"}
       className="-mx-1.5 min-w-0 truncate rounded-lg px-1.5 py-0.5 text-left text-[15px] font-semibold tracking-tight hover:bg-accent"
     >
       {name}
@@ -239,7 +245,7 @@ function Place() {
   const wt = room.worktree;
   const folder = wt ? wt.source : room.workspace;
   const tip = wt
-    ? `Worktree кімнати: гілка ${wt.branch} від ${wt.base}, тека ${room.workspace}. Claude і Codex працюють у ньому разом; ${wt.source} лишається як є.`
+    ? `Worktree кімнати: гілка ${wt.branch} від ${wt.base}, тека ${room.workspace}. ${names(room.agents.map((a) => a.label))} працюють у ньому разом; ${wt.source} лишається як є.`
     : `Робоча тека: ${room.workspace}${branch ? `, гілка ${branch}` : ""}`;
   return (
     <Tip tip={tip}>
@@ -323,14 +329,14 @@ export function RoomHeader() {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuItem
-            onSelect={() => openDialog({ kind: "sessions" })}
+            onSelect={() => useStore.getState().openSession()}
             className="items-start gap-2.5 py-2"
           >
             <TerminalIcon className="mt-0.5" />
             <span className="flex flex-col">
               Сесії агентів
               <small className="text-xs text-muted-foreground">
-                Відкрити розмову в Claude Code чи Codex
+                Усе, що агенти робили у своїх сесіях; модель і effort
               </small>
             </span>
           </DropdownMenuItem>

@@ -1,5 +1,6 @@
+import { guestHandle } from "./actor.js";
 import { applyTableOp, emptyTable } from "./table.js";
-import type { RoomCreatedEvent, RoomEvent, RoomState, RunState, TurnState } from "./types.js";
+import type { ActorOrigin, RoomCreatedEvent, RoomEvent, RoomState, RunState, TurnState } from "./types.js";
 
 export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string }): RoomState => ({
   id: event.id,
@@ -17,11 +18,33 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   runs: [],
   sessions: {},
   cursors: Object.fromEntries(event.agents.map((agent) => [agent.id, 0])),
+  profiles: {},
   table: emptyTable(),
   commits: [],
   docRevisions: [],
   counters: { m: 0, t: 0, r: 0 },
+  guests: event.createdBy ? { [guestHandle(event.createdBy)]: event.createdBy } : {},
+  ...(event.createdBy ? { createdBy: event.createdBy } : {}),
 });
+
+/** The agent of another room an event names, if any: remembered so its handle can be named later. */
+const eventOrigin = (event: RoomEvent): ActorOrigin | undefined => {
+  switch (event.type) {
+    case "message.posted":
+      return event.message.from;
+    case "table.op":
+      return event.op.from;
+    case "run.extended":
+    case "run.ended":
+    case "settings.changed":
+    case "room.renamed":
+    case "agent.changed":
+    case "doc.revised":
+      return event.from;
+    default:
+      return undefined;
+  }
+};
 
 const findTurn = (state: RoomState, turnId: string): TurnState | undefined => {
   for (let i = state.turns.length - 1; i >= 0; i -= 1) {
@@ -45,6 +68,8 @@ export const activeRun = (state: RoomState): RunState | undefined => {
 /** Mutating reducer. Events are applied in seq order exactly once. */
 export const applyEvent = (state: RoomState, event: RoomEvent): void => {
   state.seq = Math.max(state.seq, event.seq);
+  const origin = eventOrigin(event);
+  if (origin) state.guests[guestHandle(origin)] = origin;
   switch (event.type) {
     case "room.created":
       return;
@@ -68,7 +93,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       return;
     case "run.extended": {
       const run = findRun(state, event.runId);
-      if (run) run.budget += event.turns;
+      if (run && run.budget !== null) run.budget += event.turns;
       return;
     }
     case "run.ended": {
@@ -93,8 +118,11 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         resume: event.resume,
         sessionId: event.sessionId,
         activity: [],
+        profile: event.profile ?? "",
+        profileBefore: state.profiles[event.agent] ?? "",
       });
       state.cursors[event.agent] = Math.max(state.cursors[event.agent] ?? 0, event.cursor);
+      state.profiles[event.agent] = event.profile ?? "";
       const run = findRun(state, event.runId);
       if (run) run.used += 1;
       return;
@@ -111,6 +139,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       const turn = findTurn(state, event.turnId);
       if (!turn) return;
       turn.status = event.status;
+      turn.endSeq = event.seq;
       turn.endedAt = event.ts;
       turn.sessionId = event.sessionId ?? turn.sessionId;
       turn.durationMs = event.durationMs;
@@ -124,6 +153,10 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       // stopped keeps it: they stopped that work.)
       if ((event.status === "error" || event.unseen) && state.cursors[turn.agent] === turn.cursor) {
         state.cursors[turn.agent] = turn.cursorBefore;
+      }
+      // Likewise the profile: a version it never answered is given again.
+      if ((event.status === "error" || event.unseen) && state.profiles[turn.agent] === turn.profile && turn.profileBefore !== undefined) {
+        state.profiles[turn.agent] = turn.profileBefore;
       }
       for (const entry of turn.activity) {
         if (entry.status === "running") entry.status = event.status === "ok" || event.status === "pass" ? "ok" : "fail";
@@ -142,6 +175,21 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
     case "room.renamed":
       state.name = event.name;
       return;
+    case "agent.changed":
+      state.agents = state.agents.map((agent) => {
+        if (agent.id !== event.agent) return agent;
+        const next = { ...agent };
+        if (event.model !== undefined) {
+          if (event.model === null) delete next.model;
+          else next.model = event.model;
+        }
+        if (event.effort !== undefined) {
+          if (event.effort === null) delete next.effort;
+          else next.effort = event.effort;
+        }
+        return next;
+      });
+      return;
     case "commit.created":
       state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq });
       return;
@@ -153,6 +201,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         by: event.by,
         ...(event.turnId ? { turnId: event.turnId } : {}),
         ...(event.native ? { native: true } : {}),
+        ...(event.among ? { among: event.among } : {}),
         hash: event.hash,
         ...(event.text === null ? { deleted: true } : {}),
         added: event.added,

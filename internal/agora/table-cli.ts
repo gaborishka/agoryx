@@ -9,12 +9,12 @@ export const TABLE_USAGE = [
   "agoryx table [show]",
   'agoryx table ask "question"',
   'agoryx table propose "short title" [--body "what and why" | --body-file notes.md] [--file path] [--q Q1]',
-  'agoryx table object|support P1 "reason"',
-  'agoryx table evidence P1 "finding" [--source url-or-path]',
+  'agoryx table object|support P1|S1|F1 "reason"',
+  'agoryx table evidence P1|S1|F1 "finding" [--source url-or-path]',
   'agoryx table fact|next "text"',
   'agoryx table settle "what is now established" [--q Q1]',
   'agoryx table concede "what I no longer hold, and why" [--on P1]',
-  "agoryx table done X1 | withdraw P1 | reopen Q1|P1",
+  "agoryx table done X1 | withdraw P1|F1 | reopen Q1|P1",
   'agoryx table decide P1 [--note "why"]',
 ];
 

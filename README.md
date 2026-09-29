@@ -11,7 +11,7 @@ Working with multiple LLMs today means copying text between apps and re-explaini
 ## Features (v0.3)
 
 - **Two agents:** Codex and Claude, running via their local CLIs
-- **Four modes:** `manual`, `round-robin`, `auto`, `team` — switch at runtime with `/mode`
+- **Five modes:** `free` (the default), `manual`, `round-robin`, `auto`, `team` — switch at runtime with `/mode`
 - **Persistent sessions:** SQLite-backed history with checkpoints and structured summaries
 - **Context management:** `/pin`, `/unpin`, automatic checkpoint summaries, workspace context injection
 - **Project memory:** automatic event capture (dispatches, decisions, errors) with crash recovery and `/memory` commands
@@ -170,7 +170,7 @@ internal/
   storage/           SQLite persistence (13 tables)
   workspace/         Workspace context collector (git status, diffs, tree)
   worktree/          Git worktree manager (per-agent isolation)
-tests/               Comprehensive suite (398 tests)
+tests/               Test suite (rooms: tests/agora)
 docs/                Architecture, vision, consensus, design plans
 ```
 

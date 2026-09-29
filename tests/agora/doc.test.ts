@@ -77,7 +77,7 @@ test("every change to the canonical file is kept with its author, and the others
         agent: "claude",
         match: "draft",
         write: { path: "README.md", content: "# Time\n\nTime is what clocks measure.\n" },
-        reply: "Drafted README.md.",
+        reply: "Drafted README.md. @codex have a look.",
         once: true,
       },
     ],
@@ -95,7 +95,7 @@ test("every change to the canonical file is kept with its author, and the others
     assert.ok(drafted!.turnId, "credited to the turn that made it");
     assert.deepEqual([drafted!.added, drafted!.removed], [3, 0]);
 
-    // Codex was woken by Claude's reply: its delta carries the diff, not the whole file.
+    // Codex was woken by Claude's reply (@codex): its delta carries the diff, not the whole file.
     const codexPrompt = room.invocations("codex").at(-1)!.prompt!;
     assert.match(codexPrompt, /README\.md \(the room's canonical file\) changed since your last turn — Claude \+3 −0/);
     assert.match(codexPrompt, /~~~~diff\n\+ # Time\n\+ \n\+ Time is what clocks measure\.\n~~~~/);
@@ -167,6 +167,76 @@ test("in a blind round the canonical file is credited only to the turn that wrot
     const claudeTurn = room.store.state.turns.find((turn) => turn.id === revision!.turnId)!;
     assert.ok(codexTurn.startedAt <= claudeTurn.endedAt!, "the two turns overlapped");
     assert.equal(codexTurn.files?.includes("README.md") ?? false, false, "Codex did not write it");
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("an edit made after the parallel turn ended is the remaining turn's, whatever tool made it", async () => {
+  const room = createTestRoom({
+    settings: { doc: "README.md" },
+    rules: [
+      { agent: "claude", match: "essay", write: { path: "README.md", content: "# Time\n\nA first draft.\n" }, reply: "Drafted it.", once: true },
+      // Codex reworks the draft with a script once Claude's turn is over, as a shell command would.
+      { agent: "codex", match: "essay", sleepMs: 1200, write: { path: "README.md", content: "# Time\n\nA sharper draft.\n", via: "shell" }, reply: "Tightened it.", once: true },
+    ],
+  });
+  try {
+    room.engine.postHuman("Write an essay on time");
+    await withTimeout(room.engine.waitIdle());
+    const { docRevisions, turns } = room.store.state;
+    assert.deepEqual(
+      docRevisions.map((revision) => revision.by),
+      ["claude", "codex"],
+      "no revision is put on the human",
+    );
+    const codexTurn = turns.find((turn) => turn.agent === "codex")!;
+    assert.equal(docRevisions[1]!.turnId, codexTurn.id);
+    assert.deepEqual(codexTurn.files, ["README.md"]);
+    // Its patch starts from Claude's draft, not from before Claude wrote it.
+    assert.deepEqual(codexTurn.changes?.map((change) => [change.path, change.status, change.added, change.removed]), [["README.md", "M", 1, 1]]);
+    assert.match(room.engine.turnPatch(codexTurn.id)!.patch, /-A first draft\.\n\+A sharper draft\./);
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("an edit no one can be credited with during parallel turns is recorded as theirs, not the human's", async () => {
+  const room = createTestRoom({
+    settings: { doc: "README.md" },
+    rules: [
+      { agent: "claude", match: "essay", sleepMs: 1200, reply: "Thinking it over.", once: true },
+      { agent: "codex", match: "essay", sleepMs: 200, write: { path: "README.md", content: "# Time\n\nA draft.\n", via: "shell" }, reply: "Drafted it.", once: true },
+    ],
+  });
+  try {
+    room.engine.postHuman("Write an essay on time");
+    await withTimeout(room.engine.waitIdle());
+    const revision = room.store.state.docRevisions.at(-1)!;
+    assert.deepEqual(revision.among?.sort(), ["claude", "codex"]);
+    assert.equal(revision.turnId, undefined);
+    assert.equal(room.store.state.docRevisions.some((entry) => entry.by === room.store.state.human), false);
+    // Claude's reply woke Codex: that prompt says so too, rather than naming one of them.
+    assert.match(room.invocations("codex").at(-1)!.prompt!, /changed since your last turn — Claude or Codex \(parallel turns, whose is not known\) \+3 −0/);
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a big rewrite of the canonical file is cut in the prompt; the agent reads the file", async () => {
+  const room = createTestRoom({ settings: { doc: "README.md" } });
+  try {
+    const paragraph = (n: number) => `Paragraph ${n}: ${"time ".repeat(80)}`;
+    const text = `${Array.from({ length: 40 }, (_, i) => paragraph(i)).join("\n\n")}\n`;
+    // Both have sessions by now, so the next prompt is a delta, not a briefing.
+    room.engine.postHuman("Hello both");
+    await withTimeout(room.engine.waitIdle());
+    room.engine.writeDocument(text, docHash(""));
+    room.engine.postHuman("@claude thoughts?");
+    await withTimeout(room.engine.waitIdle());
+    const prompt = room.invocations("claude").at(-1)!.prompt!;
+    assert.match(prompt, /… the rest of this diff is cut \(\d+ chars in all\) — read README\.md for the whole file\n~~~~/);
+    assert.ok(prompt.length < 12_000, `the prompt stays thin (${prompt.length} chars)`);
   } finally {
     await room.cleanup();
   }

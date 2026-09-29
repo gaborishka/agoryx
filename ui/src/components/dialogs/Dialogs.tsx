@@ -1,5 +1,5 @@
-import { CopyIcon, ExternalLinkIcon, FileIcon, FolderOpenIcon } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { ExternalLinkIcon, FileIcon, FolderOpenIcon } from "lucide-react";
+import { type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { CodeFile, Patch } from "@/components/code/Code";
 import { LiveFrame } from "@/components/md/LiveFrame";
@@ -16,11 +16,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api, roomPath, Unauthorized } from "@/lib/api";
-import { copyText } from "@/lib/copy";
-import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, fullDate, IMAGE_EXT, kb, TABLE_EXT, VIDEO_EXT } from "@/lib/format";
-import { participant } from "@/lib/room";
+import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, fullDate, IMAGE_EXT, kb, names, TABLE_EXT, VIDEO_EXT } from "@/lib/format";
+import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { type DialogState, type TableFormOp, useStore } from "@/lib/store";
-import type { FileChange } from "@/lib/types";
+import type { FileChange, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const errText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -342,68 +341,9 @@ function FilesDialog() {
       }
       sub={room?.workspace}
     >
-      <Faint>Спільна git-тека кімнати. Агенти читають і пишуть тут (у пісочниці).</Faint>
+      <Faint>Спільна git-тека кімнати. Агенти читають і пишуть тут.</Faint>
       {body}
     </Shell>
-  );
-}
-
-// --- agent sessions -------------------------------------------------------------------
-
-function SessionsDialog() {
-  const snap = useStore((s) => s.snap);
-  if (!snap) return null;
-  const st = snap.state;
-  return (
-    <Shell title="Сесії агентів">
-      <Faint className="text-[13.5px]">
-        Agoryx не перепаковує агентів: кожен працює у своїй справжній сесії, і розмова в кімнаті — це їхні ходи в цих сесіях. Відкрийте сесію в терміналі, щоб
-        побачити все, що агент робив, або поговорити сам-на-сам — кімната це теж побачить.
-      </Faint>
-      {st.agents.map((a) => {
-        const session = st.sessions[a.id];
-        const command = snap.resume?.[a.id];
-        return (
-          <div key={a.id} className="flex items-start gap-3 rounded-xl border border-border bg-card p-3.5">
-            <Avatar handle={a.id} size={34} />
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <div className="flex items-baseline gap-2">
-                <b className="text-[14.5px]">{a.label}</b>
-                {a.model ? <span className="font-mono text-[11px] text-faint">{a.model}</span> : null}
-              </div>
-              <span className="truncate text-xs text-muted-foreground">
-                {session ? (
-                  <>
-                    сесія <span className="font-mono">{session.sessionId}</span>
-                  </>
-                ) : (
-                  "Ще не говорив у кімнаті — сесія з'явиться після першого ходу"
-                )}
-              </span>
-              {command ? <CopyLine text={command} /> : null}
-            </div>
-          </div>
-        );
-      })}
-      <Faint>
-        Уся кімната в терміналі: <code className="font-mono">agoryx tail -f</code> · <code className="font-mono">agoryx say "…"</code> ·{" "}
-        <code className="font-mono">agoryx table</code>
-      </Faint>
-    </Shell>
-  );
-}
-
-function CopyLine({ text }: { text: string }) {
-  const code = useRef<HTMLElement>(null);
-  return (
-    <div className="flex items-center gap-1 rounded-lg border border-border bg-code py-1 pr-1 pl-2.5">
-      <code ref={code} className="scroll-thin min-w-0 flex-1 overflow-x-auto font-mono text-[12px] whitespace-nowrap">
-        {text}
-      </code>
-      <Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Копіювати" title="Копіювати" onClick={() => void copyText(text, code.current)}>
-        <CopyIcon className="size-3.5" />
-      </Button>
-    </div>
   );
 }
 
@@ -414,6 +354,7 @@ function SettingsDialog() {
   const post = useStore((s) => s.post);
   const openDialog = useStore((s) => s.openDialog);
   const s = room?.settings;
+  const [limited, setLimited] = useState(typeof s?.budget === "number");
   const [budget, setBudget] = useState(String(s?.budget ?? 8));
   const [access, setAccess] = useState<string>(s?.access ?? "workspace");
   const [network, setNetwork] = useState(s?.network ?? true);
@@ -430,7 +371,7 @@ function SettingsDialog() {
           setBusy(true);
           try {
             await post("/settings", {
-              budget: Math.max(1, Number.parseInt(budget, 10) || s.budget),
+              budget: limited ? Math.min(100, Math.max(1, Number.parseInt(budget, 10) || s.budget || 8)) : null,
               access,
               network,
               autoCommit,
@@ -445,9 +386,18 @@ function SettingsDialog() {
         }}
       >
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="s-budget">Ходів агентів на ваше повідомлення</Label>
-          <Input id="s-budget" type="number" min={1} max={100} value={budget} onChange={(e) => setBudget(e.target.value)} className="w-28" />
-          <Faint>Скільки ходів агенти роблять після вашого повідомлення, перш ніж зупинитися й чекати на вас.</Faint>
+          <label className="flex items-center justify-between gap-3 text-sm">
+            Ліміт ходів на ваше повідомлення
+            <Switch checked={limited} onCheckedChange={setLimited} />
+          </label>
+          {limited && (
+            <Input id="s-budget" aria-label="Ходів агентів на ваше повідомлення" type="number" min={1} max={100} value={budget} onChange={(e) => setBudget(e.target.value)} className="w-28" />
+          )}
+          <Faint>
+            {limited
+              ? "Скільки ходів агенти роблять після вашого повідомлення, перш ніж зупинитися й чекати на вас."
+              : "Без ліміту: агенти працюють, доки комусь є що додати, і кімната стихає, коли всі пасують. Зупинити можна будь-коли."}
+          </Faint>
         </div>
         <div className="flex flex-col gap-1.5">
           <Label>Доступ агентів</Label>
@@ -460,7 +410,7 @@ function SettingsDialog() {
               <SelectItem value="readonly">Лише читання</SelectItem>
             </SelectContent>
           </Select>
-          <Faint>Агенти завжди працюють у пісочниці; поза робочою текою писати не можуть.</Faint>
+          <Faint>Агенти працюють, як у вашому терміналі: Claude — з вашими налаштуваннями, Codex — у своїй пісочниці. «Лише читання» чи вимкнена мережа обмежують обох.</Faint>
         </div>
         <label className="flex items-center justify-between gap-3 text-sm">
           Мережа для команд агентів
@@ -491,27 +441,38 @@ function SettingsDialog() {
 // --- help -------------------------------------------------------------------------------------
 
 function HelpDialog() {
-  const at = (who: "claude" | "codex") => (
-    <span className={cn("rounded-md px-1.5 py-0.5 font-mono text-[12.5px]", who === "claude" ? "bg-claude-soft text-claude" : "bg-codex-soft text-codex")}>@{who}</span>
-  );
+  // The room's own agents (any number, any mix); outside a room — the default pair.
+  const agents = useStore((s) => s.snap?.state.agents) ?? DEFAULT_AGENTS;
+  const at = (agent: RoomAgent) => {
+    const who = participant({ agents }, agent.id);
+    return (
+      <span
+        key={agent.id}
+        style={ink(who)}
+        className={cn("rounded-md px-1.5 py-0.5 font-mono text-[12.5px]", who.tone === "codex" ? "bg-codex-soft text-codex" : "bg-claude-soft text-claude")}
+      >
+        @{agent.id}
+      </span>
+    );
+  };
   const li = "relative pl-5 before:absolute before:top-[0.6em] before:left-1 before:size-1.5 before:rounded-full before:bg-primary/50";
   return (
     <Shell title="Як це працює">
       <div className="flex flex-col gap-3.5 text-[14.5px] leading-relaxed">
         <p>
-          <b>Кімната</b> — одна розмова для вас, Claude і Codex. Agoryx задає контекст, а не ролі: агенти працюють у своїх рідних сесіях з усіма своїми
+          <b>Кімната</b> — одна розмова для вас і {names(agents.map((a) => a.label))}. Agoryx задає контекст, а не ролі: агенти працюють у своїх рідних сесіях з усіма своїми
           інструментами.
         </p>
         <ul className="flex flex-col gap-2">
           <li className={li}>
-            На ваше повідомлення агенти відповідають <b>незалежно</b> — одночасно, не бачачи одне одного.
+            На ваше повідомлення агенти беруться <b>одночасно</b> — з того самого місця, і по ходу кажуть одне одному, хто що робить.
           </li>
           <li className={li}>
             Далі вони говорять <b>по черзі</b>: кожен бачить усе, що сказано раніше. Коли нема що додати — хід пропускається.
           </li>
           <li className={li}>Після кількох ходів розмова зупиняється й чекає на вас. Кількість — у налаштуваннях кімнати.</li>
           <li className={li}>
-            {at("claude")} чи {at("codex")} — звернутися лише до одного.
+            {agents.map((agent, i) => [i ? (i === agents.length - 1 ? " чи " : ", ") : null, at(agent)])} — звернутися лише до одного.
           </li>
           <li className={li}>
             <b>Стіл</b> — питання, варіанти, заперечення й рішення, коли є справжні альтернативи.
@@ -668,8 +629,6 @@ const render = (d: DialogState) => {
       return <CommitDialog sha={d.sha} />;
     case "files":
       return <FilesDialog />;
-    case "sessions":
-      return <SessionsDialog />;
     case "settings":
       return <SettingsDialog />;
     case "help":

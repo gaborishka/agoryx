@@ -1,15 +1,22 @@
-import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { clearTurnContext, TURN_FILE_ENV, turnContextPath, writeTurnContext } from "./turn-context.js";
+import { actorFields, actorLabel, AGENT_KEY_ENV, describeSettings, originName } from "./actor.js";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
-import { embed } from "./media.js";
+import { embed, mediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
-import { buildTurnPrompt, parseMentions, passNote } from "./prompts.js";
-import { truncate, type AgentRunner, type TurnResult } from "./runners/types.js";
-import type { RoomStore } from "./store.js";
+import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
+import { buildTurnPrompt, paragraphs, parseMentions, passNote } from "./prompts.js";
+import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
+import { validEffort, validModel } from "./roster.js";
+import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
+import { RoomStore } from "./store.js";
+import { namesFile, shellWriteTargets, shellWrites, type ShellCwd } from "./shell-writes.js";
 import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
 import type {
   Activity,
+  Actor,
   AgentKind,
   AgentPresence,
   DocRevision,
@@ -29,15 +36,22 @@ import {
   clearStaleAcks,
   diffSnapshots,
   drainOpsInbox,
+  markTurnLive,
   MAX_TREE_SNAPSHOT_DIRTY,
+  messagePath,
+  otherRoomTurns,
   prepareWorkspace,
   readTurnPatch,
+  roomDirName,
   snapshotChanges,
   snapshotTree,
   treeChangedPaths,
   treeChanges,
   workspacePaths,
+  workspaceRooms,
+  workspaceTracking,
   writeAck,
+  writeRoomMessage,
   writeTurnPatch,
   type ChangeSnapshot,
   type WorkspacePaths,
@@ -51,11 +65,47 @@ export interface EngineOptions {
   /** Command agents are told to use for the table. */
   agentCli?: string;
   env?: NodeJS.ProcessEnv;
+  /** The human's profile (<AGORYX_HOME>/profile.md, see profile.ts). Without it no agent is given one. */
+  profilePath?: string;
   opsPollMs?: number;
   /** How often to read the agents' native sessions for turns taken outside the room (0 = never). */
   nativePollMs?: number;
   log?: (message: string) => void;
+  /**
+   * Issues an agent's key to the daemon (see actor.ts), put in its turns' environment as
+   * AGORYX_AGENT_KEY: the human's CLI in the agent's shell then acts as that agent, not as the human.
+   */
+  agentKey?: (agentId: string) => string | undefined;
+  /**
+   * Keep each agent's CLI process up between its turns (Claude `--input-format stream-json`, Codex
+   * `app-server`), so a turn does not wait for the CLI to start. Off unless given. `idleMs`: how long an
+   * unused process is kept (default 5 minutes). A runner without a live mode, and a process that fails to
+   * start, fall back to one process per turn without a word.
+   */
+  live?: boolean | { idleMs?: number };
+  /**
+   * Asked when the human put something to one agent alone and its answer names no one: whether another
+   * agent should take a look (see jev.ts). Without it such an answer wakes nobody else.
+   */
+  secondLook?: SecondLook | null;
+  /** How sure secondLook must be before it wakes an agent (default one half); readMessage wakes at the same mark. */
+  secondLookThreshold?: number;
+  /**
+   * Reads each agent's message (see jev.ts): who it is meant for, @name or not, and which paragraphs take a
+   * position. Without it the room goes by @names and its word lists alone.
+   */
+  readMessage?: ReadMessage | null;
 }
+
+/** A process kept up for an agent between turns. */
+interface LiveEntry {
+  proc: LiveProcess;
+  idleTimer?: NodeJS.Timeout;
+  /** Turns it has taken: one that has taken none is new, and its failure to start says something about live mode itself. */
+  turns: number;
+}
+
+export const DEFAULT_LIVE_IDLE_MS = 5 * 60 * 1000;
 
 /** Where the engine is in an agent's native session file. */
 interface NativeTracker {
@@ -107,9 +157,14 @@ interface RunningTurn {
   done: Promise<void>;
   /** Hash of the canonical file as the human last saved it while this turn ran (not the turn's work). */
   outsideDoc?: string;
+  /** The workspace when the last turn that ran alongside this one (in any room here) ended: what changed after it is this turn's. */
+  handoff?: { dirty: ChangeSnapshot | null; tree: string | null; at: number };
 }
 
 const LOCK_FILE = "engine.lock";
+
+/** Past this, the canonical file's diff in a turn prompt is cut; the agent reads the file for the rest. */
+const MAX_DOC_DELTA_CHARS = 6_000;
 
 interface LockSnapshot {
   ino: number;
@@ -148,6 +203,18 @@ export class RoomLockedError extends Error {}
 /** Rooms driven by an engine in this process (the lock file covers other processes). */
 const lockedHere = new Set<string>();
 
+/** Engines in this process, by workspace: a turn that ends hands the workspace to the others' running turns. */
+const enginesHere = new Map<string, Set<RoomEngine>>();
+
+/** One key for one directory, however it was reached (a symlinked path is the same workspace). */
+const workspaceKey = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+};
+
 /**
  * One turn's exact patch: the file written when it ended, or regenerated from
  * the git trees in its turn.ended event. Needs only the log and the workspace,
@@ -158,17 +225,40 @@ export const roomTurnPatch = (store: RoomStore, turnId: string): { patch: string
   if (!turn?.changes?.length) return null;
   const ended = store.events.find((event) => event.type === "turn.ended" && event.turnId === turnId);
   const trees = ended?.type === "turn.ended" ? ended.trees : undefined;
-  return readTurnPatch(workspacePaths(store.state.workspace), turnId, {
+  const author = store.state.agents.find((agent) => agent.id === turn.agent)?.label;
+  return readTurnPatch(workspacePaths(store.state.workspace, store.state.id), turnId, {
     ...(trees ? { trees } : {}),
     files: turn.changes.map((change) => change.path),
+    ...(author ? { author } : {}),
+    ...(turn.endedAt ? { endedAt: turn.endedAt } : {}),
+    // An old .agoryx/turns/ file is this room's only when no other room ever had this workspace.
+    ownsLegacy: () => roomsSharingWorkspace(store).length === 1,
   });
+};
+
+/**
+ * Every room whose workspace this room's is, this one included: by the room logs next to its own
+ * (a room that never opened since rooms got their own directories counts too), and by the room
+ * directories rooms from elsewhere left in the workspace. Room logs are the persisted owner record.
+ */
+export const roomsSharingWorkspace = (store: RoomStore): Array<{ id: string; name: string }> => {
+  const here = resolve(store.state.workspace);
+  const rooms = new Map<string, string>();
+  for (const id of workspaceRooms(store.state.workspace)) rooms.set(id, id);
+  for (const room of RoomStore.list(dirname(store.dir))) {
+    const id = roomDirName(room.id);
+    if (id && resolve(room.workspace) === here) rooms.set(id, room.name);
+  }
+  rooms.set(roomDirName(store.state.id)!, store.state.name);
+  return [...rooms].map(([id, name]) => ({ id, name })).sort((a, b) => a.id.localeCompare(b.id));
 };
 
 /**
  * Drives one room. There is no orchestrator deciding who speaks: every new
  * message wakes the agents that have not seen it, each agent gets a turn with
  * only what is new for it, a pass is silence, and a run ends when nobody has
- * anything unseen (quiet) or the turn budget is spent.
+ * anything unseen (quiet), the human stops it, or — only in a room given a turn
+ * limit — the limit is spent.
  */
 export class RoomEngine {
   readonly store: RoomStore;
@@ -177,6 +267,7 @@ export class RoomEngine {
   private readonly shimDir?: string;
   private readonly agentCli: string;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly profilePath?: string;
   private readonly opsPollMs: number;
   private readonly nativePollMs: number;
   private readonly native = new Map<string, NativeTracker>();
@@ -185,6 +276,8 @@ export class RoomEngine {
   private lastPresence = "";
   /** Last stat of the canonical file, so the sync tick reads it only when it changed. */
   private docWatch = "";
+  /** When the canonical file was last seen as `docWatch` (another room's turn since then may have changed it). */
+  private docWatchAt = Date.now();
   private retryTimer: NodeJS.Timeout | undefined;
   /** Agents already announced as busy in their own session (cleared when they are free). */
   private readonly nativeBusyNoted = new Set<string>();
@@ -195,25 +288,54 @@ export class RoomEngine {
   private idleWaiters: Array<() => void> = [];
   private opsTimer: NodeJS.Timeout | undefined;
   private scheduleQueued = false;
+  private readonly secondLook: SecondLook | null;
+  private readonly secondLookThreshold: number;
+  private readonly readMessage: ReadMessage | null;
+  /** Turns whose answer is being weighed for a second look, and messages Jev is reading: the run stays open until they are. */
+  private readonly consulting = new Set<string>();
+  /** Agents whose message Jev is reading, with how many: each waits for it before its next turn, whose delta uses it. */
+  private readonly beingRead = new Map<string, number>();
   private stopping = false;
-  private heldWork: { trigger: string | null; minTurns: number | undefined } | null = null;
+  private heldWork: { trigger: string | null; minTurns: number | undefined; actor: Actor | undefined } | null = null;
   private closed = false;
   private lockHeld = false;
+  private readonly agentKey: ((agentId: string) => string | undefined) | undefined;
+  private readonly liveIdleMs: number;
+  private readonly liveOn: boolean;
+  /** Live processes by agent: at most one each, used by one turn at a time. */
+  private readonly live = new Map<string, LiveEntry>();
+  /** Agents whose live process could not start: they run one process per turn from then on. */
+  private readonly liveOff = new Set<string>();
 
   constructor(options: EngineOptions) {
     this.store = options.store;
     this.runners = options.runners;
     this.shimDir = options.shimDir;
     this.agentCli = options.agentCli ?? "agoryx";
+    this.agentKey = options.agentKey;
+    this.liveOn = Boolean(options.live);
+    this.liveIdleMs = typeof options.live === "object" && options.live.idleMs !== undefined ? options.live.idleMs : DEFAULT_LIVE_IDLE_MS;
     this.env = options.env ?? process.env;
+    this.secondLook = options.secondLook ?? null;
+    this.secondLookThreshold = options.secondLookThreshold ?? 0.5;
+    this.readMessage = options.readMessage ?? null;
+    this.profilePath = options.profilePath;
     this.opsPollMs = options.opsPollMs ?? 250;
     this.nativePollMs = options.nativePollMs ?? 2000;
     this.log = options.log ?? (() => {});
     this.acquireLock();
     try {
-      this.ws = prepareWorkspace(this.state.workspace, { initGit: this.state.createdWorkspace });
+      this.ws = prepareWorkspace(this.state.workspace, {
+        initGit: this.state.createdWorkspace,
+        room: { id: this.state.id, name: this.state.name },
+      });
       clearStaleAcks(this.ws);
+      clearStaleAcks(workspacePaths(this.state.workspace));
+      this.publishSharingRooms();
+      const peers = enginesHere.get(workspaceKey(this.state.workspace)) ?? new Set<RoomEngine>();
+      enginesHere.set(workspaceKey(this.state.workspace), peers.add(this));
       this.writeTableFile();
+      this.writeMissingMessages();
       this.recover();
       this.recordDocBaseline();
       // Table ops written while no engine ran, or taken by one that died before applying them.
@@ -309,6 +431,8 @@ export class RoomEngine {
   private recover(): void {
     const stale = this.state.turns.filter((turn) => turn.status === "running");
     for (const turn of stale) {
+      // Its marker may carry this very pid (a restart in place): other rooms must not wait on it forever.
+      markTurnLive(this.state.workspace, { room: this.state.id, turn: turn.id, pid: process.pid, startedAt: Date.parse(turn.startedAt), endedAt: Date.now() });
       this.store.append({
         type: "turn.ended",
         turnId: turn.id,
@@ -327,13 +451,16 @@ export class RoomEngine {
     }
   }
 
-  async close(): Promise<void> {
+  /** `by`: who stopped the daemon (so the run stopped with it is credited to them). */
+  async close(by?: Actor): Promise<void> {
     if (this.closed) return;
-    await this.stop("shutdown");
+    await this.stop("shutdown", by);
     this.closed = true;
+    this.closeAllLive();
     if (this.opsTimer) clearInterval(this.opsTimer);
     if (this.nativeTimer) clearInterval(this.nativeTimer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    enginesHere.get(workspaceKey(this.state.workspace))?.delete(this);
     this.releaseLock();
   }
 
@@ -370,6 +497,22 @@ export class RoomEngine {
   // Human actions
   // -------------------------------------------------------------------------
 
+  /** Someone acting: the human by default; an agent id; or an Actor (an agent of another room). */
+  private actor(by?: string | Actor): Actor {
+    if (by === undefined) return { by: this.state.human };
+    return typeof by === "string" ? { by } : by;
+  }
+
+  /** Whether the room's human did this (not one of its agents, not an agent of another room). */
+  private byHuman(actor: Actor): boolean {
+    return !actor.from && !this.state.agents.some((agent) => agent.id === actor.by);
+  }
+
+  /** A line in the transcript saying what someone did. It wakes nobody. */
+  private postNote(actor: Actor, text: string): MessageEntry {
+    return this.postMessage({ author: actor.by, kind: "system", text, mentions: [], wakes: false, ...(actor.from ? { from: actor.from } : {}) });
+  }
+
   postHuman(text: string, author = this.state.human): MessageEntry {
     const body = text.trim();
     if (!body) throw new Error("empty message");
@@ -386,46 +529,79 @@ export class RoomEngine {
     return message;
   }
 
-  /** "One more round": every agent gets another turn even with nothing new. */
-  continueRun(by = this.state.human): void {
-    this.benched.clear();
+  /**
+   * A message from whoever sent it: the human's is the human's; one of this room's agents, or an agent
+   * of another room, posts as itself (kind "agent", never "human") and it wakes the others like any reply.
+   */
+  post(text: string, by?: string | Actor): MessageEntry {
+    const actor = this.actor(by);
+    if (this.byHuman(actor)) return this.postHuman(text, actor.by);
+    const body = text.trim();
+    if (!body) throw new Error("empty message");
+    const handles = [...this.state.agents.map((agent) => agent.id), this.state.human.toLowerCase()];
     const message = this.postMessage({
-      author: by,
-      kind: "system",
-      text: `${by} asked for another round.`,
-      mentions: [],
+      author: actor.by,
+      kind: "agent",
+      text: body,
+      mentions: parseMentions(body, handles),
       wakes: true,
+      ...(actor.from ? { from: actor.from } : {}),
     });
-    this.startWork(message.id, this.state.agents.length);
+    this.startWork(message.id, undefined, actor);
+    return message;
   }
 
-  tableOp(raw: unknown, by = this.state.human): TableOp {
-    const isHuman = !this.state.agents.some((agent) => agent.id === by);
-    const op = this.applyTableOp(raw, by, isHuman, undefined);
-    if (isHuman) {
-      this.benched.clear();
-      this.startWork(null);
+  /** "One more round": every agent gets another turn even with nothing new. */
+  continueRun(by?: string | Actor): void {
+    const actor = this.actor(by);
+    this.benched.clear();
+    const message = this.postMessage({
+      author: actor.by,
+      kind: "system",
+      text: `${actorLabel(this.state, actor.by)} asked for another round.`,
+      mentions: [],
+      wakes: true,
+      ...(actor.from ? { from: actor.from } : {}),
+    });
+    this.startWork(message.id, this.state.agents.length, actor);
+  }
+
+  tableOp(raw: unknown, by?: string | Actor): TableOp {
+    const actor = this.actor(by);
+    const isHuman = this.byHuman(actor);
+    const op = this.applyTableOp(raw, actor, isHuman, undefined);
+    // The human's move, or one from another room (it has no reply here to ride on), is news for the agents.
+    if (isHuman || actor.from) {
+      if (isHuman) this.benched.clear();
+      this.startWork(null, undefined, actor);
     }
     return op;
   }
 
   /**
-   * Starts or extends the run for something the human did. While a stop is under way the run being
+   * Starts or extends the run for something someone did (the human, by default). While a stop is under way the run being
    * stopped must not absorb it, so the work is held and started as a fresh run once the stop is done.
    */
-  private startWork(trigger: string | null, minTurns?: number): void {
+  private startWork(trigger: string | null, minTurns?: number, actor?: Actor): void {
     if (this.stopping) {
       const held = this.heldWork;
-      this.heldWork = { trigger: held?.trigger ?? trigger, minTurns: Math.max(held?.minTurns ?? 0, minTurns ?? 0) || undefined };
+      this.heldWork = {
+        trigger: held?.trigger ?? trigger,
+        minTurns: Math.max(held?.minTurns ?? 0, minTurns ?? 0) || undefined,
+        actor: held?.actor ?? actor,
+      };
       return;
     }
-    this.ensureRun(trigger, minTurns);
+    this.ensureRun(trigger, minTurns, actor);
     this.requestSchedule();
   }
 
-  updateSettings(patch: Partial<RoomSettings>): void {
+  updateSettings(patch: Partial<RoomSettings>, by?: string | Actor): void {
+    const actor = this.actor(by);
     const clean: Partial<RoomSettings> = {};
-    if (typeof patch.budget === "number" && patch.budget >= 1 && patch.budget <= 100) clean.budget = Math.round(patch.budget);
+    if (patch.budget === null || (typeof patch.budget === "number" && patch.budget >= 1 && patch.budget <= 100)) {
+      clean.budget = patch.budget === null ? null : Math.round(patch.budget);
+    }
     if (typeof patch.network === "boolean") clean.network = patch.network;
     if (typeof patch.autoCommit === "boolean") clean.autoCommit = patch.autoCommit;
     if (patch.access === "workspace" || patch.access === "readonly") clean.access = patch.access;
@@ -443,37 +619,82 @@ export class RoomEngine {
       if (doc !== (this.state.settings.doc ?? null)) clean.doc = doc;
     }
     if (Object.keys(clean).length === 0) return;
-    this.store.append({ type: "settings.changed", patch: clean });
-    if (clean.doc !== undefined) {
-      this.recordDocBaseline();
+    this.store.append({ type: "settings.changed", patch: clean, ...actorFields(actor) });
+    if (clean.doc !== undefined) this.recordDocBaseline();
+    // The human sees what they changed; an agent's change is said in the transcript, by name.
+    if (!this.byHuman(actor)) this.postNote(actor, `${actorLabel(this.state, actor.by)} changed the settings: ${describeSettings(clean).join(", ")}.`);
+    else if (clean.doc !== undefined) {
       this.postSystem(clean.doc ? `The room's canonical file is now ${clean.doc}.` : "The room no longer has a canonical file.", false);
     }
   }
 
+  /**
+   * Another model or effort for an agent, from its next turn on (a live process restarts for it). Empty
+   * or null: back to the CLI's own default. Said in the transcript by whoever changed it; wakes nobody.
+   */
+  updateAgent(agentId: string, patch: { model?: string | null; effort?: string | null }, by?: string | Actor): RoomAgent {
+    const actor = this.actor(by);
+    const agent = this.state.agents.find((entry) => entry.id === agentId);
+    if (!agent) throw new Error(`no agent @${agentId} in this room`);
+    const change: { model?: string | null; effort?: string | null } = {};
+    if (patch.model !== undefined) {
+      const model = typeof patch.model === "string" ? patch.model.trim() : patch.model;
+      if (model !== null && typeof model !== "string") throw new Error("model must be a string or null");
+      if (model && !validModel(model)) throw new Error(`"${model}" is not a model name the ${agent.kind} CLI could be given`);
+      if ((model || null) !== (agent.model ?? null)) change.model = model || null;
+    }
+    if (patch.effort !== undefined) {
+      const effort = typeof patch.effort === "string" ? patch.effort.trim() : patch.effort;
+      if (effort !== null && typeof effort !== "string") throw new Error("effort must be a string or null");
+      if (effort && !validEffort(effort)) throw new Error(`"${effort}" is not an effort level (like "high" or "xhigh")`);
+      if ((effort || null) !== (agent.effort ?? null)) change.effort = effort || null;
+    }
+    if (Object.keys(change).length === 0) return agent;
+    this.store.append({ type: "agent.changed", agent: agent.id, ...change, ...actorFields(actor) });
+    const parts = [
+      ...(change.model !== undefined ? [change.model ? `model ${change.model}` : "the CLI's default model"] : []),
+      ...(change.effort !== undefined ? [change.effort ? `effort ${change.effort}` : "the CLI's default effort"] : []),
+    ];
+    this.postNote(actor, `${actorLabel(this.state, actor.by)} set ${agent.label} to ${parts.join(", ")}.`);
+    return this.state.agents.find((entry) => entry.id === agentId)!;
+  }
+
   /** A new name for the room; it wakes nobody. */
-  rename(name: string): void {
+  rename(name: string, by?: string | Actor): void {
+    const actor = this.actor(by);
     const clean = name.replace(/\s+/g, " ").trim().slice(0, 120);
     if (!clean) throw new Error("a room needs a name");
     if (clean === this.state.name) return;
-    this.store.append({ type: "room.renamed", name: clean });
+    this.store.append({ type: "room.renamed", name: clean, ...actorFields(actor) });
+    if (!this.byHuman(actor)) this.postNote(actor, `${actorLabel(this.state, actor.by)} renamed the room to "${clean}".`);
   }
 
-  async stop(reason: "human" | "shutdown" = "human"): Promise<void> {
+  /**
+   * "human": someone stopped the run (`by`, the human by default); "shutdown": Agoryx is closing the
+   * room — with `by` when someone stopped the daemon.
+   */
+  async stop(reason: "human" | "shutdown" = "human", by?: string | Actor): Promise<void> {
+    const actor = by === undefined && reason === "shutdown" ? undefined : this.actor(by);
     this.stopping = true;
     const turns = [...this.running.values()];
     for (const turn of turns) turn.controller.abort();
     await Promise.all(turns.map((turn) => turn.done));
     const run = activeRun(this.state);
     if (run) {
-      this.store.append({ type: "run.ended", runId: run.id, reason: "stopped", turns: run.used });
-      if (reason === "human") this.postSystem(`${this.state.human} stopped the run.`, false);
+      this.store.append({ type: "run.ended", runId: run.id, reason: "stopped", turns: run.used, ...(actor ? actorFields(actor) : {}) });
+      if (actor && this.byHuman(actor)) {
+        if (reason === "human") this.postSystem(`${actor.by} stopped the run.`, false);
+      } else if (actor) {
+        const who = actorLabel(this.state, actor.by);
+        this.postNote(actor, reason === "human" ? `${who} stopped the run.` : `${who} stopped the daemon, so the run was stopped.`);
+      }
       this.checkpoint(run);
     }
     this.stopping = false;
     const held = this.heldWork;
     this.heldWork = null;
     if (held && reason === "human" && !this.closed) {
-      this.startWork(held.trigger, held.minTurns);
+      this.startWork(held.trigger, held.minTurns, held.actor);
       return;
     }
     this.notifyIdle();
@@ -483,19 +704,22 @@ export class RoomEngine {
   // Scheduling
   // -------------------------------------------------------------------------
 
-  private ensureRun(trigger: string | null, minTurns?: number): RunState {
+  private ensureRun(trigger: string | null, minTurns?: number, actor?: Actor): RunState {
     const budget = this.state.settings.budget;
     const wanted = minTurns ?? budget;
     const run = activeRun(this.state);
     if (run) {
+      // A run without a limit has room for any number of turns: nothing to extend.
+      if (run.budget === null || wanted === null) return run;
       const remaining = run.budget - run.used;
       if (remaining < wanted) {
-        this.store.append({ type: "run.extended", runId: run.id, by: this.state.human, turns: wanted - remaining });
+        this.store.append({ type: "run.extended", runId: run.id, ...actorFields(actor ?? this.actor()), turns: wanted - remaining });
       }
       return run;
     }
     const runId = `r${(this.state.counters.r ?? 0) + 1}`;
-    this.store.append({ type: "run.started", runId, trigger, budget: minTurns ?? budget });
+    // "Another round" in a room without a limit is a run without one too: it ends when the room goes quiet.
+    this.store.append({ type: "run.started", runId, trigger, budget: budget === null ? null : (minTurns ?? budget) });
     return activeRun(this.state)!;
   }
 
@@ -503,10 +727,16 @@ export class RoomEngine {
     if (event.type === "message.posted") {
       const message = event.message;
       if (message.author === agent.id || !message.wakes) return false;
+      // Said while working: wakes only who it addresses, and only one that was not in a turn to read it then.
+      if (message.kind === "update") {
+        return (message.mentions.includes("all") || message.mentions.includes(agent.id)) && !this.inTurnAt(agent.id, event.seq);
+      }
       // Said in someone's own session: wakes only who it explicitly addresses, never that session's agent.
       if (message.native) {
         return message.native.agent !== agent.id && (message.mentions.includes("all") || message.mentions.includes(agent.id));
       }
+      // Agoryx's own note that names agents (a second look) wakes only them.
+      if (message.kind === "system" && message.author === "agoryx" && message.mentions.length > 0) return message.mentions.includes(agent.id);
       if (message.kind === "human" && message.mentions.length > 0) {
         const agentMentions = message.mentions.filter((handle) => handle === "all" || this.state.agents.some((entry) => entry.id === handle));
         if (agentMentions.length > 0 && !agentMentions.includes("all") && !agentMentions.includes(agent.id)) return false;
@@ -514,9 +744,152 @@ export class RoomEngine {
       return true;
     }
     if (event.type === "table.op") {
-      return event.op.by === this.state.human && !event.op.turnId;
+      return (event.op.by === this.state.human || Boolean(event.op.from)) && !event.op.turnId;
     }
     return false;
+  }
+
+  /** What the human said to this agent alone (`@claude …`, no one else), when that is all that woke this turn; else null. */
+  private askedAlone(agent: RoomAgent, turnId: string): RoomMessage[] | null {
+    const turn = this.state.turns.find((entry) => entry.id === turnId);
+    if (!turn) return null;
+    const woke = this.store.since(turn.cursorBefore).filter((event) => event.seq <= turn.cursor && this.wakes(event, agent));
+    const asked: RoomMessage[] = [];
+    for (const event of woke) {
+      if (event.type !== "message.posted" || event.message.kind !== "human" || event.message.author !== this.state.human) return null;
+      const agents = event.message.mentions.filter((handle) => handle === "all" || this.state.agents.some((entry) => entry.id === handle));
+      if (agents.length !== 1 || agents[0] !== agent.id) return null;
+      asked.push(event.message);
+    }
+    return asked.length ? asked : null;
+  }
+
+  /**
+   * An answer to the human alone wakes nobody; secondLook (Jev) may still judge another agent's look worth a
+   * turn. Then Agoryx says so in the room, with how sure it is, and that agent is woken by that note.
+   * Unreachable or unsure: nobody is woken. The run stays open until the answer is in.
+   */
+  private weighSecondLook(agent: RoomAgent, turnId: string, runId: string, asked: RoomMessage[], answer: RoomMessage, changes: FileChange[]): void {
+    const others = this.state.agents.filter((entry) => entry.id !== agent.id && !this.benched.has(entry.id) && this.runners[entry.kind]);
+    if (!this.secondLook || !others.length) return;
+    this.consulting.add(turnId);
+    const done = () => {
+      this.consulting.delete(turnId);
+      this.requestSchedule();
+    };
+    this.secondLook({
+      question: asked.map((message) => message.text).join("\n\n"),
+      answeredBy: agent.label,
+      answer: answer.text,
+      changed: changes.map((change) => `${change.path} +${change.added} −${change.removed}`),
+      others: others.map((entry) => ({ id: entry.id, label: entry.label })),
+    })
+      .then((verdict) => {
+        const worth = others.filter((entry) => (verdict.worth[entry.id] ?? 0) >= this.secondLookThreshold);
+        const said = others.map((entry) => `${entry.id} ${verdict.worth[entry.id]?.toFixed(2) ?? "?"}`).join(", ");
+        this.log(`${turnId} second look: ${said} (${verdict.ms} ms, ${verdict.tokens} tokens)${worth.length ? "" : " — nobody woken"}`);
+        // The run it was for has ended (stopped): what it says no longer has a run to join.
+        if (!worth.length || this.closed || this.stopping || activeRun(this.state)?.id !== runId) return;
+        const names = worth.map((entry) => entry.label);
+        const sure = worth.map((entry) => `${entry.label} ${Math.round(verdict.worth[entry.id]! * 100)}%`).join(", ");
+        this.postMessage({
+          author: "agoryx",
+          kind: "system",
+          text: `Jev: a second look at ${agent.label}'s answer seems worth a turn (${sure}) — ${names.join(" and ")} ${names.length === 1 ? "takes" : "take"} a look.`,
+          mentions: worth.map((entry) => entry.id),
+          wakes: true,
+          turnId,
+        });
+      })
+      .catch((error: unknown) => this.log(`${turnId} second look unavailable: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(done);
+  }
+
+  /**
+   * Jev reads what an agent said: who it is meant for, @name or not, and which paragraphs take a position.
+   * The reading is kept in the room (message.read) for the author's next delta and the others' gists. An agent
+   * it is meant for that the message did not wake and that has not read it — an update or a reply in its own
+   * session without @name, an answer that went back to the human — is woken by a note that says so. It only
+   * ever adds wakes. When it wakes nobody, or Jev is out of reach, an answer to the human alone still gets
+   * `then`, its second look.
+   */
+  private readPosted(message: MessageEntry, author: RoomAgent, then?: () => void): void {
+    const others = this.state.agents.filter((entry) => entry.id !== author.id);
+    if (!this.readMessage || !others.length) {
+      then?.();
+      return;
+    }
+    const key = `read:${message.id}`;
+    this.consulting.add(key);
+    this.beingRead.set(author.id, (this.beingRead.get(author.id) ?? 0) + 1);
+    let woke = false;
+    this.readMessage({ author: author.label, paragraphs: paragraphs(message.text), others: others.map((entry) => ({ id: entry.id, label: entry.label })) })
+      .then((verdict) => {
+        if (this.closed) return;
+        this.store.append({ type: "message.read", messageId: message.id, by: "jev", addressed: verdict.addressed, stances: verdict.stances });
+        const said = others.map((entry) => `${entry.id} ${verdict.addressed[entry.id]?.toFixed(2) ?? "?"}`).join(", ");
+        const stances = verdict.stances.map((p) => (p === null ? "-" : p.toFixed(2))).join(" ");
+        this.log(`${message.id} read: meant for ${said}; stances ${stances || "-"} (${verdict.ms} ms, ${verdict.tokens} tokens)`);
+        const posted: RoomEvent = { type: "message.posted", message, seq: message.seq, ts: message.ts };
+        const meant = others.filter(
+          (entry) =>
+            (verdict.addressed[entry.id] ?? 0) >= this.secondLookThreshold &&
+            !this.benched.has(entry.id) &&
+            this.runners[entry.kind] &&
+            !this.wakes(posted, entry) &&
+            (this.state.cursors[entry.id] ?? 0) < message.seq &&
+            !(message.kind === "update" && this.inTurnAt(entry.id, message.seq)),
+        );
+        // The run the message was said in has ended (stopped): what it asked no longer has a run to join.
+        if (!meant.length || this.stopping || (message.runId && activeRun(this.state)?.id !== message.runId)) return;
+        const names = meant.map((entry) => entry.label);
+        const sure = meant.map((entry) => `${entry.label} ${Math.round(verdict.addressed[entry.id]! * 100)}%`).join(", ");
+        const note = this.postMessage({
+          author: "agoryx",
+          kind: "system",
+          text: `Jev: ${author.label}'s ${message.id} reads as meant for ${names.join(" and ")} (${sure}), with no @ — ${names.join(" and ")} ${names.length === 1 ? "is" : "are"} woken to answer it.`,
+          mentions: meant.map((entry) => entry.id),
+          wakes: true,
+          ...(message.turnId ? { turnId: message.turnId } : {}),
+        });
+        woke = true;
+        if (!activeRun(this.state)) {
+          this.benched.clear();
+          this.ensureRun(note.id, undefined, { by: author.id });
+        }
+      })
+      .catch((error: unknown) => this.log(`${message.id} read unavailable: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => {
+        if (!woke && !this.closed) then?.();
+        this.consulting.delete(key);
+        const left = (this.beingRead.get(author.id) ?? 1) - 1;
+        if (left > 0) this.beingRead.set(author.id, left);
+        else this.beingRead.delete(author.id);
+        this.requestSchedule();
+      });
+  }
+
+  private addressesOthers(mentions: string[], agent: RoomAgent): boolean {
+    return mentions.some((handle) => handle === "all" || (handle !== agent.id && this.state.agents.some((entry) => entry.id === handle)));
+  }
+
+  /** Whether this agent was in a turn when event `seq` was posted (and so could read it with `read new`). */
+  private inTurnAt(agentId: string, seq: number): boolean {
+    return this.state.turns.some((turn) => turn.agent === agentId && turn.seq < seq && (turn.endSeq === undefined || turn.endSeq > seq));
+  }
+
+  /**
+   * Whether an agent at work asked this one something while it sat idle — by @name, or so Jev reads it (its
+   * note names the turn, still running): it answers now, not after.
+   */
+  private askedMidTurn(agent: RoomAgent): boolean {
+    const cursor = this.state.cursors[agent.id] ?? 0;
+    return this.store.since(cursor).some((event) => {
+      if (event.type !== "message.posted" || !this.wakes(event, agent)) return false;
+      const { message } = event;
+      if (message.kind === "update") return true;
+      return message.author === "agoryx" && message.kind === "system" && Boolean(message.turnId) && this.state.turns.some((turn) => turn.id === message.turnId && turn.status === "running");
+    });
   }
 
   private pending(agent: RoomAgent): boolean {
@@ -558,16 +931,16 @@ export class RoomEngine {
     let blockedByBudget = false;
     let waitingOnNative = false;
     // One conversation, not two: the human's message is answered by everyone at once
-    // (blind, so the views stay independent); after that the agents take the floor one
+    // (in parallel, from the same point); after that the agents take the floor one
     // at a time, and each sees what the other just said. Whoever has waited longest goes first.
     const candidates = this.state.agents
-      .filter((agent) => !this.running.has(agent.id) && !this.benched.has(agent.id) && this.runners[agent.kind])
+      .filter((agent) => !this.running.has(agent.id) && !this.beingRead.has(agent.id) && !this.benched.has(agent.id) && this.runners[agent.kind])
       .map((agent) => ({ agent, wake: this.firstWake(agent) }))
       .filter((entry): entry is { agent: RoomAgent; wake: RoomEvent } => entry.wake !== null)
       .sort((a, b) => a.wake.seq - b.wake.seq);
     for (const { agent } of candidates) {
-      if (this.running.size > 0 && !this.humanWaiting(agent)) continue;
-      if (run.used >= run.budget) {
+      if (this.running.size > 0 && !this.humanWaiting(agent) && !this.askedMidTurn(agent)) continue;
+      if (run.budget !== null && run.used >= run.budget) {
         blockedByBudget = true;
         continue;
       }
@@ -578,6 +951,8 @@ export class RoomEngine {
       this.startTurn(agent, run);
     }
     if (this.running.size > 0) return;
+    // An answer is being weighed for a second look: the run ends once that is decided.
+    if (this.consulting.size > 0) return;
     if (waitingOnNative) {
       this.retrySoon();
       return;
@@ -596,6 +971,7 @@ export class RoomEngine {
         ...count(open.questions, "open question", "open questions"),
         ...count(open.options, "undecided proposal", "undecided proposals"),
         ...count(open.steps, "step to do", "steps to do"),
+        ...count(open.disputes, "contested point", "contested points"),
       ];
       this.postSystem(
         left.length
@@ -628,15 +1004,32 @@ export class RoomEngine {
   // Turns
   // -------------------------------------------------------------------------
 
-  private agentEnv(agent: RoomAgent, turnId: string): NodeJS.ProcessEnv {
+  /**
+   * The environment of an agent's turn. For a process started for the turn: this turn's id, the messages it
+   * has seen and the agent's key. For a live process, which keeps one environment across turns, none of those
+   * (a stale turn or key must not outlive its turn): the tools find the current turn in AGORYX_TURN_FILE.
+   */
+  private agentEnv(agent: RoomAgent, turnId: string, live = false): NodeJS.ProcessEnv {
     const path = this.env.PATH ?? process.env.PATH ?? "";
+    // Never another agent's key (or turn) inherited from where Agoryx was started: this agent's own, or none.
+    const { [AGENT_KEY_ENV]: _inherited, [TURN_FILE_ENV]: _file, AGORYX_TURN: _turn, AGORYX_SEEN: _seen, ...env } = this.env;
+    // Nor the daemon's Jev key: it is the daemon's, not something an agent's commands get to use.
+    for (const name of JEV_ENV) delete env[name];
+    const key = this.agentKey?.(agent.id);
     return {
-      ...this.env,
+      ...env,
+      ...(key && !live ? { [AGENT_KEY_ENV]: key } : {}),
       PATH: this.shimDir ? `${this.shimDir}:${path}` : path,
       AGORYX_ROOM: this.state.id,
       AGORYX_ROOM_NAME: this.state.name,
       AGORYX_AGENT: agent.id,
-      AGORYX_TURN: turnId,
+      ...(live
+        ? { [TURN_FILE_ENV]: this.turnFile(agent.id) }
+        : {
+            AGORYX_TURN: turnId,
+            // The last message this turn's delta covers: `agoryx read new` prints what was said after it.
+            AGORYX_SEEN: `m${this.state.counters.m ?? 0}`,
+          }),
       AGORYX_OPS_DIR: this.ws.opsDir,
       AGORYX_TABLE: this.ws.tableFile,
       // Login shells may reorder PATH so another `agoryx` wins; env vars survive.
@@ -644,11 +1037,115 @@ export class RoomEngine {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // Live processes
+  // -------------------------------------------------------------------------
+
+  private turnFile(agentId: string): string {
+    return turnContextPath(this.store.dir, agentId);
+  }
+
+  /** Take an agent's live process down (settings changed, a person spoke to its session, idle, closing). */
+  private closeLive(agentId: string, why?: string): void {
+    const entry = this.live.get(agentId);
+    if (!entry) return;
+    this.live.delete(agentId);
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    entry.proc.close();
+    clearTurnContext(this.turnFile(agentId));
+    if (why) this.log(`${agentId} live process closed (${why})`);
+  }
+
+  private closeAllLive(): void {
+    for (const agentId of [...this.live.keys()]) this.closeLive(agentId, "room closed");
+  }
+
+  /**
+   * One turn on the agent's live process, started (or restarted) as needed. `liveUnavailable` in the result
+   * means nothing ran: the caller runs the turn with a process of its own.
+   */
+  private async runLive(agent: RoomAgent, runner: AgentRunner, request: TurnRequest, turnId: string, callbacks: Parameters<AgentRunner["run"]>[1]): Promise<TurnResult> {
+    let entry = this.live.get(agent.id);
+    const fingerprint = runner.liveFingerprint!(request);
+    // Anything fixed when the process started that differs now, or another session than the one it holds.
+    if (entry && (!entry.proc.alive || entry.proc.fingerprint !== fingerprint || (entry.proc.sessionId ?? null) !== request.sessionId)) {
+      this.closeLive(agent.id, entry.proc.alive ? "settings or session changed" : "process gone");
+      entry = undefined;
+    }
+    if (!entry) {
+      try {
+        entry = { proc: runner.openLive!(request), turns: 0 };
+      } catch (error) {
+        return {
+          status: "error",
+          text: "",
+          sessionId: null,
+          error: { kind: "unknown", message: error instanceof Error ? error.message : String(error) },
+          liveUnavailable: true,
+        };
+      }
+      this.live.set(agent.id, entry);
+    }
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    entry.idleTimer = undefined;
+    const proc = entry.proc;
+    const file = this.turnFile(agent.id);
+    const key = this.agentKey?.(agent.id);
+    writeTurnContext(file, {
+      room: this.state.id,
+      agent: agent.id,
+      turn: turnId,
+      seen: `m${this.state.counters.m ?? 0}`,
+      ...(key ? { key } : {}),
+    });
+    const reused = entry.turns > 0;
+    entry.turns += 1;
+    let result: TurnResult;
+    try {
+      result = await proc.runTurn(request, callbacks);
+    } finally {
+      // The turn is over: what names it (and the agent's key) goes with it.
+      clearTurnContext(file);
+    }
+    if (result.liveUnavailable && reused && !request.signal.aborted && !this.closed) {
+      // A process that had served turns died between them: that says nothing about live mode. Start another.
+      this.closeLive(agent.id, "process died between turns");
+      return this.runLive(agent, runner, request, turnId, callbacks);
+    }
+    if (this.live.get(agent.id) !== entry) {
+      // Closed while the turn ran (the room is closing): nothing to keep.
+      proc.close();
+    } else if (result.status !== "ok" || !proc.alive) {
+      // Whatever went wrong, the process is in an unknown state: the next turn starts a clean one.
+      this.closeLive(agent.id);
+    } else if (this.liveIdleMs > 0) {
+      entry.idleTimer = setTimeout(() => this.closeLive(agent.id, "idle"), this.liveIdleMs);
+      entry.idleTimer.unref();
+    } else {
+      this.closeLive(agent.id);
+    }
+    return result;
+  }
+
   /** Show the shim as plain `agoryx` in activity traces instead of its absolute path. */
   /** Rewrites of machine paths into what a reader recognises, longest first. */
   private tidyRules?: Array<[string, string]>;
 
-  private tidyActivity(activity: Activity): Activity {
+  /** What each running turn's shell commands named as written, read from the whole command before its label is clipped. */
+  private shellWrites = new Map<string, Set<string>>();
+  /** Where a Claude turn's shell is after its last command: Claude Code keeps a `cd` for the commands after it; Codex starts each at the workspace. */
+  private shellCwds = new Map<string, ShellCwd>();
+
+  private noteShellWrites(turnId: string, command: string, carriesCwd: boolean): void {
+    const { targets, cwd } = shellWrites(this.tidyText(command), carriesCwd ? (this.shellCwds.get(turnId) ?? "") : "");
+    if (carriesCwd) this.shellCwds.set(turnId, cwd);
+    if (targets.length === 0) return;
+    const known = this.shellWrites.get(turnId) ?? new Set<string>();
+    for (const target of targets) known.add(target);
+    this.shellWrites.set(turnId, known);
+  }
+
+  private tidyText(text: string): string {
     if (!this.tidyRules) {
       const variants = (path: string) => {
         let real = path;
@@ -664,9 +1161,12 @@ export class RoomEngine {
       for (const root of variants(this.state.workspace)) rules.push([`${root}/`, ""], [root, "."]);
       this.tidyRules = rules.sort((a, b) => b[0].length - a[0].length);
     }
+    return this.tidyRules!.reduce((acc, [from, to]) => acc.split(from).join(to), text);
+  }
+
+  private tidyActivity({ command: _command, ...activity }: Activity): Activity {
     // Runners keep labels long enough for this to see whole paths; clip afterwards.
-    const tidy = (text: string, max: number) =>
-      truncate(this.tidyRules!.reduce((acc, [from, to]) => acc.split(from).join(to), text), max);
+    const tidy = (text: string, max: number) => truncate(this.tidyText(text), max);
     return {
       ...activity,
       label: tidy(activity.label, 200),
@@ -684,7 +1184,10 @@ export class RoomEngine {
     const fromSeq = this.state.cursors[agent.id] ?? 0;
     const cursor = this.state.seq;
     const sessionId = this.state.sessions[agent.id]?.sessionId ?? null;
-    const turnsLeft = run.budget - run.used - 1;
+    const turnsLeft = run.budget === null ? null : run.budget - run.used - 1;
+    // Read once per turn: the version given is the version recorded. An agent it is off for never gets a word of it.
+    const profile = seesProfile(agent) ? readProfile(this.profilePath) : null;
+    const held = this.state.profiles[agent.id] ?? "";
     const promptFor = (fresh: boolean, rejoin: boolean) =>
       buildTurnPrompt({
         state: this.state,
@@ -696,6 +1199,8 @@ export class RoomEngine {
         fresh,
         rejoin,
         doc: this.docDelta(agent, fromSeq, fresh),
+        profile: fresh ? (profile ? profileBriefing(profile, this.state.human) : null) : profileUpdate(profile, held, this.state.human),
+        tracking: fresh ? workspaceTracking(this.state.workspace) : undefined,
       });
     const prompt = promptFor(!sessionId, false);
 
@@ -708,12 +1213,15 @@ export class RoomEngine {
       resume: Boolean(sessionId),
       sessionId,
       promptChars: prompt.length,
+      ...(profile ? { profile: profile.hash } : {}),
     });
 
     const controller = new AbortController();
+    const startedAt = Date.now();
+    // Announced before the snapshot: another room's turn ending after this sees it overlapped.
+    markTurnLive(this.state.workspace, { room: this.state.id, turn: turnId, pid: process.pid, startedAt });
     const snapshot = snapshotChanges(this.state.workspace);
     const tree = snapshot && snapshot.size <= MAX_TREE_SNAPSHOT_DIRTY ? snapshotTree(this.state.workspace) : null;
-    const startedAt = Date.now();
     const env = this.agentEnv(agent, turnId);
 
     const callbacks = {
@@ -726,6 +1234,7 @@ export class RoomEngine {
         this.store.emit({ type: "turn.stream", turnId, agent: agent.id, text, ...(reset ? { reset } : {}) });
       },
       onActivity: (activity: Activity) => {
+        if (activity.kind === "command") this.noteShellWrites(turnId, activity.command ?? activity.label, agent.kind === "claude");
         this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity: this.tidyActivity(activity) });
       },
     };
@@ -737,14 +1246,28 @@ export class RoomEngine {
         sessionId,
         roomName: this.state.name,
         ...(agent.model ? { model: agent.model } : {}),
+        ...(agent.effort ? { effort: agent.effort } : {}),
         settings: this.state.settings,
         env,
         signal: controller.signal,
       };
-      let result = await runner.run(request, callbacks);
+      const canLive = this.liveOn && !this.liveOff.has(agent.id) && Boolean(runner.openLive && runner.liveFingerprint);
+      const liveEnv = canLive ? this.agentEnv(agent, turnId, true) : env;
+      const runOnce = async (req: TurnRequest): Promise<TurnResult> => {
+        if (canLive && !this.liveOff.has(agent.id) && !this.closed) {
+          const result = await this.runLive(agent, runner, { ...req, env: liveEnv }, turnId, callbacks);
+          if (!result.liveUnavailable) return result;
+          // It could not take the turn (did not start, or died before the turn began): one process per turn from here on.
+          this.liveOff.add(agent.id);
+          this.closeLive(agent.id);
+          this.log(`${agent.id} live mode unavailable (${result.error?.message ?? "unknown"}); using one process per turn`);
+        }
+        return runner.run(req, callbacks);
+      };
+      let result = await runOnce(request);
       if (result.status === "error" && result.error?.kind === "session" && sessionId && !controller.signal.aborted) {
         callbacks.onActivity({ id: "session-rejoin", kind: "note", label: "previous native session could not be resumed — rejoining with a fresh one", status: "ok" });
-        result = await runner.run({ ...request, sessionId: null, prompt: promptFor(true, true) }, callbacks);
+        result = await runOnce({ ...request, sessionId: null, prompt: promptFor(true, true) });
       }
       return result;
     };
@@ -775,9 +1298,16 @@ export class RoomEngine {
   ): void {
     // Sweep the inbox while this turn still counts as running, so its ops are attributed to it.
     this.ingestOps();
-    const outsideDoc = this.running.get(agent.id)?.outsideDoc;
+    const { outsideDoc, handoff } = this.running.get(agent.id) ?? {};
     this.running.delete(agent.id);
     this.notePresence();
+    markTurnLive(this.state.workspace, { room: this.state.id, turn: turnId, pid: process.pid, startedAt, endedAt: Date.now() });
+    // Turns of other rooms that ran in this workspace while this one did (in this process or another).
+    const foreign = otherRoomTurns(this.state.workspace, this.state.id, startedAt);
+    // Every turn alongside it has ended, and the handoff is from after the last of them.
+    const alone = this.running.size === 0 && foreign.every((entry) => entry.endedAt !== undefined && handoff !== undefined && entry.endedAt <= handoff.at);
+    // Taken before the snapshot: a turn of another process that ends while it is taken ends after this handoff.
+    const snappedAt = Date.now();
     const dirty = snapshotChanges(this.state.workspace);
     const after = tree && !(dirty && dirty.size > MAX_TREE_SNAPSHOT_DIRTY) ? snapshotTree(this.state.workspace) : null;
     // Work the agent committed during the turn is gone from `git status`, but not from the trees.
@@ -787,12 +1317,38 @@ export class RoomEngine {
     // change is theirs (already recorded as their revision), not the agent's.
     const humanDoc = Boolean(doc && outsideDoc && readDoc(this.state.workspace, doc)?.hash === outsideDoc);
     const seen = [...new Set([...diffSnapshots(snapshot, dirty), ...committed])].filter((file) => !(humanDoc && file === doc)).sort();
-    let files = this.attributeFiles(turnId, seen);
-    const changed = this.turnChanges(agent, turnId, tree, after, files);
+    // The turns that ran alongside this one have all ended: a file that changed since the last of them
+    // did is this turn's, whatever tool changed it. Its patch starts from where that turn left the file.
+    const late = handoff && handoff.dirty && dirty && alone ? seen.filter((file) => handoff.dirty!.get(file) !== dirty.get(file)) : [];
+    let files = this.attributeFiles(turnId, seen, late, foreign.map((entry) => `${entry.room}/${entry.turn}`));
+    // A late file this turn wrote itself all along, and no parallel turn claims, is its whole change from the turn's start;
+    // only one another turn may have shaped too starts from where the last of them left it.
+    const self = this.state.turns.find((entry) => entry.id === turnId);
+    const handedOver = late.filter(
+      (file) => foreign.length > 0 || !self || !this.claimsFile(self, file) || this.overlapping(turnId).some((entry) => this.claimsFile(entry, file)),
+    );
+    // A file a parallel turn of this room also wrote while this one ran is not this turn's alone: its change says so.
+    const sharedWith = (file: string) =>
+      self && this.claimsFile(self, file) ? [...new Set(this.overlapping(turnId).filter((entry) => this.claimsFile(entry, file)).map((entry) => entry.agent))] : [];
+    const changed = this.turnChanges(agent, turnId, tree, after, files, handedOver.length && handoff?.tree ? { tree: handoff.tree, files: handedOver } : undefined, sharedWith);
+    // Every parallel turn has ended: nothing needs their shell writes any more.
+    if (this.running.size === 0) {
+      this.shellWrites.clear();
+      this.shellCwds.clear();
+    }
     // A file only touched (same content) is not a change.
     if (changed) files = files.filter((file) => changed.changes.some((change) => change.path === file));
+    // Hand what the workspace looks like now to the turns still running, here and in the other rooms of this process.
+    for (const engine of enginesHere.get(workspaceKey(this.state.workspace)) ?? [this]) {
+      for (const other of engine.running.values()) other.handoff = { dirty, tree: after, at: snappedAt };
+    }
     // Credited by git status, or — without git to tell — changed while this was the only turn.
-    if (doc && (files.includes(doc) || (!snapshot && this.running.size === 0))) this.recordDoc(agent.id, { turnId });
+    if (doc && (files.includes(doc) || (!snapshot && this.running.size === 0 && foreign.length === 0))) this.recordDoc(agent.id, { turnId });
+    // Changed during parallel turns and credited to none: record it as theirs, not as the human's.
+    else if (doc && seen.includes(doc) && this.running.size === 0) {
+      const among = [...new Set([agent.id, ...this.overlapping(turnId).map((entry) => entry.agent), ...this.roomHandles(foreign)])];
+      if (among.length > 1) this.recordDoc(among.join(" or "), { among });
+    }
 
     let messageId: string | undefined;
     let status: "ok" | "pass" | "error" | "interrupted" = result.status;
@@ -808,15 +1364,21 @@ export class RoomEngine {
         messageId = this.postMessage({ author: agent.id, kind: "pass", text: note, mentions: [], wakes: false, turnId, runId }).id;
       } else {
         const handles = [...this.state.agents.map((entry) => entry.id), this.state.human.toLowerCase()];
-        messageId = this.postMessage({
+        const asked = this.askedAlone(agent, turnId);
+        const message = this.postMessage({
           author: agent.id,
           kind: "agent",
-          text: [said, ...images.filter((path) => !said.includes(path) && !said.includes(encodeURI(path))).map(embed)].filter(Boolean).join("\n\n"),
+          text: [said, ...images.filter((path) => !mediaRefs(said).includes(path)).map(embed)].filter(Boolean).join("\n\n"),
           mentions: parseMentions(said, handles),
-          wakes: true,
+          // An answer to what the human put to this agent alone goes back to the human: the others hear
+          // it in their next delta, and it wakes one of them only if it says @name.
+          wakes: !asked || this.addressesOthers(parseMentions(said, handles), agent),
           turnId,
           runId,
-        }).id;
+        });
+        messageId = message.id;
+        const secondLook = asked && !message.wakes ? () => this.weighSecondLook(agent, turnId, runId, asked, message, changed?.changes ?? []) : undefined;
+        this.readPosted(message, agent, secondLook);
       }
     } else if (result.status === "error") {
       const error = result.error ?? { kind: "unknown", message: "failed" };
@@ -865,10 +1427,23 @@ export class RoomEngine {
     before: string | null,
     after: string | null,
     files: string[],
+    late?: { tree: string; files: string[] },
+    sharedWith: (file: string) => string[] = () => [],
   ): { changes: FileChange[]; trees: { before: string; after: string } } | null {
     if (!before || !after || files.length === 0) return null;
-    const diff = treeChanges(this.state.workspace, before, after, files);
-    if (!diff) return null;
+    const early = late ? files.filter((file) => !late.files.includes(file)) : files;
+    const parts = [treeChanges(this.state.workspace, before, after, early), ...(late ? [treeChanges(this.state.workspace, late.tree, after, late.files)] : [])];
+    if (parts.some((part) => !part)) return null;
+    const diff = {
+      changes: parts
+        .flatMap((part) => part!.changes)
+        .map((change) => {
+          const others = sharedWith(change.path).filter((id) => id !== agent.id);
+          return others.length ? { ...change, with: others } : change;
+        })
+        .sort((a, b) => a.path.localeCompare(b.path)),
+      patch: parts.map((part) => part!.patch).filter(Boolean).join(""),
+    };
     if (diff.changes.length > 0) {
       writeTurnPatch(this.ws, { id: turnId, author: agent.label, ts: new Date().toISOString() }, diff.changes, diff.patch);
     }
@@ -885,24 +1460,41 @@ export class RoomEngine {
    * a file to everyone who was running. A file another overlapping turn
    * reported editing (and this one did not) belongs to that turn.
    */
-  private attributeFiles(turnId: string, files: string[]): string[] {
+  private attributeFiles(turnId: string, files: string[], late: string[] = [], foreign: string[] = []): string[] {
     if (files.length === 0) return files;
     const turn = this.state.turns.find((entry) => entry.id === turnId);
     if (!turn) return files;
-    const claims = (entry: TurnState, file: string) =>
-      entry.activity.some((activity) => activity.kind === "edit" && activity.label.includes(file)) ||
-      this.state.docRevisions.some((revision) => revision.turnId === entry.id && revision.path === file);
-    const overlapping = this.state.turns.filter(
+    const claims = (entry: TurnState, file: string) => this.claimsFile(entry, file);
+    if (this.overlapping(turnId).length === 0 && foreign.length === 0) return files;
+    // Another turn — of this room or of another room sharing the workspace — ran at the same time: a file this turn's own edit tool
+    // touched, or its own shell command named as written (`> file`, `sed -i … file`, `open('file', 'w')`), is its (both, if both did),
+    // and so is one changed after the others had ended. One a command changed without naming it could be either's: credited to nobody.
+    const mine = files.filter((file) => claims(turn, file) || late.includes(file));
+    const unclaimed = files.filter((file) => !mine.includes(file));
+    if (unclaimed.length > 0) this.log(`${turnId}: not credited (parallel turns${foreign.length ? `, other rooms: ${foreign.join(", ")}` : ""}): ${unclaimed.join(", ")}`);
+    return mine;
+  }
+
+  /** Whether a turn's own trace says it wrote the file: its edit tool, a shell command naming it as written, or a doc revision. */
+  private claimsFile(entry: TurnState, file: string): boolean {
+    return (
+      entry.activity.some(
+        (activity) =>
+          (activity.kind === "edit" && activity.label.includes(file)) ||
+          (activity.kind === "command" && shellWriteTargets(activity.label).some((target) => namesFile(target, file))),
+      ) ||
+      [...(this.shellWrites.get(entry.id) ?? [])].some((target) => namesFile(target, file)) ||
+      this.state.docRevisions.some((revision) => revision.turnId === entry.id && revision.path === file)
+    );
+  }
+
+  /** The other turns that ran at some point while this one did. */
+  private overlapping(turnId: string): TurnState[] {
+    const turn = this.state.turns.find((entry) => entry.id === turnId);
+    if (!turn) return [];
+    return this.state.turns.filter(
       (entry) => entry.id !== turnId && (entry.status === "running" || (entry.endedAt !== undefined && entry.endedAt >= turn.startedAt)),
     );
-    if (overlapping.length === 0) return files;
-    // Another turn ran at the same time in the same workspace: a file only this turn's own edit tool
-    // touched is its (both, if both edited it). One changed only by a shell command could be either's,
-    // so it is credited to nobody.
-    const mine = files.filter((file) => claims(turn, file));
-    const unclaimed = files.filter((file) => !mine.includes(file));
-    if (unclaimed.length > 0) this.log(`${turnId}: not credited (parallel turns): ${unclaimed.join(", ")}`);
-    return mine;
   }
 
   // -------------------------------------------------------------------------
@@ -924,13 +1516,14 @@ export class RoomEngine {
    * Record the file as it is now, if it differs from the last revision.
    * `by` is who changed it; "agoryx" marks the version the room started from.
    */
-  private recordDoc(by: string, extra: { turnId?: string; native?: boolean } = {}): boolean {
+  private recordDoc(by: string, extra: { turnId?: string; native?: boolean; among?: string[]; from?: Actor["from"] } = {}): boolean {
     const path = this.state.settings.doc;
     if (!path) return false;
     const now = readDoc(this.state.workspace, path);
     const last = this.docRevisions(path).at(-1);
     const stat = statDoc(this.state.workspace, path);
     this.docWatch = stat ? `${stat.size}:${stat.mtimeMs}` : "gone";
+    this.docWatchAt = Date.now();
     if (!now) {
       if (!last || last.deleted) return false;
       const before = this.revisionText(last.seq) ?? "";
@@ -961,6 +1554,7 @@ export class RoomEngine {
     if (baseline) this.store.append(baseline);
     const stat = statDoc(this.state.workspace, path);
     this.docWatch = stat ? `${stat.size}:${stat.mtimeMs}` : "gone";
+    this.docWatchAt = Date.now();
   }
 
   /** Between turns: pick up edits made in an editor, in the UI or in an agent's own session. */
@@ -969,9 +1563,27 @@ export class RoomEngine {
     if (!path || this.running.size > 0 || this.closed) return;
     const stat = statDoc(this.state.workspace, path);
     const key = stat ? `${stat.size}:${stat.mtimeMs}` : "gone";
-    if (key === this.docWatch) return;
+    if (key === this.docWatch) {
+      this.docWatchAt = Date.now();
+      return;
+    }
+    // Another room's turn ran in this workspace since the file was last seen: its agent may have made
+    // the change. While it runs, wait (its own room may credit it); after, the change is theirs or ours.
+    const foreign = otherRoomTurns(this.state.workspace, this.state.id, this.docWatchAt);
+    if (foreign.some((entry) => entry.endedAt === undefined)) return;
     const author = this.outsideAuthor();
+    if (foreign.length > 0) {
+      const among = [author.id, ...this.roomHandles(foreign)];
+      this.recordDoc(among.join(" or "), { among });
+      return;
+    }
     this.recordDoc(author.id, author.native ? { native: true } : {});
+  }
+
+  /** Other rooms whose turns ran here, as handles for a revision's `among`: their names, marked as rooms. */
+  private roomHandles(turns: Array<{ room: string }>): string[] {
+    const names = new Map(roomsSharingWorkspace(this.store).map((room) => [room.id, room.name]));
+    return [...new Set(turns.map((turn) => `room "${names.get(roomDirName(turn.room) ?? "") ?? turn.room}"`))];
   }
 
   /** Who changed the workspace outside a room turn: the one agent just talked to in its own session, else the human. */
@@ -997,7 +1609,8 @@ export class RoomEngine {
    * if the file moved on meanwhile, nothing is written and the current version is returned in the error.
    * Like a side conversation, an edit wakes nobody: agents see the diff in their next turn.
    */
-  writeDocument(text: string, base: string, author = this.state.human): DocRevision | null {
+  writeDocument(text: string, base: string, author?: string | Actor): DocRevision | null {
+    const actor = this.actor(author);
     const path = this.state.settings.doc;
     if (!path) throw new Error("this room has no canonical file");
     const current = readDoc(this.state.workspace, path);
@@ -1017,7 +1630,7 @@ export class RoomEngine {
     // Turns running now will see this file changed; it must not be credited to them.
     const saved = readDoc(this.state.workspace, path)?.hash;
     for (const turn of this.running.values()) turn.outsideDoc = saved;
-    return this.recordDoc(author) ? (this.docRevisions(path).at(-1) ?? null) : null;
+    return this.recordDoc(actor.by, actor.from ? { from: actor.from } : {}) ? (this.docRevisions(path).at(-1) ?? null) : null;
   }
 
   /** What changed in the canonical file since this agent last looked, as a delta block. */
@@ -1040,29 +1653,38 @@ export class RoomEngine {
     if (changes.length === 0) return null;
     const authors = new Map<string, { added: number; removed: number; native: boolean }>();
     for (const change of changes) {
-      const entry = authors.get(change.by) ?? { added: 0, removed: 0, native: false };
+      const name = change.among ? `${change.among.map((id) => this.handleName(id)).join(" or ")} (parallel turns, whose is not known)` : this.handleName(change.by);
+      const entry = authors.get(name) ?? { added: 0, removed: 0, native: false };
       entry.added += change.added;
       entry.removed += change.removed;
       entry.native ||= Boolean(change.native);
-      authors.set(change.by, entry);
+      authors.set(name, entry);
     }
     const who = [...authors.entries()]
-      .map(([by, stats]) => `${this.handleName(by)}${stats.native ? " (in its own session)" : ""} +${stats.added} −${stats.removed}`)
+      .map(([name, stats]) => `${name}${stats.native ? " (in its own session)" : ""} +${stats.added} −${stats.removed}`)
       .join(", ");
     const header = `── ${path} (the room's canonical file) changed since your last turn — ${who}`;
     if (latest.deleted) return `${header}\nThe file was deleted.`;
     const before = base >= 0 && !revisions[base]!.deleted ? this.revisionText(revisions[base]!.seq) : "";
     const after = this.revisionText(latest.seq);
     if (before === undefined || after === undefined || after === null) return `${header}\n(too large to show here — read the file)`;
-    const diff = renderDiff(before ?? "", after);
+    let diff = renderDiff(before ?? "", after);
+    if (!diff) return null;
+    // The delta stays thin: a big rewrite is pointed at, and the agent reads the file itself.
+    if (diff.length > MAX_DOC_DELTA_CHARS) {
+      const cut = diff.lastIndexOf("\n", MAX_DOC_DELTA_CHARS);
+      diff = `${diff.slice(0, cut > 0 ? cut : MAX_DOC_DELTA_CHARS)}\n… the rest of this diff is cut (${diff.length} chars in all) — read ${path} for the whole file`;
+    }
     // A longer fence than any the file is likely to contain.
-    return diff ? `${header}\n~~~~diff\n${diff}\n~~~~` : null;
+    return `${header}\n~~~~diff\n${diff}\n~~~~`;
   }
 
   private handleName(handle: string): string {
     const agent = this.state.agents.find((entry) => entry.id === handle);
     if (agent) return agent.label;
-    return handle === this.state.human ? `${handle} (human)` : handle;
+    if (handle === this.state.human) return `${handle} (human)`;
+    const guest = this.state.guests[handle];
+    return guest ? originName(guest) : handle;
   }
 
   // -------------------------------------------------------------------------
@@ -1107,7 +1729,11 @@ export class RoomEngine {
         tracker.offset = scan.offset;
         tracker.lastAgoryx = scan.lastAgoryx;
         tracker.openNative = scan.openNative;
-        if (scan.openNative || scan.exchanges.length > 0) tracker.nativeAt = Date.now();
+        if (scan.openNative || scan.exchanges.length > 0) {
+          tracker.nativeAt = Date.now();
+          // Someone talked to this session outside the room: a process that kept the session in memory no longer has all of it.
+          this.closeLive(agent.id, "the session was used outside the room");
+        }
         tracker.size = size;
         tracker.mtimeMs = mtimeMs;
         for (const exchange of scan.exchanges) this.importNative(agent, exchange);
@@ -1148,8 +1774,6 @@ export class RoomEngine {
     );
     const native = { agent: agent.id, key: exchange.key, ...(exchange.at ? { at: exchange.at } : {}) };
     const handles = [...this.state.agents.map((entry) => entry.id), this.state.human.toLowerCase()];
-    const addressesOthers = (mentions: string[]) =>
-      mentions.some((handle) => handle === "all" || (handle !== agent.id && this.state.agents.some((entry) => entry.id === handle)));
     const fresh = (kind: MessageKind): boolean => {
       const key = `${agent.id}:${exchange.key}:${half(kind)}`;
       if (this.nativeKeys!.has(key)) return false;
@@ -1157,26 +1781,34 @@ export class RoomEngine {
       return true;
     };
     let trigger: string | null = null;
+    let triggeredBy: Actor | undefined;
     let imported = false;
     if (exchange.prompt && fresh("human")) {
       const mentions = parseMentions(exchange.prompt, handles);
-      const wakes = addressesOthers(mentions);
+      const wakes = this.addressesOthers(mentions, agent);
       const message = this.postMessage({ author: this.state.human, kind: "human", text: exchange.prompt, mentions, wakes, native });
-      if (wakes) trigger ??= message.id;
+      if (wakes && !trigger) {
+        trigger = message.id;
+        triggeredBy = { by: this.state.human };
+      }
       imported = true;
     }
     if (exchange.reply && passNote(exchange.reply) === null && fresh("agent")) {
       const mentions = parseMentions(exchange.reply, handles);
-      const wakes = addressesOthers(mentions);
+      const wakes = this.addressesOthers(mentions, agent);
       const message = this.postMessage({ author: agent.id, kind: "agent", text: exchange.reply.trim(), mentions, wakes, native });
-      if (wakes) trigger ??= message.id;
+      this.readPosted(message, agent);
+      if (wakes && !trigger) {
+        trigger = message.id;
+        triggeredBy = { by: agent.id };
+      }
       imported = true;
     }
     if (!imported) return;
     this.log(`imported ${agent.id} native exchange ${exchange.key}`);
     if (trigger) {
       this.benched.clear();
-      this.ensureRun(trigger);
+      this.ensureRun(trigger, undefined, triggeredBy);
       this.requestSchedule();
     }
   }
@@ -1188,29 +1820,42 @@ export class RoomEngine {
   private postMessage(input: Omit<RoomMessage, "id"> & { kind: MessageKind }): MessageEntry {
     const id = `m${(this.state.counters.m ?? 0) + 1}`;
     this.store.append({ type: "message.posted", message: { id, ...input } });
-    return this.state.messages[this.state.messages.length - 1]!;
+    const entry = this.state.messages[this.state.messages.length - 1]!;
+    writeRoomMessage(this.ws, this.state.id, entry);
+    return entry;
+  }
+
+  /** Rooms from before .agoryx/messages/ existed, or a workspace that lost it: agents read messages from there. */
+  private writeMissingMessages(): void {
+    for (const message of this.state.messages) {
+      const target = messagePath(this.ws, this.state.id, message.id);
+      if (target && !existsSync(target)) writeRoomMessage(this.ws, this.state.id, message);
+    }
   }
 
   private postSystem(text: string, wakes: boolean, turnId?: string): MessageEntry {
     return this.postMessage({ author: "agoryx", kind: "system", text, mentions: [], wakes, ...(turnId ? { turnId } : {}) });
   }
 
-  private applyTableOp(raw: unknown, by: string, isHuman: boolean, turnId: string | undefined): TableOp {
+  private applyTableOp(raw: unknown, actor: Actor, isHuman: boolean, turnId: string | undefined): TableOp {
+    const by = actor.by;
     const prepared = prepareTableOp(this.state.table, raw, by, isHuman);
-    const op: TableOp = { ...prepared, ...(turnId ? { turnId } : {}) };
+    const op: TableOp = { ...prepared, ...(turnId ? { turnId } : {}), ...(actor.from ? { from: actor.from } : {}) };
     this.store.append({ type: "table.op", op });
     this.writeTableFile();
     if (op.op === "decide") {
       const decision = this.state.table.decisions[this.state.table.decisions.length - 1]!;
       const option = this.state.table.options.find((entry) => entry.id === decision.option);
-      const who = this.state.agents.find((agent) => agent.id === by)?.label ?? by;
+      const who = actorLabel(this.state, by);
       this.postMessage({
         author: by,
         kind: "decision",
         text: `Decision №${decision.n}: ${option?.id} «${option?.title}»${decision.note ? ` — ${decision.note}` : ""} (decided by ${who})`,
         mentions: [],
-        // A human decision is news for the agents; an agent's decision rides on its own reply.
-        wakes: isHuman,
+        // A human decision is news for the agents; an agent's decision rides on its own reply
+        // (one from another room has none here).
+        wakes: isHuman || Boolean(actor.from),
+        ...(actor.from ? { from: actor.from } : {}),
         refs: [decision.id, decision.option],
         ...(turnId ? { turnId } : {}),
       });
@@ -1233,16 +1878,24 @@ export class RoomEngine {
   }
 
   /**
-   * Which room agent wrote an inbox op. The shim signs it with the agent's id (or
-   * kind, from a hint in its environment); an unsigned op belongs to the only
-   * agent that is working right now, in a room turn or in its own session.
+   * Which room agent wrote an inbox op. The shim signs it with the agent's id, or with
+   * "kind.<cli>" when only its environment hints at which CLI wrote it. A hint names an
+   * agent only when the room has one agent of that kind; otherwise (and for an unsigned
+   * op) it is the only such agent working right now, in a room turn or in its own session.
    */
   private opAuthor(signed: string): RoomAgent | undefined {
-    const agents = this.state.agents;
-    const byId = agents.find((entry) => entry.id === signed);
-    if (byId) return byId;
-    const byKind = agents.filter((entry) => entry.kind === signed);
-    if (byKind.length === 1) return byKind[0];
+    const hint = /^kind\.(.+)$/.exec(signed)?.[1];
+    let agents = this.state.agents;
+    if (hint === undefined) {
+      const byId = agents.find((entry) => entry.id === signed);
+      if (byId) return byId;
+    }
+    // A bare kind is what shims before "kind." wrote; it is read as the hint it was.
+    const kind = hint ?? (agents.some((entry) => entry.kind === signed) ? signed : undefined);
+    if (kind !== undefined) {
+      agents = agents.filter((entry) => entry.kind === kind);
+      if (agents.length === 1) return agents[0];
+    }
     const active = () => agents.filter((entry) => this.running.has(entry.id) || this.nativeOpen(entry));
     let candidates = active();
     if (candidates.length !== 1) {
@@ -1263,33 +1916,124 @@ export class RoomEngine {
 
   /** Pull table ops agents wrote via the `agoryx table` shim and ack them. */
   ingestOps(): void {
-    drainOpsInbox(this.ws, ({ agent, raw }) => {
+    this.drainInbox(this.ws);
+    // The inbox straight under .agoryx/ is where shims before per-room directories queued ops (and
+    // where an op waits that was queued before this room first opened with them). It is this room's
+    // only when no other room lives in the workspace; otherwise nobody can tell whose an op is.
+    const legacy = workspacePaths(this.state.workspace);
+    if (!existsSync(legacy.opsDir) || !readdirSync(legacy.opsDir).some((name) => /\.jsonl(\.\d+\.\d+\.taking)?$/.test(name))) return;
+    const rooms = roomsSharingWorkspace(this.store);
+    if (rooms.length === 1) {
+      this.drainInbox(legacy);
+      return;
+    }
+    const ids = rooms.map((room) => room.id).join(", ");
+    drainOpsInbox(legacy, ({ agent, raw }) => {
+      const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
+      if (nonce) writeAck(legacy, nonce, { ok: false, error: `${rooms.length} rooms share this workspace (${ids}) — run it again with --room <id>` });
+      this.log(`rejected table op from ${agent} in the shared inbox: ${rooms.length} rooms share the workspace`);
+    });
+  }
+
+  /**
+   * Name every room of this workspace in .agoryx/rooms/<id>/room.json, those not opened since rooms got
+   * their own directories too: the agent tool sees only the workspace, and must know when to ask for --room.
+   */
+  private publishSharingRooms(): void {
+    for (const room of roomsSharingWorkspace(this.store)) {
+      const info = join(this.ws.agoryxDir, "rooms", room.id, "room.json");
+      if (existsSync(info)) continue;
+      try {
+        mkdirSync(dirname(info), { recursive: true });
+        writeFileSync(info, `${JSON.stringify(room)}\n`);
+      } catch {
+        // the agent tool falls back to what it can see
+      }
+    }
+  }
+
+  private drainInbox(inbox: WorkspacePaths): void {
+    drainOpsInbox(inbox, ({ agent, raw }) => {
       const member = this.opAuthor(agent);
       const nonce = typeof raw.nonce === "string" ? raw.nonce : undefined;
       if (!member) {
-        const ids = this.state.agents.map((entry) => entry.id).join(" or --as ");
-        if (nonce) writeAck(this.ws, nonce, { ok: false, error: `can't tell which agent wrote this — add --as ${ids}` });
+        const kind = /^kind\.(.+)$/.exec(agent)?.[1];
+        const same = this.state.agents.filter((entry) => entry.kind === kind);
+        const ids = (same.length > 1 ? same : this.state.agents).map((entry) => entry.id).join(" or --as ");
+        if (nonce) writeAck(inbox, nonce, { ok: false, error: `can't tell which agent wrote this — add --as ${ids}` });
         this.log(`rejected unsigned table op (${agent})`);
         return;
       }
       const by = member.id;
       const turnId = this.running.get(member.id)?.turnId;
+      if (raw.op === "say") {
+        this.postUpdate(inbox, member, raw, nonce, turnId);
+        return;
+      }
       // An inbox file recovered after a crash may hold ops already applied: the nonce in the log says so.
       const applied = nonce ? this.appliedOp(nonce) : undefined;
       if (applied) {
-        writeAck(this.ws, nonce!, { ok: true, id: applied.id ?? applied.op, text: `${applied.id ? `${applied.id} · ` : ""}${describeTableOp(applied, this.state.table)}` });
+        writeAck(inbox, nonce!, { ok: true, id: applied.id ?? applied.op, text: `${applied.id ? `${applied.id} · ` : ""}${describeTableOp(applied, this.state.table)}` });
         this.log(`skipped table op ${nonce} from ${agent}: already applied`);
         return;
       }
       try {
-        const op = this.applyTableOp(raw, by, false, turnId);
-        if (nonce) writeAck(this.ws, nonce, { ok: true, id: op.id ?? op.op, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, this.state.table)}` });
+        const op = this.applyTableOp(raw, { by }, false, turnId);
+        if (nonce) writeAck(inbox, nonce, { ok: true, id: op.id ?? op.op, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, this.state.table)}` });
       } catch (error) {
         const message = error instanceof TableOpError ? error.message : error instanceof Error ? error.message : String(error);
-        if (nonce) writeAck(this.ws, nonce, { ok: false, error: message });
+        if (nonce) writeAck(inbox, nonce, { ok: false, error: message });
         this.log(`rejected table op from ${agent}: ${message}`);
       }
     });
+  }
+
+  /**
+   * `agoryx say`: what an agent is doing, posted while it works. As many as it likes — not a turn, and not
+   * counted against the budget. It wakes nobody (the turn's reply does that), except an agent it @addresses
+   * that is not in a turn: a question asked mid-turn must not wait for a reply that is waiting on it. That
+   * agent starts at once, beside the one that asked. Only during a room turn: in its own session an
+   * agent's answer is read back into the room anyway.
+   */
+  private postUpdate(inbox: WorkspacePaths, member: RoomAgent, raw: Record<string, unknown>, nonce: string | undefined, turnId: string | undefined): void {
+    const ack = (result: { ok: true; id: string; text: string } | { ok: false; error: string }) => {
+      if (nonce) writeAck(inbox, nonce, result);
+    };
+    const posted = nonce ? this.state.messages.find((entry) => entry.nonce === nonce) : undefined;
+    if (posted) {
+      ack({ ok: true, id: posted.id, text: `${posted.id} · posted` });
+      return;
+    }
+    const text = typeof raw.text === "string" ? raw.text.trim() : "";
+    if (!text) {
+      ack({ ok: false, error: "'say' needs text" });
+      return;
+    }
+    if (!turnId) {
+      ack({ ok: false, error: "'say' is for while you work in a room turn — outside one, just answer here: your reply is read back into the room" });
+      this.log(`rejected update from ${member.id}: not in a room turn`);
+      return;
+    }
+    const handles = [...this.state.agents.map((entry) => entry.id), this.state.human.toLowerCase()];
+    const runId = this.state.turns.find((turn) => turn.id === turnId)?.runId;
+    const mentions = parseMentions(text, handles);
+    // Those at work read it with `read new`; only an addressed agent sitting idle needs waking.
+    const wakes = this.state.agents.some(
+      (entry) => entry.id !== member.id && (mentions.includes("all") || mentions.includes(entry.id)) && !this.running.has(entry.id),
+    );
+    const message = this.postMessage({
+      author: member.id,
+      kind: "update",
+      text,
+      mentions,
+      wakes,
+      turnId,
+      ...(runId ? { runId } : {}),
+      ...(nonce ? { nonce } : {}),
+    });
+    ack({ ok: true, id: message.id, text: `${message.id} · posted to the room` });
+    if (wakes) this.requestSchedule();
+    this.readPosted(message, member);
   }
 
   private checkpoint(run: RunState): void {
@@ -1302,7 +2046,24 @@ export class RoomEngine {
     });
     const trigger = this.state.messages.find((entry) => entry.id === run.trigger);
     const subject = `agoryx(${this.state.name}): ${trigger ? trigger.text.split("\n")[0]!.slice(0, 60) : `run ${run.id}`}`;
-    const commit = checkpointCommit(this.state.workspace, subject, lines.join("\n"));
+    // Only what the run's turns were credited with: not another room's work, not anyone's staged changes.
+    const files = [...new Set(turns.flatMap((turn) => turn.files ?? []))];
+    const expectedTrees = new Map<string, string>();
+    // The last completed credited turn supplies each file's checkpoint version.
+    const turnIds = new Set(turns.map((turn) => turn.id));
+    for (const event of this.store.events) {
+      if (event.type !== "turn.ended" || !turnIds.has(event.turnId)) continue;
+      for (const file of event.files ?? []) {
+        if (event.trees) expectedTrees.set(file, event.trees.after);
+        else expectedTrees.delete(file);
+      }
+    }
+    // Alone in the directory, and no other room's turn ran during this run: everything, as always.
+    const started = Date.parse(this.state.turns.find((turn) => turn.runId === run.id)?.startedAt ?? "") || 0;
+    const shared = roomsSharingWorkspace(this.store).length > 1 || otherRoomTurns(this.state.workspace, this.state.id, started).length > 0;
+    const commit = shared
+      ? checkpointCommit(this.state.workspace, subject, lines.join("\n"), files, expectedTrees)
+      : checkpointCommit(this.state.workspace, subject, lines.join("\n"));
     if (commit) this.store.append({ type: "commit.created", sha: commit.sha, subject, files: commit.files });
   }
 }

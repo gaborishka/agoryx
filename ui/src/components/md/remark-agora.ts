@@ -7,15 +7,19 @@
 
 type Node = { type: string; value?: string; url?: string; children?: Node[] };
 
-const PATTERN = /(^|[^\w@])@([a-z][\w-]{1,30})\b|\b([QPDNXSF]\d{1,3})\b/gi;
+// An @handle is read as the server reads it (prompts.ts MENTION: 2–32 characters), so the handle that wakes an agent is the one the page tints.
+const PATTERN = /(^|[^\w@])@([a-z][\w-]{1,31})|\b([QPDNXSF]\d{1,3})\b/gi;
 const LOCAL = "/@ws/";
 const LINKED = new Set(["link", "image", "definition"]);
 const isLocal = (url: string) => url !== "" && !/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith("#") && !url.startsWith("//");
 
-/** The local path a marked link or embed points at, or null for anything else. */
+/**
+ * The local path a marked link or embed points at, or null for anything else: a ?query or
+ * #fragment dropped (report.pdf#page=2 is report.pdf), then %-escapes decoded once.
+ */
 export const localPath = (url: string | undefined): string | null => {
   if (!url?.startsWith(LOCAL)) return null;
-  const path = url.slice(LOCAL.length);
+  const path = url.slice(LOCAL.length).replace(/[?#].*$/, "");
   try {
     return decodeURIComponent(path);
   } catch {

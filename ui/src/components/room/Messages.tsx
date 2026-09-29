@@ -4,11 +4,11 @@ import { memo, type ReactNode } from "react";
 import { Markdown } from "@/components/md/Markdown";
 import { OpCard, OpCards } from "@/components/table/OpCard";
 import { cost, isSysError, passNote, plural, secs, sysText } from "@/lib/format";
-import { participant } from "@/lib/room";
+import { ink, nameOf, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { DocRevision, MessageEntry, TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Avatar, Name, NativeBadge, NativeTag, Stats, Time } from "./bits";
+import { Avatar, Name, NativeBadge, NativeTag, Stats, Time, Tip } from "./bits";
 import { Clamp } from "./Clamp";
 import { TurnBar } from "./Trace";
 
@@ -41,7 +41,7 @@ function TurnMeta({ turn }: { turn?: TurnState }) {
 
 const railTone = { claude: "bg-claude/35", codex: "bg-codex/35", human: "bg-human/35", sys: "bg-border" } as const;
 
-const cardTone = { claude: "before:bg-claude", codex: "before:bg-codex", human: "before:bg-human", sys: "before:bg-border" } as const;
+const cardTone = { claude: "bg-claude", codex: "bg-codex", human: "bg-human", sys: "bg-border" } as const;
 
 export const AgentMessage = memo(function AgentMessage({
   m,
@@ -66,11 +66,11 @@ export const AgentMessage = memo(function AgentMessage({
     <article
       className={cn(
         "group/msg relative min-w-0",
-        card &&
-          "overflow-hidden rounded-2xl border border-border bg-card p-4 pt-5 shadow-soft before:absolute before:inset-x-0 before:top-0 before:h-[3px] sm:p-5 sm:pt-6",
-        card && cardTone[p.tone],
+        card && "overflow-hidden rounded-2xl border border-border bg-card p-4 pt-5 shadow-soft sm:p-5 sm:pt-6",
       )}
     >
+      {/* The stripe is its own element: the agent's shade must not reach other agents' colours inside the card. */}
+      {card ? <span aria-hidden className={cn("absolute inset-x-0 top-0 h-[3px]", cardTone[p.tone])} style={ink(p)} /> : null}
       <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Avatar handle={m.author} size={28} />
         <Name handle={m.author} className="text-[14.5px]" />
@@ -79,7 +79,7 @@ export const AgentMessage = memo(function AgentMessage({
         <TurnMeta turn={turn} />
       </header>
       <div className={cn("relative mt-1.5", !card && "pl-[38px]")}>
-        {!card ? <span className={cn("absolute top-1 bottom-1 left-[13px] w-[2px] rounded-full opacity-0 transition group-hover/msg:opacity-100", railTone[p.tone])} /> : null}
+        {!card ? <span className={cn("absolute top-1 bottom-1 left-[13px] w-[2px] rounded-full opacity-0 transition group-hover/msg:opacity-100", railTone[p.tone])} style={ink(p)} /> : null}
         {clamp ? <Clamp max={clamp} fade={card ? "from-card" : "from-background"}>{text}</Clamp> : text}
         <OpCards ops={ops} compact={Boolean(clamp)} />
         <TurnBar turn={turn} docs={docs} compact={Boolean(clamp)} text={m.text} />
@@ -127,7 +127,29 @@ export function PassLine({ m, turn, ops, docs }: { m: MessageEntry; turn?: TurnS
   );
 }
 
+/** What an agent said while it worked (`agoryx say`): a line in the flow, not a turn's reply. */
+export function UpdateLine({ m }: { m: MessageEntry }) {
+  return (
+    <div className="flex items-start gap-2 text-[13.5px]">
+      <Avatar handle={m.author} size={20} className="mt-0.5" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <Name handle={m.author} />
+          <Tip tip="Написано під час роботи — це ще не відповідь за хід">
+            <span className="text-xs text-muted-foreground">по ходу</span>
+          </Tip>
+          <Time iso={m.ts} />
+        </div>
+        <Markdown text={m.text} className="text-[13.5px] leading-relaxed text-muted-foreground" />
+      </div>
+    </div>
+  );
+}
+
 export function SystemLine({ m }: { m: MessageEntry }) {
+  const room = useStore((s) => s.snap?.state);
+  // A line an agent's action wrote (it is the author): say who, by the name the UI gives it.
+  const who = m.author !== "agoryx" && m.author !== room?.human ? nameOf(room, m.author) : undefined;
   const err = isSysError(m.text);
   const Icon = err ? TriangleAlertIcon : InfoIcon;
   return (
@@ -138,7 +160,7 @@ export function SystemLine({ m }: { m: MessageEntry }) {
       )}
     >
       <Icon className="mt-0.5 size-4 shrink-0" />
-      <Markdown text={sysText(m.text)} className="text-[13px] leading-relaxed" />
+      <Markdown text={sysText(m.text, who)} className="text-[13px] leading-relaxed" />
     </div>
   );
 }
@@ -185,7 +207,21 @@ export function DocLine({ r }: { r: DocRevision }) {
         <FileTextIcon className="size-3.5" />
       </span>
       <span>
-        <Name handle={r.by} /> змінює{" "}
+        {r.among ? (
+          <Tip tip="Файл змінився, поки ходи йшли паралельно, і кімната не бачить, чий це хід.">
+            <span>
+              {r.among.map((id, i) => (
+                <span key={id}>
+                  {i ? " або " : ""}
+                  <Name handle={id} />
+                </span>
+              ))}
+            </span>
+          </Tip>
+        ) : (
+          <Name handle={r.by} />
+        )}{" "}
+        змінює{" "}
         <button type="button" className="font-mono text-[12px] text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openDocRevision(r.seq)}>
           {r.path}
         </button>

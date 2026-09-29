@@ -52,6 +52,13 @@ import {
   type OutputWriter,
 } from "./cli-args.js";
 
+// `agoryx new … | head` closes the pipe while a transcript is still printing: that is the reader leaving, not a crash.
+// The room itself runs in the daemon and goes on.
+process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EPIPE") process.exit(0);
+  throw error;
+});
+
 const MODES: OrchestrationMode[] = ["manual", "round-robin", "auto", "team", "free"];
 const ROOT_COMMANDS = [
   "chat",

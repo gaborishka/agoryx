@@ -12,8 +12,11 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join, resolve, sep } from "node:path";
+import { originName } from "./actor.js";
+import { type AgentLook, agentLook } from "./look.js";
 import { applyEvent, initialState } from "./projection.js";
 import type {
+  ActorOrigin,
   EphemeralEvent,
   RoomAgent,
   RoomCreatedEvent,
@@ -35,6 +38,8 @@ export interface CreateRoomInput {
   agents: RoomAgent[];
   settings: RoomSettings;
   id?: string;
+  /** An agent opened the room from another room. */
+  createdBy?: ActorOrigin;
 }
 
 export interface RoomSummary {
@@ -44,7 +49,11 @@ export interface RoomSummary {
   createdAt: string;
   updatedAt: string;
   messages: number;
-  lastMessage?: { author: string; text: string };
+  /**
+   * `label` is the author's display name when an agent wrote it: a room list has no roster to look it up in.
+   * `look`: that agent's shade and mark, only when it shares its kind with another agent in the room.
+   */
+  lastMessage?: { author: string; text: string; label?: string; look?: AgentLook };
   running: boolean;
   /** The folder the human started the room in; absent when Agoryx made one. */
   folder?: string;
@@ -129,6 +138,7 @@ export class RoomStore {
       human: input.human,
       agents: input.agents,
       settings: input.settings,
+      ...(input.createdBy ? { createdBy: input.createdBy } : {}),
     };
     const event = { ...created, seq: 1, ts: new Date().toISOString() };
     appendFileSync(store.file, `${JSON.stringify(event)}\n`);
@@ -210,6 +220,10 @@ export class RoomStore {
   summary(): RoomSummary {
     const last = [...this.state.messages].reverse().find((message) => message.kind !== "pass" && message.kind !== "system");
     const lastEvent = this.events[this.events.length - 1]!;
+    const lastBy = last ? this.state.agents.find((agent) => agent.id === last.author) : undefined;
+    const look = lastBy ? agentLook(this.state.agents, lastBy.id) : undefined;
+    const lastGuest = last && !lastBy ? this.state.guests?.[last.author] : undefined;
+    const lastLabel = lastBy ? lastBy.label : lastGuest ? originName(lastGuest) : undefined;
     return {
       id: this.state.id,
       name: this.state.name,
@@ -217,7 +231,7 @@ export class RoomStore {
       createdAt: this.state.createdAt,
       updatedAt: lastEvent.ts,
       messages: this.state.messages.filter((message) => message.kind !== "pass").length,
-      ...(last ? { lastMessage: { author: last.author, text: last.text.slice(0, 200) } } : {}),
+      ...(last ? { lastMessage: { author: last.author, text: last.text.slice(0, 200), ...(lastLabel ? { label: lastLabel } : {}), ...(look?.mark ? { look } : {}) } } : {}),
       running: this.state.turns.some((turn) => turn.status === "running"),
       ...(this.state.worktree
         ? { folder: this.state.worktree.source, branch: this.state.worktree.branch }

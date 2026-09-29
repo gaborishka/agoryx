@@ -25,7 +25,8 @@ import { Markdown } from "@/components/md/Markdown";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { plural } from "@/lib/format";
-import { participant, refAnchor } from "@/lib/room";
+import { inkColor, participant, refAnchor } from "@/lib/room";
+import { disputeOf } from "@agora/table";
 import { type TableFormOp, useStore } from "@/lib/store";
 import type { RoomState, TableItem, TableNote, TableOption, TableQuestion, TableState } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -106,14 +107,18 @@ function argumentMap(table: TableState) {
 }
 
 /** One side objects again and again, the other never does: agreement without friction may be politeness. */
-function asymmetry(room: RoomState, edges: Edge[]) {
+function asymmetry(room: RoomState, edges: Edge[], tally: Map<string, Tally>) {
   const agents = new Set(room.agents.map((a) => a.id));
-  let best: { loud: string; quiet: string; objections: number; shifts: number } | null = null;
+  let best: { loud: string; quiet: string; objections: number; shifts: number; alone: boolean } | null = null;
   for (const x of edges) {
     if (!agents.has(x.from) || !agents.has(x.to) || x.object < 2) continue;
     const back = edges.find((y) => y.from === x.to && y.to === x.from);
     if (back?.object) continue;
-    if (!best || x.object > best.objections) best = { loud: x.from, quiet: x.to, objections: x.object, shifts: back?.shifts ?? 0 };
+    if (!best || x.object > best.objections) {
+      // "Only X argues" holds only if no other agent objects to anything; with three, a third may be arguing too.
+      const alone = room.agents.every((a) => a.id === x.from || !tally.get(a.id)?.object);
+      best = { loud: x.from, quiet: x.to, objections: x.object, shifts: back?.shifts ?? 0, alone };
+    }
   }
   return best;
 }
@@ -208,19 +213,23 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
   const driven = useStore((s) => s.snap?.driven);
   const live = table.options.filter((o) => isLive(table, o));
   const disputes = live.filter((o) => noteCounts(table, o.id).obj);
+  // A settled point or a fact someone still objects to is a dispute, not common ground.
+  const contested = [...table.settled, ...table.facts].filter((s) => disputeOf(table, s).length);
   const openQ = table.questions.filter((q) => q.status === "open");
-  const agreed = table.settled.length + table.facts.length + table.decisions.length;
+  const agreed = table.settled.length + table.facts.filter((f) => !f.withdrawn).length + table.decisions.length - contested.length;
   const shifts = shiftsOf(table).length;
   const parts: Array<[string, string]> = [];
   if (agreed) parts.push([`Зійшлися в ${plural(agreed, "пункті", "пунктах", "пунктах")}`, "text-primary"]);
-  if (disputes.length) parts.push([plural(disputes.length, "відкрита суперечка", "відкриті суперечки", "відкритих суперечок"), "text-destructive"]);
+  const quarrels = disputes.length + contested.length;
+  if (quarrels) parts.push([plural(quarrels, "відкрита суперечка", "відкриті суперечки", "відкритих суперечок"), "text-destructive"]);
   if (openQ.length) parts.push([plural(openQ.length, "питання без відповіді", "питання без відповіді", "питань без відповіді"), "text-amber"]);
   if (shifts) parts.push([plural(shifts, "зміна думки", "зміни думки", "змін думки"), "text-shift"]);
-  const settled = !disputes.length && !openQ.length && !live.length;
+  const settled = !quarrels && !openQ.length && !live.length;
   const hot = [...disputes].sort((a, b) => noteCounts(table, b.id).obj - noteCounts(table, a.id).obj || b.seq - a.seq)[0];
-  const waiting = !hot ? openQ.find((q) => !table.options.some((o) => o.q === q.id && o.status === "open")) : undefined;
+  const hotPoint = !hot ? contested.sort((a, b) => b.seq - a.seq)[0] : undefined;
+  const waiting = !hot && !hotPoint ? openQ.find((q) => !table.options.some((o) => o.q === q.id && o.status === "open")) : undefined;
   const { tally, edges } = argumentMap(table);
-  const lean = asymmetry(room, edges);
+  const lean = asymmetry(room, edges, tally);
   const order = [...room.agents.map((a) => a.id), ...[...tally.keys()].filter((k) => !room.agents.some((a) => a.id === k))];
   const people = order.filter((who) => tally.has(who));
   const name = (who: string) => participant(room, who).label;
@@ -266,6 +275,27 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
               </span>
               <ArrowRightIcon className="mt-2 size-4 shrink-0 text-destructive/60 transition group-hover:translate-x-0.5" />
             </button>
+          ) : hotPoint ? (
+            <button
+              type="button"
+              onClick={() => goToRef(hotPoint.id)}
+              className="group flex items-start gap-3 rounded-2xl border border-destructive/20 bg-destructive-soft/50 p-3 text-left transition hover:border-destructive/40"
+            >
+              <span className="grid size-8 shrink-0 place-items-center rounded-xl bg-destructive/10 text-destructive">
+                <FlameIcon className="size-4" />
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="text-[11.5px] font-semibold text-destructive">Оскаржено</span>
+                <span className="line-clamp-2 text-[14.5px] leading-snug font-semibold text-pretty">
+                  <span className="mr-1 font-mono text-[12px] text-muted-foreground">{hotPoint.id}</span>
+                  {hotPoint.text}
+                </span>
+                <span className="text-[12px] text-muted-foreground">
+                  {hotPoint.id.startsWith("F") ? "факт" : "узгодив"} {name(hotPoint.by)} · заперечує {disputeOf(table, hotPoint).map(name).join(", ")}
+                </span>
+              </span>
+              <ArrowRightIcon className="mt-2 size-4 shrink-0 text-destructive/60 transition group-hover:translate-x-0.5" />
+            </button>
           ) : waiting ? (
             <button
               type="button"
@@ -286,7 +316,7 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
             <div className="flex flex-col gap-2 rounded-2xl border border-amber/30 bg-amber-soft/70 p-3.5">
               <div className="flex items-center gap-2 text-[13px] font-semibold text-amber">
                 <ScaleIcon className="size-4" />
-                Сперечається лише {name(lean.loud)}
+                {lean.alone ? `Сперечається лише ${name(lean.loud)}` : `${name(lean.quiet)} не заперечує ${name(lean.loud)} у відповідь`}
               </div>
               <p className="text-[13px] leading-relaxed text-pretty text-foreground/85">
                 {name(lean.loud)} — {plural(lean.objections, "заперечення", "заперечення", "заперечень")} до пунктів {name(lean.quiet)}, від {name(lean.quiet)} у відповідь — жодного
@@ -466,12 +496,15 @@ function Debate({ o, table, room }: { o: TableOption; table: TableState; room: R
   const v = verdict(table, o);
   const live = isLive(table, o);
   const faded = !live && o.status !== "chosen";
+  const author = participant(room, o.by);
   return (
     <article
       id={`opt-${o.id}`}
+      // The band takes the author's shade directly: an inherited --claude/--codex would recolour everything in the card.
+      style={{ borderLeftColor: inkColor(author) }}
       className={cn(
         "flex min-w-0 scroll-mt-24 flex-col overflow-hidden rounded-2xl border border-l-[3px] border-border bg-card shadow-soft",
-        band[participant(room, o.by).tone],
+        band[author.tone],
         o.status === "chosen" && "ring-2 ring-primary/25",
         faded && "opacity-70 saturate-50",
       )}
@@ -716,9 +749,9 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                 ) : (
                   <span className="mt-1.5 size-2 shrink-0 rounded-full bg-primary/70 ring-4 ring-primary/10" />
                 )}
-                <div className="min-w-0">
+                <div className={cn("min-w-0", s.withdrawn && "opacity-60")}>
                   <Clamp max={88} more="Далі">
-                    <Markdown text={s.text} className="text-[13.5px]" />
+                    <Markdown text={s.text} className={cn("text-[13.5px]", s.withdrawn && "line-through decoration-faint")} />
                   </Clamp>
                   <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-faint">
                     {s.q ? (
@@ -726,9 +759,26 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                         відповідь на <RefChip id={s.q} />
                       </span>
                     ) : null}
-                    {s.fact ? "факт" : null}
+                    {s.fact ? (s.withdrawn ? "факт · відкликано" : "факт") : null}
                     <span>{participant(room, s.by).label}</span>
+                    {disputeOf(table, s).length ? (
+                      <span className="inline-flex items-center gap-1 font-medium text-destructive">
+                        <ShieldAlertIcon className="size-3" />
+                        заперечує {disputeOf(table, s).map((who) => participant(room, who).label).join(", ")}
+                      </span>
+                    ) : null}
                   </div>
+                  {table.notes.some((n) => n.target === s.id) ? (
+                    <div className="mt-2 flex flex-col gap-1.5">
+                      {table.notes
+                        .filter((n) => n.target === s.id)
+                        .map((n) => (
+                          <div key={n.id} className={cn("rounded-xl", n.kind === "object" ? "ring-1 ring-destructive/25" : "")}>
+                            <NoteItem n={n} />
+                          </div>
+                        ))}
+                    </div>
+                  ) : null}
                 </div>
               </li>
             ))}
@@ -791,7 +841,10 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                 </button>
                 <div className="min-w-0">
                   <Markdown text={n.text} className={cn("text-[13.5px]", n.done && "line-through decoration-faint")} />
-                  <div className="text-[11.5px] text-faint">{participant(room, n.by).label}</div>
+                  <div className="text-[11.5px] text-faint">
+                    {participant(room, n.by).label}
+                    {n.doneBy && n.doneBy !== n.by ? ` · виконано: ${participant(room, n.doneBy).label}` : ""}
+                  </div>
                 </div>
               </li>
             ))}

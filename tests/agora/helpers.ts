@@ -31,7 +31,12 @@ export interface FakeLogEntry {
   sessionId?: string;
   resumed?: boolean;
   env?: Record<string, string | undefined>;
+  /** Live mode: the pid of the (live) process and what it was started with, which no turn can change. */
+  live?: boolean;
+  pid?: number;
+  procEnv?: Record<string, string | undefined>;
   tableOutputs?: string[];
+  backgroundPid?: number;
 }
 
 export interface TestRoom {
@@ -65,10 +70,21 @@ export const createTestRoom = (options: {
   agents?: RoomAgent[];
   name?: string;
   env?: NodeJS.ProcessEnv;
+  /** The human's profile file, as the daemon passes <AGORYX_HOME>/profile.md; none when not given. */
+  profilePath?: string;
+  /** Keep the agents' CLI processes up between turns (see EngineOptions.live). */
+  live?: boolean | { idleMs?: number };
+  /** Issues the agents' keys, as the daemon does. */
+  agentKey?: (agentId: string) => string | undefined;
+  secondLook?: import("../../internal/agora/jev.js").SecondLook;
+  readMessage?: import("../../internal/agora/jev.js").ReadMessage;
+  /** false: the workspace is a folder the human brought (it exists, and is not a git repository). */
+  createdWorkspace?: boolean;
 } = {}): TestRoom => {
   const home = mkdtempSync(join(tmpdir(), "agora-test-"));
   const roomsRoot = join(home, "rooms");
   const workspace = join(home, "ws");
+  if (options.createdWorkspace === false) mkdirSync(workspace, { recursive: true });
   const { fakeClaude, fakeCodex } = writeFakeBins(home);
   const rulesPath = join(home, "rules.json");
   writeFileSync(rulesPath, JSON.stringify(options.rules ?? []));
@@ -89,7 +105,7 @@ export const createTestRoom = (options: {
   const store = RoomStore.create(roomsRoot, {
     name: options.name ?? "Test room",
     workspace,
-    createdWorkspace: true,
+    createdWorkspace: options.createdWorkspace ?? true,
     human: "Ivan",
     agents: options.agents ?? AGENTS,
     settings: { ...DEFAULT_SETTINGS, network: false, ...options.settings },
@@ -99,6 +115,11 @@ export const createTestRoom = (options: {
     runners: { claude: createClaudeRunner(fakeClaude), codex: createCodexRunner(fakeCodex) },
     shimDir,
     env,
+    ...(options.profilePath ? { profilePath: options.profilePath } : {}),
+    ...(options.live !== undefined ? { live: options.live } : {}),
+    ...(options.agentKey ? { agentKey: options.agentKey } : {}),
+    ...(options.secondLook ? { secondLook: options.secondLook } : {}),
+    ...(options.readMessage ? { readMessage: options.readMessage } : {}),
     opsPollMs: 50,
     nativePollMs: 50,
   });

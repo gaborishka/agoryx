@@ -1,4 +1,7 @@
-import type { DocRevision, MessageEntry, RoomState, TableOp, TurnState } from "./types";
+import type { CSSProperties } from "react";
+import { type AgentLook, agentLook } from "../../../internal/agora/look";
+import { names as nameList } from "./format";
+import type { ActorOrigin, DocRevision, MessageEntry, RoomAgent, RoomState, RoomSummary, TableOp, TurnState } from "./types";
 import type { OpEntry } from "./types";
 
 export type Tone = "claude" | "codex" | "human" | "sys";
@@ -9,17 +12,86 @@ export interface Participant {
   tone: Tone;
   agent: boolean;
   kind?: "claude" | "codex";
+  /** Only for an agent that shares its kind with another in the room: its own shade (0–7) of the kind's colour… */
+  shade?: number;
+  /** …and the character on its avatar ("O" for Opus next to "S" for Sonnet). */
+  mark?: string;
 }
 
-const KNOWN_LABEL: Record<string, string> = { claude: "Claude", codex: "Codex" };
+/** Who a room seats when nobody chose otherwise; the server's own default (GET /api/info `agents`) wins when known. */
+export const DEFAULT_AGENTS: RoomAgent[] = [
+  { id: "claude", kind: "claude", label: "Claude" },
+  { id: "codex", kind: "codex", label: "Codex" },
+];
 
-export const participant = (room: RoomState | undefined, handle: string): Participant => {
+/** What a handle is looked up in: a room, or just a roster (the start screen, before there is a room). */
+export type Seating = { agents: RoomAgent[]; human?: string; guests?: Record<string, ActorOrigin> };
+
+/**
+ * An agent is whoever the room's roster says it is — never a kind. "claude" or "codex" is an agent
+ * only if an agent has that id: in a room of Opus and Sonnet, "@claude" is nobody.
+ */
+export const participant = (room: Seating | undefined, handle: string): Participant => {
   const agent = room?.agents.find((a) => a.id === handle);
-  if (agent) return { id: agent.id, label: agent.label, tone: agent.kind === "codex" ? "codex" : "claude", agent: true, kind: agent.kind };
+  if (agent) {
+    const look = agentLook(room!.agents, agent.id);
+    return {
+      id: agent.id,
+      label: agent.label,
+      tone: agent.kind === "codex" ? "codex" : "claude",
+      agent: true,
+      kind: agent.kind,
+      ...(look?.mark ? { shade: look.shade, mark: look.mark } : {}),
+    };
+  }
   if (handle === "agoryx") return { id: handle, label: "Agoryx", tone: "sys", agent: false };
-  if (KNOWN_LABEL[handle]) return { id: handle, label: KNOWN_LABEL[handle]!, tone: handle === "codex" ? "codex" : "claude", agent: true, kind: handle as "claude" | "codex" };
+  // An agent of another room that acted here with its own key: named with its room, never taken for one of ours.
+  const guest = room?.guests?.[handle];
+  if (guest) return { id: handle, label: `${guest.label} (з кімнати «${guest.roomName}»)`, tone: guest.kind, agent: false, kind: guest.kind };
+  // Another room sharing the directory, named in a revision whose author is not known (room "B").
+  const other = /^room "(.+)"$/.exec(handle);
+  if (other) return { id: handle, label: `кімната «${other[1]}»`, tone: "sys", agent: false };
   return { id: handle, label: handle === room?.human ? "Ви" : handle, tone: "human", agent: false };
 };
+
+/**
+ * The inline style that turns the kind's colour into this agent's shade of it: the element's own
+ * --claude/--codex (and -soft) point at the shade, so every tone class on it — text, background,
+ * ring, border, /opacity — follows. Nothing for an agent alone of its kind: it keeps the kind's
+ * colour exactly. Put it only on the element that carries the tone (custom properties inherit).
+ */
+export const ink = (who: Pick<Participant, "kind" | "shade" | "mark"> | Pick<AgentLook, "kind" | "shade" | "mark"> | undefined): CSSProperties | undefined => {
+  if (!who?.kind || !who.mark || who.shade === undefined) return undefined;
+  return { [`--${who.kind}`]: `var(--${who.kind}-${who.shade})`, [`--${who.kind}-soft`]: `var(--${who.kind}-soft-${who.shade})` } as CSSProperties;
+};
+
+/** The agent's colour itself, for a property no tone class covers (a card's left band). */
+export const inkColor = (who: Pick<Participant, "kind" | "shade" | "mark"> | undefined): string | undefined =>
+  who?.kind && who.mark && who.shade !== undefined ? `var(--${who.kind}-${who.shade})` : undefined;
+
+/**
+ * The room list's last line after a live message: the same shape the daemon's summary gives
+ * (the author's label and, next to another of its kind, its look), so an agent's line is not
+ * put on "Ви" until the next reload.
+ */
+export const lastLine = (room: RoomState, m: Pick<MessageEntry, "author" | "text">): NonNullable<RoomSummary["lastMessage"]> => {
+  const agent = room.agents.find((a) => a.id === m.author);
+  const look = agent ? agentLook(room.agents, agent.id) : undefined;
+  return {
+    author: m.author,
+    text: m.text.slice(0, 200),
+    ...(agent ? { label: agent.label } : {}),
+    ...(look?.mark ? { look } : {}),
+  };
+};
+
+/** Whether an agent is given the human's profile — for its tooltip. Null when there is no profile to give. */
+export const profileLine = (agent: Pick<RoomAgent, "profile">, profile: { exists: boolean } | undefined): string | null =>
+  !profile?.exists
+    ? null
+    : agent.profile === false
+      ? "Ваш профіль цьому агентові вимкнено (\"profile\": false у ростері): у його промпти з нього не надходить ані слова. Прочитати сам файл своїми інструментами агент усе ж може."
+      : "Бачить ваш профіль (profile.md) — як контекст про вас, не як частину розмови.";
 
 export const nameOf = (room: RoomState | undefined, handle: string) => {
   const p = participant(room, handle);
@@ -41,7 +113,7 @@ export type FeedItem =
 
 export type FeedRow =
   | FeedItem
-  | { key: string; type: "group"; text: string; title: string; blind: boolean; items: Array<Extract<FeedItem, { type: "msg" }>> }
+  | { key: string; type: "group"; text: string; title: string; first: boolean; items: Array<Extract<FeedItem, { type: "msg" }>> }
   | { key: string; type: "hello" };
 
 export interface FeedModel {
@@ -60,7 +132,7 @@ const replyTurn = (item: FeedItem | undefined, turns: Map<string, TurnState>) =>
 
 export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   const turns = new Map(st.turns.map((t) => [t.id, t]));
-  const withMessage = new Set(st.messages.filter((m) => m.turnId).map((m) => m.turnId!));
+  const withMessage = new Set(st.messages.filter((m) => m.turnId && m.kind !== "update").map((m) => m.turnId!));
   const opsByTurn = new Map<string, TableOp[]>();
   const items: FeedItem[] = [];
   for (const entry of ops) {
@@ -94,38 +166,44 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
     const item = items[i]!;
     const first = replyTurn(item, turns);
     if (first && item.type === "msg") {
-      // Replies written at the same moment: none of them saw the others.
+      // Replies written at the same moment: each saw the others only in what they said while working.
       const group: Array<Extract<FeedItem, { type: "msg" }>> = [item];
+      // What someone said while still working does not end the moment: it goes just before the group.
+      const said: FeedItem[] = [];
       const agents = new Set([item.m.author]);
       let j = i + 1;
-      for (;;) {
-        const next = items[j];
+      for (let k = j; ; k += 1) {
+        const next = items[k];
+        if (next?.type === "msg" && next.m.kind === "update") continue;
         const t = replyTurn(next, turns);
         if (!t || next?.type !== "msg" || t.cursor >= item.m.seq || agents.has(next.m.author)) break;
         agents.add(next.m.author);
+        said.push(...items.slice(j, k));
         group.push(next);
-        j += 1;
+        j = k + 1;
       }
       if (group.length > 1 && group.some((g) => g.m.kind === "agent")) {
-        const prev = st.messages.filter((m) => m.seq < item.m.seq && m.kind !== "system").at(-1);
-        const names = group.map((g) => name(g.m.author)).join(" і ");
+        const prev = st.messages.filter((m) => m.seq < item.m.seq && m.kind !== "system" && m.kind !== "update").at(-1);
+        const names = nameList(group.map((g) => name(g.m.author)));
+        rows.push(...said);
         rows.push(
           prev?.kind === "human"
             ? {
                 key: `g-${item.m.id}`,
                 type: "group",
                 items: group,
-                blind: true,
-                text: `${names} не бачили відповідей одне одного`,
-                title: "Перша відповідь на ваше повідомлення: агенти писали одночасно й не бачили відповідей одне одного — щоб думки були незалежні.",
+                first: true,
+                text: `${names} почали одночасно з вашого повідомлення`,
+                title:
+                  "Перші відповіді на ваше повідомлення: агенти почали з того самого місця й працювали паралельно. Одне від одного бачили лише те, що з'являлося в кімнаті по ходу (agoryx say, agoryx read new).",
               }
             : {
                 key: `g-${item.m.id}`,
                 type: "group",
                 items: group,
-                blind: false,
-                text: `${names} не бачили цих відповідей одне одного`,
-                title: "Ці відповіді писалися одночасно: кожен бачив попередні репліки, але не цю відповідь іншого.",
+                first: false,
+                text: `${names} писали одночасно`,
+                title: "Ці відповіді писалися паралельно: агенти бачили все, що було раніше, а одне від одного — лише те, що з'являлося в кімнаті по ходу.",
               },
         );
         i = j - 1;
@@ -137,8 +215,8 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   const live = st.turns.filter((turn) => turn.status === "running");
   let liveDivider: string | null = null;
   if (live.length > 1) {
-    const prev = st.messages.filter((m) => m.kind !== "system").at(-1);
-    if (prev?.kind === "human") liveDivider = `${live.map((t) => name(t.agent)).join(" і ")} відповідають, не бачачи одне одного`;
+    const prev = st.messages.filter((m) => m.kind !== "system" && m.kind !== "update").at(-1);
+    if (prev?.kind === "human") liveDivider = `${nameList(live.map((t) => name(t.agent)))} працюють одночасно`;
   }
   return { turns, opsByTurn, docByTurn, rows, live, liveDivider };
 };

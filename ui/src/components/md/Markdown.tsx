@@ -5,7 +5,7 @@ import { Code2Icon, ExternalLinkIcon, FileIcon, FileXIcon, Maximize2Icon } from 
 import { type ComponentProps, memo, type ReactNode, useMemo, useState } from "react";
 import { type Components, type CustomRendererProps, defaultRemarkPlugins, Streamdown, type StreamdownTranslations } from "streamdown";
 import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, hashBlock, IMAGE_EXT, TABLE_EXT, VIDEO_EXT, VISUAL_EXT, workspaceRel } from "@/lib/format";
-import { participant, refExists, toneText } from "@/lib/room";
+import { ink, participant, refExists, toneText } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -148,7 +148,11 @@ function Mention({ handle, children }: { handle: string; children: ReactNode }) 
   const known = room && (room.agents.some((a) => a.id === handle) || handle === room.human);
   if (!known) return <>{children}</>;
   const p = participant(room, handle);
-  return <span className={cn("font-medium", toneText[p.tone])}>@{p.agent ? p.label : handle}</span>;
+  return (
+    <span className={cn("font-medium", toneText[p.tone])} style={ink(p)}>
+      @{p.agent ? p.label : handle}
+    </span>
+  );
 }
 
 function Ref({ id }: { id: string }) {

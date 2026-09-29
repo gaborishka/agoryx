@@ -3,9 +3,11 @@ import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -39,11 +41,54 @@ const git = (cwd: string, args: string[], timeout = 15_000, env?: NodeJS.Process
 export const isGitRepo = (dir: string): boolean => git(dir, ["rev-parse", "--is-inside-work-tree"])?.trim() === "true";
 
 /**
+ * A folder the human brought that is not a git repository still gets its changes tracked: Agoryx keeps its
+ * own repository for that in .agoryx/shadow.git, with the folder as its work tree. The folder itself gains no
+ * .git and nothing is ever committed there; it only lets Agoryx see what each turn changed. Once the folder
+ * becomes a repository of its own, that one is used.
+ */
+const SHADOW_GIT = "shadow.git";
+const shadowGitDir = (root: string): string => join(root, AGORYX_DIR, SHADOW_GIT);
+const shadowEnv = (root: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined => {
+  const dir = shadowGitDir(root);
+  if (!existsSync(dir) || existsSync(join(root, ".git"))) return env;
+  return { ...(env ?? process.env), GIT_DIR: dir, GIT_WORK_TREE: root };
+};
+/** A folder past this many files (a home directory…) is left untracked rather than scanned on every turn. */
+export const MAX_SHADOW_FILES = 20_000;
+const fewerFilesThan = (root: string, limit: number): boolean => {
+  let seen = 0;
+  const walk = (dir: string): boolean => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return true;
+    }
+    for (const entry of entries) {
+      if (entry.name === AGORYX_DIR || entry.name === ".git") continue;
+      if ((seen += 1) >= limit) return false;
+      if (entry.isDirectory() && !walk(join(dir, entry.name))) return false;
+    }
+    return true;
+  };
+  return walk(root);
+};
+/**
+ * How a workspace's changes are seen: its own git repository, Agoryx's shadow one (the folder has no .git, so
+ * `git status` there finds nothing), or not at all (a folder too big to scan).
+ */
+export const workspaceTracking = (root: string): "git" | "shadow" | "none" =>
+  isGitRepo(root) ? "git" : existsSync(shadowGitDir(root)) ? "shadow" : "none";
+
+/** git for seeing changes: the workspace's own repository, or Agoryx's shadow one for a folder without it. */
+const track = (root: string, args: string[], timeout = 15_000, env?: NodeJS.ProcessEnv): string | null => git(root, args, timeout, shadowEnv(root, env));
+
+/**
  * Where the workspace sits inside its repository ("" at the root, "sub/dir/" below it). A room given a
  * subdirectory of a bigger repository sees, diffs and commits only that subdirectory; git reports paths
  * from the repository root, so they are made workspace-relative with this.
  */
-const repoPrefix = (root: string): string => git(root, ["rev-parse", "--show-prefix"])?.trim() ?? "";
+const repoPrefix = (root: string): string => track(root, ["rev-parse", "--show-prefix"])?.trim() ?? "";
 
 /** A repository-relative path as a workspace-relative one; null when it lies outside the workspace. */
 const underPrefix = (prefix: string, path: string): string | null =>
@@ -52,28 +97,74 @@ const underPrefix = (prefix: string, path: string): string | null =>
 export interface WorkspacePaths {
   root: string;
   agoryxDir: string;
+  /** Where this room's own service files live: .agoryx/rooms/<room>/, or .agoryx/ itself (the layout before rooms shared a workspace). */
+  roomDir: string;
   opsDir: string;
   acksDir: string;
   tableFile: string;
+  turnsDir: string;
 }
 
-export const workspacePaths = (root: string): WorkspacePaths => {
+/** A room id as a directory name, or null when nothing safe is left of it. */
+export const roomDirName = (roomId: string): string | null => {
+  const clean = roomId.replace(/[^\w.-]/g, "");
+  return clean && !clean.startsWith(".") ? clean : null;
+};
+
+/**
+ * Rooms may share a workspace, and each numbers its turns from t1, has its own table and its own
+ * inbox; so everything but the message copies (already per room) sits under .agoryx/rooms/<room>/.
+ * Without a room id: the single-room layout older rooms and shims used, straight under .agoryx/.
+ */
+export const workspacePaths = (root: string, roomId?: string): WorkspacePaths => {
   const agoryxDir = join(root, AGORYX_DIR);
-  const opsDir = join(agoryxDir, "ops");
-  return { root, agoryxDir, opsDir, acksDir: join(opsDir, "acks"), tableFile: join(agoryxDir, "TABLE.md") };
+  const dirName = roomId === undefined ? null : roomDirName(roomId);
+  if (roomId !== undefined && !dirName) throw new Error(`'${roomId}' is not a room id`);
+  const roomDir = dirName ? join(agoryxDir, "rooms", dirName) : agoryxDir;
+  const opsDir = join(roomDir, "ops");
+  return { root, agoryxDir, roomDir, opsDir, acksDir: join(opsDir, "acks"), tableFile: join(roomDir, "TABLE.md"), turnsDir: join(roomDir, "turns") };
+};
+
+/** Where a room writes its id and name, so the agent tool can list the rooms sharing a workspace. */
+const ROOM_INFO = "room.json";
+
+/** Ids of the rooms that have opened in this workspace since rooms got their own directories. */
+export const workspaceRooms = (root: string): string[] => {
+  const dir = join(root, AGORYX_DIR, "rooms");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && existsSync(join(dir, entry.name, ROOM_INFO)))
+    .map((entry) => entry.name)
+    .sort();
 };
 
 /**
  * Make sure the workspace exists, is a git repo when Agoryx created it, and
  * keeps Agoryx's own files (.agoryx/) out of git status.
  */
-export const prepareWorkspace = (root: string, options: { initGit: boolean }): WorkspacePaths => {
+export const prepareWorkspace = (root: string, options: { initGit: boolean; room?: { id: string; name: string } }): WorkspacePaths => {
   mkdirSync(root, { recursive: true });
   if (options.initGit && !isGitRepo(root)) {
     git(root, ["init", "-q"]);
   }
-  const paths = workspacePaths(root);
+  if (!isGitRepo(root) && !existsSync(shadowGitDir(root)) && fewerFilesThan(root, MAX_SHADOW_FILES)) {
+    mkdirSync(join(root, AGORYX_DIR), { recursive: true });
+    git(root, ["init", "-q"], 15_000, { ...process.env, GIT_DIR: shadowGitDir(root), GIT_WORK_TREE: root });
+    try {
+      writeFileSync(join(shadowGitDir(root), "info", "exclude"), `/${AGORYX_DIR}/\n`);
+    } catch {
+      rmSync(shadowGitDir(root), { recursive: true, force: true }); // untracked is better than tracking Agoryx's own files
+    }
+  }
+  const paths = workspacePaths(root, options.room?.id);
   mkdirSync(paths.acksDir, { recursive: true });
+  if (options.room) {
+    try {
+      writeFileSync(join(paths.roomDir, ROOM_INFO), `${JSON.stringify({ id: options.room.id, name: options.room.name })}\n`);
+    } catch {
+      // the agent tool then cannot list this room by name; --room <id> still reaches it
+    }
+  }
   if (isGitRepo(root)) {
     const excludeRel = git(root, ["rev-parse", "--git-path", "info/exclude"])?.trim();
     if (excludeRel) {
@@ -98,7 +189,7 @@ export type ChangeSnapshot = Map<string, string>;
 
 /** Signature of every dirty/untracked file: git status code + mtime + size. */
 export const snapshotChanges = (root: string): ChangeSnapshot | null => {
-  const output = git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
+  const output = track(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
   if (output === null) return null;
   const prefix = repoPrefix(root);
   const snapshot: ChangeSnapshot = new Map();
@@ -130,6 +221,77 @@ export const diffSnapshots = (before: ChangeSnapshot | null, after: ChangeSnapsh
   return [...changed].sort();
 };
 
+// ---------------------------------------------------------------------------
+// Live turns: .agoryx/live/<room>.<turn>.json — rooms sharing a workspace (in one process
+// or in several) tell each other when their turns run, so none credits the other's work
+// ---------------------------------------------------------------------------
+
+export interface LiveTurn {
+  room: string;
+  turn: string;
+  pid: number;
+  startedAt: number;
+  /** Unset while the turn runs; a turn whose process died ends when a reader first sees it dead. */
+  endedAt?: number;
+}
+
+/** Ended markers are kept this long, so a turn still running after them can see they overlapped it. */
+const LIVE_KEEP_MS = 24 * 60 * 60 * 1000;
+
+const liveDir = (root: string): string => join(root, AGORYX_DIR, "live");
+
+const liveFile = (root: string, room: string, turn: string): string | null => {
+  const dir = roomDirName(room);
+  return dir && TURN_ID.test(turn) ? join(liveDir(root), `${dir}.${turn}.json`) : null;
+};
+
+export const markTurnLive = (root: string, entry: LiveTurn): void => {
+  const target = liveFile(root, entry.room, entry.turn);
+  if (!target) return;
+  const partial = `${target}.${randomBytes(4).toString("hex")}.tmp`;
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(partial, JSON.stringify(entry));
+    renameSync(partial, target);
+  } catch {
+    rmSync(partial, { force: true });
+  }
+};
+
+/**
+ * Turns of rooms other than `room` that ran at some point since `since` (ms): still running, ended
+ * after it, or left running by a process that died after it. Old ended markers are swept on the way.
+ */
+export const otherRoomTurns = (root: string, room: string, since: number, now = Date.now()): LiveTurn[] => {
+  const dir = liveDir(root);
+  if (!existsSync(dir)) return [];
+  const own = roomDirName(room);
+  const found: LiveTurn[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    const full = join(dir, name);
+    let entry: LiveTurn;
+    try {
+      entry = JSON.parse(readFileSync(full, "utf8")) as LiveTurn;
+    } catch {
+      continue;
+    }
+    if (typeof entry?.room !== "string" || typeof entry.startedAt !== "number") continue;
+    // Its process died mid-turn at some unknown moment: it ends now, when that is first seen (and stays so).
+    if (entry.endedAt === undefined && !processAlive(entry.pid)) {
+      entry = { ...entry, endedAt: now };
+      markTurnLive(root, entry);
+    }
+    if (entry.endedAt !== undefined && now - entry.endedAt > LIVE_KEEP_MS) {
+      rmSync(full, { force: true });
+      continue;
+    }
+    if (roomDirName(entry.room) === own) continue;
+    if (entry.endedAt === undefined || entry.endedAt >= since) found.push(entry);
+  }
+  return found;
+};
+
 /** Past this many dirty files (a fresh `npm install` without .gitignore…) turns are not snapshotted as trees. */
 export const MAX_TREE_SNAPSHOT_DIRTY = 3000;
 
@@ -140,15 +302,15 @@ export const MAX_TREE_SNAPSHOT_DIRTY = 3000;
  * what the turn changed.
  */
 export const snapshotTree = (root: string): string | null => {
-  const indexRel = git(root, ["rev-parse", "--git-path", "index"])?.trim();
+  const indexRel = track(root, ["rev-parse", "--git-path", "index"])?.trim();
   if (!indexRel) return null;
   const index = isAbsolute(indexRel) ? indexRel : join(root, indexRel);
   const scratch = join(tmpdir(), `agoryx-index-${process.pid}-${randomBytes(4).toString("hex")}`);
   try {
     if (existsSync(index)) copyFileSync(index, scratch);
     const env = { ...process.env, GIT_INDEX_FILE: scratch };
-    if (git(root, ["add", "-A", "--", "."], 30_000, env) === null) return null;
-    return git(root, ["write-tree"], 15_000, env)?.trim() || null;
+    if (track(root, ["add", "-A", "--", "."], 30_000, env) === null) return null;
+    return track(root, ["write-tree"], 15_000, env)?.trim() || null;
   } catch {
     return null;
   } finally {
@@ -179,8 +341,8 @@ export const treeChanges = (
   const specs = files.map((file) => `:(top,literal)${prefix}${file}`);
   // --relative: paths in the counts and the patch are the workspace's, like everywhere else in the room.
   const base = ["-c", "core.quotepath=off", "diff", "--no-renames", "--no-ext-diff", "--no-color", "--relative", before, after];
-  const numstat = git(root, [...base, "--numstat", "-z", "--", ...specs]);
-  const names = git(root, [...base, "--name-status", "-z", "--", ...specs]);
+  const numstat = track(root, [...base, "--numstat", "-z", "--", ...specs]);
+  const names = track(root, [...base, "--name-status", "-z", "--", ...specs]);
   if (numstat === null || names === null) return null;
   const statusOf = new Map<string, string>();
   const nameParts = names.split("\0");
@@ -197,7 +359,7 @@ export const treeChanges = (
       removed: match[2] === "-" ? null : Number(match[2]),
     });
   }
-  let patch = git(root, [...base, "-U3", "--", ...specs], 30_000) ?? "";
+  let patch = track(root, [...base, "-U3", "--", ...specs], 30_000) ?? "";
   const truncated = patch.length > MAX_TURN_PATCH;
   if (truncated) patch = `${patch.slice(0, MAX_TURN_PATCH)}\n${CUT_MARK} (${patch.length - MAX_TURN_PATCH} more chars): git diff ${before.slice(0, 12)} ${after.slice(0, 12)}\n`;
   return { changes, patch, truncated };
@@ -209,7 +371,7 @@ export const treeChanges = (
  */
 export const treeChangedPaths = (root: string, before: string, after: string): string[] | null => {
   if (before === after) return [];
-  const output = git(root, ["-c", "core.quotepath=off", "diff", "--no-renames", "--relative", "--name-only", "-z", before, after, "--", "."]);
+  const output = track(root, ["-c", "core.quotepath=off", "diff", "--no-renames", "--relative", "--name-only", "-z", before, after, "--", "."]);
   if (output === null) return null;
   return output.split("\0").filter((path) => path && !path.startsWith(`${AGORYX_DIR}/`));
 };
@@ -222,7 +384,7 @@ export const treeChangedPaths = (root: string, before: string, after: string): s
 const TURN_ID = /^t\d{1,9}$/;
 
 export const turnPatchPath = (paths: WorkspacePaths, turnId: string): string | null =>
-  TURN_ID.test(turnId) ? join(paths.agoryxDir, "turns", `${turnId}.patch`) : null;
+  TURN_ID.test(turnId) ? join(paths.turnsDir, `${turnId}.patch`) : null;
 
 /** "+12 −3", or "(binary)". */
 export const changeStats = (change: FileChange): string =>
@@ -242,7 +404,10 @@ export const writeTurnPatch = (
   if (!target) return;
   const header = [
     `# ${turn.id} · ${turn.author} · ${turn.ts.slice(0, 16).replace("T", " ")} UTC`,
-    ...changes.map((change) => `#   ${change.path}  ${changeStats(change)}${change.status === "A" ? " (new)" : change.status === "D" ? " (deleted)" : ""}`),
+    ...changes.map(
+      (change) =>
+        `#   ${change.path}  ${changeStats(change)}${change.status === "A" ? " (new)" : change.status === "D" ? " (deleted)" : ""}${change.with?.length ? ` (also edited by ${change.with.join(", ")} meanwhile)` : ""}`,
+    ),
     "#",
   ];
   try {
@@ -253,22 +418,73 @@ export const writeTurnPatch = (
   }
 };
 
+const MESSAGE_ID = /^m\d{1,9}$/;
+
+/**
+ * Every room message, in full, at .agoryx/messages/<room>/<id>.md: the room log lives
+ * outside the workspace, where an agent's sandbox cannot see it, so this copy is
+ * what `agoryx read m12` prints when the delta gave only part of a message.
+ * Per room, because rooms may share a workspace and every room has its own m1.
+ */
+export const messagePath = (paths: WorkspacePaths, roomId: string, messageId: string): string | null => {
+  const room = roomId.replace(/[^\w.-]/g, "");
+  return MESSAGE_ID.test(messageId) && room && !room.startsWith(".") ? join(paths.agoryxDir, "messages", room, `${messageId}.md`) : null;
+};
+
+export const writeRoomMessage = (
+  paths: WorkspacePaths,
+  roomId: string,
+  message: { id: string; author: string; ts: string; text: string; turnId?: string },
+): void => {
+  const target = messagePath(paths, roomId, message.id);
+  if (!target) return;
+  const turn = message.turnId ? ` · turn ${message.turnId}` : "";
+  const partial = `${target}.${randomBytes(4).toString("hex")}.tmp`;
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    // Written aside and renamed in: a reader never sees half a message.
+    writeFileSync(partial, `# ${message.id} · ${message.author} · ${message.ts.slice(0, 16).replace("T", " ")} UTC${turn}\n\n${message.text}\n`);
+    renameSync(partial, target);
+  } catch {
+    rmSync(partial, { force: true });
+    // the message is still in the event log; only the agents' copy is lost
+  }
+};
+
 /** The patch without its header; regenerated from the turn's trees when the file is gone. */
 export const readTurnPatch = (
   paths: WorkspacePaths,
   turnId: string,
-  fallback?: { trees?: { before: string; after: string }; files: string[] },
+  fallback?: { trees?: { before: string; after: string }; files: string[]; author?: string; endedAt?: string; ownsLegacy?: () => boolean },
 ): { patch: string; truncated: boolean } | null => {
   const target = turnPatchPath(paths, turnId);
   if (!target) return null;
-  if (existsSync(target)) {
-    const text = readFileSync(target, "utf8");
+  const fromFile = (file: string) => {
+    const text = readFileSync(file, "utf8");
     const patch = text.replace(/^(#[^\n]*\n)+/, "");
-    return { patch, truncated: patch.includes(CUT_MARK) };
+    return { header: text.split("\n", 1)[0]!, patch, truncated: patch.includes(CUT_MARK) };
+  };
+  if (existsSync(target)) {
+    const { patch, truncated } = fromFile(target);
+    return { patch, truncated };
   }
-  if (!fallback?.trees || fallback.files.length === 0) return null;
-  const diff = treeChanges(paths.root, fallback.trees.before, fallback.trees.after, fallback.files);
-  return diff ? { patch: diff.patch, truncated: diff.truncated } : null;
+  if (fallback?.trees && fallback.files.length > 0) {
+    const diff = treeChanges(paths.root, fallback.trees.before, fallback.trees.after, fallback.files);
+    if (diff) return { patch: diff.patch, truncated: diff.truncated };
+  }
+  // A turn from before rooms had their own directories: its patch sits in .agoryx/turns/, where another
+  // room sharing the workspace may have written a turn of the same number, by the same agent, in the same
+  // minute. So it is taken only by a room that alone ever had this workspace (the caller knows the rooms),
+  // and only when its header names this turn's author and the minute it ended.
+  const legacy = turnPatchPath(workspacePaths(paths.root), turnId)!;
+  if (legacy !== target && fallback?.author && fallback.ownsLegacy && existsSync(legacy) && fallback.ownsLegacy()) {
+    const { header, patch, truncated } = fromFile(legacy);
+    const match = /^# (t\d+) · (.*) · (\d{4}-\d\d-\d\d \d\d:\d\d) UTC$/.exec(header);
+    const written = match ? Date.parse(`${match[3]!.replace(" ", "T")}:00Z`) : NaN;
+    const near = !fallback.endedAt || Math.abs(written - Date.parse(fallback.endedAt)) <= 2 * 60_000;
+    if (match?.[1] === turnId && match[2] === fallback.author && near) return { patch, truncated };
+  }
+  return null;
 };
 
 /** One file's `diff --git` section of a patch; null when the patch does not touch it. */
@@ -282,7 +498,7 @@ export const patchSection = (patch: string, path: string): string | null => {
   );
 };
 
-export const checkpointCommit = (root: string, subject: string, body: string): { sha: string; files: number } | null => {
+const commitAll = (root: string, subject: string, body: string): { sha: string; files: number } | null => {
   if (!isGitRepo(root)) return null;
   // Only the workspace: a room in a subdirectory never stages or commits the rest of the repository.
   const status = git(root, ["status", "--porcelain", "--", "."]);
@@ -311,12 +527,85 @@ export const checkpointCommit = (root: string, subject: string, body: string): {
   return sha ? { sha, files: staged.length } : null;
 };
 
+/**
+ * The run's checkpoint. A room alone in its directory commits all of it, as it always has. Given `files`
+ * (the room shares the directory), only those credited paths go in, and nobody's staged change is taken.
+ */
+export const checkpointCommit = (root: string, subject: string, body: string, files?: string[], expectedTrees?: ReadonlyMap<string, string>): { sha: string; files: number } | null => {
+  if (!files) return commitAll(root, subject, body);
+  if (!files.length || !isGitRepo(root)) return null;
+  const indexRel = git(root, ["rev-parse", "--git-path", "index"])?.trim();
+  if (!indexRel) return null;
+  const index = resolve(root, indexRel);
+  const lock = `${index}.lock`;
+  const scratch = join(tmpdir(), `agoryx-commit-${process.pid}-${randomBytes(8).toString("hex")}`);
+  const preserved = `${scratch}-preserved`;
+  let locked = false;
+  try {
+    // Also serializes checkpoints from separate daemons. On contention skip this checkpoint.
+    closeSync(openSync(lock, "wx"));
+    locked = true;
+    const head = git(root, ["rev-parse", "--verify", "HEAD"])?.trim();
+    const prefix = repoPrefix(root);
+    const staged = git(root, ["diff", "--cached", "--name-only", "--no-renames", "-z"]);
+    if (staged === null) return null;
+    const occupied = new Set(staged.split("\0"));
+    const paths = [...new Set(files)].filter((file) =>
+      file && !isAbsolute(file) && !file.split("/").some((part) => part === ".." || part === ".git" || part === AGORYX_DIR) &&
+      !occupied.has(`${prefix}${file}`),
+    );
+    if (!paths.length) return null;
+    let specs = paths.map((file) => `:(top,literal)${prefix}${file}`);
+    const env = { ...process.env, GIT_INDEX_FILE: scratch };
+    if (git(root, ["read-tree", head ?? "--empty"], 15_000, env) === null) return null;
+    if (git(root, ["add", "-A", "--", ...specs], 30_000, env) === null) return null;
+    if (expectedTrees) {
+      // Stage first, then compare that frozen content with the latest credited turn. A later
+      // writer may have changed an allowed file; do not put their version into this room's commit.
+      const rejected = paths.filter((file) => {
+        const expected = expectedTrees.get(file);
+        return !expected || git(root, ["diff", "--cached", "--quiet", expected, "--", `:(top,literal)${prefix}${file}`], 15_000, env) === null;
+      });
+      if (rejected.length) {
+        const rejectedSpecs = rejected.map((file) => `:(top,literal)${prefix}${file}`);
+        const args = head ? ["reset", "-q", head, "--", ...rejectedSpecs] : ["rm", "-r", "-f", "--cached", "--ignore-unmatch", "--", ...rejectedSpecs];
+        if (git(root, args, 15_000, env) === null) return null;
+        specs = paths.filter((file) => !rejected.includes(file)).map((file) => `:(top,literal)${prefix}${file}`);
+      }
+      if (!specs.length) return null;
+    }
+    const changed = git(root, ["diff", "--cached", "--name-only", "-z"], 15_000, env)?.split("\0").filter(Boolean);
+    if (!changed?.length) return null;
+    const tree = git(root, ["write-tree"], 15_000, env)?.trim();
+    if (!tree) return null;
+    const sha = git(root, ["-c", "user.name=Agoryx", "-c", "user.email=agoryx@localhost", "-c", "commit.gpgsign=false",
+      "commit-tree", tree, ...(head ? ["-p", head] : []), "-m", subject, ...(body ? ["-m", body] : [])], 15_000, env)?.trim();
+    if (!sha) return null;
+    // Prepare the real index's update before moving HEAD. Only the selected, previously unstaged
+    // entries change; all foreign staged blobs (including partial staging) remain intact.
+    if (existsSync(index)) copyFileSync(index, preserved);
+    const keptEnv = { ...process.env, GIT_INDEX_FILE: preserved };
+    if (git(root, ["reset", "-q", sha, "--", ...specs], 15_000, keptEnv) === null) return null;
+    copyFileSync(preserved, lock);
+    // Compare-and-swap: another writer moving HEAD cannot make us overwrite its commit.
+    if (git(root, ["update-ref", "-m", subject, "HEAD", sha, head ?? "0".repeat(sha.length)]) === null) return null;
+    renameSync(lock, index);
+    locked = false;
+    return { sha, files: changed.length };
+  } catch {
+    return null;
+  } finally {
+    if (locked) rmSync(lock, { force: true });
+    for (const path of [scratch, preserved, `${scratch}.lock`, `${preserved}.lock`]) rmSync(path, { force: true });
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Files (for previews in the UI)
 // ---------------------------------------------------------------------------
 
 export const listWorkspaceFiles = (root: string, limit = 2000): string[] => {
-  const fromGit = git(root, ["ls-files", "-co", "--exclude-standard"]);
+  const fromGit = track(root, ["ls-files", "-co", "--exclude-standard"]);
   if (fromGit !== null) {
     return fromGit
       .split("\n")

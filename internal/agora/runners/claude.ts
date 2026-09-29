@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { classifyFailure, lastLines, runJsonlProcess } from "./process.js";
+import { classifyFailure, lastLines, runJsonlProcess, spawnJsonlChild, type JsonlChild } from "./process.js";
 import {
+  fingerprintOf,
   shellQuote,
   truncate,
   type AgentRunner,
+  type LiveProcess,
   type TurnCallbacks,
   type TurnRequest,
   type TurnResult,
@@ -12,33 +14,41 @@ import type { Activity, ActivityKind, TurnUsage } from "../types.js";
 
 type Json = Record<string, unknown>;
 
+/** After its `result`, how long a Claude process gets to exit by itself before its group is taken down. */
+const CLAUDE_EXIT_GRACE_MS = 1500;
+
 const asObject = (value: unknown): Json | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Json) : undefined;
 
 const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
 
 /**
- * Claude Code runs sandboxed: file edits inside the workspace are accepted,
- * Bash runs inside Claude Code's own sandbox (auto-allowed there), and the
- * web tools stay available. No permission bypass.
+ * Claude Code runs as it does in the human's own terminal: their settings, their permission mode
+ * (e.g. auto), no sandbox of Agoryx's own. Agoryx adds restrictions only when the human sets them
+ * for the room: read-only access or network off put Claude in its sandbox (Bash auto-allowed
+ * there), with edits accepted or denied. No permission bypass either way.
  *
- * Two narrow additions keep the room's own tools working in -p mode, where
- * nobody can answer an approval prompt: the table/diff shim is allowed by
- * name (Claude Code otherwise refuses commands it cannot statically analyse,
- * e.g. an evidence note quoting `===`), and when the room has network on,
- * sandboxed Bash gets it too — the same as Codex's network_access.
+ * The room's shim (table, diff, read, say) is allowed by name, so the room's own tools work in -p
+ * mode whatever the permission mode (Claude Code otherwise refuses commands it cannot statically
+ * analyse, e.g. an evidence note quoting `===`).
  */
+export const restrictedRoom = (settings: TurnRequest["settings"]): boolean => settings.access === "readonly" || !settings.network;
+
 export const buildClaudeSettings = (request: Pick<TurnRequest, "settings"> & { env?: NodeJS.ProcessEnv }): Json => {
   const readonly = request.settings.access === "readonly";
   const shim = request.env?.AGORYX_CLI;
-  const tools = ["agoryx", ...(shim ? [shim] : [])].flatMap((cli) => [`Bash(${cli} table *)`, `Bash(${cli} diff *)`]);
+  const tools = ["agoryx", ...(shim ? [shim] : [])].flatMap((cli) => ["table", "diff", "read", "say"].map((verb) => `Bash(${cli} ${verb} *)`));
   return {
-    sandbox: {
-      enabled: true,
-      autoAllowBashIfSandboxed: true,
-      allowUnsandboxedCommands: false,
-      ...(request.settings.network ? { network: { allowedDomains: ["*"] } } : {}),
-    },
+    ...(restrictedRoom(request.settings)
+      ? {
+          sandbox: {
+            enabled: true,
+            autoAllowBashIfSandboxed: true,
+            allowUnsandboxedCommands: false,
+            ...(request.settings.network ? { network: { allowedDomains: ["*"] } } : {}),
+          },
+        }
+      : {}),
     permissions: {
       allow: tools,
       ...(readonly ? { deny: ["Edit", "Write", "MultiEdit", "NotebookEdit"] } : {}),
@@ -53,8 +63,7 @@ export const buildClaudeArgs = (request: TurnRequest, sessionId: string, fresh: 
     "stream-json",
     "--verbose",
     "--include-partial-messages",
-    "--permission-mode",
-    request.settings.access === "readonly" ? "default" : "acceptEdits",
+    ...(restrictedRoom(request.settings) ? ["--permission-mode", request.settings.access === "readonly" ? "default" : "acceptEdits"] : []),
     "--settings",
     JSON.stringify(buildClaudeSettings(request)),
     "--allowedTools",
@@ -62,6 +71,7 @@ export const buildClaudeArgs = (request: TurnRequest, sessionId: string, fresh: 
     "WebFetch",
   ];
   if (request.model) args.push("--model", request.model);
+  if (request.effort) args.push("--effort", request.effort);
   if (fresh) args.push("--session-id", sessionId, "--name", `agoryx · ${request.roomName}`);
   else args.push("--resume", sessionId);
   return args;
@@ -93,7 +103,7 @@ const TOOL_KINDS: Record<string, ActivityKind> = {
   TodoWrite: "note",
 };
 
-export const describeClaudeTool = (name: string, input: Json | undefined): { kind: ActivityKind; label: string; detail?: string } => {
+export const describeClaudeTool = (name: string, input: Json | undefined): { kind: ActivityKind; label: string; detail?: string; command?: string } => {
   const kind = TOOL_KINDS[name] ?? "tool";
   const pick = (...keys: string[]) => {
     for (const key of keys) {
@@ -103,8 +113,10 @@ export const describeClaudeTool = (name: string, input: Json | undefined): { kin
     return undefined;
   };
   switch (kind) {
-    case "command":
-      return { kind, label: truncate(pick("command", "bash_id", "shell_id") ?? name, 800), detail: pick("description") };
+    case "command": {
+      const command = pick("command");
+      return { kind, label: truncate(command ?? pick("bash_id", "shell_id") ?? name, 800), detail: pick("description"), ...(command ? { command } : {}) };
+    }
     case "edit":
     case "read":
       return { kind, label: pick("file_path", "notebook_path", "path") ?? name };
@@ -134,25 +146,333 @@ const toolResultText = (content: unknown): string => {
   return "";
 };
 
+/**
+ * What Claude prints for one turn, folded into what the room needs. Shared by the process-per-turn run and
+ * the live process, which sees the same events one turn after another on a single stream.
+ */
+class ClaudeTurn {
+  finalText: string | undefined;
+  lastAssistantText = "";
+  resultError = false;
+  resultSubtype = "";
+  usage: TurnUsage | undefined;
+  /** `total_cost_usd` of the result, cumulative for the process. */
+  totalCost: number | undefined;
+  finished = false;
+  private readonly pendingTools = new Map<string, Activity>();
+
+  constructor(
+    private readonly callbacks: TurnCallbacks,
+    public confirmedSession: string | null,
+    /** Cost the process had already run up before this turn. */
+    private readonly costBase = 0,
+    /** Denials already shown (a live process may repeat earlier ones in a later result). */
+    private readonly shownDenials?: Set<string>,
+  ) {}
+
+  handle(event: Json): void {
+    const callbacks = this.callbacks;
+    const type = str(event.type);
+    const sid = str(event.session_id);
+    if (sid && sid !== this.confirmedSession) {
+      this.confirmedSession = sid;
+      callbacks.onSession(sid);
+    }
+    if (type === "stream_event") {
+      const inner = asObject(event.event);
+      if (inner?.type === "message_start") callbacks.onText("", true);
+      const delta = asObject(inner?.delta);
+      if (inner?.type === "content_block_delta" && delta?.type === "text_delta") {
+        const text = str(delta.text);
+        if (text) callbacks.onText(text);
+      }
+      return;
+    }
+    if (type === "assistant") {
+      const message = asObject(event.message);
+      const content = Array.isArray(message?.content) ? (message!.content as Json[]) : [];
+      for (const block of content) {
+        if (block.type === "tool_use") {
+          const id = str(block.id) ?? randomUUID();
+          const described = describeClaudeTool(str(block.name) ?? "tool", asObject(block.input));
+          const activity: Activity = { id, ...described, status: "running" };
+          this.pendingTools.set(id, activity);
+          callbacks.onActivity(activity);
+        } else if (block.type === "text") {
+          const text = str(block.text);
+          if (text?.trim()) this.lastAssistantText = text;
+        }
+      }
+      return;
+    }
+    if (type === "user") {
+      const message = asObject(event.message);
+      const content = Array.isArray(message?.content) ? (message!.content as Json[]) : [];
+      for (const block of content) {
+        if (block.type !== "tool_result") continue;
+        const id = str(block.tool_use_id);
+        const pending = id ? this.pendingTools.get(id) : undefined;
+        if (!pending) continue;
+        const failed = block.is_error === true;
+        const output = toolResultText(block.content);
+        callbacks.onActivity({
+          ...pending,
+          status: failed ? "fail" : "ok",
+          ...(failed && output ? { detail: truncate(output, 240) } : {}),
+        });
+        this.pendingTools.delete(id!);
+      }
+      return;
+    }
+    if (type === "result") {
+      this.finished = true;
+      this.resultSubtype = str(event.subtype) ?? "";
+      this.resultError = event.is_error === true;
+      const text = str(event.result);
+      if (text !== undefined) this.finalText = text;
+      const rawUsage = asObject(event.usage);
+      if (rawUsage) {
+        this.usage = {
+          inputTokens:
+            Number(rawUsage.input_tokens ?? 0) +
+            Number(rawUsage.cache_creation_input_tokens ?? 0) +
+            Number(rawUsage.cache_read_input_tokens ?? 0),
+          outputTokens: Number(rawUsage.output_tokens ?? 0),
+          cachedTokens: Number(rawUsage.cache_read_input_tokens ?? 0),
+        };
+      }
+      if (typeof event.total_cost_usd === "number") {
+        this.totalCost = event.total_cost_usd;
+        this.usage = { ...this.usage, costUsd: Math.max(0, event.total_cost_usd - this.costBase) };
+      }
+      const denials = Array.isArray(event.permission_denials) ? (event.permission_denials as Json[]) : [];
+      denials.forEach((denial, index) => {
+        const described = describeClaudeTool(str(denial.tool_name) ?? "tool", asObject(denial.tool_input));
+        const id = `denied-${index}-${str(denial.tool_use_id) ?? ""}`;
+        const uid = str(denial.tool_use_id);
+        if (this.shownDenials && uid) {
+          if (this.shownDenials.has(uid)) return;
+          this.shownDenials.add(uid);
+        }
+        callbacks.onActivity({
+          id,
+          kind: "denied",
+          label: `${str(denial.tool_name) ?? "tool"}: ${described.label}`,
+          status: "fail",
+        });
+      });
+    }
+  }
+}
+
+/** What an ended turn is, given how the process ended (the same rules for a turn of its own and a live one). */
+const claudeOutcome = (
+  turn: ClaudeTurn,
+  fallbackSession: string,
+  outcome: { stderr: string; code: number | null },
+): TurnResult => {
+  const { finalText, resultError } = turn;
+  if (finalText !== undefined && !resultError) {
+    return { status: "ok", text: finalText, sessionId: turn.confirmedSession ?? fallbackSession, ...(turn.usage ? { usage: turn.usage } : {}) };
+  }
+  const detail = [finalText, lastLines(outcome.stderr)].filter(Boolean).join("\n") || `exit ${outcome.code} ${turn.resultSubtype}`;
+  const kind = classifyFailure(detail);
+  return {
+    status: "error",
+    text: "",
+    sessionId: kind === "session" ? null : turn.confirmedSession,
+    error: { kind, message: truncate(detail, 600) },
+    ...(turn.usage ? { usage: turn.usage } : {}),
+  };
+};
+
+/** The flags of a live process: the same as a turn's, but the prompts arrive as user messages on stdin. */
+const buildClaudeLiveArgs = (request: TurnRequest, sessionId: string, fresh: boolean): string[] => [
+  ...buildClaudeArgs(request, sessionId, fresh),
+  "--input-format",
+  "stream-json",
+  // The CLI echoes each user message when it starts on it: how a turn knows its events from a stray one's.
+  "--replay-user-messages",
+];
+
+/**
+ * One `claude -p --input-format stream-json` process that lives across the turns of one agent: each turn is
+ * a user message on its stdin, and the `result` that follows the CLI's echo of that message ends it. Events
+ * outside a turn (a background task waking the model) are ignored.
+ */
+class ClaudeLiveProcess implements LiveProcess {
+  sessionId: string | null;
+  private readonly child: JsonlChild;
+  private current: {
+    uuid: string;
+    echoed: boolean;
+    turn: ClaudeTurn;
+    callbacks: TurnCallbacks;
+    aborted: boolean;
+    timedOut: boolean;
+    timeoutMinutes: number;
+    finish: (result: TurnResult) => void;
+  } | null = null;
+  private totalCost = 0;
+  private readonly denials = new Set<string>();
+  private closed = false;
+
+  constructor(
+    bin: string,
+    request: TurnRequest,
+    readonly fingerprint: string,
+  ) {
+    const fresh = !request.sessionId;
+    const sid = request.sessionId ?? randomUUID();
+    this.sessionId = fresh ? null : sid;
+    this.child = spawnJsonlChild({
+      bin,
+      args: buildClaudeLiveArgs(request, sid, fresh),
+      cwd: request.cwd,
+      env: buildClaudeEnv(request.env),
+      onJson: (event) => this.onEvent(event),
+    });
+    void this.child.whenExited.then((exit) => this.onExit(exit));
+  }
+
+  get alive(): boolean {
+    return !this.closed && !this.child.exited;
+  }
+
+  private onEvent(event: Json): void {
+    const cur = this.current;
+    if (!cur) return;
+    if (!cur.echoed) {
+      const sid = str(event.session_id);
+      if (sid && sid !== this.sessionId) {
+        this.sessionId = sid;
+        cur.turn.confirmedSession = sid;
+        cur.callbacks.onSession(sid);
+      }
+      if (event.type === "user" && event.uuid === cur.uuid) cur.echoed = true;
+      return;
+    }
+    cur.turn.handle(event);
+    this.sessionId = cur.turn.confirmedSession ?? this.sessionId;
+    if (event.type === "result") {
+      if (cur.turn.totalCost !== undefined) this.totalCost = cur.turn.totalCost;
+      cur.finish(claudeOutcome(cur.turn, this.sessionId ?? "", { stderr: this.child.stderr(), code: null }));
+    }
+  }
+
+  private onExit(exit: { code: number | null; spawnError?: Error }): void {
+    this.closed = true;
+    const cur = this.current;
+    if (!cur) return;
+    const { turn } = cur;
+    if (cur.aborted) {
+      cur.finish({ status: "interrupted", text: turn.lastAssistantText, sessionId: this.sessionId });
+      return;
+    }
+    if (exit.spawnError) {
+      cur.finish({
+        status: "error",
+        text: "",
+        sessionId: null,
+        error: { kind: "spawn", message: `could not start claude: ${exit.spawnError.message}` },
+        liveUnavailable: true,
+      });
+      return;
+    }
+    if (cur.timedOut) {
+      cur.finish({
+        status: "error",
+        text: turn.lastAssistantText,
+        sessionId: this.sessionId,
+        error: { kind: "timeout", message: `turn exceeded ${cur.timeoutMinutes} min` },
+      });
+      return;
+    }
+    const failed = claudeOutcome(turn, this.sessionId ?? "", { stderr: this.child.stderr(), code: exit.code });
+    // Dead before it took the message: nothing ran, so the turn can be run again without this process.
+    // (A session the CLI could not find is a real answer: the engine rejoins with a fresh one.)
+    const unstarted = !cur.echoed && failed.error?.kind !== "session";
+    cur.finish(failed.status === "ok" ? failed : { ...failed, ...(unstarted ? { liveUnavailable: true } : {}) });
+  }
+
+  runTurn(request: TurnRequest, callbacks: TurnCallbacks): Promise<TurnResult> {
+    return new Promise<TurnResult>((resolvePromise) => {
+      if (!this.alive) {
+        resolvePromise({
+          status: "error",
+          text: "",
+          sessionId: this.sessionId,
+          error: { kind: "unknown", message: "the live claude process is not running" },
+          liveUnavailable: true,
+        });
+        return;
+      }
+      let timer: NodeJS.Timeout | undefined;
+      const onAbort = () => {
+        if (this.current) this.current.aborted = true;
+        this.child.terminate();
+      };
+      const uuid = randomUUID();
+      const cur = {
+        uuid,
+        echoed: false,
+        turn: new ClaudeTurn(callbacks, this.sessionId, this.totalCost, this.denials),
+        callbacks,
+        aborted: false,
+        timedOut: false,
+        timeoutMinutes: Math.round(request.settings.turnTimeoutMs / 60000),
+        finish: (result: TurnResult) => {
+          if (this.current !== cur) return;
+          this.current = null;
+          if (timer) clearTimeout(timer);
+          request.signal.removeEventListener("abort", onAbort);
+          resolvePromise(result);
+        },
+      };
+      this.current = cur;
+      if (request.settings.turnTimeoutMs > 0) {
+        timer = setTimeout(() => {
+          cur.timedOut = true;
+          this.child.terminate();
+        }, Math.min(request.settings.turnTimeoutMs, 2 ** 31 - 1));
+        timer.unref();
+      }
+      request.signal.addEventListener("abort", onAbort, { once: true });
+      if (request.signal.aborted) {
+        onAbort();
+        return;
+      }
+      this.child.send({ type: "user", uuid, message: { role: "user", content: request.prompt } });
+    });
+  }
+
+  close(): void {
+    this.closed = true;
+    this.child.terminate();
+  }
+}
+
 export const createClaudeRunner = (bin = process.env.AGORYX_CLAUDE_BIN || "claude"): AgentRunner => ({
   kind: "claude",
 
-  resumeCommand(sessionId: string, cwd: string): string {
-    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} --resume ${shellQuote(sessionId)}`;
+  resumeCommand(sessionId: string, cwd: string, model?: string, effort?: string): string {
+    return `cd ${shellQuote(cwd)} && ${shellQuote(bin)} --resume ${shellQuote(sessionId)}${model ? ` --model ${shellQuote(model)}` : ""}${effort ? ` --effort ${shellQuote(effort)}` : ""}`;
+  },
+
+  liveFingerprint(request: TurnRequest): string {
+    // The session is not part of it (the engine compares that); everything else the process is started with is.
+    return fingerprintOf({ bin, args: buildClaudeLiveArgs(request, "-", false), cwd: request.cwd, env: buildClaudeEnv(request.env) });
+  },
+
+  openLive(request: TurnRequest): LiveProcess {
+    return new ClaudeLiveProcess(bin, request, this.liveFingerprint!(request));
   },
 
   async run(request: TurnRequest, callbacks: TurnCallbacks): Promise<TurnResult> {
     const attempt = async (sessionId: string, fresh: boolean): Promise<TurnResult> => {
-      let finalText: string | undefined;
-      let lastAssistantText = "";
-      let resultError = false;
-      let resultSubtype = "";
-      let usage: TurnUsage | undefined;
-      let confirmedSession: string | null = fresh ? null : sessionId;
-      const pendingTools = new Map<string, Activity>();
-
       // A fresh session is bound only once Claude reports it (below): if the CLI never starts, the room
       // must not keep an id that names no session.
+      const turn = new ClaudeTurn(callbacks, fresh ? null : sessionId);
       const outcome = await runJsonlProcess({
         bin,
         args: buildClaudeArgs(request, sessionId, fresh),
@@ -161,92 +481,14 @@ export const createClaudeRunner = (bin = process.env.AGORYX_CLAUDE_BIN || "claud
         stdin: request.prompt,
         signal: request.signal,
         timeoutMs: request.settings.turnTimeoutMs,
-        onJson: (event) => {
-          const type = str(event.type);
-          const sid = str(event.session_id);
-          if (sid && sid !== confirmedSession) {
-            confirmedSession = sid;
-            callbacks.onSession(sid);
-          }
-          if (type === "stream_event") {
-            const inner = asObject(event.event);
-            if (inner?.type === "message_start") callbacks.onText("", true);
-            const delta = asObject(inner?.delta);
-            if (inner?.type === "content_block_delta" && delta?.type === "text_delta") {
-              const text = str(delta.text);
-              if (text) callbacks.onText(text);
-            }
-            return;
-          }
-          if (type === "assistant") {
-            const message = asObject(event.message);
-            const content = Array.isArray(message?.content) ? (message!.content as Json[]) : [];
-            for (const block of content) {
-              if (block.type === "tool_use") {
-                const id = str(block.id) ?? randomUUID();
-                const described = describeClaudeTool(str(block.name) ?? "tool", asObject(block.input));
-                const activity: Activity = { id, ...described, status: "running" };
-                pendingTools.set(id, activity);
-                callbacks.onActivity(activity);
-              } else if (block.type === "text") {
-                const text = str(block.text);
-                if (text?.trim()) lastAssistantText = text;
-              }
-            }
-            return;
-          }
-          if (type === "user") {
-            const message = asObject(event.message);
-            const content = Array.isArray(message?.content) ? (message!.content as Json[]) : [];
-            for (const block of content) {
-              if (block.type !== "tool_result") continue;
-              const id = str(block.tool_use_id);
-              const pending = id ? pendingTools.get(id) : undefined;
-              if (!pending) continue;
-              const failed = block.is_error === true;
-              const output = toolResultText(block.content);
-              callbacks.onActivity({
-                ...pending,
-                status: failed ? "fail" : "ok",
-                ...(failed && output ? { detail: truncate(output, 240) } : {}),
-              });
-              pendingTools.delete(id!);
-            }
-            return;
-          }
-          if (type === "result") {
-            resultSubtype = str(event.subtype) ?? "";
-            resultError = event.is_error === true;
-            const text = str(event.result);
-            if (text !== undefined) finalText = text;
-            const rawUsage = asObject(event.usage);
-            if (rawUsage) {
-              usage = {
-                inputTokens:
-                  Number(rawUsage.input_tokens ?? 0) +
-                  Number(rawUsage.cache_creation_input_tokens ?? 0) +
-                  Number(rawUsage.cache_read_input_tokens ?? 0),
-                outputTokens: Number(rawUsage.output_tokens ?? 0),
-                cachedTokens: Number(rawUsage.cache_read_input_tokens ?? 0),
-              };
-            }
-            if (typeof event.total_cost_usd === "number") usage = { ...usage, costUsd: event.total_cost_usd };
-            const denials = Array.isArray(event.permission_denials) ? (event.permission_denials as Json[]) : [];
-            denials.forEach((denial, index) => {
-              const described = describeClaudeTool(str(denial.tool_name) ?? "tool", asObject(denial.tool_input));
-              callbacks.onActivity({
-                id: `denied-${index}-${str(denial.tool_use_id) ?? ""}`,
-                kind: "denied",
-                label: `${str(denial.tool_name) ?? "tool"}: ${described.label}`,
-                status: "fail",
-              });
-            });
-          }
-        },
+        onJson: (event) => turn.handle(event),
+        // `result` is the answer; Claude exits within a moment by itself, and is not waited on for long.
+        readyWhen: (event) => event.type === "result",
+        readyGraceMs: CLAUDE_EXIT_GRACE_MS,
       });
 
       if (outcome.aborted) {
-        return { status: "interrupted", text: lastAssistantText, sessionId: confirmedSession, ...(usage ? { usage } : {}) };
+        return { status: "interrupted", text: turn.lastAssistantText, sessionId: turn.confirmedSession, ...(turn.usage ? { usage: turn.usage } : {}) };
       }
       if (outcome.spawnError) {
         return {
@@ -259,23 +501,12 @@ export const createClaudeRunner = (bin = process.env.AGORYX_CLAUDE_BIN || "claud
       if (outcome.timedOut) {
         return {
           status: "error",
-          text: lastAssistantText,
-          sessionId: confirmedSession,
+          text: turn.lastAssistantText,
+          sessionId: turn.confirmedSession,
           error: { kind: "timeout", message: `turn exceeded ${Math.round(request.settings.turnTimeoutMs / 60000)} min` },
         };
       }
-      if (finalText !== undefined && !resultError) {
-        return { status: "ok", text: finalText, sessionId: confirmedSession ?? sessionId, ...(usage ? { usage } : {}) };
-      }
-      const detail = [finalText, lastLines(outcome.stderr)].filter(Boolean).join("\n") || `exit ${outcome.code} ${resultSubtype}`;
-      const kind = classifyFailure(detail);
-      return {
-        status: "error",
-        text: "",
-        sessionId: kind === "session" ? null : confirmedSession,
-        error: { kind, message: truncate(detail, 600) },
-        ...(usage ? { usage } : {}),
-      };
+      return claudeOutcome(turn, sessionId, outcome);
     };
 
     return request.sessionId ? attempt(request.sessionId, false) : attempt(randomUUID(), true);

@@ -38,8 +38,8 @@ test("blind first round, then each agent sees the other and passes → quiet", a
     const codex = room.invocations("codex");
     assert.equal(claude.length, 2);
     assert.equal(codex.length, 2);
-    // Round 1 is blind: briefing + the human message, nothing from the other agent.
-    assert.match(claude[0]!.prompt!, /You are Claude, in an Agoryx room/);
+    // Round 1 starts from the same point: briefing + the human message, no reply of the other agent.
+    assert.match(claude[0]!.prompt!, /You are Claude \(@claude\), in an Agoryx room/);
     assert.match(claude[0]!.prompt!, /How should we store rooms\?/);
     assert.doesNotMatch(claude[0]!.prompt!, /use JSONL/);
     assert.doesNotMatch(codex[0]!.prompt!, /use SQLite/);
@@ -189,6 +189,40 @@ test("@mention wakes only the addressed agent first; the other hears the reply",
   }
 });
 
+test("a question put to one agent alone is answered to the human: the other is not woken for it", async () => {
+  const room = createTestRoom({
+    rules: [
+      { agent: "claude", match: "which model", reply: "Sonnet." },
+      { agent: "claude", match: "ask codex", reply: "@codex what do you think?" },
+      { agent: "codex", reply: "Fine by me." },
+    ],
+  });
+  try {
+    room.engine.postHuman("@claude which model are you on?");
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(room.invocations("codex").length, 0, "Codex gets no turn just to pass");
+    const answer = room.store.state.messages.find((message) => message.text === "Sonnet.")!;
+    assert.equal(answer.wakes, false);
+    assert.equal(room.store.state.runs.at(-1)?.endReason, "quiet");
+    assert.match(room.invocations("claude")[0]!.prompt!, /When Ivan addresses only you, your reply goes back to them/);
+
+    // The agent can still bring the other in, by name.
+    room.engine.postHuman("@claude ask codex");
+    await withTimeout(room.engine.waitIdle());
+    const codex = room.invocations("codex");
+    assert.equal(codex.length, 1);
+    // What it was not woken for still reaches it, in its next delta.
+    assert.match(codex[0]!.prompt!, /Sonnet\./);
+
+    // Said to everyone, the answer is part of the conversation as before.
+    room.engine.postHuman("which model are you on?");
+    await withTimeout(room.engine.waitIdle());
+    assert.ok(room.store.state.messages.filter((message) => message.text === "Sonnet.").at(-1)!.wakes);
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("a human message sent while agents work reaches both in their next delta", async () => {
   const room = createTestRoom({
     rules: [
@@ -223,7 +257,7 @@ test("agents put things on the table through the agoryx shim, with acks and attr
           ["table", "ask", "Where do rooms live?"],
           ["table", "propose", "JSONL event log", "--body", "append-only, replayable"],
         ],
-        reply: "I opened Q1 and proposed P1.",
+        reply: "I opened Q1 and proposed P1. @codex?",
       },
       {
         agent: "codex",
@@ -239,7 +273,7 @@ test("agents put things on the table through the agoryx shim, with acks and attr
     ],
   });
   try {
-    // Codex waits for Claude's proposal: mention only claude first.
+    // Codex waits for Claude's proposal: mention only claude first; Claude brings Codex in.
     room.engine.postHuman("@claude open a question about storage");
     await withTimeout(room.engine.waitIdle());
     const table = room.store.state.table;
@@ -265,7 +299,7 @@ test("agents put things on the table through the agoryx shim, with acks and attr
     assert.ok(outputs.some((line) => line.startsWith("P2 ·")), outputs.join("\n"));
     assert.ok(outputs.some((line) => line.includes("ERR") && line.includes("no option P9")), outputs.join("\n"));
     // TABLE.md in the workspace mirrors the table.
-    const md = readFileSync(join(room.store.state.workspace, ".agoryx", "TABLE.md"), "utf8");
+    const md = readFileSync(room.engine.ws.tableFile, "utf8");
     assert.match(md, /## Q1 · Where do rooms live\?/);
     assert.match(md, /✗ objection \(codex\): no indexes/);
     // Codex's prompt showed Claude's table ops under Claude's message.
@@ -331,7 +365,7 @@ test("a settled conclusion can answer a question, and a concession is kept on th
       table.shifts.map((shift) => [shift.id, shift.by, shift.target]),
       [["C1", "claude", "P1"]],
     );
-    assert.deepEqual(openOnTable(table), { questions: 0, options: 0, steps: 0 });
+    assert.deepEqual(openOnTable(table), { questions: 0, options: 0, steps: 0, disputes: 0 });
     assert.match(summarizeTable(table)!, /changed minds: C1 claude on P1/);
     assert.match(renderTableMarkdown(table, "time"), /answered → S1/);
     assert.match(renderTableMarkdown(table, "time"), /## Changed minds/);
@@ -355,6 +389,8 @@ test("a message sent while a stop is under way is not swallowed by the run being
       { match: "Take your time", sleepMs: 30_000, reply: "too late" },
       { match: "follow-up", reply: "got the follow-up" },
     ],
+    // These fakes answer each other forever; a limit ends the run (the default has none).
+    settings: { budget: 4 },
   });
   try {
     room.engine.postHuman("Take your time");
@@ -413,7 +449,7 @@ test("a lost native session is rejoined with the full context", async () => {
 });
 
 test("agent failures are reported in the room and do not wedge the run", async () => {
-  const room = createTestRoom({ rules: [{ agent: "codex", error: "stream error: 429 Too Many Requests" }] });
+  const room = createTestRoom({ rules: [{ agent: "codex", error: "stream error: 429 Too Many Requests" }], settings: { budget: 4 } });
   try {
     room.engine.postHuman("hi");
     await withTimeout(room.engine.waitIdle());
@@ -473,6 +509,7 @@ test("workspace changes are attributed per turn and checkpointed at run end", as
 test("activity traces show workspace-relative paths and a plain `agoryx`, not machine paths", async () => {
   const room = createTestRoom({
     rules: [{ command: 'cat {cwd}/src/app.ts && "{cli}" table ask "why?" && ls {cwd}', reply: "looked" }],
+    settings: { budget: 4 },
   });
   try {
     room.engine.postHuman("look around");

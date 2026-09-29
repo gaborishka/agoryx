@@ -1,23 +1,24 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { agentKey, loadOrCreateToken } from "./actor.js";
 import { baselineRevision, docWritable, normalizeDocPath } from "./doc.js";
 import { createRoomWorktree, removeRoomWorktree } from "./folders.js";
 import { RoomEngine } from "./engine.js";
 import { defaultWorkspaceRoot, roomsDir, shimDir } from "./paths.js";
+import { profilePath } from "./profile.js";
 import { createClaudeRunner } from "./runners/claude.js";
 import { createCodexRunner } from "./runners/codex.js";
 import type { AgentRunner } from "./runners/types.js";
+import { defaultRoster, parseAgents } from "./roster.js";
 import { newRoomId, RoomStore, slugify } from "./store.js";
-import { DEFAULT_SETTINGS, type AgentKind, type RoomAgent, type RoomSettings, type RoomWorktree } from "./types.js";
+import { DEFAULT_SETTINGS, type ActorOrigin, type AgentKind, type RoomAgent, type RoomSettings, type RoomWorktree } from "./types.js";
 import { ensureAgentShim, prepareWorkspace } from "./workspace.js";
+import { jevReadMessage, jevSecondLook, jevThreshold } from "./jev.js";
+
+export { DEFAULT_AGENTS } from "./roster.js";
 
 export const DEFAULT_DOC = "README.md";
-
-export const DEFAULT_AGENTS: RoomAgent[] = [
-  { id: "claude", kind: "claude", label: "Claude" },
-  { id: "codex", kind: "codex", label: "Codex" },
-];
 
 /** "Ivan_Habor" / git "Ivan Habor" → "Ivan". */
 export const defaultHumanName = (env: NodeJS.ProcessEnv = process.env): string => {
@@ -43,8 +44,10 @@ export interface CreateRoomOptions {
   /** Branch or commit the worktree starts from. Default: the branch checked out in `dir`. */
   base?: string;
   human?: string;
-  agents?: RoomAgent[];
-  budget?: number;
+  /** Who sits in the room (see roster.ts). Default: <AGORYX_HOME>/agents.json if it exists, else Claude and Codex. */
+  agents?: unknown;
+  /** Agent turns per run; null (the default) for no limit. */
+  budget?: number | null;
   network?: boolean;
   autoCommit?: boolean;
   access?: RoomSettings["access"];
@@ -52,6 +55,8 @@ export interface CreateRoomOptions {
   doc?: string | null;
   models?: Partial<Record<string, string>>;
   env?: NodeJS.ProcessEnv;
+  /** An agent opened the room from another room's turn (the room's human is still the human). */
+  createdBy?: ActorOrigin;
 }
 
 /**
@@ -74,6 +79,25 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
   const env = options.env ?? process.env;
   const name = options.name.trim();
   if (!name) throw new Error("a room needs a name");
+  // All that can be refused is checked before a workspace folder is claimed, so a refused room leaves nothing behind.
+  // The roster is checked here, whoever calls: one that came as JSON is not trusted to be well-formed.
+  const agents = (options.agents === undefined ? defaultRoster(env) : parseAgents(options.agents)).map((agent) =>
+    options.models?.[agent.id] ? { ...agent, model: options.models[agent.id] } : agent,
+  );
+  // Same bounds as a settings change: a run must be able to spend at least one turn, and not without limit.
+  if (options.budget !== undefined && options.budget !== null && !(Number.isInteger(options.budget) && options.budget >= 1 && options.budget <= 100)) {
+    throw new Error(`the turn budget must be a whole number from 1 to 100, or none (got ${options.budget})`);
+  }
+  // Messages are told apart by author: a human named like an agent would be taken for that agent.
+  const human = (options.human?.trim() || defaultHumanName(env)).replace(/^@+/, "");
+  if (!human || agents.some((agent) => agent.id === human.toLowerCase() || agent.label.toLowerCase() === human.toLowerCase())) {
+    throw new Error(`"${human}" cannot be the human's name in this room: it is taken by an agent`);
+  }
+  let doc: string | null = null;
+  if (options.doc) {
+    doc = normalizeDocPath(options.doc);
+    if (!doc) throw new Error(`the canonical file must be a path inside the workspace: ${options.doc}`);
+  }
   const id = newRoomId(name);
   let workspace: string;
   // True only when Agoryx picked the directory. One the human names stays theirs even if it is empty:
@@ -97,25 +121,7 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     }
     createdWorkspace = true;
   }
-  let doc: string | null = null;
-  if (options.doc) {
-    doc = normalizeDocPath(options.doc);
-    if (!doc) throw new Error(`the canonical file must be a path inside the workspace: ${options.doc}`);
-  } else if (options.doc === undefined && createdWorkspace) {
-    doc = DEFAULT_DOC;
-  }
-  const agents = (options.agents ?? DEFAULT_AGENTS).map((agent) =>
-    options.models?.[agent.id] ? { ...agent, model: options.models[agent.id] } : agent,
-  );
-  // Same bounds as a settings change: a run must be able to spend at least one turn, and not without limit.
-  if (options.budget !== undefined && !(Number.isInteger(options.budget) && options.budget >= 1 && options.budget <= 100)) {
-    throw new Error(`the turn budget must be a whole number from 1 to 100 (got ${options.budget})`);
-  }
-  // Messages are told apart by author: a human named like an agent would be taken for that agent.
-  const human = (options.human?.trim() || defaultHumanName(env)).replace(/^@+/, "");
-  if (!human || agents.some((agent) => agent.id.toLowerCase() === human.toLowerCase())) {
-    throw new Error(`"${human}" cannot be the human's name in this room: it is taken by an agent`);
-  }
+  if (options.doc === undefined && createdWorkspace) doc = DEFAULT_DOC;
   const settings: RoomSettings = {
     ...DEFAULT_SETTINGS,
     ...(options.budget !== undefined ? { budget: options.budget } : {}),
@@ -135,7 +141,7 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     if (options.autoCommit === undefined) settings.autoCommit = true;
   }
   try {
-    return finishRoom({ id, name, workspace, createdWorkspace, worktree, human, agents, settings, doc, env });
+    return finishRoom({ id, name, workspace, createdWorkspace, worktree, human, agents, settings, doc, env, createdBy: options.createdBy });
   } catch (error) {
     if (worktree) removeRoomWorktree(worktree);
     throw error;
@@ -153,6 +159,7 @@ const finishRoom = ({
   settings,
   doc,
   env,
+  createdBy,
 }: {
   id: string;
   name: string;
@@ -164,6 +171,7 @@ const finishRoom = ({
   settings: RoomSettings;
   doc: string | null;
   env: NodeJS.ProcessEnv;
+  createdBy: ActorOrigin | undefined;
 }): RoomStore => {
   prepareWorkspace(workspace, { initGit: createdWorkspace });
   if (doc && !lstatSync(join(workspace, doc), { throwIfNoEntry: false })) {
@@ -182,6 +190,7 @@ const finishRoom = ({
     human,
     agents,
     settings,
+    ...(createdBy ? { createdBy } : {}),
   });
   const baseline = doc ? baselineRevision(workspace, doc) : null;
   if (baseline) store.append(baseline);
@@ -193,6 +202,16 @@ export const defaultRunners = (env: NodeJS.ProcessEnv = process.env): Record<Age
   codex: createCodexRunner(env.AGORYX_CODEX_BIN || "codex"),
 });
 
+/**
+ * Live processes (see EngineOptions.live) are on unless AGORYX_LIVE is 0/off/false/no;
+ * AGORYX_LIVE_IDLE_MS sets how long an unused one is kept (default 5 minutes, 0 = close after every turn).
+ */
+export const liveSetting = (env: NodeJS.ProcessEnv): boolean | { idleMs: number } => {
+  if (/^(0|off|false|no)$/i.test(env.AGORYX_LIVE?.trim() ?? "")) return false;
+  const idle = Number(env.AGORYX_LIVE_IDLE_MS?.trim());
+  return env.AGORYX_LIVE_IDLE_MS?.trim() && Number.isFinite(idle) && idle >= 0 ? { idleMs: idle } : true;
+};
+
 export const openEngine = (
   store: RoomStore,
   options: {
@@ -200,6 +219,8 @@ export const openEngine = (
     runners?: Partial<Record<AgentKind, AgentRunner>>;
     log?: (message: string) => void;
     opsPollMs?: number;
+    /** Issues each agent's key (see actor.ts). Default: signed with <AGORYX_HOME>/daemon.token, as the daemon does. */
+    agentKey?: (agentId: string) => string | undefined;
   } = {},
 ): RoomEngine => {
   const env = options.env ?? process.env;
@@ -210,6 +231,12 @@ export const openEngine = (
     runners: options.runners ?? defaultRunners(env),
     shimDir: dir,
     env,
+    profilePath: profilePath(env),
+    agentKey: options.agentKey ?? ((agentId) => agentKey(loadOrCreateToken(env), store.id, agentId)),
+    live: liveSetting(env),
+    secondLook: jevSecondLook(env),
+    secondLookThreshold: jevThreshold(env),
+    readMessage: jevReadMessage(env),
     ...(options.log ? { log: options.log } : {}),
     ...(options.opsPollMs ? { opsPollMs: options.opsPollMs } : {}),
   });
@@ -223,7 +250,7 @@ export const resumeCommands = (
   for (const agent of store.state.agents) {
     const session = store.state.sessions[agent.id];
     const runner = runners[agent.kind];
-    if (session && runner) commands[agent.id] = runner.resumeCommand(session.sessionId, store.state.workspace);
+    if (session && runner) commands[agent.id] = runner.resumeCommand(session.sessionId, store.state.workspace, agent.model, agent.effort);
   }
   return commands;
 };

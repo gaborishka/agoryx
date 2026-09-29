@@ -3,19 +3,26 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { agentBehind } from "./agentprocs.js";
+import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, originName, originOf, readAgentKey } from "./actor.js";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
-import { linkedMedia } from "./media.js";
+import { linkedMedia, markdownTexts } from "./media.js";
+import { agentModels } from "./models.js";
+import { locateNativeSession } from "./native.js";
+import { readTranscript } from "./transcript.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
+import { profilePath, readProfile } from "./profile.js";
+import { defaultRoster } from "./roster.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
 import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js";
 import { createRoom, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
-import type { AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomEvent, RoomSettings } from "./types.js";
+import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
-import { listWorkspaceFiles, repoRoot, resolveInside } from "./workspace.js";
+import { listWorkspaceFiles, repoRoot, resolveInside, workspacePaths } from "./workspace.js";
 
 export interface DaemonInfo {
   pid: number;
@@ -37,7 +44,15 @@ export interface DaemonOptions {
   opsPollMs?: number;
   /** Rooms active within this many days are opened at start, so their native sessions are watched (default 14; 0 = lazily only). */
   watchDays?: number;
+  /**
+   * POST /api/down: what stops the daemon (the process running it exits). Default: the daemon closes.
+   * `by` is who asked, recorded in each room whose run it stops.
+   */
+  onDown?: (by: ActorOrigin | null) => void;
 }
+
+/** Who is calling the API: the human (the daemon's token), or an agent with its key (see actor.ts). */
+type Caller = { agent: null } | { agent: ActorOrigin };
 
 class HttpError extends Error {
   constructor(
@@ -50,6 +65,7 @@ class HttpError extends Error {
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
+  ".htm": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -176,24 +192,7 @@ const safeEqual = (a: string, b: string): boolean => {
   return left.length === right.length && timingSafeEqual(left, right);
 };
 
-const TOKEN_FILE = "daemon.token";
 const COOKIE = "agoryx_token";
-
-/** The token survives daemon restarts so an open browser tab keeps working. */
-export const loadOrCreateToken = (env: NodeJS.ProcessEnv = process.env): string => {
-  const path = join(agoraHome(env), TOKEN_FILE);
-  try {
-    const existing = readFileSync(path, "utf8").trim();
-    if (existing.length >= 32) return existing;
-  } catch {
-    // create below
-  }
-  const token = randomBytes(24).toString("base64url");
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, token, { mode: 0o600 });
-  chmodSync(path, 0o600);
-  return token;
-};
 
 const cookieValue = (req: IncomingMessage, name: string): string | undefined => {
   const header = req.headers.cookie;
@@ -246,6 +245,8 @@ export class AgoraDaemon {
   readonly token: string;
   private readonly options: DaemonOptions;
   private readonly rooms = new Map<string, RoomHandle>();
+  /** Where each agent session's file was found (room, agent, session id → path). */
+  private readonly sessionFiles = new Map<string, string>();
   private readonly log: (message: string) => void;
   private readonly runners: Partial<Record<AgentKind, AgentRunner>>;
   private readonly webDir: string | null;
@@ -340,14 +341,18 @@ export class AgoraDaemon {
     }
   }
 
-  async close(): Promise<void> {
+  /** `by`: the agent that stopped the daemon, so each room records that its run was stopped by it. */
+  async close(by?: ActorOrigin | { human: true }): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
     for (const client of this.sseClients) client.end();
     this.sseClients.clear();
     await Promise.all(
       [...this.rooms.values()].map(async (handle) => {
         if (handle.followTimer) clearInterval(handle.followTimer);
-        if (handle.engine) await handle.engine.close();
+        if (!handle.engine) return;
+        const state = handle.engine.state;
+        const actor: Actor | undefined = !by ? undefined : "human" in by ? { by: state.human } : actorIn(state, by);
+        await handle.engine.close(actor);
       }),
     );
     this.rooms.clear();
@@ -396,6 +401,8 @@ export class AgoraDaemon {
       const fresh = RoomStore.open(roomsDir(this.env), handle.store.id);
       const engine = openEngine(fresh, {
         env: this.env,
+        // Each agent's own key, signed with this daemon's token: what it does through the API is its own.
+        agentKey: (agentId) => agentKey(this.token, fresh.id, agentId),
         runners: this.runners,
         log: (message) => this.log(`[${fresh.id}] ${message}`),
         ...(this.options.opsPollMs ? { opsPollMs: this.options.opsPollMs } : {}),
@@ -451,10 +458,58 @@ export class AgoraDaemon {
     }
   }
 
-  private checkToken(req: IncomingMessage, url: URL): void {
+  private checkToken(req: IncomingMessage, url: URL): Caller {
     const header = req.headers["x-agoryx-token"];
-    const given = (Array.isArray(header) ? header[0] : header) ?? cookieValue(req, COOKIE) ?? url.searchParams.get("token") ?? "";
+    const sent = Array.isArray(header) ? header[0] : header;
+    // An agent's key comes in the header only (the agent's CLI sends it); never as a browser login.
+    if (sent && isAgentKey(sent)) return { agent: this.agentOrigin(sent) };
+    const given = sent ?? cookieValue(req, COOKIE) ?? url.searchParams.get("token") ?? "";
     if (!given || !safeEqual(given, this.token)) throw new HttpError(401, "missing or wrong agoryx token (see daemon.json)");
+    return { agent: null };
+  }
+
+  /**
+   * The human's token, sent from an agent's process (its CLI or anything under it), is refused: agents
+   * can read the token file as the human can, but what they do is signed with their own key, never as
+   * the human (see agentprocs.ts).
+   */
+  private async refuseHumanTokenFromAgent(req: IncomingMessage): Promise<void> {
+    const owner = await agentBehind(req.socket);
+    if (!owner) return;
+    if ("unknown" in owner) {
+      throw new HttpError(
+        403,
+        `agent processes are running and Agoryx cannot tell whether this request comes from one of them (${owner.unknown}); the human's token is refused until it can — the daemon needs lsof and ps`,
+      );
+    }
+    throw new HttpError(
+      403,
+      `this request comes from ${owner.agent}'s process (room ${owner.room}) with the human's token: an agent acts under its own key (${AGENT_KEY_ENV}), never as the human`,
+    );
+  }
+
+  /**
+   * The agent a key names — checked, never trusted: signed with this daemon's token, for a room that
+   * exists and an agent seated in it now. A key for another room still works anywhere (see actorIn):
+   * what it does there is signed as that agent, from that room.
+   */
+  private agentOrigin(key: string): ActorOrigin {
+    const named = readAgentKey(this.token, key);
+    if (!named) throw new HttpError(401, "this agent key was not issued by this daemon (a stale key, or a different daemon token)");
+    let state: RoomState;
+    try {
+      state = this.rooms.get(named.room)?.store.state ?? RoomStore.open(roomsDir(this.env), named.room).state;
+    } catch {
+      throw new HttpError(401, `this agent key is for room ${named.room}, which does not exist`);
+    }
+    const origin = originOf(state, named.agent);
+    if (!origin) throw new HttpError(401, `this agent key is for ${named.agent}, who is no longer in room "${state.name}"`);
+    return origin;
+  }
+
+  /** Who the caller is in a room: the human, one of its agents, or an agent of another room. */
+  private actorFor(caller: Caller, state: RoomState): Actor {
+    return caller.agent ? actorIn(state, caller.agent) : { by: state.human };
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -470,8 +525,9 @@ export class AgoraDaemon {
       return;
     }
     if (path.startsWith("/api/")) {
-      this.checkToken(req, url);
-      await this.api(req, res, url);
+      const caller = this.checkToken(req, url);
+      if (!caller.agent) await this.refuseHumanTokenFromAgent(req);
+      await this.api(req, res, url, caller);
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method not allowed");
@@ -502,7 +558,12 @@ export class AgoraDaemon {
   private serveRaw(req: IncomingMessage, res: ServerResponse, path: string): void {
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method not allowed");
     const [, , roomPart = "", key = "", ...rest] = path.split("/");
-    const roomId = decodeURIComponent(roomPart);
+    let roomId = "";
+    try {
+      roomId = decodeURIComponent(roomPart);
+    } catch {
+      // Not a room id; falls through to 404.
+    }
     if (!/^[\w.-]+$/.test(roomId) || !safeEqual(key, this.rawKey(roomId))) throw new HttpError(404, "not found");
     let relPath: string;
     try {
@@ -517,10 +578,11 @@ export class AgoraDaemon {
     }
     let full: string | null;
     if (relPath.startsWith("~abs/")) {
-      // A media file outside the workspace, served only while a message in the room links it.
+      // A media file outside the workspace, served only while a text in the room links it.
+      // relPath is decoded already: the path is taken as is, not decoded again.
       const ref = relPath.slice("~abs/".length);
-      full = linkedMedia(handle.store.state.messages, ref.startsWith("~/") ? ref : `/${ref}`);
-      if (!full) throw new HttpError(404, "no such file, or no message in the room links it");
+      full = linkedMedia(markdownTexts(handle.store.state), ref.startsWith("~/") ? ref : `/${ref}`);
+      if (!full) throw new HttpError(404, "no such file, or nothing in the room links it");
     } else {
       if (!relPath || relPath.endsWith("/")) relPath += "index.html";
       full = resolveInside(handle.store.state.workspace, relPath);
@@ -620,7 +682,16 @@ export class AgoraDaemon {
     res.end(body);
   }
 
-  private async api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  /** Who a new room seats unless told otherwise, for the start screen; a broken roster file is reported, not hidden. */
+  private roster(): { agents: RoomAgent[] } | { rosterError: string } {
+    try {
+      return { agents: defaultRoster(this.env) };
+    } catch (error) {
+      return { rosterError: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async api(req: IncomingMessage, res: ServerResponse, url: URL, caller: Caller = { agent: null }): Promise<void> {
     const parts = url.pathname.split("/").filter(Boolean).slice(1); // drop "api"
     const method = req.method ?? "GET";
 
@@ -630,7 +701,13 @@ export class AgoraDaemon {
         url: this.url,
         home: agoraHome(this.env),
         rooms: RoomStore.list(roomsDir(this.env)).length,
+        ...this.roster(),
       });
+      return;
+    }
+
+    if (parts[0] === "models" && parts.length === 1 && method === "GET") {
+      sendJson(res, 200, await agentModels(this.env));
       return;
     }
 
@@ -667,6 +744,17 @@ export class AgoraDaemon {
       return;
     }
 
+    if (parts[0] === "down" && parts.length === 1 && method === "POST") {
+      this.log(`stopping: asked by ${caller.agent ? originName(caller.agent) : "the human"}`);
+      sendJson(res, 200, { ok: true });
+      const by = caller.agent;
+      setImmediate(() => {
+        if (this.options.onDown) this.options.onDown(by);
+        else void this.close(by ?? { human: true });
+      });
+      return;
+    }
+
     if (parts[0] !== "rooms") throw new HttpError(404, "unknown endpoint");
 
     if (parts.length === 1) {
@@ -694,17 +782,21 @@ export class AgoraDaemon {
             ...(typeof body.dir === "string" && body.dir.trim() ? { dir: resolveFolder(body.dir, this.env) } : {}),
             ...(body.worktree === true ? { worktree: true } : {}),
             ...(typeof body.base === "string" && body.base.trim() ? { base: body.base.trim() } : {}),
-            ...(typeof body.budget === "number" ? { budget: body.budget } : {}),
+            ...(typeof body.budget === "number" || body.budget === null ? { budget: body.budget } : {}),
             ...(typeof body.human === "string" ? { human: body.human } : {}),
+            // Who sits in the room, as JSON (checked by createRoom); absent: the default roster.
+            ...(body.agents !== undefined ? { agents: body.agents } : {}),
             // `agoryx new --doc none` sends null: no canonical file.
             ...(typeof body.doc === "string" ? { doc: body.doc.trim() || null } : body.doc === null ? { doc: null } : {}),
+            // Opened from an agent's turn: the room says so; its human is still the human.
+            ...(caller.agent ? { createdBy: caller.agent } : {}),
             env: this.env,
           });
         } catch (error) {
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
         }
         const handle = this.room(store.id);
-        if (text.trim()) this.engineFor(handle).postHuman(text);
+        if (text.trim()) this.engineFor(handle).post(text, this.actorFor(caller, handle.store.state));
         sendJson(res, 201, { room: handle.store.summary() });
         return;
       }
@@ -733,6 +825,11 @@ export class AgoraDaemon {
     if (action === "doc" && method === "GET") {
       const rev = url.searchParams.get("rev");
       sendJson(res, 200, rev ? this.docRevision(handle, Number.parseInt(rev, 10)) : this.docNow(handle));
+      return;
+    }
+
+    if (action === "session" && method === "GET") {
+      sendJson(res, 200, this.sessionTranscript(handle, url.searchParams));
       return;
     }
 
@@ -778,30 +875,31 @@ export class AgoraDaemon {
     if (method !== "POST") throw new HttpError(405, "method not allowed");
     const body = (await readBody(req)) as Record<string, unknown>;
     const engine = this.engineFor(handle);
+    const actor = this.actorFor(caller, engine.state);
 
     switch (action) {
       case "messages": {
         const text = typeof body.text === "string" ? body.text : "";
         if (!text.trim()) throw new HttpError(400, "text is required");
-        const message = engine.postHuman(text);
+        const message = engine.post(text, actor);
         sendJson(res, 201, { message });
         return;
       }
       case "table": {
         const seq = engine.state.seq + 1;
-        const op = engine.tableOp(body);
+        const op = engine.tableOp(body, actor);
         sendJson(res, 201, { op, seq, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, engine.state.table)}` });
         return;
       }
       case "continue": {
         const seq = engine.state.seq + 1;
-        engine.continueRun();
+        engine.continueRun(actor);
         sendJson(res, 200, { ok: true, seq });
         return;
       }
       case "rename": {
         try {
-          engine.rename(typeof body.name === "string" ? body.name : "");
+          engine.rename(typeof body.name === "string" ? body.name : "", actor);
         } catch (error) {
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
         }
@@ -809,13 +907,29 @@ export class AgoraDaemon {
         return;
       }
       case "stop": {
-        await engine.stop("human");
+        await engine.stop("human", actor);
         sendJson(res, 200, { ok: true });
+        return;
+      }
+      case "agent": {
+        const agentId = typeof body.agent === "string" ? body.agent : "";
+        const patch: { model?: string | null; effort?: string | null } = {};
+        for (const key of ["model", "effort"] as const) {
+          const value = body[key];
+          if (value === null || typeof value === "string") patch[key] = value;
+          else if (value !== undefined) throw new HttpError(400, `${key} must be a string or null`);
+        }
+        try {
+          const agent = engine.updateAgent(agentId, patch, actor);
+          sendJson(res, 200, { agent });
+        } catch (error) {
+          throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
         return;
       }
       case "settings": {
         try {
-          engine.updateSettings(body as Partial<RoomSettings>);
+          engine.updateSettings(body as Partial<RoomSettings>, actor);
         } catch (error) {
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
         }
@@ -826,7 +940,7 @@ export class AgoraDaemon {
         if (typeof body.text !== "string" || typeof body.base !== "string") throw new HttpError(400, "text and base are required");
         if (body.text.length > MAX_DOC_TEXT) throw new HttpError(413, "the text is too large");
         try {
-          const revision = engine.writeDocument(body.text, body.base);
+          const revision = engine.writeDocument(body.text, body.base, actor);
           sendJson(res, 200, { revision, ...this.docNow(handle) });
         } catch (error) {
           if (error instanceof DocConflictError) {
@@ -855,7 +969,36 @@ export class AgoraDaemon {
       resume: resumeCommands(handle.store, this.runners),
       driven: Boolean(handle.engine),
       ...(handle.lockedBy ? { lockedBy: handle.lockedBy } : {}),
+      // Whether there is a profile at all, never what it says: the UI shows who is given it.
+      profile: { path: profilePath(this.env), exists: readProfile(profilePath(this.env)) !== null },
     };
+  }
+
+  /**
+   * An agent's own session as its CLI wrote it: `end` reads what came before an earlier page; `size`
+   * (the file size the caller already has) answers `unchanged` without reading anything.
+   */
+  private sessionTranscript(handle: RoomHandle, params: URLSearchParams) {
+    const state = handle.store.state;
+    const agent = state.agents.find((entry) => entry.id === params.get("agent"));
+    if (!agent) throw new HttpError(404, "no such agent in this room");
+    const session = state.sessions[agent.id];
+    if (!session) return { agent: agent.id, sessionId: null, file: null, entries: [], start: 0, end: 0, size: 0 };
+    const key = `${state.id}\0${agent.id}\0${session.sessionId}`;
+    let file = this.sessionFiles.get(key) ?? null;
+    if (!file || !existsSync(file)) {
+      file = locateNativeSession(agent.kind, session.sessionId, state.workspace, this.env);
+      if (file) this.sessionFiles.set(key, file);
+    }
+    if (!file) return { agent: agent.id, sessionId: session.sessionId, file: null, entries: [], start: 0, end: 0, size: 0 };
+    const endParam = params.get("end");
+    const end = endParam !== null && /^\d{1,15}$/.test(endParam) ? Number(endParam) : undefined;
+    const known = Number(params.get("size") ?? "");
+    if (end === undefined && Number.isFinite(known) && known > 0) {
+      const size = statSync(file).size;
+      if (size === known) return { agent: agent.id, sessionId: session.sessionId, file, unchanged: true, size };
+    }
+    return { agent: agent.id, sessionId: session.sessionId, file, ...readTranscript(agent.kind, file, end === undefined ? {} : { end }) };
   }
 
   /** The canonical file as it is on disk now. */
@@ -901,7 +1044,8 @@ export class AgoraDaemon {
 
   private readWorkspaceFile(handle: RoomHandle, relPath: string) {
     const root = handle.store.state.workspace;
-    const full = relPath === ".agoryx/TABLE.md" ? join(root, ".agoryx", "TABLE.md") : resolveInside(root, relPath);
+    // The room's own table, wherever it lives in .agoryx/ (rooms sharing the workspace have one each).
+    const full = relPath === ".agoryx/TABLE.md" ? workspacePaths(root, handle.store.state.id).tableFile : resolveInside(root, relPath);
     if (!full || inGitDir(root, full) || !existsSync(full)) throw new HttpError(404, "no such file in the workspace");
     const stats = statSync(full);
     if (!stats.isFile()) throw new HttpError(400, "not a file");
@@ -948,7 +1092,12 @@ export class AgoraDaemon {
         return;
       }
       const state = handle.store.state;
-      const patch = { ...eventPatch(state, event), presence: this.presence(handle) };
+      const patch = {
+        ...eventPatch(state, event),
+        presence: this.presence(handle),
+        // The command to open a session names its model: it changes with either.
+        ...(event.type === "agent.changed" || event.type === "session.bound" ? { resume: resumeCommands(handle.store, this.runners) } : {}),
+      };
       res.write(`id: ${event.seq}\nevent: room\ndata: ${JSON.stringify({ event, patch })}\n\n`);
     };
     const start = Number.isFinite(after) ? after : handle.store.state.seq;

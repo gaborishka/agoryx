@@ -1,16 +1,54 @@
 #!/usr/bin/env node
 // The `agoryx` command agents see inside a room. Zero dependencies on purpose:
 // it runs inside the agents' sandboxes, writes table ops into the workspace
-// inbox (.agoryx/ops/<agent>.jsonl) and waits briefly for the room to ack.
+// inbox (.agoryx/rooms/<room>/ops/<agent>.jsonl) and waits briefly for the room to ack.
 // It also works outside a room turn, when someone talks to the agent directly
 // in its own session: the op is signed with --as, or with a hint from the
 // agent's environment, and the room reads it from the same inbox.
-// `agoryx diff` reads what each turn changed (.agoryx/turns/<turn>.patch).
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+// `agoryx diff` reads what each turn changed (.agoryx/rooms/<room>/turns/<turn>.patch).
+// `agoryx read` reads what was said, in full (.agoryx/messages/<room>/<id>.md).
+// `agoryx say` posts what the agent is doing while it works, through the same inbox as table ops.
+// Every other command is the human's own `agoryx` (bin/agoryx.js), run as is: in a turn it carries the
+// agent's key, so what it does is recorded as the agent's — the same commands, no fewer.
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+// Under a live agent (one CLI kept up across the agent's turns) the turn is not in the environment, which was
+// fixed when the process started: the room rewrites the file AGORYX_TURN_FILE names at the start of each turn
+// and removes it at the end. Same rules as applyTurnContext in internal/agora/turn-context.ts.
+if (process.env.AGORYX_TURN_FILE) {
+  let context = null;
+  try {
+    context = JSON.parse(readFileSync(process.env.AGORYX_TURN_FILE, "utf8"));
+  } catch {
+    // no turn in progress
+  }
+  const valid =
+    context &&
+    typeof context.turn === "string" &&
+    typeof context.seen === "string" &&
+    context.agent === process.env.AGORYX_AGENT &&
+    context.room === process.env.AGORYX_ROOM;
+  if (valid) {
+    process.env.AGORYX_TURN = context.turn;
+    process.env.AGORYX_SEEN = context.seen;
+    if (typeof context.key === "string" && context.key) process.env.AGORYX_AGENT_KEY = context.key;
+    else delete process.env.AGORYX_AGENT_KEY;
+  } else {
+    delete process.env.AGORYX_TURN;
+    delete process.env.AGORYX_SEEN;
+    delete process.env.AGORYX_AGENT_KEY;
+  }
+}
 
 const USAGE = `agoryx — room tools for agents
+
+  agoryx say "what I am doing"   post to the room now, while you work (not a turn; wakes only an idle agent you @mention)
+                   e.g. agoryx say "taking internal/x.ts — leaving the CLI to you"
+  agoryx read new          what the others said since your turn began
 
   agoryx table show
   agoryx table ask "question"
@@ -19,6 +57,7 @@ const USAGE = `agoryx — room tools for agents
   agoryx table object  P1 "reason"
   agoryx table support P1 "reason"
   agoryx table evidence P1 "finding" [--source url-or-path]
+                   these also take a settled point or a fact (S1, F1): object S1 when you still dispute it
   agoryx table fact "a fact everyone should rely on"
   agoryx table settle "what is now established" [--q Q1]   (--q: this answers Q1 and closes it)
   agoryx table concede "what I no longer hold, and why" [--on P1]
@@ -33,19 +72,85 @@ const USAGE = `agoryx — room tools for agents
   agoryx diff t7           exactly what turn t7 changed (a patch)
   agoryx diff t7 src/a.ts  only that file
 
+  agoryx read              recent messages: id, who, how long, how it starts
+  agoryx read m12          the full text of message m12 (your turn's delta may give only its start)
+  agoryx read m12 m15      several at once
+
+  Everything else is the full agoryx, as the human has it (agoryx settings, more, stop, new, …):
+  run from your turn, it acts under your own key, so the room records it as yours.
+
 Outside a room turn (someone talking to you directly in your own session), run it
 from the room's workspace and sign it: agoryx table … --as <your id in the room>.
+If several rooms share the workspace, name yours too: --room <room id> (table, diff, read).
+'say' works only during a room turn.
 `;
 
+const cleanRoom = (value) => String(value).replace(/[^\w.-]/g, "");
+
+/** The workspace's .agoryx directory: the one the room turn's inbox is in, or the nearest one up from here. */
 const findAgoryxDir = () => {
-  if (process.env.AGORYX_OPS_DIR) return dirname(resolve(process.env.AGORYX_OPS_DIR));
+  if (process.env.AGORYX_OPS_DIR) {
+    const opsParent = dirname(resolve(process.env.AGORYX_OPS_DIR));
+    // .agoryx/rooms/<room>/ops, or .agoryx/ops from a room that opened before rooms had their own directories
+    return /[\\/]rooms$/.test(dirname(opsParent)) ? dirname(dirname(opsParent)) : opsParent;
+  }
   let dir = process.cwd();
   for (;;) {
-    if (existsSync(join(dir, ".agoryx", "ops"))) return join(dir, ".agoryx");
+    if (existsSync(join(dir, ".agoryx", "ops")) || existsSync(join(dir, ".agoryx", "rooms"))) return join(dir, ".agoryx");
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
+};
+
+/** Rooms that opened in this workspace with their own directories: [{ id, name }]. */
+const roomsHere = (agoryxDir) => {
+  const root = join(agoryxDir, "rooms");
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "room.json")))
+    .map((entry) => {
+      try {
+        return { id: entry.name, name: JSON.parse(readFileSync(join(root, entry.name, "room.json"), "utf8")).name ?? entry.name };
+      } catch {
+        return { id: entry.name, name: entry.name };
+      }
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+};
+
+/**
+ * The directory holding one room's inbox (ops/), table (TABLE.md) and turn patches (turns/). Rooms may
+ * share a workspace, so each has .agoryx/rooms/<room>/. A room turn names it (AGORYX_OPS_DIR, AGORYX_ROOM);
+ * outside one, --room does, or the only room here. Several rooms and no --room is an error, not a guess:
+ * a move on the wrong room's table is worse than none. A workspace no room has opened with per-room
+ * directories yet keeps the older layout straight under .agoryx/.
+ */
+const roomDir = (agoryxDir, flagRoom) => {
+  const named = flagRoom ?? process.env.AGORYX_ROOM;
+  if (named !== undefined) {
+    const room = cleanRoom(named);
+    if (!room || room !== String(named) || room.startsWith(".")) fail(`'${named}' is not a room id`);
+    const dir = join(agoryxDir, "rooms", room);
+    if (!existsSync(dir)) {
+      // A room turn run by an engine from before per-room directories: its inbox is the one it named.
+      if (flagRoom === undefined && process.env.AGORYX_OPS_DIR && roomsHere(agoryxDir).length === 0
+        && dirname(resolve(process.env.AGORYX_OPS_DIR)) === agoryxDir) return agoryxDir;
+      const rooms = roomsHere(agoryxDir);
+      fail(`no room '${room}' in this workspace${rooms.length ? ` — rooms here: ${rooms.map((entry) => `${entry.id} (${entry.name})`).join(", ")}` : ""}`);
+    }
+    return dir;
+  }
+  if (process.env.AGORYX_OPS_DIR) {
+    const selected = dirname(resolve(process.env.AGORYX_OPS_DIR));
+    if (selected !== agoryxDir) return selected;
+  }
+  const rooms = roomsHere(agoryxDir);
+  if (rooms.length === 0) return agoryxDir;
+  if (rooms.length === 1) return join(agoryxDir, "rooms", rooms[0].id);
+  fail(
+    `${rooms.length} rooms share this workspace — say which one with --room <id>:\n${rooms.map((entry) => `  --room ${entry.id}   ${entry.name}`).join("\n")}`,
+  );
 };
 
 const parseArgs = (argv) => {
@@ -74,15 +179,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Who is writing. A room turn sets AGORYX_AGENT; outside one, --as says it, or
- * the agent's own environment hints at it. "unknown" lets the room decide by
- * who is mid-exchange in its own session right now.
+ * the agent's own environment hints at which CLI it is ("kind.claude": a room
+ * may seat two Claudes, and one of them may even be called "claude", so a hint
+ * is never an id). "unknown" lets the room decide by who is mid-exchange in its
+ * own session right now.
  */
 const signer = (flags) => {
   const clean = (value) => String(value).replace(/[^a-z0-9_-]/gi, "");
   if (flags.as) return clean(flags.as) || "unknown";
   if (process.env.AGORYX_AGENT) return clean(process.env.AGORYX_AGENT) || "unknown";
-  if (process.env.CLAUDECODE) return "claude";
-  if (process.env.CODEX_SANDBOX || process.env.CODEX_SANDBOX_NETWORK_DISABLED) return "codex";
+  if (process.env.CLAUDECODE) return "kind.claude";
+  if (process.env.CODEX_SANDBOX || process.env.CODEX_SANDBOX_NETWORK_DISABLED) return "kind.codex";
   return "unknown";
 };
 
@@ -153,21 +260,43 @@ const splitPatch = (text) => {
   return { header, body: lines.join("\n") };
 };
 
-const runDiff = (agoryxDir, ref, path) => {
-  const dir = join(agoryxDir, "turns");
-  const turns = existsSync(dir)
-    ? readdirSync(dir)
-        .filter((name) => /^t\d+\.patch$/.test(name))
-        .map((name) => Number(name.slice(1, -".patch".length)))
-        .sort((a, b) => b - a)
-    : [];
+/** Whether a turn of this room is running now: its marker in .agoryx/live/ has not ended and its process lives. */
+const stillRunning = (agoryxDir, room, id) => {
+  if (room === agoryxDir) return false;
+  try {
+    const entry = JSON.parse(readFileSync(join(agoryxDir, "live", `${basename(room)}.${id}.json`), "utf8"));
+    if (entry.endedAt !== undefined) return false;
+    process.kill(entry.pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+};
+
+/**
+ * A room's turn patches; a room that opened before rooms had their own directories keeps its older
+ * ones in .agoryx/turns/, read too while it is the only room in the workspace.
+ */
+const runDiff = (agoryxDir, room, ref, path) => {
+  const dirs = [join(room, "turns")];
+  if (room !== agoryxDir && roomsHere(agoryxDir).length <= 1) dirs.push(join(agoryxDir, "turns"));
+  const found = new Map();
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSync(dir)) {
+      if (!/^t\d+\.patch$/.test(name)) continue;
+      const n = Number(name.slice(1, -".patch".length));
+      if (!found.has(n)) found.set(n, join(dir, name));
+    }
+  }
+  const turns = [...found.keys()].sort((a, b) => b - a);
   if (!ref) {
     if (turns.length === 0) {
       process.stdout.write("No turn has changed files yet.\n");
       return;
     }
     for (const n of turns.slice(0, 15)) {
-      const { header } = splitPatch(readFileSync(join(dir, `t${n}.patch`), "utf8"));
+      const { header } = splitPatch(readFileSync(found.get(n), "utf8"));
       process.stdout.write(`${header.filter((line) => line !== "#").map((line) => line.replace(/^# ?/, "")).join("\n")}\n\n`);
     }
     if (turns.length > 15) process.stdout.write(`… ${turns.length - 15} older turns: agoryx diff t<N>\n`);
@@ -175,8 +304,11 @@ const runDiff = (agoryxDir, ref, path) => {
   }
   const id = /^t?\d+$/.test(ref) ? `t${ref.replace(/^t/, "")}` : null;
   if (!id) fail(`'${ref}' is not a turn id (like t7) — agoryx diff lists them`);
-  const file = join(dir, `${id}.patch`);
-  if (!existsSync(file)) fail(`turn ${id} changed no files (or its patch is gone) — agoryx diff lists the ones that did`);
+  const file = found.get(Number(id.slice(1)));
+  if (!file && stillRunning(agoryxDir, room, id)) {
+    fail(`turn ${id} is still running — what it changed is recorded when it ends (agoryx diff ${id} then); until then the files as they are now are in the workspace`);
+  }
+  if (!file) fail(`turn ${id} changed no files (or its patch is gone) — agoryx diff lists the ones that did`);
   const { header, body } = splitPatch(readFileSync(file, "utf8"));
   if (!path) {
     process.stdout.write(`${header.join("\n")}\n${body}`);
@@ -191,30 +323,136 @@ const runDiff = (agoryxDir, ref, path) => {
   process.stdout.write(`${header[0]}\n${section}`);
 };
 
+/**
+ * Messages are kept per room (.agoryx/messages/<room>/), since rooms may share a
+ * workspace. A room turn names its room in AGORYX_ROOM; outside one, --room does,
+ * or the only room here, or the one that spoke last (said on stderr).
+ */
+const messagesDir = (agoryxDir, flagRoom) => {
+  const root = join(agoryxDir, "messages");
+  const clean = (value) => String(value).replace(/[^\w.-]/g, "");
+  const named = flagRoom ?? process.env.AGORYX_ROOM;
+  if (named) {
+    const room = clean(named);
+    if (!room || room !== String(named) || room.startsWith(".")) fail(`'${named}' is not a room id`);
+    return join(root, room);
+  }
+  const rooms = existsSync(root)
+    ? readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => ({ name: entry.name, mtime: statSync(join(root, entry.name)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+    : [];
+  if (rooms.length === 0) return join(root, "-");
+  if (rooms.length > 1) process.stderr.write(`agoryx: ${rooms.length} rooms share this workspace; reading ${rooms[0].name} (--room <id> for another)\n`);
+  return join(root, rooms[0].name);
+};
+
+/**
+ * Messages after the last one this turn's delta covered (AGORYX_SEEN), in full, but not the reader's own:
+ * what the others said while this turn was running — their updates, a reply, the human.
+ */
+const readNew = (dir) => {
+  const seen = /^m(\d+)$/.exec(process.env.AGORYX_SEEN ?? "");
+  if (!seen) fail("'read new' works during a room turn — outside one, 'agoryx read' lists recent messages");
+  const me = process.env.AGORYX_AGENT;
+  const fresh = existsSync(dir)
+    ? readdirSync(dir)
+        .filter((name) => /^m\d+\.md$/.test(name))
+        .map((name) => Number(name.slice(1, -".md".length)))
+        .filter((n) => n > Number(seen[1]))
+        .sort((a, b) => a - b)
+        .map((n) => readFileSync(join(dir, `m${n}.md`), "utf8"))
+        .filter((text) => text.split("\n", 1)[0].split(" · ")[1] !== me)
+    : [];
+  process.stdout.write(fresh.length ? fresh.join("\n") : "Nothing new since your turn began.\n");
+};
+
+const runRead = (agoryxDir, argv) => {
+  const { positional: refs, flags } = parseArgs(argv);
+  const dir = messagesDir(agoryxDir, flags.room);
+  if (refs.length === 1 && refs[0] === "new") {
+    readNew(dir);
+    return;
+  }
+  if (refs.length === 0) {
+    const all = existsSync(dir)
+      ? readdirSync(dir)
+          .filter((name) => /^m\d+\.md$/.test(name))
+          .map((name) => Number(name.slice(1, -".md".length)))
+          .sort((a, b) => b - a)
+      : [];
+    if (all.length === 0) {
+      process.stdout.write("No messages yet.\n");
+      return;
+    }
+    for (const n of all.slice(0, 20)) {
+      const [header, , ...body] = readFileSync(join(dir, `m${n}.md`), "utf8").split("\n");
+      const text = body.join("\n").trim();
+      const start = text.replace(/\s+/g, " ").slice(0, 100);
+      process.stdout.write(`${header.replace(/^# /, "")} · ${text.length} chars\n   ${start}${text.length > 100 ? " …" : ""}\n`);
+    }
+    if (all.length > 20) process.stdout.write(`… ${all.length - 20} older messages: agoryx read m<N>\n`);
+    return;
+  }
+  const out = [];
+  for (const ref of refs) {
+    const id = /^m?\d+$/.test(ref) ? `m${ref.replace(/^m/, "")}` : null;
+    if (!id) fail(`'${ref}' is not a message id (like m12) — agoryx read lists them`);
+    const file = join(dir, `${id}.md`);
+    if (!existsSync(file)) fail(`no message ${id} — agoryx read lists recent ones`);
+    out.push(readFileSync(file, "utf8"));
+  }
+  process.stdout.write(out.join("\n"));
+};
+
 const main = async () => {
   const [command, verb, ...args] = process.argv.slice(2);
   if (!command || command === "help" || command === "--help" || command === "-h") {
     process.stdout.write(USAGE);
     return;
   }
-  if (command !== "table" && command !== "diff") fail(`inside a room only 'agoryx table …' and 'agoryx diff …' are available\n\n${USAGE}`);
+  if (command !== "table" && command !== "diff" && command !== "read" && command !== "say") {
+    const full = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "agoryx.js"), command, ...(verb === undefined ? [] : [verb]), ...args], {
+      stdio: "inherit",
+      env: process.env,
+    });
+    if (full.error) fail(`could not run agoryx ${command}: ${full.error.message}`);
+    process.exit(full.status ?? 1);
+  }
 
   const agoryxDir = findAgoryxDir();
   if (!agoryxDir) fail("not inside an Agoryx room workspace (no .agoryx/ directory found)");
+  if (command === "read") {
+    runRead(agoryxDir, verb ? [verb, ...args] : []);
+    return;
+  }
+  const { positional, flags } = parseArgs(verb ? [verb, ...args] : []);
+  const room = roomDir(agoryxDir, flags.room);
   if (command === "diff") {
-    runDiff(agoryxDir, verb, args[0]);
+    runDiff(agoryxDir, room, positional[0], positional[1]);
     return;
   }
 
+  if (command === "say") {
+    const text = positional.length === 1 && positional[0] === "-" ? readFileSync(0, "utf8") : positional.join(" ");
+    if (!text.trim()) fail(`'say' needs text, e.g. agoryx say "taking internal/x.ts"`);
+    const unknown = Object.keys(flags).filter((flag) => flag !== "as" && flag !== "room");
+    if (unknown.length) fail(`'say' does not take ${unknown.map((flag) => `--${flag}`).join(", ")}`);
+    await send(room, signer(flags), { op: "say", text });
+    return;
+  }
+
+  positional.shift();
   if (!verb || verb === "show") {
-    const tableFile = process.env.AGORYX_TABLE || join(agoryxDir, "TABLE.md");
+    const tableFile = join(room, "TABLE.md");
     process.stdout.write(existsSync(tableFile) ? readFileSync(tableFile, "utf8") : "The table is empty.\n");
     return;
   }
 
-  const { positional, flags } = parseArgs(args);
   const agent = signer(flags);
   delete flags.as;
+  delete flags.room;
   // A long markdown body (diagrams, html) is easier to pass as a file or on stdin than as one shell argument.
   if (flags["body-file"]) {
     try {
@@ -228,8 +466,13 @@ const main = async () => {
   }
   const op = buildOp(verb, positional, flags);
   for (const key of Object.keys(op)) if (op[key] === undefined) delete op[key];
+  await send(room, agent, op);
+};
+
+/** Queue an op in the room's inbox and wait briefly for the room to ack it. */
+const send = async (room, agent, op) => {
   const nonce = randomBytes(6).toString("hex");
-  const opsDir = process.env.AGORYX_OPS_DIR || join(agoryxDir, "ops");
+  const opsDir = join(room, "ops");
   mkdirSync(opsDir, { recursive: true });
   appendFileSync(join(opsDir, `${agent}.jsonl`), `${JSON.stringify({ ...op, nonce })}\n`);
 

@@ -1,11 +1,33 @@
-import { ArrowUpIcon, PlayIcon, SquareIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  CornerDownLeftIcon,
+  EyeIcon,
+  FileIcon,
+  FolderOpenIcon,
+  GitBranchIcon,
+  LoaderCircleIcon,
+  PlayIcon,
+  PlusIcon,
+  Settings2Icon,
+  ShieldCheckIcon,
+  SquareIcon,
+  UsersIcon,
+  WifiOffIcon,
+} from "lucide-react";
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Kbd } from "@/components/ui/kbd";
+import { Avatar, Stats } from "@/components/room/bits";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { local, Unauthorized } from "@/lib/api";
-import { plural } from "@/lib/format";
-import { participant } from "@/lib/room";
+import { baseName, names as nameList, plural } from "@/lib/format";
+import type { AgentModels, RoomAgent, RoomState } from "@/lib/types";
+import { useModels } from "@/lib/models";
+import { ModelMenu } from "@/components/room/ModelMenu";
+import { ink, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -15,23 +37,12 @@ const fail = (error: unknown) => {
 
 const dot = "size-2 shrink-0 rounded-full";
 
+/** Notes that stand above the composer: the room is driven elsewhere, or an agent is being talked to directly. */
 export function StatusBar() {
   const snap = useStore((s) => s.snap);
-  const post = useStore((s) => s.post);
-  const [busy, setBusy] = useState(false);
-  const run = snap?.state.runs.at(-1);
-  useEffect(() => setBusy(false), [run?.id, run?.status, run?.budget]);
   if (!snap) return null;
   const st = snap.state;
-  const working = st.agents.filter((a) => snap.presence?.[a.id] === "working").map((a) => a.label);
   const native = st.agents.filter((a) => snap.presence?.[a.id] === "native");
-  const act = (suffix: string) => {
-    setBusy(true);
-    post(suffix).catch((error) => {
-      setBusy(false);
-      fail(error);
-    });
-  };
   const rows = [];
   if (!snap.driven) {
     rows.push(
@@ -40,53 +51,27 @@ export function StatusBar() {
         <span>Лише перегляд — кімнату веде інший процес agoryx{snap.lockedBy ? ` (${snap.lockedBy})` : ""}.</span>
       </div>,
     );
-  } else if (run?.status === "active") {
-    rows.push(
-      <div key="run" className="flex items-center gap-2.5">
-        <span className={cn(dot, "animate-breathe bg-primary")} />
-        <span className="min-w-0 flex-1 truncate">
-          {working.length ? `${working.join(" і ")} ${working.length > 1 ? "працюють" : "працює"}` : "Розмова триває"}
-          <span className="tabular text-faint"> · хід {run.used} з {run.budget}</span>
-        </span>
-        <Button size="sm" variant="ghost" className="h-7 text-destructive hover:bg-destructive-soft hover:text-destructive" disabled={busy} onClick={() => act("/stop")}>
-          <SquareIcon className="size-3 fill-current" />
-          Зупинити
-        </Button>
-      </div>,
-    );
-  } else if (run?.endReason === "budget" || run?.endReason === "stopped") {
-    rows.push(
-      <div key="wait" className="flex items-center gap-2.5">
-        <span className={cn(dot, "bg-amber")} />
-        <span className="min-w-0 flex-1">
-          {run.endReason === "budget"
-            ? `Агенти зробили ${plural(run.used, "хід", "ходи", "ходів")} і чекають на вас. Напишіть або дайте їм продовжити.`
-            : "Розмову зупинено."}
-        </span>
-        <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => act("/continue")}>
-          <PlayIcon className="size-3 fill-current" />
-          Продовжити
-        </Button>
-      </div>,
-    );
   }
   for (const a of native) {
-    const tone = participant(st, a.id).tone;
+    const who = participant(st, a.id);
     rows.push(
       <div key={`n-${a.id}`} className="flex items-center gap-2.5 text-muted-foreground">
-        <span className={cn(dot, "animate-breathe", tone === "codex" ? "bg-codex" : "bg-claude")} />
+        <span className={cn(dot, "animate-breathe", who.tone === "codex" ? "bg-codex" : "bg-claude")} style={ink(who)} />
         <span>З {a.label} зараз говорять напряму, у власній сесії — хід у кімнаті почнеться після цього.</span>
       </div>,
     );
   }
   if (!rows.length) return null;
-  return <div className="mx-auto flex w-full max-w-[860px] flex-col gap-1.5 px-4 pb-2 text-[13px] sm:px-8">{rows}</div>;
+  return <div className="flex w-full flex-col gap-1.5 px-1 text-[13px]">{rows}</div>;
 }
 
 export const autosize = (ta: HTMLTextAreaElement | null, max = 0.4) => {
   if (!ta) return;
   ta.style.height = "auto";
-  ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * max))}px`;
+  const limit = Math.round(window.innerHeight * max);
+  ta.style.height = `${Math.min(ta.scrollHeight, limit)}px`;
+  // A scrollbar only once the text outgrows the limit, never for a pixel of rounding.
+  ta.style.overflowY = ta.scrollHeight > limit + 1 ? "auto" : "hidden";
 };
 
 export function Composer() {
@@ -157,13 +142,14 @@ export function Composer() {
       el?.setSelectionRange(pos, pos);
     });
   };
-  const names = room.agents.map((a) => a.label).join(" і ");
+  const names = nameList(room.agents.map((a) => a.label));
 
   return (
-    <div className="mx-auto w-full max-w-[860px] px-3 pb-3 sm:px-8 sm:pb-5">
+    <div className="flex w-full flex-col gap-2">
+      <RoomStrip />
       <form
         className={cn(
-          "group/composer rounded-[20px] border border-input bg-card shadow-soft transition focus-within:border-ring/60 focus-within:shadow-lift",
+          "rounded-[18px] border border-input bg-card shadow-soft transition focus-within:border-ring/60 focus-within:shadow-lift",
           !driven && "opacity-60",
         )}
         onSubmit={(event) => {
@@ -171,44 +157,284 @@ export function Composer() {
           void send();
         }}
       >
-        <textarea
-          ref={ta}
-          rows={1}
-          value={text}
-          disabled={!driven}
-          onChange={(event) => change(event.target.value)}
-          onKeyDown={onKey}
-          placeholder={driven ? `Напишіть ${names}…` : "Кімнату веде інший процес — лише перегляд"}
-          aria-label="Повідомлення"
-          className="scroll-thin block max-h-[40vh] min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed outline-none placeholder:text-faint"
-        />
-        <div className="flex items-center gap-1.5 px-2.5 pb-2.5">
-          {room.agents.map((a) => {
-            const tone = participant(room, a.id).tone;
-            return (
-              <button
-                key={a.id}
-                type="button"
-                disabled={!driven}
-                onClick={() => mention(a.id)}
-                title={`Звернутися лише до ${a.label}`}
-                className={cn(
-                  "h-7 rounded-full px-2.5 font-mono text-[12px] font-medium transition disabled:pointer-events-none",
-                  tone === "codex" ? "text-codex hover:bg-codex-soft" : "text-claude hover:bg-claude-soft",
-                )}
-              >
-                @{a.id}
-              </button>
-            );
-          })}
-          <span className="ml-auto hidden items-center gap-1 text-[11.5px] text-faint sm:flex">
-            <Kbd>Enter</Kbd> надіслати · <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> новий рядок
-          </span>
-          <Button type="submit" size="icon" className="ml-auto size-8 rounded-full sm:ml-2" disabled={!driven || sending || !text.trim()} aria-label="Надіслати" title="Надіслати (Enter)">
-            <ArrowUpIcon className="size-4" />
+        <div className="flex items-end gap-2 py-1.5 pr-2 pl-4">
+          <textarea
+            ref={ta}
+            rows={1}
+            value={text}
+            disabled={!driven}
+            onChange={(event) => change(event.target.value)}
+            onKeyDown={onKey}
+            placeholder={driven ? `Напишіть ${names}…` : "Кімнату веде інший процес — лише перегляд"}
+            aria-label="Повідомлення"
+            title="Enter — надіслати, Shift+Enter — новий рядок"
+            className="scroll-thin block max-h-[40vh] min-h-[44px] overflow-y-hidden flex-1 resize-none bg-transparent py-2.5 text-[15px] leading-relaxed outline-none placeholder:text-faint"
+          />
+          <Button
+            type="submit"
+            size="icon"
+            variant={text.trim() ? "default" : "ghost"}
+            className={cn("mb-1 size-8 shrink-0 rounded-full", !text.trim() && "text-faint")}
+            disabled={!driven || sending || !text.trim()}
+            aria-label="Надіслати"
+            title="Надіслати (Enter)"
+          >
+            {text.trim() ? <ArrowUpIcon className="size-4" /> : <CornerDownLeftIcon className="size-4" />}
           </Button>
         </div>
       </form>
+      <ToolRow driven={driven} mention={mention} />
     </div>
+  );
+}
+
+/** Lines the room's turns changed, per file: what the strip's +/− counts and its list opens. */
+const roomChanges = (room: RoomState) => {
+  const files = new Map<string, { path: string; added: number; removed: number; status: string; turnId: string; binary: boolean }>();
+  for (const turn of room.turns) {
+    for (const c of turn.changes ?? []) {
+      const was = files.get(c.path);
+      files.set(c.path, {
+        path: c.path,
+        added: (was?.added ?? 0) + (c.added ?? 0),
+        removed: (was?.removed ?? 0) + (c.removed ?? 0),
+        status: c.status,
+        turnId: turn.id,
+        binary: (was?.binary ?? false) || c.added === null,
+      });
+    }
+  }
+  const list = [...files.values()];
+  return { list, added: list.reduce((n, f) => n + f.added, 0), removed: list.reduce((n, f) => n + f.removed, 0) };
+};
+
+/** Above the composer: where the room works (folder, branch), what its turns changed, and the run's state with its one action. */
+function RoomStrip() {
+  const snap = useStore((s) => s.snap);
+  const post = useStore((s) => s.post);
+  const openDialog = useStore((s) => s.openDialog);
+  const [busy, setBusy] = useState(false);
+  const run = snap?.state.runs.at(-1);
+  useEffect(() => setBusy(false), [run?.id, run?.status, run?.budget]);
+  if (!snap) return null;
+  const room = snap.state;
+  const changes = roomChanges(room);
+  const working = room.agents.filter((a) => snap.presence?.[a.id] === "working").map((a) => a.label);
+  const act = (suffix: string) => {
+    setBusy(true);
+    post(suffix).catch((error) => {
+      setBusy(false);
+      fail(error);
+    });
+  };
+  const active = snap.driven && run?.status === "active";
+  const waiting = snap.driven && !active && (run?.endReason === "budget" || run?.endReason === "stopped");
+  const folder = room.worktree ? baseName(room.worktree.repo) : baseName(room.workspace);
+
+  return (
+    <div className="flex min-h-10 items-center gap-2 rounded-[14px] bg-secondary/70 py-1.5 pr-1.5 pl-3.5 text-[13px]">
+      <button
+        type="button"
+        onClick={() => openDialog({ kind: "files" })}
+        title={room.workspace}
+        className="flex min-w-0 shrink items-center gap-2.5 font-mono text-[12.5px] text-muted-foreground transition hover:text-foreground"
+      >
+        <span className="truncate">{folder}</span>
+        {room.worktree ? (
+          <span className="hidden min-w-0 items-center gap-1 truncate sm:flex">
+            <GitBranchIcon className="size-3.5 shrink-0 opacity-70" />
+            <span className="truncate">{room.worktree.branch}</span>
+          </span>
+        ) : null}
+      </button>
+      {active || waiting ? (
+        <span className="flex min-w-0 flex-1 items-center justify-end gap-2 truncate text-[13px]">
+          <span className={cn(dot, active ? "animate-breathe bg-primary" : "bg-amber")} />
+          <span className="truncate">
+            {active
+              ? working.length
+                ? `${nameList(working)} ${working.length > 1 ? "працюють" : "працює"}`
+                : "Розмова триває"
+              : run!.endReason === "budget"
+                ? `${plural(run!.used, "хід", "ходи", "ходів")} зроблено — чекають на вас`
+                : "Зупинено"}
+            {active ? <span className="tabular text-faint"> · хід {run!.used}{run!.budget !== null ? ` з ${run!.budget}` : ""}</span> : null}
+          </span>
+        </span>
+      ) : (
+        <span className="flex-1" />
+      )}
+      {changes.list.length ? <ChangesPill changes={changes} /> : null}
+      {active ? (
+        <Button size="sm" variant="outline" className="h-7 rounded-[9px] bg-card text-destructive hover:bg-destructive-soft hover:text-destructive" disabled={busy} onClick={() => act("/stop")}>
+          <SquareIcon className="size-3 fill-current" />
+          Зупинити
+        </Button>
+      ) : waiting ? (
+        <Button size="sm" variant="outline" className="h-7 rounded-[9px] bg-card" disabled={busy} onClick={() => act("/continue")}>
+          <PlayIcon className="size-3 fill-current" />
+          Продовжити
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function ChangesPill({ changes }: { changes: ReturnType<typeof roomChanges> }) {
+  const openDialog = useStore((s) => s.openDialog);
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title="Рядки, які змінили ходи агентів у цій кімнаті"
+          className="tabular inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[9px] border border-border bg-card px-2.5 font-mono text-[12.5px] transition hover:border-ring/50"
+        >
+          <span className="text-add-ink">+{changes.added.toLocaleString("en-US")}</span>
+          <span className="text-del-ink">−{changes.removed.toLocaleString("en-US")}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[340px] p-1">
+        <div className="px-2 py-1.5 text-[11.5px] text-muted-foreground">
+          {plural(changes.list.length, "файл", "файли", "файлів")} змінено ходами агентів — натисніть, щоб побачити останню зміну
+        </div>
+        <div className="scroll-thin max-h-[40vh] overflow-y-auto">
+          {changes.list.map((f) => (
+            <button
+              key={f.path}
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                openDialog({ kind: "turn-diff", turnId: f.turnId, path: f.path });
+              }}
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
+            >
+              <FileIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
+                <span className="text-muted-foreground">{f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/") + 1) : ""}</span>
+                {baseName(f.path)}
+              </span>
+              <span className="shrink-0 text-[12px]">
+                <Stats added={f.added} removed={f.removed} deleted={f.status === "D"} binary={f.binary} />
+              </span>
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+const ACCESS = [
+  { id: "terminal", label: "Як у терміналі", hint: "Claude — з вашими налаштуваннями, Codex — у своїй пісочниці", icon: ShieldCheckIcon, settings: { access: "workspace", network: true } },
+  { id: "offline", label: "Без мережі", hint: "Запис у теці є, мережі для команд немає", icon: WifiOffIcon, settings: { access: "workspace", network: false } },
+  { id: "readonly", label: "Лише читання", hint: "Агенти нічого не змінюють у теці", icon: EyeIcon, settings: { access: "readonly", network: false } },
+] as const;
+
+/** Below the composer: whom to address, what agents may do, and each agent's model — Claude Code's footer, for a room. */
+function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) => void }) {
+  const room = useStore((s) => s.snap?.state);
+  const presence = useStore((s) => s.snap?.presence);
+  const post = useStore((s) => s.post);
+  const openDialog = useStore((s) => s.openDialog);
+  const models = useModels();
+  if (!room) return null;
+  const mode =
+    room.settings.access === "readonly" ? ACCESS[2] : room.settings.network ? ACCESS[0] : ACCESS[1];
+  const Mode = mode.icon;
+  const running = room.runs.at(-1)?.status === "active";
+  const setMode = (next: (typeof ACCESS)[number]) => {
+    if (next.id === mode.id) return;
+    post("/settings", next.settings).catch(fail);
+  };
+  const quiet = quietButton;
+
+  return (
+    <div className="flex min-h-7 items-center gap-1 px-1">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" className="size-7 rounded-lg text-muted-foreground hover:text-foreground" disabled={!driven} aria-label="Звернутися" title="Звернутися до когось">
+            <PlusIcon className="size-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-[230px]">
+          <DropdownMenuLabel className="text-[11.5px] font-normal text-muted-foreground">Звернутися — будить лише названого</DropdownMenuLabel>
+          {room.agents.map((a) => (
+            <DropdownMenuItem key={a.id} onSelect={() => mention(a.id)}>
+              <Avatar handle={a.id} size={18} />
+              {a.label}
+              <span className="ml-auto font-mono text-[11.5px] text-faint">@{a.id}</span>
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuItem onSelect={() => mention("all")}>
+            <UsersIcon className="size-4" />
+            Усі
+            <span className="ml-auto font-mono text-[11.5px] text-faint">@all</span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => openDialog({ kind: "files" })}>
+            <FolderOpenIcon className="size-4" />
+            Робоча тека
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="sm" className={quiet} disabled={!driven} title={mode.hint}>
+            <Mode className="size-3.5" />
+            <span className="hidden sm:inline">{mode.label}</span>
+            <ChevronDownIcon className="size-3 opacity-60" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-[280px]">
+          <DropdownMenuLabel className="text-[11.5px] font-normal text-muted-foreground">Що агенти можуть робити</DropdownMenuLabel>
+          {ACCESS.map((m) => (
+            <DropdownMenuItem key={m.id} onSelect={() => setMode(m)} className="items-start">
+              <m.icon className="mt-0.5 size-4" />
+              <span className="flex flex-col">
+                {m.label}
+                <span className="text-[11.5px] text-muted-foreground">{m.hint}</span>
+              </span>
+              <CheckIcon className={cn("mt-0.5 ml-auto size-4", m.id === mode.id ? "opacity-100" : "opacity-0")} />
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => openDialog({ kind: "settings" })}>
+            <Settings2Icon className="size-4" />
+            Усі налаштування кімнати…
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <span className="flex-1" />
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-0.5">
+        {room.agents.map((a) => (
+          <AgentModel key={a.id} agent={a} models={models} disabled={!driven} working={presence?.[a.id] === "working"} />
+        ))}
+      </div>
+      {running ? <LoaderCircleIcon className="ml-1 size-4 shrink-0 animate-spin text-primary" aria-label="Агенти працюють" /> : null}
+    </div>
+  );
+}
+
+const quietButton = "h-7 gap-1.5 rounded-lg px-2 text-[12.5px] font-normal text-muted-foreground hover:text-foreground";
+
+/** One agent in the footer: its model and effort, changed right here in one menu (for its next turn). */
+function AgentModel({ agent, models, disabled, working }: { agent: RoomAgent; models: AgentModels | null; disabled: boolean; working: boolean }) {
+  const room = useStore((s) => s.snap?.state);
+  const post = useStore((s) => s.post);
+  const openSession = useStore((s) => s.openSession);
+  if (!room) return null;
+  return (
+    <ModelMenu
+      agent={agent}
+      seating={room}
+      models={models}
+      disabled={disabled}
+      working={working}
+      className={quietButton}
+      onSet={(change) => post("/agent", { agent: agent.id, ...change }).catch(fail)}
+      onSession={() => openSession(agent.id)}
+    />
   );
 }

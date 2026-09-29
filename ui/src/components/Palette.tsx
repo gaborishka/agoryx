@@ -55,7 +55,7 @@ export function Palette() {
                 <FolderOpenIcon />
                 Файли робочої теки
               </CommandItem>
-              <CommandItem onSelect={run(() => openDialog({ kind: "sessions" }))}>
+              <CommandItem onSelect={run(() => useStore.getState().openSession())}>
                 <SquareTerminalIcon />
                 Сесії агентів
               </CommandItem>

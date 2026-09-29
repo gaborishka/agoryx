@@ -5,6 +5,7 @@ import {
   ChevronDownIcon,
   FileTextIcon,
   FileXIcon,
+  InfinityIcon,
   LayoutTemplateIcon,
   MinusIcon,
   PlusIcon,
@@ -13,10 +14,11 @@ import {
   SearchCodeIcon,
   UserIcon,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { FolderBar, useFolderGit } from "@/components/FolderPicker";
 import { Avatar } from "@/components/room/bits";
+import { type ModelChange, ModelMenu } from "@/components/room/ModelMenu";
 import { autosize } from "@/components/room/Composer";
 import { NavButton } from "@/components/room/RoomHeader";
 import { Button } from "@/components/ui/button";
@@ -28,8 +30,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { api, local, Unauthorized } from "@/lib/api";
-import { plural } from "@/lib/format";
+import { names, plural } from "@/lib/format";
+import { useModels } from "@/lib/models";
+import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
+import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const EXAMPLES = [
@@ -50,32 +55,76 @@ const EXAMPLES = [
   },
 ];
 
-const DEFAULT_BUDGET = 8;
+/** No limit: the room goes on until everyone passes, or you stop it. The same default as the daemon's. */
+const DEFAULT_BUDGET: number | null = null;
 const BUDGETS = [4, 8, 16, 32];
 const DOCS = ["README.md", "PLAN.md", "DESIGN.md"];
+
+/** Model and effort chosen here for each agent, by id; a key that is present overrides the roster (null: the CLI's default). */
+type Picks = Record<string, ModelChange>;
+
+const readPicks = (): Picks => {
+  try {
+    const value: unknown = JSON.parse(local.get("start.models") ?? "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Picks) : {};
+  } catch {
+    return {};
+  }
+};
+
+/** The roster's agent with what was picked for it here. */
+const withPick = (agent: RoomAgent, pick: ModelChange | undefined): RoomAgent => {
+  if (!pick) return agent;
+  const next = { ...agent };
+  if ("model" in pick) {
+    if (pick.model) next.model = pick.model;
+    else delete next.model;
+  }
+  if ("effort" in pick) {
+    if (pick.effort) next.effort = pick.effort;
+    else delete next.effort;
+  }
+  return next;
+};
+
+/** An agent as the roster JSON the daemon checks: only the fields it takes. */
+const rosterEntry = ({ id, kind, label, model, effort, profile }: RoomAgent) => ({
+  id,
+  kind,
+  label,
+  ...(model ? { model } : {}),
+  ...(effort ? { effort } : {}),
+  ...(profile === false ? { profile } : {}),
+});
 
 const footChip =
   "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] text-muted-foreground transition hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
-/** You, Claude and Codex at one table: the lines are the conversation between all three. */
-function Seats() {
-  const Line = ({ tone }: { tone: "claude" | "codex" }) => (
-    <span
-      className={cn(
-        "relative block h-px w-10 sm:w-16",
-        tone === "claude"
-          ? "bg-gradient-to-r from-claude/50 to-human/40"
-          : "bg-gradient-to-r from-human/40 to-codex/50",
-      )}
-    >
+/** You and the agents at one table (Claude and Codex unless agents.json says otherwise): the lines are the conversation between all of you. */
+function Seats({ agents }: { agents: RoomAgent[] }) {
+  /** The line to the seat next to you, in that agent's colour (its own shade when its kind repeats). */
+  const Line = ({ agent }: { agent: RoomAgent | undefined }) => {
+    const who = participant({ agents }, agent?.id ?? "");
+    const tone = who.tone === "codex" ? "codex" : "claude";
+    return (
       <span
+        style={ink(who)}
         className={cn(
-          "absolute top-1/2 size-1.5 -translate-y-1/2 rounded-full opacity-0 motion-safe:animate-travel",
-          tone === "claude" ? "bg-claude" : "bg-codex [animation-delay:1.6s]",
+          "relative block h-px w-10 sm:w-16",
+          tone === "claude"
+            ? "bg-gradient-to-r from-claude/50 to-human/40"
+            : "bg-gradient-to-r from-human/40 to-codex/50",
         )}
-      />
-    </span>
-  );
+      >
+        <span
+          className={cn(
+            "absolute top-1/2 size-1.5 -translate-y-1/2 rounded-full opacity-0 motion-safe:animate-travel",
+            tone === "claude" ? "bg-claude" : "bg-codex [animation-delay:1.6s]",
+          )}
+        />
+      </span>
+    );
+  };
   const Seat = ({
     label,
     children,
@@ -90,25 +139,32 @@ function Seats() {
       </span>
     </span>
   );
+  const seat = (agent: RoomAgent) => (
+    <Seat key={agent.id} label={agent.label}>
+      <Avatar handle={agent.id} roster={agents} size={44} />
+    </Seat>
+  );
+  const left = agents.slice(0, Math.ceil(agents.length / 2));
+  const right = agents.slice(left.length);
   return (
     <div className="flex items-start">
-      <Seat label="Claude">
-        <Avatar handle="claude" size={44} />
-      </Seat>
+      <span className="flex gap-3">{left.map(seat)}</span>
       <span className="mx-1.5 mt-[22px]">
-        <Line tone="claude" />
+        <Line agent={left.at(-1)} />
       </span>
       <Seat label="Ви">
         <span className="grid size-11 place-items-center rounded-[30%] bg-human-soft text-human ring-1 ring-human/25 ring-inset">
           <UserIcon className="size-5" />
         </span>
       </Seat>
-      <span className="mx-1.5 mt-[22px]">
-        <Line tone="codex" />
-      </span>
-      <Seat label="Codex">
-        <Avatar handle="codex" size={44} />
-      </Seat>
+      {right.length ? (
+        <>
+          <span className="mx-1.5 mt-[22px]">
+            <Line agent={right[0]} />
+          </span>
+          <span className="flex gap-3">{right.map(seat)}</span>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -238,26 +294,40 @@ function BudgetChip({
   budget,
   onBudget,
 }: {
-  budget: number;
-  onBudget: (n: number) => void;
+  budget: number | null;
+  onBudget: (n: number | null) => void;
 }) {
-  const set = (n: number) => onBudget(Math.min(100, Math.max(1, n)));
+  const set = (n: number | null) => onBudget(n === null ? null : Math.min(100, Math.max(1, n)));
+  // The stepper starts from a middling limit when there is none yet.
+  const step = budget ?? BUDGETS[1]!;
   return (
     <Popover>
       <PopoverTrigger className={footChip}>
-        <RepeatIcon className="size-3.5 shrink-0" />
+        {budget === null ? <InfinityIcon className="size-3.5 shrink-0" /> : <RepeatIcon className="size-3.5 shrink-0" />}
         <span className="tabular text-foreground">
-          {plural(budget, "хід", "ходи", "ходів")}
+          {budget === null ? "без ліміту ходів" : plural(budget, "хід", "ходи", "ходів")}
         </span>
         <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-80 rounded-xl p-3">
         <PopHead
           title="Ходів на ваше повідомлення"
-          text="Скільки ходів Claude і Codex разом можуть зробити після кожного вашого повідомлення. Далі кімната чекає на вас — або стихає раніше, коли агентам нема що додати."
+          text="Без ліміту агенти працюють, доки комусь є що додати: кімната стихає сама, коли всі пасують, а зупинити її можна будь-коли. З лімітом — після стількох ходів кімната чекає на вас."
         />
         <div className="mt-3 flex items-center gap-2">
-          <div className="grid flex-1 grid-cols-4 gap-1 rounded-lg bg-muted p-1">
+          <div className="grid flex-1 grid-cols-5 gap-1 rounded-lg bg-muted p-1">
+            <button
+              type="button"
+              aria-label="Без ліміту"
+              title="Без ліміту"
+              onClick={() => set(null)}
+              className={cn(
+                "grid h-7 place-items-center rounded-md transition",
+                budget === null ? "bg-card text-foreground shadow-soft" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <InfinityIcon className="size-3.5" />
+            </button>
             {BUDGETS.map((n) => (
               <button
                 key={n}
@@ -278,41 +348,46 @@ function BudgetChip({
             <button
               type="button"
               aria-label="Менше"
-              onClick={() => set(budget - 1)}
+              onClick={() => set(step - 1)}
               className="grid size-8 place-items-center text-muted-foreground hover:text-foreground"
             >
               <MinusIcon className="size-3.5" />
             </button>
             <span className="tabular w-7 text-center text-[13px] font-semibold">
-              {budget}
+              {budget ?? "—"}
             </span>
             <button
               type="button"
               aria-label="Більше"
-              onClick={() => set(budget + 1)}
+              onClick={() => set(step + 1)}
               className="grid size-8 place-items-center text-muted-foreground hover:text-foreground"
             >
               <PlusIcon className="size-3.5" />
             </button>
           </div>
         </div>
-        <p className="mt-2.5 text-[12px] text-faint">
-          Незалежні перші відповіді теж рахуються — це вже 2 ходи.
-        </p>
+        {budget !== null && (
+          <p className="mt-2.5 text-[12px] text-faint">
+            Незалежні перші відповіді теж рахуються — це вже 2 ходи.
+          </p>
+        )}
       </PopoverContent>
     </Popover>
   );
 }
 
-function Steps({ budget }: { budget: number }) {
+function Steps({ budget }: { budget: number | null }) {
   const steps = [
     {
-      title: "Наосліп",
-      text: "Обидва відповідають одночасно, не бачачи одне одного.",
+      title: "Разом",
+      text: "Беруться одночасно з того самого місця й кажуть по ходу, хто що робить.",
     },
     {
       title: "По черзі",
-      text: `Бачать усе сказане й продовжують — до ${plural(budget, "ходу", "ходів", "ходів")}, потім чекають на вас.`,
+      text:
+        budget === null
+          ? "Бачать усе сказане й продовжують, доки комусь є що додати; стихають, коли всі пасують."
+          : `Бачать усе сказане й продовжують — до ${plural(budget, "ходу", "ходів", "ходів")}, потім чекають на вас.`,
     },
     {
       title: "Стіл",
@@ -350,7 +425,7 @@ export function StartScreen() {
   const [worktree, setWorktree] = useState(() => local.get("worktree") === "1");
   const [base, setBase] = useState<string | null>(null);
   const [doc, setDoc] = useState<string | null | undefined>(undefined);
-  const [budget, setBudget] = useState(() => {
+  const [budget, setBudget] = useState<number | null>(() => {
     const n = Number.parseInt(local.get("budget") ?? "", 10);
     return n >= 1 && n <= 100 ? n : DEFAULT_BUDGET;
   });
@@ -365,16 +440,47 @@ export function StartScreen() {
     setWorktree(on);
     local.set("worktree", on ? "1" : null);
   };
-  const changeBudget = (n: number) => {
+  const changeBudget = (n: number | null) => {
     setBudget(n);
-    local.set("budget", n === DEFAULT_BUDGET ? null : String(n));
+    local.set("budget", n === DEFAULT_BUDGET || n === null ? null : String(n));
   };
   const inWorktree = Boolean(folder && git?.head && worktree);
   const [busy, setBusy] = useState(false);
+  // Who a new room seats: the daemon's roster (agents.json), Claude and Codex until it answers.
+  const [agents, setAgents] = useState<RoomAgent[]>(DEFAULT_AGENTS);
+  // A broken roster file (agents.json): said here, and no room is started until it reads again.
+  const [rosterError, setRosterError] = useState<string | null>(null);
+  const who = names(agents.map((a) => a.label));
+  const models = useModels();
+  const [picks, setPicks] = useState<Picks>(readPicks);
+  const seated = agents.map((agent) => withPick(agent, picks[agent.id]));
+  // The roster goes with the new room only when a model or effort here differs from it.
+  const picked = seated.some((agent, i) => agent.model !== agents[i]!.model || agent.effort !== agents[i]!.effort);
+  const pick = (id: string, change: ModelChange) =>
+    setPicks((prev) => {
+      const next = { ...prev, [id]: { ...prev[id], ...change } };
+      local.set("start.models", JSON.stringify(next));
+      return next;
+    });
+  const loadRoster = useCallback(() => {
+    api<{ agents?: RoomAgent[]; rosterError?: string }>("GET", "/api/info")
+      .then((info) => {
+        setRosterError(info.rosterError ?? null);
+        if (info.agents?.length) setAgents(info.agents);
+      })
+      .catch(() => {});
+  }, []);
   useEffect(() => {
     document.title = "Нова кімната · Agoryx";
     setTimeout(() => ta.current?.focus(), 30);
-  }, []);
+    loadRoster();
+  }, [loadRoster]);
+  // Fixed in an editor meanwhile: read again when the window is back.
+  useEffect(() => {
+    if (!rosterError) return;
+    window.addEventListener("focus", loadRoster);
+    return () => window.removeEventListener("focus", loadRoster);
+  }, [rosterError, loadRoster]);
   useLayoutEffect(() => autosize(ta.current, 0.4), [text]);
   const change = (value: string) => {
     setText(value);
@@ -383,7 +489,7 @@ export function StartScreen() {
   const submit = async (event?: { preventDefault: () => void }) => {
     event?.preventDefault();
     const body = text.trim();
-    if (!body || busy) return;
+    if (!body || busy || rosterError) return;
     setBusy(true);
     try {
       const { room } = await api<{ room: { id: string } }>(
@@ -395,6 +501,7 @@ export function StartScreen() {
           ...(inWorktree ? { worktree: true, ...(base ? { base } : {}) } : {}),
           ...(budget !== DEFAULT_BUDGET ? { budget } : {}),
           ...(doc !== undefined ? { doc } : {}),
+          ...(picked ? { agents: seated.map(rosterEntry) } : {}),
         },
       );
       local.set("draft.new", null);
@@ -423,15 +530,15 @@ export function StartScreen() {
       <div className="scroll-thin relative flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col justify-center gap-8 px-4 py-10 sm:px-6">
           <div className="flex flex-col items-center gap-5 text-center">
-            <Seats />
+            <Seats agents={agents} />
             <div className="flex flex-col items-center gap-2.5">
               <h1 className="font-serif text-[clamp(28px,4.4vw,40px)] leading-[1.1] font-semibold tracking-tight text-balance">
                 {first
-                  ? "Спільна кімната для вас, Claude і Codex"
+                  ? `Спільна кімната для вас, ${who}`
                   : "Про що поговоримо?"}
               </h1>
               <p className="max-w-[52ch] text-[15px] leading-relaxed text-pretty text-muted-foreground">
-                Одна розмова на трьох. Кожен агент працює у власній рідній
+                Одна розмова на всіх. Кожен агент працює у власній рідній
                 сесії, з усіма своїми інструментами, і бачить усе, що сказано в
                 кімнаті.
               </p>
@@ -472,11 +579,23 @@ export function StartScreen() {
                     void submit();
                   }
                 }}
-                placeholder="Опишіть задачу чи питання для Claude і Codex…"
+                placeholder={`Опишіть задачу чи питання для ${who}…`}
                 aria-label="Перше повідомлення"
                 className="scroll-thin block min-h-[108px] w-full resize-none bg-transparent px-5 pt-4 text-[16px] leading-relaxed outline-none placeholder:text-faint"
               />
               <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2.5">
+                {seated.map((agent) => (
+                  <ModelMenu
+                    key={agent.id}
+                    agent={agent}
+                    seating={{ agents: seated }}
+                    models={models}
+                    side="bottom"
+                    className="h-8 rounded-full px-2.5 text-[12.5px] text-muted-foreground hover:text-foreground"
+                    onSet={(change) => pick(agent.id, change)}
+                  />
+                ))}
+                <span aria-hidden className="mx-0.5 h-4 w-px bg-border" />
                 <DocChip
                   doc={doc}
                   onDoc={setDoc}
@@ -487,7 +606,7 @@ export function StartScreen() {
                   type="submit"
                   size="icon"
                   className="ml-auto size-9 rounded-full"
-                  disabled={busy || !text.trim()}
+                  disabled={busy || !text.trim() || Boolean(rosterError)}
                   aria-label="Почати"
                   title="Почати (Enter)"
                 >
@@ -495,6 +614,15 @@ export function StartScreen() {
                 </Button>
               </div>
             </form>
+            {rosterError ? (
+              <div role="alert" className="flex flex-col gap-1.5 rounded-2xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-[13px]">
+                <span className="font-semibold text-destructive">Склад агентів не читається — кімнату не почати, доки його не виправлено</span>
+                <span className="font-mono text-[12px] break-words whitespace-pre-wrap text-muted-foreground">{rosterError}</span>
+                <Button type="button" variant="outline" size="sm" className="self-start" onClick={loadRoster}>
+                  Перевірити знову
+                </Button>
+              </div>
+            ) : null}
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 text-[12px] text-faint">
               <span>
                 Назва кімнати — з першого рядка; змінити можна будь-коли

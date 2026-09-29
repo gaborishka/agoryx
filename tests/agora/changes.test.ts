@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { roomTurnPatch } from "../../internal/agora/engine.js";
 import {
   MAX_TURN_PATCH,
+  markTurnLive,
   patchSection,
   prepareWorkspace,
   readTurnPatch,
@@ -97,7 +98,7 @@ test("every turn's exact change is kept; the others see +/− and pull the patch
         agent: "claude",
         match: "build the clock",
         write: { path: "src/clock.ts", content: "export const now = () => Date.now();\nexport const zero = 0;\n" },
-        reply: "Wrote src/clock.ts.",
+        reply: "Wrote src/clock.ts. @codex your turn.",
         once: true,
       },
       {
@@ -121,13 +122,13 @@ test("every turn's exact change is kept; the others see +/− and pull the patch
     const ended = room.store.events.find((event) => event.type === "turn.ended" && event.turnId === claudeTurn.id);
     assert.ok(ended?.type === "turn.ended" && ended.trees && ended.trees.before !== ended.trees.after, "the trees are logged");
 
-    // Codex was woken by Claude's reply: its delta names the change and how to see it.
+    // Codex was woken by Claude's reply (@codex): its delta names the change and how to see it.
     const codexPrompt = room.invocations("codex").at(-1)!.prompt!;
     assert.match(codexPrompt, new RegExp(`↳ changed: src/clock\\.ts \\+2 −0 \\(new\\) — the exact diff: agoryx diff ${claudeTurn.id}`));
     assert.match(codexPrompt, /agoryx diff t7` prints that turn's patch/, "the briefing explains the tool");
 
     // The patch file, and the same thing through the engine.
-    const patchFile = join(ws, ".agoryx", "turns", `${claudeTurn.id}.patch`);
+    const patchFile = join(room.engine.ws.turnsDir, `${claudeTurn.id}.patch`);
     assert.match(readFileSync(patchFile, "utf8"), new RegExp(`^# ${claudeTurn.id} · Claude · `));
     assert.match(room.engine.turnPatch(codexTurn.id)!.patch, /-export const zero = 0;\n\+export const ZERO = 0;/);
 
@@ -148,12 +149,30 @@ test("every turn's exact change is kept; the others see +/− and pull the patch
     assert.match(claudePrompt, new RegExp(`src/clock\\.ts \\+1 −1 — the exact diff: agoryx diff ${codexTurn.id}`));
     assert.doesNotMatch(claudePrompt, new RegExp(`agoryx diff ${claudeTurn.id}\\b`));
 
-    // Losing .agoryx/turns loses nothing: the trees in the log rebuild it.
-    rmSync(join(ws, ".agoryx", "turns"), { recursive: true });
+    // Losing the turns directory loses nothing: the trees in the log rebuild it.
+    rmSync(room.engine.ws.turnsDir, { recursive: true });
     assert.match(roomTurnPatch(room.store, claudeTurn.id)!.patch, /\+export const zero = 0;/);
     assert.equal(roomTurnPatch(room.store, "t999"), null);
   } finally {
     await room.cleanup();
+  }
+});
+
+test("agoryx diff on a turn still running says so, instead of that it changed no files", () => {
+  const ws = mkdtempSync(join(tmpdir(), "agora-running-diff-"));
+  try {
+    mkdirSync(join(ws, ".agoryx", "rooms", "r1", "turns"), { recursive: true });
+    const shim = (turn: string) =>
+      spawnSync(process.execPath, [SHIM, "diff", turn], { cwd: ws, env: { PATH: process.env.PATH!, AGORYX_ROOM: "r1" }, encoding: "utf8" });
+    markTurnLive(ws, { room: "r1", turn: "t2", pid: process.pid, startedAt: Date.now() });
+    const running = shim("t2");
+    assert.notEqual(running.status, 0);
+    assert.match(running.stderr, /turn t2 is still running — what it changed is recorded when it ends/);
+    markTurnLive(ws, { room: "r1", turn: "t2", pid: process.pid, startedAt: Date.now(), endedAt: Date.now() });
+    assert.match(shim("t2").stderr, /turn t2 changed no files/, "once it has ended, no patch means no change");
+    assert.match(shim("t3").stderr, /turn t3 changed no files/);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
   }
 });
 
@@ -237,8 +256,80 @@ test("a turn that changed nothing has no changes and no patch", async () => {
       assert.equal(turn.changes, undefined);
       assert.equal(room.engine.turnPatch(turn.id), null);
     }
-    assert.equal(existsSync(join(room.store.state.workspace, ".agoryx", "turns")), false);
+    assert.equal(existsSync(room.engine.ws.turnsDir), false);
   } finally {
     await room.cleanup();
   }
+});
+
+test("a file two parallel turns both wrote is marked in each change as not that turn's alone", async () => {
+  const room = createTestRoom({
+    rules: [
+      { agent: "claude", match: "glob", earlyWrite: { path: "glob.test.ts", content: "mine\n" }, sleepMs: 1200, write: { path: "glob.ts", content: "x\n" }, reply: "glob.ts is in.", once: true },
+      { agent: "codex", match: "glob", sleepMs: 400, write: { path: "glob.test.ts", content: "codex 1\ncodex 2\n" }, reply: "Tests in.", once: true },
+      { agent: "claude", reply: "::pass::" },
+      { agent: "codex", reply: "::pass::" },
+    ],
+  });
+  try {
+    room.engine.postHuman("Implement glob");
+    await withTimeout(room.engine.waitIdle());
+    const turn = (agent: string) => room.store.state.turns.find((entry) => entry.agent === agent)!;
+    const change = (agent: string, path: string) => turn(agent).changes?.find((entry) => entry.path === path);
+    assert.deepEqual(change("claude", "glob.test.ts")?.with, ["codex"]);
+    assert.deepEqual(change("codex", "glob.test.ts")?.with, ["claude"]);
+    assert.equal(change("claude", "glob.ts")?.with, undefined, "only Claude wrote glob.ts");
+    const prompt = room.invocations("codex").at(-1)!.prompt!;
+    assert.match(prompt, /glob\.test\.ts \+2 −0 \(new; Codex edited it too meanwhile\)|glob\.test\.ts \+\d+ −\d+ \([^)]*Codex edited it too meanwhile\)/);
+    const patch = readFileSync(join(room.store.state.workspace, ".agoryx", "rooms", room.store.state.id, "turns", `${turn("claude").id}.patch`), "utf8");
+    assert.match(patch, /#   glob\.test\.ts .*\(also edited by codex meanwhile\)/);
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a folder that is not a git repository still has each turn's changes tracked — through Agoryx's own shadow repository, the folder gains no .git", async () => {
+  const room = createTestRoom({
+    createdWorkspace: false,
+    rules: [
+      { agent: "claude", match: "fix", write: { path: "src/locale.js", content: "export const fixed = true;\n" }, reply: "Fixed locale.js.", once: true },
+      { reply: "::pass::" },
+    ],
+  });
+  const workspace = room.store.state.workspace;
+  try {
+    writeFileSync(join(workspace, "README.md"), "the human's own file\n");
+    room.engine.postHuman("@claude fix the locale");
+    await withTimeout(room.engine.waitIdle());
+    const turn = room.store.state.turns.find((entry) => entry.agent === "claude")!;
+    assert.deepEqual(turn.changes, [{ path: "src/locale.js", status: "A", added: 1, removed: 0 }]);
+    assert.match(readFileSync(join(workspace, ".agoryx", "rooms", room.store.state.id, "turns", `${turn.id}.patch`), "utf8"), /\+export const fixed = true;/);
+    assert.equal(existsSync(join(workspace, ".git")), false, "the human's folder is not made a repository");
+    assert.ok(existsSync(join(workspace, ".agoryx", "shadow.git", "HEAD")));
+    assert.equal(room.store.state.commits?.length ?? 0, 0, "nothing is committed for a folder Agoryx did not create");
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("the briefing says what the folder is — a room in a folder without git is not told to run git status there", async () => {
+  const briefing = async (createdWorkspace: boolean) => {
+    const room = createTestRoom({ createdWorkspace, rules: [{ reply: "::pass::" }] });
+    try {
+      room.engine.postHuman("@claude look around");
+      await withTimeout(room.engine.waitIdle());
+      return room.invocations("claude")[0]!.prompt!;
+    } finally {
+      await room.cleanup();
+    }
+  };
+  const inGit = await briefing(true);
+  assert.match(inGit, /A shared git directory/);
+  assert.match(inGit, /check `git status` \/ `git diff` before overwriting/);
+
+  const outside = await briefing(false);
+  assert.doesNotMatch(outside, /git directory|check `git status`/);
+  assert.match(outside, /A shared folder — everyone works here/);
+  assert.match(outside, /It is not a git repository \(`git status` there finds none\); Agoryx tracks each turn's changes itself\./);
+  assert.match(outside, /Every turn's exact change is kept/);
 });

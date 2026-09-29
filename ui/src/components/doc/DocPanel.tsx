@@ -16,10 +16,15 @@ import { cn } from "@/lib/utils";
 
 const errText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-const revAuthor = (room: RoomState, r: DocRevision) => (r.by === "agoryx" ? "Початкова версія" : participant(room, r.by).label);
+const revAuthor = (room: RoomState, r: DocRevision) =>
+  r.by === "agoryx" ? "Початкова версія" : r.among ? r.among.map((id) => participant(room, id).label).join(" або ") : participant(room, r.by).label;
+
+/** A revision made during parallel turns has no single author to show a face for. */
+const revHandle = (r: DocRevision) => (r.among ? "agoryx" : r.by);
 
 const revWhere = (room: RoomState, r: DocRevision) => {
   if (r.by === "agoryx") return "з неї кімната почала";
+  if (r.among) return "паралельні ходи — чий саме, не видно";
   const who = participant(room, r.by);
   if (r.turnId) return "хід у кімнаті";
   if (r.native && who.agent) return "у своїй сесії";
@@ -254,7 +259,7 @@ export function DocPanel() {
       else if (rev.text === null) body = <Muted>У цій версії файл видалено.</Muted>;
       else body = rev.diff?.some((i) => "t" in i && i.t !== " ") ? <DocDiff items={rev.diff} /> : <Muted>Текст не змінився.</Muted>;
     }
-    const message = r?.turnId ? room.messages.find((m) => m.turnId === r.turnId) : undefined;
+    const message = r?.turnId ? room.messages.find((m) => m.turnId === r.turnId && m.kind !== "update") : undefined;
     return (
       <div className="px-4 pb-6">
         <Bar>
@@ -264,7 +269,7 @@ export function DocPanel() {
           </Button>
           {r ? (
             <>
-              <Avatar handle={r.by} size={20} />
+              <Avatar handle={revHandle(r)} size={20} />
               <b className="text-[13px]">{revAuthor(room, r)}</b>
               <span className="text-xs text-muted-foreground">
                 <time title={fullDate(r.ts)}>{ago(r.ts)}</time> · {revWhere(room, r)}
@@ -312,7 +317,7 @@ export function DocPanel() {
               return (
                 <li key={r.seq}>
                   <button type="button" onClick={() => setView(r.seq)} className="relative flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-accent">
-                    <Avatar handle={r.by} size={24} className="ring-4 ring-background" />
+                    <Avatar handle={revHandle(r)} size={24} className="ring-4 ring-background" />
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="flex items-center gap-2 text-[13.5px] font-medium">
                         {revAuthor(room, r)}

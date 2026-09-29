@@ -250,6 +250,9 @@ test("settings are validated; an unknown action is 404", async () => {
   const settings = changed.json<{ settings: Record<string, unknown> }>().settings;
   assert.equal(settings.budget, 4);
   assert.notEqual(settings.access, "root");
+  // Back to no limit.
+  const unlimited = await call("POST", `/api/rooms/${room.id}/settings`, { body: { budget: null } });
+  assert.equal(unlimited.json<{ settings: Record<string, unknown> }>().settings.budget, null);
   assert.equal((await call("POST", `/api/rooms/${room.id}/explode`, { body: {} })).status, 404);
   assert.equal((await call("GET", "/api/rooms/no-such-room")).status, 404);
 });
@@ -428,6 +431,34 @@ test("media outside the workspace is served only while a message in the room lin
   }
 });
 
+test("media outside the workspace is served while the table's prose links it too", async () => {
+  const room = await newRoom("Daemon table media");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();
+  const outside = mkdtempSync(join(tmpdir(), "agora-media-"));
+  writeFileSync(join(outside, "chart.png"), "PNG");
+  writeFileSync(join(outside, "100%20 sure.png"), "PCT");
+  const abs = (name: string) => `${snap.rawBase}~abs${join(outside, name).split("/").map(encodeURIComponent).join("/")}`;
+  try {
+    assert.equal((await call("GET", abs("chart.png"), { token: null })).status, 404);
+    const op = await call("POST", `/api/rooms/${room.id}/table`, { body: { op: "propose", title: "Plot", body: `![chart](${join(outside, "chart.png")})` } });
+    assert.equal(op.status, 201, op.body);
+    assert.equal((await call("GET", abs("chart.png"), { token: null })).status, 200, "a proposal body renders through markdown");
+    // A literal %20 in the file's own name survives: the path is decoded once.
+    const text = `![](${encodeURI(join(outside, "100%20 sure.png"))})`;
+    assert.equal((await call("POST", `/api/rooms/${room.id}/messages`, { body: { text } })).status, 201);
+    const pct = await call("GET", abs("100%20 sure.png"), { token: null });
+    assert.equal(pct.status, 200);
+    assert.equal(pct.body, "PCT");
+    writeFileSync(join(outside, "page.htm"), "<p>hi</p>");
+    assert.equal((await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: `[page](${join(outside, "page.htm")})` } })).status, 201);
+    assert.match((await call("GET", abs("page.htm"), { token: null })).headers["content-type"] ?? "", /^text\/html/);
+    // A broken escape in the room part is just not a room.
+    assert.equal((await call("GET", snap.rawBase.replace(/\/raw\/[^/]+\//, "/raw/%E0%A4%A/") + "x.png", { token: null })).status, 404);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test("a file preview reads only its first 2 MB", async () => {
   const room = await newRoom("Daemon big file");
   writeFileSync(join(room.workspace, "big.txt"), "x".repeat(3 * 1024 * 1024));
@@ -437,6 +468,14 @@ test("a file preview reads only its first 2 MB", async () => {
   assert.equal(body.size, 3 * 1024 * 1024);
   assert.equal(body.truncated, true);
   assert.equal(body.text.length, 2 * 1024 * 1024);
+});
+
+test("the table file a message links opens the room's own table", async () => {
+  const room = await newRoom("Daemon table file");
+  assert.equal((await call("POST", `/api/rooms/${room.id}/table`, { body: { op: "propose", title: "Own table" } })).status, 201);
+  const file = await call("GET", `/api/rooms/${room.id}/file?path=.agoryx/TABLE.md`);
+  assert.equal(file.status, 200, file.body);
+  assert.match(file.json<{ text: string }>().text, /Own table/);
 });
 
 test("html and svg fences in a message are served as sandboxed pages, found by the hash of their body", async () => {
@@ -558,4 +597,39 @@ test("the folder picker lists subfolders and says which are git repositories", a
   assert.equal(inside.git.branch, "main");
   assert.deepEqual([...inside.git.branches].sort(), ["feature", "main"]);
   assert.equal((await call("GET", `/api/fs?path=${encodeURIComponent(join(home, "missing"))}`)).status, 404);
+});
+
+test("an agent's own session is read from its CLI's file; its model and effort change through the room", async () => {
+  const room = await newRoom("Sessions");
+  const none = (await call("GET", `/api/rooms/${room.id}/session?agent=claude`)).json<any>();
+  assert.equal(none.sessionId, null, "no turn yet, no session");
+  assert.deepEqual(none.entries, []);
+  assert.equal((await call("GET", `/api/rooms/${room.id}/session?agent=nobody`)).status, 404);
+
+  const done = readEvents(`/api/rooms/${room.id}/events?after=0`, (frame) => frame.event === "room" && frame.data.event.type === "run.ended");
+  await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "Hello both" } });
+  await done;
+  for (const agent of ["claude", "codex"]) {
+    const t = (await call("GET", `/api/rooms/${room.id}/session?agent=${agent}`)).json<any>();
+    assert.ok(t.sessionId && t.file, `${agent}'s session file is found`);
+    assert.ok(t.entries.some((e: any) => e.kind === "user" && e.agoryx), `${agent}: the room's prompt is there, marked`);
+    assert.ok(t.entries.some((e: any) => e.kind === "assistant" && e.text === `${agent} here`), `${agent}: its reply is there`);
+    const same = (await call("GET", `/api/rooms/${room.id}/session?agent=${agent}&size=${t.size}`)).json<any>();
+    assert.equal(same.unchanged, true, "nothing new: nothing sent");
+    assert.equal(same.entries, undefined);
+  }
+
+  const models = await call("GET", "/api/models");
+  assert.equal(models.status, 200);
+  assert.ok(models.json<any>().claude.models.some((m: any) => m.id === "opus"));
+
+  const changed = readEvents(`/api/rooms/${room.id}/events?after=0`, (frame) => frame.event === "room" && frame.data.event.type === "agent.changed");
+  const set = await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "claude", model: "sonnet", effort: "high" } });
+  assert.equal(set.status, 200, set.body);
+  assert.deepEqual(set.json<any>().agent, { id: "claude", kind: "claude", label: "Claude", model: "sonnet", effort: "high" });
+  const frame = (await changed).at(-1)!;
+  assert.equal(frame.data.patch.agents.find((a: any) => a.id === "claude").model, "sonnet", "the stream carries the new roster");
+  assert.match(frame.data.patch.resume.claude, /--model sonnet/, "and the resume command that goes with it");
+  assert.equal((await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "claude", model: "a b" } })).status, 400);
+  assert.equal((await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "nobody", model: "opus" } })).status, 400);
 });

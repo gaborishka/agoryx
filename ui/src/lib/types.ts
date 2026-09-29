@@ -1,3 +1,4 @@
+import type { AgentLook } from "@agora/look";
 import type { AgentPresence, RoomState, TableOp } from "@agora/types";
 
 export type * from "@agora/types";
@@ -9,7 +10,8 @@ export interface RoomSummary {
   createdAt: string;
   updatedAt: string;
   messages: number;
-  lastMessage?: { author: string; text: string };
+  /** `label`: the author's display name when an agent wrote it; `look`: its shade and mark, only next to another of its kind. */
+  lastMessage?: { author: string; text: string; label?: string; look?: AgentLook };
   running: boolean;
   driven?: boolean;
 }
@@ -34,6 +36,8 @@ export interface Snapshot {
   resume: Record<string, string>;
   driven: boolean;
   lockedBy?: string;
+  /** The human's profile: where it is and whether it exists (its text never reaches the UI). */
+  profile?: { path: string; exists: boolean };
 }
 
 export type DiffItem = { t: "+" | "-" | " "; s: string } | { skip: number };

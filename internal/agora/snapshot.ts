@@ -38,7 +38,9 @@ const findTurn = (state: RoomState, turnId: string): TurnState | undefined => {
 export const eventPatch = (state: RoomState, event: RoomEvent): Record<string, unknown> => {
   // The event's own seq, not the state's: a client catching up replays several events against today's
   // state, and a newer seq on the first patch would make it drop the rest as already seen.
-  const base = { seq: event.seq, runs: state.runs, presence: presenceOf(state) };
+  const guest = event.type === "message.posted" ? event.message.from : event.type === "table.op" ? event.op.from : "from" in event ? event.from : undefined;
+  // An agent of another room acted: the client learns who that handle is.
+  const base = { seq: event.seq, runs: state.runs, presence: presenceOf(state), ...(guest ? { guests: state.guests } : {}) };
   switch (event.type) {
     case "message.posted": {
       const message = state.messages.find((entry) => entry.id === event.message.id);
@@ -58,6 +60,8 @@ export const eventPatch = (state: RoomState, event: RoomEvent): Record<string, u
       return { ...base, settings: state.settings };
     case "room.renamed":
       return { ...base, name: state.name };
+    case "agent.changed":
+      return { ...base, agents: state.agents };
     case "commit.created":
       return { ...base, commits: state.commits };
     case "doc.revised":

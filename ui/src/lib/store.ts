@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { create } from "zustand";
 import { api, ApiError, local, roomPath, setUnauthorizedHandler, Unauthorized } from "./api";
+import { lastLine } from "./room";
 import type { AgentPresence, OpEntry, RoomEvent, RoomSummary, RunState, Snapshot, TurnState } from "./types";
 
 /** The right-hand panel holds the shared document; the table is a view of its own. */
@@ -272,7 +273,7 @@ const applyPatch = (event: RoomEvent, patch: Patch) => {
       if (room.id !== st.id) return room;
       const updated = { ...room, name: st.name, running: st.turns.some((t) => t.status === "running"), updatedAt: event.ts };
       if (event.type === "message.posted" && event.message.kind !== "pass" && event.message.kind !== "system") {
-        updated.lastMessage = { author: event.message.author, text: event.message.text.slice(0, 200) };
+        updated.lastMessage = lastLine(st, event.message);
       }
       return updated;
     });

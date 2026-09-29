@@ -7,7 +7,8 @@
 
 type Node = { type: string; value?: string; url?: string; children?: Node[] };
 
-const PATTERN = /(^|[^\w@])@([a-z][\w-]{1,30})\b|\b([QPDNXSF]\d{1,3})\b/gi;
+// An @handle is read as the server reads it (prompts.ts MENTION: 2–32 characters), so the handle that wakes an agent is the one the page tints.
+const PATTERN = /(^|[^\w@])@([a-z][\w-]{1,31})|\b([QPDNXSF]\d{1,3})\b/gi;
 const LOCAL = "/@ws/";
 const LINKED = new Set(["link", "image", "definition"]);
 const isLocal = (url: string) => url !== "" && !/^[a-z][a-z0-9+.-]*:/i.test(url) && !url.startsWith("#") && !url.startsWith("//");

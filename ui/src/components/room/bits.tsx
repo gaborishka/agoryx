@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { clock, fullDate } from "@/lib/format";
-import { nameOf, participant, type Tone, toneText } from "@/lib/room";
+import { ink, nameOf, participant, type Tone, toneText } from "@/lib/room";
 import { useStore } from "@/lib/store";
-import type { MessageEntry } from "@/lib/types";
+import type { MessageEntry, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const toneBg: Record<Tone, string> = {
@@ -41,23 +41,31 @@ export const AgoraGlyph = ({ className }: { className?: string }) => (
   </svg>
 );
 
-/** `kind`: an agent's CLI when there is no room to look it up in (the start screen). */
+/** Below this size a glyph and a corner badge do not both read: the mark takes the glyph's place (the colour still says which CLI). */
+const MARK_INSIDE = 26;
+
+/**
+ * `roster`: who to look the handle up in when there is no room yet (the start screen).
+ * An agent that shares its kind with another gets its own shade of the kind's colour and its mark
+ * (a corner badge, or in place of the glyph on a small avatar); one alone of its kind looks as it always has.
+ */
 export function Avatar({
   handle,
-  kind,
+  roster,
   size = 28,
   live = false,
   className,
 }: {
   handle: string;
-  kind?: "claude" | "codex";
+  roster?: RoomAgent[];
   size?: number;
   live?: boolean;
   className?: string;
 }) {
   const room = useStore((s) => s.snap?.state);
-  const found = participant(room, handle);
-  const p = kind && !found.agent ? { ...found, tone: kind, agent: true, kind } : found;
+  const p = participant(roster ? { agents: roster } : room, handle);
+  const inside = Boolean(p.mark) && size < MARK_INSIDE;
+  const badge = Math.max(12, Math.round(size * 0.46));
   return (
     <span
       className={cn(
@@ -67,10 +75,14 @@ export function Avatar({
         live && ringTone[p.tone],
         className,
       )}
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, ...ink(p) }}
       aria-hidden
     >
-      {p.kind === "claude" ? (
+      {inside ? (
+        <span className="font-bold leading-none" style={{ fontSize: size * 0.5 }}>
+          {p.mark}
+        </span>
+      ) : p.kind === "claude" ? (
         <ClaudeGlyph />
       ) : p.kind === "codex" ? (
         <CodexGlyph />
@@ -81,6 +93,17 @@ export function Avatar({
           {(handle[0] ?? "?").toUpperCase()}
         </span>
       )}
+      {p.mark && !inside ? (
+        <span
+          className={cn(
+            "absolute -right-1 -bottom-1 grid place-items-center rounded-full font-bold leading-none text-background ring-2 ring-background",
+            p.kind === "codex" ? "bg-codex" : "bg-claude",
+          )}
+          style={{ width: badge, height: badge, fontSize: Math.round(badge * 0.66) }}
+        >
+          {p.mark}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -88,7 +111,11 @@ export function Avatar({
 export function Name({ handle, className }: { handle: string; className?: string }) {
   const room = useStore((s) => s.snap?.state);
   const p = participant(room, handle);
-  return <span className={cn("font-semibold", toneText[p.tone], className)}>{nameOf(room, handle)}</span>;
+  return (
+    <span className={cn("font-semibold", toneText[p.tone], className)} style={ink(p)}>
+      {nameOf(room, handle)}
+    </span>
+  );
 }
 
 export function Tip({ tip, children, side }: { tip: ReactNode; children: ReactNode; side?: "top" | "bottom" | "left" | "right" }) {
@@ -124,7 +151,9 @@ export function NativeBadge({ agent, label, tip }: { agent: string; label: strin
   const p = participant(room, agent);
   return (
     <Tip tip={tip}>
-      <span className={cn("inline-flex h-5 items-center rounded-full border border-dashed px-2 text-[11px] font-medium", nativeTone[p.tone])}>{label}</span>
+      <span className={cn("inline-flex h-5 items-center rounded-full border border-dashed px-2 text-[11px] font-medium", nativeTone[p.tone])} style={ink(p)}>
+        {label}
+      </span>
     </Tip>
   );
 }

@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/popover";
 import { api, local, Unauthorized } from "@/lib/api";
 import { names, plural } from "@/lib/format";
-import { DEFAULT_AGENTS } from "@/lib/room";
+import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -61,23 +61,29 @@ const footChip =
 
 /** You and the agents at one table (Claude and Codex unless agents.json says otherwise): the lines are the conversation between all of you. */
 function Seats({ agents }: { agents: RoomAgent[] }) {
-  const Line = ({ tone }: { tone: "claude" | "codex" }) => (
-    <span
-      className={cn(
-        "relative block h-px w-10 sm:w-16",
-        tone === "claude"
-          ? "bg-gradient-to-r from-claude/50 to-human/40"
-          : "bg-gradient-to-r from-human/40 to-codex/50",
-      )}
-    >
+  /** The line to the seat next to you, in that agent's colour (its own shade when its kind repeats). */
+  const Line = ({ agent }: { agent: RoomAgent | undefined }) => {
+    const who = participant({ agents }, agent?.id ?? "");
+    const tone = who.tone === "codex" ? "codex" : "claude";
+    return (
       <span
+        style={ink(who)}
         className={cn(
-          "absolute top-1/2 size-1.5 -translate-y-1/2 rounded-full opacity-0 motion-safe:animate-travel",
-          tone === "claude" ? "bg-claude" : "bg-codex [animation-delay:1.6s]",
+          "relative block h-px w-10 sm:w-16",
+          tone === "claude"
+            ? "bg-gradient-to-r from-claude/50 to-human/40"
+            : "bg-gradient-to-r from-human/40 to-codex/50",
         )}
-      />
-    </span>
-  );
+      >
+        <span
+          className={cn(
+            "absolute top-1/2 size-1.5 -translate-y-1/2 rounded-full opacity-0 motion-safe:animate-travel",
+            tone === "claude" ? "bg-claude" : "bg-codex [animation-delay:1.6s]",
+          )}
+        />
+      </span>
+    );
+  };
   const Seat = ({
     label,
     children,
@@ -94,7 +100,7 @@ function Seats({ agents }: { agents: RoomAgent[] }) {
   );
   const seat = (agent: RoomAgent) => (
     <Seat key={agent.id} label={agent.label}>
-      <Avatar handle={agent.id} kind={agent.kind} size={44} />
+      <Avatar handle={agent.id} roster={agents} size={44} />
     </Seat>
   );
   const left = agents.slice(0, Math.ceil(agents.length / 2));
@@ -103,7 +109,7 @@ function Seats({ agents }: { agents: RoomAgent[] }) {
     <div className="flex items-start">
       <span className="flex gap-3">{left.map(seat)}</span>
       <span className="mx-1.5 mt-[22px]">
-        <Line tone={left.at(-1)?.kind ?? "claude"} />
+        <Line agent={left.at(-1)} />
       </span>
       <Seat label="Ви">
         <span className="grid size-11 place-items-center rounded-[30%] bg-human-soft text-human ring-1 ring-human/25 ring-inset">
@@ -113,7 +119,7 @@ function Seats({ agents }: { agents: RoomAgent[] }) {
       {right.length ? (
         <>
           <span className="mx-1.5 mt-[22px]">
-            <Line tone={right[0]!.kind} />
+            <Line agent={right[0]} />
           </span>
           <span className="flex gap-3">{right.map(seat)}</span>
         </>

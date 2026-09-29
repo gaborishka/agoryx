@@ -18,7 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, roomPath, Unauthorized } from "@/lib/api";
 import { copyText } from "@/lib/copy";
 import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, fullDate, IMAGE_EXT, kb, names, TABLE_EXT, VIDEO_EXT } from "@/lib/format";
-import { DEFAULT_AGENTS, participant } from "@/lib/room";
+import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { type DialogState, type TableFormOp, useStore } from "@/lib/store";
 import type { FileChange, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -493,14 +493,18 @@ function SettingsDialog() {
 function HelpDialog() {
   // The room's own agents (any number, any mix); outside a room — the default pair.
   const agents = useStore((s) => s.snap?.state.agents) ?? DEFAULT_AGENTS;
-  const at = (agent: RoomAgent) => (
-    <span
-      key={agent.id}
-      className={cn("rounded-md px-1.5 py-0.5 font-mono text-[12.5px]", agent.kind === "claude" ? "bg-claude-soft text-claude" : "bg-codex-soft text-codex")}
-    >
-      @{agent.id}
-    </span>
-  );
+  const at = (agent: RoomAgent) => {
+    const who = participant({ agents }, agent.id);
+    return (
+      <span
+        key={agent.id}
+        style={ink(who)}
+        className={cn("rounded-md px-1.5 py-0.5 font-mono text-[12.5px]", who.tone === "codex" ? "bg-codex-soft text-codex" : "bg-claude-soft text-claude")}
+      >
+        @{agent.id}
+      </span>
+    );
+  };
   const li = "relative pl-5 before:absolute before:top-[0.6em] before:left-1 before:size-1.5 before:rounded-full before:bg-primary/50";
   return (
     <Shell title="Як це працює">

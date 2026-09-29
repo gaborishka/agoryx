@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { local, Unauthorized } from "@/lib/api";
 import { names as nameList, plural } from "@/lib/format";
-import { participant } from "@/lib/room";
+import { ink, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -71,10 +71,10 @@ export function StatusBar() {
     );
   }
   for (const a of native) {
-    const tone = participant(st, a.id).tone;
+    const who = participant(st, a.id);
     rows.push(
       <div key={`n-${a.id}`} className="flex items-center gap-2.5 text-muted-foreground">
-        <span className={cn(dot, "animate-breathe", tone === "codex" ? "bg-codex" : "bg-claude")} />
+        <span className={cn(dot, "animate-breathe", who.tone === "codex" ? "bg-codex" : "bg-claude")} style={ink(who)} />
         <span>З {a.label} зараз говорять напряму, у власній сесії — хід у кімнаті почнеться після цього.</span>
       </div>,
     );
@@ -184,17 +184,18 @@ export function Composer() {
         />
         <div className="flex items-center gap-1.5 px-2.5 pb-2.5">
           {room.agents.map((a) => {
-            const tone = participant(room, a.id).tone;
+            const who = participant(room, a.id);
             return (
               <button
                 key={a.id}
                 type="button"
                 disabled={!driven}
+                style={ink(who)}
                 onClick={() => mention(a.id)}
                 title={`Звернутися лише до ${a.label}`}
                 className={cn(
                   "h-7 rounded-full px-2.5 font-mono text-[12px] font-medium transition disabled:pointer-events-none",
-                  tone === "codex" ? "text-codex hover:bg-codex-soft" : "text-claude hover:bg-claude-soft",
+                  who.tone === "codex" ? "text-codex hover:bg-codex-soft" : "text-claude hover:bg-claude-soft",
                 )}
               >
                 @{a.id}

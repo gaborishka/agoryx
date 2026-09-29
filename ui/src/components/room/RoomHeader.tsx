@@ -23,7 +23,7 @@ import {
 import { useNow } from "@/hooks/use-now";
 import { api, roomPath, Unauthorized } from "@/lib/api";
 import { baseName, names, secs, shortPath } from "@/lib/format";
-import { participant, tableCount } from "@/lib/room";
+import { ink, participant, tableCount } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -37,7 +37,8 @@ function Presence({ a }: { a: RoomAgent }) {
   const room = useStore((s) => s.snap?.state);
   const openDialog = useStore((s) => s.openDialog);
   const tick = useNow(now === "working" && Boolean(turn));
-  const tone = participant(room, a.id).tone;
+  const who = participant(room, a.id);
+  const tone = who.tone;
   const working = now === "working" && turn;
   const tip = working
     ? `${a.label} зараз робить хід у кімнаті`
@@ -51,6 +52,7 @@ function Presence({ a }: { a: RoomAgent }) {
       <button
         type="button"
         onClick={() => openDialog({ kind: "sessions" })}
+        style={ink(who)}
         className={cn(
           "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12.5px] transition",
           now === "idle"

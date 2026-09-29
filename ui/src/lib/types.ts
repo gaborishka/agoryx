@@ -1,3 +1,4 @@
+import type { AgentLook } from "@agora/look";
 import type { AgentPresence, RoomState, TableOp } from "@agora/types";
 
 export type * from "@agora/types";
@@ -9,8 +10,8 @@ export interface RoomSummary {
   createdAt: string;
   updatedAt: string;
   messages: number;
-  /** `label`: the author's display name when an agent wrote it. */
-  lastMessage?: { author: string; text: string; label?: string };
+  /** `label`: the author's display name when an agent wrote it; `look`: its shade and mark, only next to another of its kind. */
+  lastMessage?: { author: string; text: string; label?: string; look?: AgentLook };
   running: boolean;
   driven?: boolean;
 }

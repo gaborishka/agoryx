@@ -7,6 +7,7 @@ import { DaemonClient, type DaemonStreamItem } from "../../internal/agora/client
 import { AgoraDaemon, findDaemon, readDaemonInfo, type DaemonInfo } from "../../internal/agora/daemon.js";
 import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
+import { type AgentLook, agentLook } from "../../internal/agora/look.js";
 import { activeRun } from "../../internal/agora/projection.js";
 import { readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
 import { createRoom, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
@@ -15,7 +16,7 @@ import { changeStats, patchSection } from "../../internal/agora/workspace.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { parseTableCommand, TABLE_USAGE } from "../../internal/agora/table-cli.js";
 import { describeTableOp, renderTableMarkdown } from "../../internal/agora/table.js";
-import type { AgentPresence, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
+import type { AgentKind, AgentPresence, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
 import { CliUsageError, parseCliArgsOrThrow, type OptionSpec, type OutputWriter } from "./cli-args.js";
 
 export const AGORA_COMMANDS = new Set([
@@ -90,6 +91,26 @@ const oneLine = (text: string, max: number): string => {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
 
+type Colors = Omit<typeof pc, "createColors">;
+type Hue = "yellow" | "yellowBright" | "red" | "redBright" | "cyan" | "cyanBright" | "blue" | "blueBright";
+
+/**
+ * Terminal inks per kind: warm for Claude, cool for Codex (magenta is the human, green the table).
+ * The first is the kind's own colour; the others go to more agents of that kind, in roster order,
+ * and past four they are underlined too — eight agents of one kind, eight looks.
+ */
+const TERMINAL_INKS: Record<AgentKind, Hue[]> = {
+  claude: ["yellow", "redBright", "yellowBright", "red"],
+  codex: ["cyan", "blueBright", "cyanBright", "blue"],
+};
+
+/** How `agoryx tail` paints an agent's name: its kind's colour, or its own shade of it next to another of its kind (see look.ts). */
+export const terminalInk = (look: AgentLook, colors: Colors = pc): ((text: string) => string) => {
+  const hues = TERMINAL_INKS[look.kind];
+  const hue = colors[hues[look.shade % hues.length]!];
+  return look.shade >= hues.length ? (text) => colors.underline(hue(text)) : hue;
+};
+
 /** Prints room events as a readable transcript. */
 export class TranscriptPrinter {
   private readonly seenActivities = new Set<string>();
@@ -99,18 +120,24 @@ export class TranscriptPrinter {
   constructor(
     private readonly agents: RoomAgent[],
     private readonly human: string,
-    private readonly options: { trace: boolean; write?: (text: string) => void } = { trace: true },
+    private readonly options: { trace: boolean; write?: (text: string) => void; colors?: Colors } = { trace: true },
   ) {}
+
+  private get colors(): Colors {
+    return this.options.colors ?? pc;
+  }
 
   private out(text: string): void {
     (this.options.write ?? ((chunk: string) => process.stdout.write(chunk)))(text);
   }
 
   private name(author: string): string {
+    const c = this.colors;
     const agent = this.agents.find((entry) => entry.id === author);
-    if (agent) return agent.kind === "claude" ? pc.yellow(pc.bold(agent.label)) : pc.cyan(pc.bold(agent.label));
-    if (author === "agoryx") return pc.dim("agoryx");
-    return author === this.human ? pc.magenta(pc.bold(author)) : pc.bold(author);
+    const look = agent ? agentLook(this.agents, agent.id) : undefined;
+    if (agent && look) return terminalInk(look, c)(c.bold(agent.label));
+    if (author === "agoryx") return c.dim("agoryx");
+    return author === this.human ? c.magenta(c.bold(author)) : c.bold(author);
   }
 
   private plainName(author: string): string {

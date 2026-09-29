@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join, resolve, sep } from "node:path";
+import { type AgentLook, agentLook } from "./look.js";
 import { applyEvent, initialState } from "./projection.js";
 import type {
   EphemeralEvent,
@@ -44,8 +45,11 @@ export interface RoomSummary {
   createdAt: string;
   updatedAt: string;
   messages: number;
-  /** `label` is the author's display name when an agent wrote it: a room list has no roster to look it up in. */
-  lastMessage?: { author: string; text: string; label?: string };
+  /**
+   * `label` is the author's display name when an agent wrote it: a room list has no roster to look it up in.
+   * `look`: that agent's shade and mark, only when it shares its kind with another agent in the room.
+   */
+  lastMessage?: { author: string; text: string; label?: string; look?: AgentLook };
   running: boolean;
   /** The folder the human started the room in; absent when Agoryx made one. */
   folder?: string;
@@ -212,6 +216,7 @@ export class RoomStore {
     const last = [...this.state.messages].reverse().find((message) => message.kind !== "pass" && message.kind !== "system");
     const lastEvent = this.events[this.events.length - 1]!;
     const lastBy = last ? this.state.agents.find((agent) => agent.id === last.author) : undefined;
+    const look = lastBy ? agentLook(this.state.agents, lastBy.id) : undefined;
     return {
       id: this.state.id,
       name: this.state.name,
@@ -219,7 +224,7 @@ export class RoomStore {
       createdAt: this.state.createdAt,
       updatedAt: lastEvent.ts,
       messages: this.state.messages.filter((message) => message.kind !== "pass").length,
-      ...(last ? { lastMessage: { author: last.author, text: last.text.slice(0, 200), ...(lastBy ? { label: lastBy.label } : {}) } } : {}),
+      ...(last ? { lastMessage: { author: last.author, text: last.text.slice(0, 200), ...(lastBy ? { label: lastBy.label } : {}), ...(look?.mark ? { look } : {}) } } : {}),
       running: this.state.turns.some((turn) => turn.status === "running"),
       ...(this.state.worktree
         ? { folder: this.state.worktree.source, branch: this.state.worktree.branch }

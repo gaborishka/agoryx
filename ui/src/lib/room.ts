@@ -1,5 +1,7 @@
+import type { CSSProperties } from "react";
+import { type AgentLook, agentLook } from "../../../internal/agora/look";
 import { names as nameList } from "./format";
-import type { DocRevision, MessageEntry, RoomAgent, RoomState, TableOp, TurnState } from "./types";
+import type { DocRevision, MessageEntry, RoomAgent, RoomState, RoomSummary, TableOp, TurnState } from "./types";
 import type { OpEntry } from "./types";
 
 export type Tone = "claude" | "codex" | "human" | "sys";
@@ -10,6 +12,10 @@ export interface Participant {
   tone: Tone;
   agent: boolean;
   kind?: "claude" | "codex";
+  /** Only for an agent that shares its kind with another in the room: its own shade (0–7) of the kind's colour… */
+  shade?: number;
+  /** …and the character on its avatar ("O" for Opus next to "S" for Sonnet). */
+  mark?: string;
 }
 
 /** Who a room seats when nobody chose otherwise; the server's own default (GET /api/info `agents`) wins when known. */
@@ -18,14 +24,59 @@ export const DEFAULT_AGENTS: RoomAgent[] = [
   { id: "codex", kind: "codex", label: "Codex" },
 ];
 
-const KNOWN_LABEL: Record<string, string> = { claude: "Claude", codex: "Codex" };
+/** What a handle is looked up in: a room, or just a roster (the start screen, before there is a room). */
+export type Seating = { agents: RoomAgent[]; human?: string };
 
-export const participant = (room: RoomState | undefined, handle: string): Participant => {
+/**
+ * An agent is whoever the room's roster says it is — never a kind. "claude" or "codex" is an agent
+ * only if an agent has that id: in a room of Opus and Sonnet, "@claude" is nobody.
+ */
+export const participant = (room: Seating | undefined, handle: string): Participant => {
   const agent = room?.agents.find((a) => a.id === handle);
-  if (agent) return { id: agent.id, label: agent.label, tone: agent.kind === "codex" ? "codex" : "claude", agent: true, kind: agent.kind };
+  if (agent) {
+    const look = agentLook(room!.agents, agent.id);
+    return {
+      id: agent.id,
+      label: agent.label,
+      tone: agent.kind === "codex" ? "codex" : "claude",
+      agent: true,
+      kind: agent.kind,
+      ...(look?.mark ? { shade: look.shade, mark: look.mark } : {}),
+    };
+  }
   if (handle === "agoryx") return { id: handle, label: "Agoryx", tone: "sys", agent: false };
-  if (KNOWN_LABEL[handle]) return { id: handle, label: KNOWN_LABEL[handle]!, tone: handle === "codex" ? "codex" : "claude", agent: true, kind: handle as "claude" | "codex" };
   return { id: handle, label: handle === room?.human ? "Ви" : handle, tone: "human", agent: false };
+};
+
+/**
+ * The inline style that turns the kind's colour into this agent's shade of it: the element's own
+ * --claude/--codex (and -soft) point at the shade, so every tone class on it — text, background,
+ * ring, border, /opacity — follows. Nothing for an agent alone of its kind: it keeps the kind's
+ * colour exactly. Put it only on the element that carries the tone (custom properties inherit).
+ */
+export const ink = (who: Pick<Participant, "kind" | "shade" | "mark"> | Pick<AgentLook, "kind" | "shade" | "mark"> | undefined): CSSProperties | undefined => {
+  if (!who?.kind || !who.mark || who.shade === undefined) return undefined;
+  return { [`--${who.kind}`]: `var(--${who.kind}-${who.shade})`, [`--${who.kind}-soft`]: `var(--${who.kind}-soft-${who.shade})` } as CSSProperties;
+};
+
+/** The agent's colour itself, for a property no tone class covers (a card's left band). */
+export const inkColor = (who: Pick<Participant, "kind" | "shade" | "mark"> | undefined): string | undefined =>
+  who?.kind && who.mark && who.shade !== undefined ? `var(--${who.kind}-${who.shade})` : undefined;
+
+/**
+ * The room list's last line after a live message: the same shape the daemon's summary gives
+ * (the author's label and, next to another of its kind, its look), so an agent's line is not
+ * put on "Ви" until the next reload.
+ */
+export const lastLine = (room: RoomState, m: Pick<MessageEntry, "author" | "text">): NonNullable<RoomSummary["lastMessage"]> => {
+  const agent = room.agents.find((a) => a.id === m.author);
+  const look = agent ? agentLook(room.agents, agent.id) : undefined;
+  return {
+    author: m.author,
+    text: m.text.slice(0, 200),
+    ...(agent ? { label: agent.label } : {}),
+    ...(look?.mark ? { look } : {}),
+  };
 };
 
 export const nameOf = (room: RoomState | undefined, handle: string) => {

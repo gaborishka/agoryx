@@ -25,7 +25,7 @@ import { Markdown } from "@/components/md/Markdown";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { plural } from "@/lib/format";
-import { participant, refAnchor } from "@/lib/room";
+import { inkColor, participant, refAnchor } from "@/lib/room";
 import { type TableFormOp, useStore } from "@/lib/store";
 import type { RoomState, TableItem, TableNote, TableOption, TableQuestion, TableState } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -470,12 +470,15 @@ function Debate({ o, table, room }: { o: TableOption; table: TableState; room: R
   const v = verdict(table, o);
   const live = isLive(table, o);
   const faded = !live && o.status !== "chosen";
+  const author = participant(room, o.by);
   return (
     <article
       id={`opt-${o.id}`}
+      // The band takes the author's shade directly: an inherited --claude/--codex would recolour everything in the card.
+      style={{ borderLeftColor: inkColor(author) }}
       className={cn(
         "flex min-w-0 scroll-mt-24 flex-col overflow-hidden rounded-2xl border border-l-[3px] border-border bg-card shadow-soft",
-        band[participant(room, o.by).tone],
+        band[author.tone],
         o.status === "chosen" && "ring-2 ring-primary/25",
         faded && "opacity-70 saturate-50",
       )}

@@ -189,6 +189,40 @@ test("@mention wakes only the addressed agent first; the other hears the reply",
   }
 });
 
+test("a question put to one agent alone is answered to the human: the other is not woken for it", async () => {
+  const room = createTestRoom({
+    rules: [
+      { agent: "claude", match: "which model", reply: "Sonnet." },
+      { agent: "claude", match: "ask codex", reply: "@codex what do you think?" },
+      { agent: "codex", reply: "Fine by me." },
+    ],
+  });
+  try {
+    room.engine.postHuman("@claude which model are you on?");
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(room.invocations("codex").length, 0, "Codex gets no turn just to pass");
+    const answer = room.store.state.messages.find((message) => message.text === "Sonnet.")!;
+    assert.equal(answer.wakes, false);
+    assert.equal(room.store.state.runs.at(-1)?.endReason, "quiet");
+    assert.match(room.invocations("claude")[0]!.prompt!, /When Ivan addresses only you, your reply goes back to them/);
+
+    // The agent can still bring the other in, by name.
+    room.engine.postHuman("@claude ask codex");
+    await withTimeout(room.engine.waitIdle());
+    const codex = room.invocations("codex");
+    assert.equal(codex.length, 1);
+    // What it was not woken for still reaches it, in its next delta.
+    assert.match(codex[0]!.prompt!, /Sonnet\./);
+
+    // Said to everyone, the answer is part of the conversation as before.
+    room.engine.postHuman("which model are you on?");
+    await withTimeout(room.engine.waitIdle());
+    assert.ok(room.store.state.messages.filter((message) => message.text === "Sonnet.").at(-1)!.wakes);
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("a human message sent while agents work reaches both in their next delta", async () => {
   const room = createTestRoom({
     rules: [
@@ -223,7 +257,7 @@ test("agents put things on the table through the agoryx shim, with acks and attr
           ["table", "ask", "Where do rooms live?"],
           ["table", "propose", "JSONL event log", "--body", "append-only, replayable"],
         ],
-        reply: "I opened Q1 and proposed P1.",
+        reply: "I opened Q1 and proposed P1. @codex?",
       },
       {
         agent: "codex",
@@ -239,7 +273,7 @@ test("agents put things on the table through the agoryx shim, with acks and attr
     ],
   });
   try {
-    // Codex waits for Claude's proposal: mention only claude first.
+    // Codex waits for Claude's proposal: mention only claude first; Claude brings Codex in.
     room.engine.postHuman("@claude open a question about storage");
     await withTimeout(room.engine.waitIdle());
     const table = room.store.state.table;

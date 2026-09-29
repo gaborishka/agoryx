@@ -77,7 +77,7 @@ test("every change to the canonical file is kept with its author, and the others
         agent: "claude",
         match: "draft",
         write: { path: "README.md", content: "# Time\n\nTime is what clocks measure.\n" },
-        reply: "Drafted README.md.",
+        reply: "Drafted README.md. @codex have a look.",
         once: true,
       },
     ],
@@ -95,7 +95,7 @@ test("every change to the canonical file is kept with its author, and the others
     assert.ok(drafted!.turnId, "credited to the turn that made it");
     assert.deepEqual([drafted!.added, drafted!.removed], [3, 0]);
 
-    // Codex was woken by Claude's reply: its delta carries the diff, not the whole file.
+    // Codex was woken by Claude's reply (@codex): its delta carries the diff, not the whole file.
     const codexPrompt = room.invocations("codex").at(-1)!.prompt!;
     assert.match(codexPrompt, /README\.md \(the room's canonical file\) changed since your last turn — Claude \+3 −0/);
     assert.match(codexPrompt, /~~~~diff\n\+ # Time\n\+ \n\+ Time is what clocks measure\.\n~~~~/);

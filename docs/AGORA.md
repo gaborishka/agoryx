@@ -55,7 +55,9 @@ table ┘   (JSONL, replayable)└── Codex   (native session, workspace-writ
   `--budget none` takes the cap off again. With a cap, the prompt counts the turns down and the run waits
   for the human when they are spent.
 - **The human is a participant,** not a dispatcher. Write any time — your message reaches the agents in
-  their next delta. `@id` wakes only that participant first; `@all` addresses everyone.
+  their next delta. `@id` wakes only that participant, and its answer goes back to the human: the others
+  read it in their next turn, and are woken by it only if it names them (`@codex, check this`). `@all`, or no
+  name at all, addresses everyone.
 - **Work is attributed.** Files changed during a turn are credited to that turn; at run end Agoryx makes a
   checkpoint commit (in workspaces it created, or when `autocommit` is on).
 - **So are actions.** Each agent's turn carries its own key to the daemon (`AGORYX_AGENT_KEY`). The human's own

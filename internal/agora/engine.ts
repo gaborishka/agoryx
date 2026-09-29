@@ -722,6 +722,25 @@ export class RoomEngine {
     return false;
   }
 
+  /** Whether everything that woke this turn was the human speaking to this agent alone (`@claude …`, no one else). */
+  private askedAlone(agent: RoomAgent, turnId: string): boolean {
+    const turn = this.state.turns.find((entry) => entry.id === turnId);
+    if (!turn) return false;
+    const woke = this.store.since(turn.cursorBefore).filter((event) => event.seq <= turn.cursor && this.wakes(event, agent));
+    return (
+      woke.length > 0 &&
+      woke.every((event) => {
+        if (event.type !== "message.posted" || event.message.kind !== "human" || event.message.author !== this.state.human) return false;
+        const agents = event.message.mentions.filter((handle) => handle === "all" || this.state.agents.some((entry) => entry.id === handle));
+        return agents.length === 1 && agents[0] === agent.id;
+      })
+    );
+  }
+
+  private addressesOthers(mentions: string[], agent: RoomAgent): boolean {
+    return mentions.some((handle) => handle === "all" || (handle !== agent.id && this.state.agents.some((entry) => entry.id === handle)));
+  }
+
   /** Whether this agent was in a turn when event `seq` was posted (and so could read it with `read new`). */
   private inTurnAt(agentId: string, seq: number): boolean {
     return this.state.turns.some((turn) => turn.agent === agentId && turn.seq < seq && (turn.endSeq === undefined || turn.endSeq > seq));
@@ -1174,7 +1193,9 @@ export class RoomEngine {
           kind: "agent",
           text: [said, ...images.filter((path) => !mediaRefs(said).includes(path)).map(embed)].filter(Boolean).join("\n\n"),
           mentions: parseMentions(said, handles),
-          wakes: true,
+          // An answer to what the human put to this agent alone goes back to the human: the others hear
+          // it in their next delta, and it wakes one of them only if it says @name.
+          wakes: !this.askedAlone(agent, turnId) || this.addressesOthers(parseMentions(said, handles), agent),
           turnId,
           runId,
         }).id;
@@ -1555,8 +1576,6 @@ export class RoomEngine {
     );
     const native = { agent: agent.id, key: exchange.key, ...(exchange.at ? { at: exchange.at } : {}) };
     const handles = [...this.state.agents.map((entry) => entry.id), this.state.human.toLowerCase()];
-    const addressesOthers = (mentions: string[]) =>
-      mentions.some((handle) => handle === "all" || (handle !== agent.id && this.state.agents.some((entry) => entry.id === handle)));
     const fresh = (kind: MessageKind): boolean => {
       const key = `${agent.id}:${exchange.key}:${half(kind)}`;
       if (this.nativeKeys!.has(key)) return false;
@@ -1568,7 +1587,7 @@ export class RoomEngine {
     let imported = false;
     if (exchange.prompt && fresh("human")) {
       const mentions = parseMentions(exchange.prompt, handles);
-      const wakes = addressesOthers(mentions);
+      const wakes = this.addressesOthers(mentions, agent);
       const message = this.postMessage({ author: this.state.human, kind: "human", text: exchange.prompt, mentions, wakes, native });
       if (wakes && !trigger) {
         trigger = message.id;
@@ -1578,7 +1597,7 @@ export class RoomEngine {
     }
     if (exchange.reply && passNote(exchange.reply) === null && fresh("agent")) {
       const mentions = parseMentions(exchange.reply, handles);
-      const wakes = addressesOthers(mentions);
+      const wakes = this.addressesOthers(mentions, agent);
       const message = this.postMessage({ author: agent.id, kind: "agent", text: exchange.reply.trim(), mentions, wakes, native });
       if (wakes && !trigger) {
         trigger = message.id;

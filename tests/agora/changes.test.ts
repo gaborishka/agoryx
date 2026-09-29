@@ -97,7 +97,7 @@ test("every turn's exact change is kept; the others see +/− and pull the patch
         agent: "claude",
         match: "build the clock",
         write: { path: "src/clock.ts", content: "export const now = () => Date.now();\nexport const zero = 0;\n" },
-        reply: "Wrote src/clock.ts.",
+        reply: "Wrote src/clock.ts. @codex your turn.",
         once: true,
       },
       {
@@ -121,7 +121,7 @@ test("every turn's exact change is kept; the others see +/− and pull the patch
     const ended = room.store.events.find((event) => event.type === "turn.ended" && event.turnId === claudeTurn.id);
     assert.ok(ended?.type === "turn.ended" && ended.trees && ended.trees.before !== ended.trees.after, "the trees are logged");
 
-    // Codex was woken by Claude's reply: its delta names the change and how to see it.
+    // Codex was woken by Claude's reply (@codex): its delta names the change and how to see it.
     const codexPrompt = room.invocations("codex").at(-1)!.prompt!;
     assert.match(codexPrompt, new RegExp(`↳ changed: src/clock\\.ts \\+2 −0 \\(new\\) — the exact diff: agoryx diff ${claudeTurn.id}`));
     assert.match(codexPrompt, /agoryx diff t7` prints that turn's patch/, "the briefing explains the tool");

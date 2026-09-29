@@ -202,7 +202,7 @@ test("names reads right for one, two and three agents", () => {
   assert.equal(names(["Opus", "Sonnet", "Codex"]), "Opus, Sonnet і Codex");
 });
 
-test("@sonnet wakes only Sonnet, not the other Claude; the others hear its reply", async () => {
+test("@sonnet wakes only Sonnet, not the other Claude; the others read its answer in their next turn", async () => {
   const room = createTestRoom({
     agents: parseAgents(TRIO),
     rules: [{ id: "sonnet", match: "@Sonnet", reply: "Sonnet looked: fine.", once: true }],
@@ -210,9 +210,9 @@ test("@sonnet wakes only Sonnet, not the other Claude; the others hear its reply
   try {
     room.engine.postHuman("@Sonnet take a look");
     await withTimeout(room.engine.waitIdle());
-    const [first, ...rest] = room.store.state.turns;
-    assert.equal(first!.agent, "sonnet");
-    for (const turn of rest) assert.ok(started(room, turn.id) > ended(room, first!.id), `${turn.agent} waited for the one addressed`);
+    assert.deepEqual(room.store.state.turns.map((turn) => turn.agent), ["sonnet"], "its answer went to the human alone");
+    room.engine.postHuman("Thoughts, everyone?");
+    await withTimeout(room.engine.waitIdle());
     assert.match(callsOf(room, "opus")[0]!.prompt!, /Sonnet looked: fine\./);
     assert.match(callsOf(room, "codex")[0]!.prompt!, /Sonnet looked: fine\./);
   } finally {

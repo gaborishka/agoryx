@@ -203,6 +203,18 @@ test("an agent stopping its room with the human's CLI is recorded as that agent"
   assert.ok(!s.messages.some((message) => /Ivan stopped/.test(message.text)));
 });
 
+test("the room's own agoryx is the full CLI too: an agent's settings change through it is made, and is the agent's", async () => {
+  // `agoryx` here is whatever the turn's PATH finds first: the room's shim.
+  setRules([{ id: "claude", match: "Shim settings", once: true, run: [["agoryx", "settings", "--budget", "9"]], reply: "set" }, { id: "codex", match: "Shim settings", once: true, reply: "ok" }]);
+  const room = await newRoom("Shim settings");
+  await call("POST", `/api/rooms/${room}/messages`, { body: { text: "Shim settings" } });
+  await idle(room);
+  const changed = events(room).find((event) => event.type === "settings.changed");
+  assert.ok(changed && changed.type === "settings.changed", JSON.stringify(logLines().filter((line) => line.runOutputs)));
+  assert.equal(changed.by, "claude");
+  assert.equal((await state(room)).settings.budget, 9);
+});
+
 test("an agent's turn without a key of its own is refused, not sent as the human's", async () => {
   const room = await newRoom("Keyless");
   const [bin, ...args] = humanCli("settings", "--network", "off", "--room", room);

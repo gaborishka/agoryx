@@ -95,6 +95,8 @@ current state, so nobody has to reconstruct it from the scroll. Agents and the h
 Agents use `agoryx table …` from their shell. Agoryx puts a shim first on `PATH` and also exports
 `AGORYX_CLI` (absolute path), because login shells can reorder `PATH` and an older global `agoryx` may win.
 Each op is acknowledged, and the rendered table lives at `<workspace>/.agoryx/rooms/<room>/TABLE.md`.
+The shim handles `say`, `table`, `read` and `diff` itself and hands every other command to the full `agoryx`,
+so an agent has the same commands as the human, under its own key.
 
 Several rooms may work in one directory. Each keeps its own inbox, acks, `TABLE.md` and turn patches
 under `.agoryx/rooms/<room>/`, so one room's op or `t1` never lands in another. Message copies stay
@@ -377,7 +379,7 @@ Without `--dir`, a room's workspace is `~/agoryx/<slug>/` (git-initialised); `AG
 | `internal/agora/runners/{claude,codex}.ts` | Native CLI runners: session ids, stream parsing, activity traces |
 | `internal/agora/native.ts` | Finds and reads the agents' native session files; imports turns taken outside the room |
 | `internal/agora/doc.ts` | The canonical file: path rules, reading, line diff, baseline revision |
-| `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim (`table`, `diff`) |
+| `internal/agora/table.ts`, `table-cli.ts`, `bin/agoryx-agent.mjs` | Table ops, rendering, CLI parsing, zero-dependency agent shim (`say`, `table`, `read`, `diff`; the rest goes to the full CLI) |
 | `internal/agora/store.ts`, `projection.ts` | JSONL event log and state projection |
 | `internal/agora/actor.ts` | Agents' keys to the daemon, and who did what (`by`, guests from other rooms) |
 | `internal/agora/daemon.ts`, `snapshot.ts`, `client.ts` | HTTP/SSE daemon, snapshots and patches, CLI client |

@@ -8,9 +8,13 @@
 // `agoryx diff` reads what each turn changed (.agoryx/rooms/<room>/turns/<turn>.patch).
 // `agoryx read` reads what was said, in full (.agoryx/messages/<room>/<id>.md).
 // `agoryx say` posts what the agent is doing while it works, through the same inbox as table ops.
+// Every other command is the human's own `agoryx` (bin/agoryx.js), run as is: in a turn it carries the
+// agent's key, so what it does is recorded as the agent's — the same commands, no fewer.
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const USAGE = `agoryx — room tools for agents
 
@@ -42,6 +46,9 @@ const USAGE = `agoryx — room tools for agents
   agoryx read              recent messages: id, who, how long, how it starts
   agoryx read m12          the full text of message m12 (your turn's delta may give only its start)
   agoryx read m12 m15      several at once
+
+  Everything else is the full agoryx, as the human has it (agoryx settings, more, stop, new, …):
+  run from your turn, it acts under your own key, so the room records it as yours.
 
 Outside a room turn (someone talking to you directly in your own session), run it
 from the room's workspace and sign it: agoryx table … --as <your id in the room>.
@@ -361,7 +368,12 @@ const main = async () => {
     return;
   }
   if (command !== "table" && command !== "diff" && command !== "read" && command !== "say") {
-    fail(`inside a room only 'agoryx say …', 'agoryx table …', 'agoryx diff …' and 'agoryx read …' are available\n\n${USAGE}`);
+    const full = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "agoryx.js"), command, ...(verb === undefined ? [] : [verb]), ...args], {
+      stdio: "inherit",
+      env: process.env,
+    });
+    if (full.error) fail(`could not run agoryx ${command}: ${full.error.message}`);
+    process.exit(full.status ?? 1);
   }
 
   const agoryxDir = findAgoryxDir();

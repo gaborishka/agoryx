@@ -2,7 +2,8 @@
 import { constants, realpathSync } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { constants as osConstants } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const thisFile = realpathSync(fileURLToPath(import.meta.url));
@@ -22,17 +23,27 @@ if (process.env.AGORYX_AGENT && ["say", "table", "read", "diff"].includes(proces
   process.exit(agent.status ?? 1);
 }
 
-const runSourceFallback = () => {
-  const fallback = spawnSync(
-    process.execPath,
-    ["--import", pathToFileURL(tsxLoader).href, sourceEntry, ...process.argv.slice(2)],
-    {
-      stdio: "inherit",
-      env: process.env,
-    },
-  );
-  process.exit(fallback.status ?? 1);
-};
+// The child is the real process: a SIGTERM or SIGHUP sent to this one (launchd stopping the service, `kill`)
+// reaches it, so the daemon closes its rooms instead of being orphaned and then killed with the group.
+// Ctrl-C needs no forwarding: the terminal sends SIGINT to both.
+const runSourceFallback = () =>
+  new Promise(() => {
+    const fallback = spawn(
+      process.execPath,
+      ["--import", pathToFileURL(tsxLoader).href, sourceEntry, ...process.argv.slice(2)],
+      {
+        stdio: "inherit",
+        env: process.env,
+      },
+    );
+    for (const signal of ["SIGTERM", "SIGHUP"]) process.on(signal, () => fallback.kill(signal));
+    process.on("SIGINT", () => {});
+    fallback.on("error", (error) => {
+      console.error(`[agoryx] Failed to start source mode: ${error.message}`);
+      process.exit(1);
+    });
+    fallback.on("exit", (code, signal) => process.exit(code ?? (signal ? 128 + (osConstants.signals[signal] ?? 0) : 1)));
+  });
 
 const shouldRunSource = async () => {
   try {
@@ -63,11 +74,11 @@ try {
 }
 
 if (!distReadable) {
-  runSourceFallback();
+  await runSourceFallback();
 }
 
 if (await shouldRunSource()) {
-  runSourceFallback();
+  await runSourceFallback();
 }
 
 try {
@@ -76,5 +87,5 @@ try {
   const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
   console.error(`[agoryx] Failed to load built entry '${distEntry}': ${detail}`);
   console.error("[agoryx] Falling back to source mode via tsx.");
-  runSourceFallback();
+  await runSourceFallback();
 }

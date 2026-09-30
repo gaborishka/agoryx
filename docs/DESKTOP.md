@@ -58,7 +58,8 @@ The app does not bring its own Node. The Mac it runs on needs `node` >= 22, and 
    If something needed is missing, the screen lists it with the command that fixes it, and nothing is
    started. Warnings are shown once. After «Відкрити Agoryx» (Open Agoryx) they come back only when a check changes.
 3. **Starting Agoryx.** The app uses the daemon already running for this `AGORYX_HOME`, if there is one.
-   Otherwise it starts `node <root>/bin/agoryx.js up`, detached, with its output in
+   Otherwise it starts `node <root>/bin/agoryx.js up`, detached (or through launchd, when the
+   [login service](#the-daemon-at-login-without-the-app) is installed), with its output in
    `<AGORYX_HOME>/daemon.log`. If the daemon does not come up, the screen shows the end of that log.
    A daemon that is running but not answering is waited for (20s), and then reported. The app never
    starts a second one next to it.
@@ -133,6 +134,38 @@ The packaged copy holds:
   daemon started from a terminal and one started by the app are the same thing, and each can find the other.
 
 The cost is that Node >= 22 must be installed. The doctor's first check says so, with the command to install it.
+
+## The daemon at login, without the app
+
+```bash
+agoryx service install     # a LaunchAgent for this AGORYX_HOME; loads it now and at every login
+agoryx service status      # the plist, launchd's state and pid, and whether the running daemon is the service's
+agoryx service uninstall   # unload it (launchd stops the daemon it runs) and remove the plist
+```
+
+- **What it runs.** `~/Library/LaunchAgents/dev.agoryx.daemon.plist` runs `<node> <root>/bin/agoryx.js up
+  --login-env`, with the node and the install that ran `install`. Moved the install or upgraded node? Run
+  `install` again; `agoryx doctor` and `service status` say when a path in the plist is gone.
+- **One per `AGORYX_HOME`.** The default home gets `dev.agoryx.daemon`; any other gets the label plus a hash
+  of its path. The plist pins that home (`AGORYX_HOME`, `AGORYX_WORKSPACES`, `XDG_STATE_HOME` as set at
+  install), so an rc file that exports another `AGORYX_HOME` does not move the service's daemon.
+- **No keys in the plist.** It holds PATH, SHELL and the home only. With `--login-env`, `up` reads the login
+  shell's environment at each start, the way the app does, so keys and PATH changes in your rc files apply
+  at the next start. The log says which: «environment from the login shell (…)».
+- **When it runs.** At load (login, or `install`) and again after a crash (`KeepAlive` on an unsuccessful
+  exit, at most every 10s). `agoryx down` exits cleanly, so launchd leaves the daemon down until the next
+  login or `agoryx up -d`. A daemon that is already running when the service starts makes `up` exit 0 at
+  once: the service never races it or spins.
+- **Output** goes to `<AGORYX_HOME>/daemon.log`, as with the app.
+
+The app and `agoryx up -d` start a loaded service's daemon through launchd (`launchctl kickstart`), never
+beside it. The supervisor still watches it and kickstarts it after it goes away. Stopping the service
+(`uninstall`, logout) sends the daemon SIGTERM: it stops the running turns and closes its rooms. In
+source mode (no `dist/`), `bin/agoryx.js` passes SIGTERM and SIGHUP on to the daemon it runs.
+
+Before attaching, the app checks that the process listening on the daemon's port is the pid in
+`daemon.json` (by `lsof`). A port held by another process, or by another user, is reported and never
+given the token.
 
 ## Environment
 
@@ -339,11 +372,11 @@ The app keeps two files in `~/Library/Application Support/Agoryx`:
 | `desktop/scripts/make-icon.mjs` | draws the icon (`build/icon.png`, `build/icon.icns`) at build time |
 | `desktop/scripts/stage-core.mjs` | the core's production `node_modules` for the package |
 | `desktop/electron-builder.config.cjs` | packaging |
-| `internal/desktop/` | the core the app loads: `shellenv`, `doctor`, `supervisor`, `attention` (following the rooms that wait), `browserlink` and `browserpage` (the room browser's host link and page helpers) |
+| `internal/desktop/` | the core the app loads: `shellenv`, `doctor`, `supervisor`, `attention` (following the rooms that wait), `browserlink` and `browserpage` (the room browser's host link and page helpers), `launchd` (the login service) |
+| `cmd/agoryx/service.ts` | `agoryx service install/uninstall/status` |
 
 ## What's next
 
-- A launchd service: the daemon at login, without the app.
 - `agoryx open .` bringing up the app, through a control socket.
 - `agoryx://` links.
 - For the room's browser: tabs, browser data that survives a restart, a browser without the app.

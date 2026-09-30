@@ -17,6 +17,9 @@ agoryx \- local-first multi-agent CLI chat orchestrator
 .br
 .B agoryx doctor
 .RI "[--probe] [--json]"
+.br
+.B agoryx service
+.RI "<install|uninstall|status> [--json]"
 .SH DESCRIPTION
 Agoryx runs Codex and Claude in one shared local session with SQLite persistence.
 .SH COMMANDS
@@ -35,6 +38,35 @@ Also send each logged-in agent one short prompt (a real request each) and report
 Print
 .I { verdict, checks }
 as JSON.
+.RE
+.TP
+.B service
+macOS only. Run the daemon for the current
+.I AGORYX_HOME
+as a per-user launchd service (a LaunchAgent in
+.IR ~/Library/LaunchAgents ,
+label
+.I dev.agoryx.daemon
+for the default home).
+It starts at login and again after a crash;
+.B agoryx down
+stops it until the next login or
+.BR "agoryx up -d" .
+The plist holds PATH, SHELL and the home only; the daemon reads the rest from the login shell each time it starts.
+Output goes to
+.IR <AGORYX_HOME>/daemon.log .
+.RS
+.TP
+.B install
+Write the LaunchAgent and load it. Run it again after moving the install or upgrading node.
+.TP
+.B uninstall
+Unload it (launchd stops the daemon it runs) and remove it.
+.TP
+.B status
+Whether it is installed, loaded and running, and which daemon runs for the home.
+.B --json
+prints it as JSON.
 .RE
 .SH FILES
 .TP

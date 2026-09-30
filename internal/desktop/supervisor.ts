@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { closeSync, fstatSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DaemonClient, DaemonRequestError } from "../agora/client.js";
 import { findDaemon, pidAlive, probeDaemon, readDaemonInfo, type DaemonInfo } from "../agora/daemoninfo.js";
 import { agoraHome } from "../agora/paths.js";
+import { launchdService, type DaemonService } from "./launchd.js";
 
 /**
  * Keeps the daemon of one AGORYX_HOME up for the desktop app, the way `agoryx up -d` would from a terminal.
@@ -17,6 +18,11 @@ import { agoraHome } from "../agora/paths.js";
  * its API. It never touches a daemon of another home, and never signals a pid it has not verified.
  * A daemon that is alive but not answering (busy) is never taken for gone: nothing starts next to it,
  * and a stop that cannot reach it says so.
+ *
+ * With the launchd service installed for the home (`agoryx service install`), launchd owns the daemon: a
+ * start is a `launchctl kickstart`, never a process of its own, so a restart never races launchd's. Before
+ * it attaches to a daemon it did not start, it checks that the process listening on the daemon's port is
+ * the pid in daemon.json: the page it opens gets the token.
  *
  * Events (while watching): "down" — the daemon went away, restarts follow; "up" (info) — one came up
  * after "down", "failed" or retry(); "changed" (info) — another daemon replaced the one it knew (restarted
@@ -59,6 +65,13 @@ export interface DaemonSupervisorOptions {
   startTimeoutMs?: number;
   /** Delays before restarts 1..5 after "down" (the last one repeats); default 0.5, 1, 2, 4, 8s. */
   backoffMs?: number[];
+  /** The home's launchd service (default: launchdService(env) on macOS). When it is loaded, starts go through it. */
+  service?: DaemonService | null;
+  /**
+   * The pids listening on a local TCP port, [] when none is visible (another user's process is not), or
+   * null when that cannot be told (no lsof). Default: lsof.
+   */
+  listenerPids?: (port: number) => Promise<number[] | null>;
 }
 
 /** A daemon that did not come up: why, in a few words, and the end of its log. */
@@ -94,6 +107,8 @@ export class DaemonSupervisor extends EventEmitter<DaemonSupervisorEvents> {
   private readonly port: number | undefined;
   private readonly startTimeoutMs: number;
   private readonly backoffMs: number[];
+  private readonly service: DaemonService | null;
+  private readonly listenerPids: (port: number) => Promise<number[] | null>;
   /** The daemon last seen alive (null: none, or it went away). */
   private current: DaemonInfo | null = null;
   private starting: Promise<DaemonInfo> | null = null;
@@ -124,6 +139,8 @@ export class DaemonSupervisor extends EventEmitter<DaemonSupervisorEvents> {
     this.port = options.port;
     this.startTimeoutMs = options.startTimeoutMs ?? 20_000;
     this.backoffMs = options.backoffMs?.length ? options.backoffMs : BACKOFF_MS;
+    this.service = options.service !== undefined ? options.service : launchdService(this.env);
+    this.listenerPids = options.listenerPids ?? lsofListeners;
   }
 
   /** The daemon last seen alive. */
@@ -272,7 +289,11 @@ export class DaemonSupervisor extends EventEmitter<DaemonSupervisorEvents> {
     this.starting ??= (async () => {
       const found = await this.reach();
       if (found?.busy) throw new DaemonStartError(notAnswering(found.info), this.logPath(), this.logTail());
-      const info = found?.info ?? (await this.spawnDaemon());
+      if (found) {
+        const impostor = await this.listenerMismatch(found.info);
+        if (impostor) throw new DaemonStartError(impostor, this.logPath(), this.logTail());
+      }
+      const info = found?.info ?? (await this.startDaemon());
       if (found) this.log(`attached to the daemon at ${info.url} (pid ${info.pid})`);
       this.current = info;
       return info;
@@ -297,6 +318,48 @@ export class DaemonSupervisor extends EventEmitter<DaemonSupervisorEvents> {
       said = true;
       await sleep(200);
     }
+  }
+
+  /**
+   * Why the daemon daemon.json names is not the one on its port (null: it is, or that cannot be told).
+   * /api/health's pid is only what the answering process says; the socket's owner is what the OS says.
+   */
+  private async listenerMismatch(info: DaemonInfo): Promise<string | null> {
+    const pids = await this.listenerPids(info.port);
+    if (pids === null || pids.includes(info.pid)) return null;
+    // It stopped listening between the two looks: gone, not an impostor (the next look says so).
+    if (pids.length === 0 && !(await findDaemon(this.env))) return null;
+    const holder = pids.length > 0 ? `pid ${pids.join(", ")}` : "a process of another user";
+    return `port ${info.port} is held by ${holder}, not by the daemon in daemon.json (pid ${info.pid}); not attaching`;
+  }
+
+  /** A new daemon: through the launchd service when it is loaded for this home, else a process of its own. */
+  private async startDaemon(): Promise<DaemonInfo> {
+    let viaService = false;
+    try {
+      viaService = Boolean(this.service && (await this.service.loaded()));
+    } catch {
+      viaService = false;
+    }
+    return viaService ? this.kickstartDaemon(this.service!) : this.spawnDaemon();
+  }
+
+  private async kickstartDaemon(service: DaemonService): Promise<DaemonInfo> {
+    const logPath = this.logPath();
+    this.log(`starting the daemon through launchd (${service.label}), log: ${logPath}`);
+    try {
+      await service.kickstart();
+    } catch (error) {
+      throw new DaemonStartError(`launchd did not start the daemon (${messageOf(error)})`, logPath, this.logTail());
+    }
+    const deadline = Date.now() + this.startTimeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(200);
+      const info = await findDaemon(this.env);
+      if (info) return info;
+    }
+    // launchd keeps the process: nothing here to end. It restarts a crashed one by itself.
+    throw new DaemonStartError(`the daemon did not answer within ${this.startTimeoutMs / 1000}s of launchd starting it`, logPath, this.logTail());
   }
 
   private async spawnDaemon(): Promise<DaemonInfo> {
@@ -356,6 +419,12 @@ export class DaemonSupervisor extends EventEmitter<DaemonSupervisorEvents> {
       if (this.disposed || this.starting || this.recovering || this.halting) return;
       if (info) {
         if (this.current && info.pid === this.current.pid && info.port === this.current.port) return;
+        const impostor = await this.listenerMismatch(info);
+        if (this.disposed || this.starting || this.recovering || this.halting) return;
+        if (impostor) {
+          if (this.failure?.message !== impostor) this.fail(new Error(impostor));
+          return;
+        }
         const known = this.current !== null && this.failure === null;
         this.current = info;
         this.failure = null;
@@ -415,6 +484,29 @@ export class DaemonSupervisor extends EventEmitter<DaemonSupervisorEvents> {
     });
   }
 }
+
+const LSOF = ["/usr/sbin/lsof", "/usr/bin/lsof"];
+
+/** `lsof -iTCP:<port> -sTCP:LISTEN`: the listening pids this user can see; null without lsof or an answer. */
+export const lsofListeners = (port: number): Promise<number[] | null> => {
+  const lsof = LSOF.find((path) => {
+    try {
+      return statSync(path).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (!lsof) return Promise.resolve(null);
+  return new Promise((resolveList) => {
+    execFile(lsof, ["-nP", "-a", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"], { timeout: 5000, encoding: "utf8" }, (error, stdout) => {
+      const pids = [...new Set((stdout ?? "").split("\n").flatMap((line) => (/^p(\d+)$/.exec(line) ? [Number(line.slice(1))] : [])))];
+      if (!error) return resolveList(pids);
+      // Exit 1 with nothing printed: no listener this user can see. Anything else: unknown.
+      const code = (error as { code?: unknown }).code;
+      resolveList(code === 1 && pids.length === 0 ? [] : null);
+    });
+  });
+};
 
 const isDirectory = (path: string): boolean => {
   try {

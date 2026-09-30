@@ -8,6 +8,7 @@ import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { pidAlive } from "../../internal/agora/daemoninfo.js";
 import { doctorVerdict, formatDoctor, installRoot, runDoctor, type DoctorCheck } from "../../internal/desktop/doctor.js";
+import { launchdContext, plistPath, renderPlist, serviceSpec, type LaunchctlRun } from "../../internal/desktop/launchd.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const scratch = mkdtempSync(join(tmpdir(), "agoryx-doctor-test-"));
@@ -89,7 +90,7 @@ test("everything present and logged in: every check passes, in order, and names 
   const checks = await runDoctor({ env, root: ROOT });
   assert.deepEqual(
     checks.map((entry) => entry.id),
-    ["node", "agoryx", "sqlite", "claude", "codex", "agents", "git", "home", "daemon"],
+    ["node", "agoryx", "sqlite", "claude", "codex", "agents", "git", "home", "daemon", ...(process.platform === "darwin" ? ["service"] : [])],
   );
   const check = byId(checks);
   assert.equal(check.node!.status, "ok");
@@ -102,6 +103,9 @@ test("everything present and logged in: every check passes, in order, and names 
   assert.deepEqual([check.git!.status, check.git!.detail], ["ok", `2.50.1 at ${join(bin, "git")}`]);
   assert.deepEqual([check.home!.status, check.home!.detail], ["ok", `${env.AGORYX_HOME} (created on first start)`]);
   assert.deepEqual([check.daemon!.status, check.daemon!.detail], ["ok", "not running"]);
+  if (process.platform === "darwin") {
+    assert.deepEqual([check.service!.status, check.service!.detail], ["ok", "not installed (`agoryx service install` starts the daemon at login)"]);
+  }
   assert.notEqual(check.agoryx!.status, "fail", check.agoryx!.detail);
   assert.notEqual(doctorVerdict(checks), "fail");
   assertPrivate(checks);
@@ -352,4 +356,31 @@ test("`agoryx doctor`: the lines, or JSON; exit 1 only when Agoryx cannot run", 
 
   const wrong = await runCli(["doctor", "--prob"], good);
   assert.equal(wrong.code, 2);
+});
+
+test("login service (macOS): installed and running is ok; stopped after a failure, unloaded or pointing at a moved install is a warning", { skip: process.platform !== "darwin" && "launchd is macOS only" }, async () => {
+  const env = envFor(makeBin({ claude: CLAUDE_IN }));
+  const launchd = { agentsDir: join(scratch, "LaunchAgents"), domain: "gui/501" };
+  const service = async (print: { code: number; stdout?: string }) => {
+    const launchctl: LaunchctlRun = async () => ({ code: print.code, stdout: print.stdout ?? "", stderr: "" });
+    return byId(await runDoctor({ env, root: ROOT, launchd: { ...launchd, launchctl } })).service!;
+  };
+  const ctx = launchdContext(env, launchd);
+  mkdirSync(launchd.agentsDir, { recursive: true });
+  writeFileSync(plistPath(ctx), renderPlist(serviceSpec({ ctx, root: ROOT, node: process.execPath })));
+  const printed = (lines: string[]) => ({ code: 0, stdout: [`gui/501/${ctx.label} = {`, ...lines.map((line) => `\t${line}`), "}"].join("\n") });
+
+  const running = await service(printed(["state = running", "pid = 4242"]));
+  assert.deepEqual([running.status, running.detail], ["ok", `${ctx.label}, running (pid 4242)`]);
+  const crashed = await service(printed(["state = not running", "last exit code = 1"]));
+  assert.deepEqual([crashed.status, crashed.detail], ["warn", `${ctx.label}, not running (last exit code 1)`]);
+  assert.match(crashed.fix!, /daemon\.log.*agoryx service status$/);
+  const stopped = await service(printed(["state = not running", "last exit code = 0"]));
+  assert.deepEqual([stopped.status, stopped.detail], ["ok", `${ctx.label}, not running now (\`agoryx up -d\` starts it through launchd)`]);
+  const unloaded = await service({ code: 113 });
+  assert.deepEqual([unloaded.status, unloaded.fix], ["warn", "agoryx service install"]);
+
+  writeFileSync(plistPath(ctx), renderPlist(serviceSpec({ ctx, root: join(scratch, "moved-away"), node: process.execPath })));
+  const moved = await service(printed(["state = not running"]));
+  assert.deepEqual([moved.status, moved.detail, moved.fix], ["warn", `${ctx.label} runs ${join(scratch, "moved-away", "bin", "agoryx.js")}, which no longer exists`, "agoryx service install"]);
 });

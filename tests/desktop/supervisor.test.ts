@@ -341,3 +341,92 @@ test("stop() with no daemon, and dispose(), leave everything as it is", async ()
   assert.equal(existsSync(join(agoraHome(env), "daemon.json")), false);
   assert.equal(supervisor.logTail(), "");
 });
+
+/** A spawnImpl for supervisors that must never start a daemon themselves. */
+const noSpawn: SpawnLike = () => {
+  throw new Error("the supervisor started a daemon of its own");
+};
+
+test("with the launchd service loaded, a start is a kickstart and a crash is launchd's to restart: never a process of its own", async () => {
+  const env = homeEnv("service");
+  mkdirSync(agoraHome(env), { recursive: true });
+  let kicks = 0;
+  // launchd, as far as the supervisor sees it: kickstart starts `up` when it is not running.
+  const service = {
+    label: "dev.agoryx.daemon.test",
+    loaded: async () => true,
+    kickstart: async () => {
+      kicks += 1;
+      if (await findDaemon(env)) return;
+      recordingSpawn(process.execPath, [join(ROOT, "bin", "agoryx.js"), "up", "--port", "0"], { detached: true, stdio: "ignore", env }).unref();
+    },
+  };
+  const supervisor = supervise(env, { service, spawnImpl: noSpawn });
+  const seen = record(supervisor);
+  const info = await supervisor.start();
+  assert.equal(kicks, 1);
+  supervisor.watch();
+
+  // A crash: "down", one kickstart (launchd would have restarted it too: kickstart then does nothing), "up".
+  process.kill(info.pid, "SIGKILL");
+  await waitFor('"up" after the crash', () => seen.some((entry) => entry.event === "up"));
+  assert.deepEqual(seen.map((entry) => entry.event), ["down", "up"]);
+  assert.equal(kicks, 2);
+  const revived = seen[1]!.args[0] as DaemonInfo;
+  assert.notEqual(revived.pid, info.pid);
+
+  // Stopped through the API (exit 0: launchd leaves it down), and nothing restarts it.
+  await supervisor.stop();
+  await sleep(600);
+  assert.equal(await findDaemon(env), null);
+  assert.equal(kicks, 2);
+  void supervisor.dispose();
+});
+
+test("a service that does not bring the daemon up: the error says so, with the log's tail", async () => {
+  const env = homeEnv("service-dead");
+  mkdirSync(agoraHome(env), { recursive: true });
+  writeFileSync(join(agoraHome(env), "daemon.log"), "launchd: exec failed: node not found\n");
+  const failing = supervise(env, { service: { label: "x", loaded: async () => true, kickstart: async () => {} }, spawnImpl: noSpawn, startTimeoutMs: 600 });
+  const error = await failing.start().catch((reason: unknown) => reason);
+  assert.ok(error instanceof DaemonStartError);
+  assert.equal(error.reason, "the daemon did not answer within 0.6s of launchd starting it");
+  assert.match(error.logTail, /exec failed/);
+  const refused = supervise(env, { service: { label: "x", loaded: async () => true, kickstart: async () => { throw new Error("launchctl kickstart failed (113)"); } }, spawnImpl: noSpawn });
+  await assert.rejects(refused.start(), /launchd did not start the daemon \(launchctl kickstart failed \(113\)\)/);
+});
+
+test("attach checks the port's owner: a process that answers /api/health with daemon.json's pid is not the daemon", async () => {
+  const env = homeEnv("impostor");
+  mkdirSync(agoraHome(env), { recursive: true });
+  // daemon.json names a live process (a sleeping node) whose pid the impostor, listening here, claims.
+  const sleeper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+  spawned.push(sleeper);
+  const pid = sleeper.pid!;
+  const { createServer: createHttpServer } = await import("node:http");
+  const server = createHttpServer((_request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ ok: true, pid }));
+  });
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const { port } = server.address() as AddressInfo;
+  try {
+    writeFileSync(daemonInfoPath(env), JSON.stringify({ pid, port, url: `http://127.0.0.1:${port}`, token: "secret-token", startedAt: new Date().toISOString() }));
+    assert.equal((await findDaemon(env))?.pid, pid, "/api/health alone is fooled");
+
+    const checked = supervise(env, { service: null, spawnImpl: noSpawn });
+    const error = await checked.start().catch((reason: unknown) => reason);
+    assert.ok(error instanceof DaemonStartError, String(error));
+    assert.equal(error.reason, `port ${port} is held by pid ${process.pid}, not by the daemon in daemon.json (pid ${pid}); not attaching`);
+    assert.equal(checked.info, null);
+
+    // Where the owner cannot be told (no lsof), it attaches as before; the right owner, too.
+    assert.equal((await supervise(env, { service: null, spawnImpl: noSpawn, listenerPids: async () => null }).start()).pid, pid);
+    assert.equal((await supervise(env, { service: null, spawnImpl: noSpawn, listenerPids: async () => [pid] }).start()).pid, pid);
+    // Nothing this user can see holds the port: another user's process.
+    await assert.rejects(supervise(env, { service: null, spawnImpl: noSpawn, listenerPids: async () => [] }).start(), /held by a process of another user/);
+  } finally {
+    server.close();
+    sleeper.kill("SIGKILL");
+  }
+});

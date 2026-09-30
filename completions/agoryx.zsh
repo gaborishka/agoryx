@@ -7,6 +7,7 @@ _agoryx() {
     'config:Configuration diagnostics'
     'completion:Shell completion'
     'doctor:Check what Agoryx needs'
+    'service:Run the daemon at login (launchd)'
     'man:Manual page'
     'help:Help'
   )
@@ -31,6 +32,9 @@ _agoryx() {
           ;;
         doctor)
           _arguments '--probe[Also send each logged-in agent one short prompt]' '--json[Print the checks as JSON]'
+          ;;
+        service)
+          _values 'action' install uninstall status
           ;;
       esac
       ;;

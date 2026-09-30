@@ -6,6 +6,8 @@ import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_T
 import { embed, mediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
+import { inTurnAt, wakesAgent } from "./wakes.js";
+import { limitAccount } from "./limits-store.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
 import { buildTurnPrompt, paragraphs, parseMentions, passNote } from "./prompts.js";
 import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
@@ -22,6 +24,8 @@ import type {
   AgentPresence,
   DocRevision,
   FileChange,
+  LimitReport,
+  LimitSnapshot,
   MessageEntry,
   MessageKind,
   RevertEntry,
@@ -106,6 +110,8 @@ export interface EngineOptions {
    * position. Without it the room goes by @names and its word lists alone.
    */
   readMessage?: ReadMessage | null;
+  /** What an agent's CLI said about its subscription's limits (see limits.ts); only shown, never acted on. */
+  onLimits?: (snapshot: LimitSnapshot) => void;
 }
 
 /** A process kept up for an agent between turns. */
@@ -320,6 +326,7 @@ export class RoomEngine {
   /** Agents already announced as busy in their own session (cleared when they are free). */
   private readonly nativeBusyNoted = new Set<string>();
   private readonly log: (message: string) => void;
+  private readonly onLimits: ((snapshot: LimitSnapshot) => void) | undefined;
   private readonly running = new Map<string, RunningTurn>();
   /** Agents that failed hard (spawn/auth) sit out until the next human message. */
   private readonly benched = new Set<string>();
@@ -361,6 +368,7 @@ export class RoomEngine {
     this.opsPollMs = options.opsPollMs ?? 250;
     this.nativePollMs = options.nativePollMs ?? 2000;
     this.log = options.log ?? (() => {});
+    this.onLimits = options.onLimits;
     this.acquireLock();
     try {
       this.ws = prepareWorkspace(this.state.workspace, {
@@ -868,29 +876,7 @@ export class RoomEngine {
   }
 
   private wakes(event: RoomEvent, agent: RoomAgent): boolean {
-    if (event.type === "message.posted") {
-      const message = event.message;
-      if (message.author === agent.id || !message.wakes) return false;
-      // Said while working: wakes only who it addresses, and only one that was not in a turn to read it then.
-      if (message.kind === "update") {
-        return (message.mentions.includes("all") || message.mentions.includes(agent.id)) && !this.inTurnAt(agent.id, event.seq);
-      }
-      // Said in someone's own session: wakes only who it explicitly addresses, never that session's agent.
-      if (message.native) {
-        return message.native.agent !== agent.id && (message.mentions.includes("all") || message.mentions.includes(agent.id));
-      }
-      // Agoryx's own note that names agents (a second look) wakes only them.
-      if (message.kind === "system" && message.author === "agoryx" && message.mentions.length > 0) return message.mentions.includes(agent.id);
-      if (message.kind === "human" && message.mentions.length > 0) {
-        const agentMentions = message.mentions.filter((handle) => handle === "all" || this.state.agents.some((entry) => entry.id === handle));
-        if (agentMentions.length > 0 && !agentMentions.includes("all") && !agentMentions.includes(agent.id)) return false;
-      }
-      return true;
-    }
-    if (event.type === "table.op") {
-      return (event.op.by === this.state.human || Boolean(event.op.from)) && !event.op.turnId;
-    }
-    return false;
+    return wakesAgent(this.state, event, agent);
   }
 
   /** What the human said to this agent alone (`@claude …`, no one else), when that is all that woke this turn; else null. */
@@ -1023,7 +1009,7 @@ export class RoomEngine {
 
   /** Whether this agent was in a turn when event `seq` was posted (and so could read it with `read new`). */
   private inTurnAt(agentId: string, seq: number): boolean {
-    return this.state.turns.some((turn) => turn.agent === agentId && turn.seq < seq && (turn.endSeq === undefined || turn.endSeq > seq));
+    return inTurnAt(this.state, agentId, seq);
   }
 
   /**
@@ -1387,6 +1373,14 @@ export class RoomEngine {
       onActivity: (activity: Activity) => {
         if (activity.kind === "command") this.noteShellWrites(turnId, activity.command ?? activity.label, agent.kind === "claude");
         this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity: this.tidyActivity(activity) });
+      },
+      onLimits: (report: LimitReport, source: LimitSnapshot["source"]) => {
+        if (!this.onLimits) return;
+        try {
+          this.onLimits({ ...report, kind: agent.kind, account: limitAccount(agent.kind, env), source, at: new Date().toISOString() });
+        } catch (error) {
+          this.log(`${turnId} limits not kept: ${error instanceof Error ? error.message : String(error)}`);
+        }
       },
     };
 

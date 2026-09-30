@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { api, ApiError, local, roomPath, setUnauthorizedHandler, Unauthorized } from "./api";
 import { startAttention } from "./attention";
 import { lastLine } from "./room";
-import type { AgentPresence, OpEntry, RoomEvent, RoomSummary, RunState, Snapshot, TurnState } from "./types";
+import type { AgentPresence, LimitSnapshot, OpEntry, RoomEvent, RoomSummary, RunState, Snapshot, TurnState } from "./types";
 
 /**
  * The right-hand panel's tabs: an agent's own session, the shared document, the room's browser (in the app),
@@ -36,6 +36,7 @@ export type DialogState =
   | { kind: "settings" }
   | { kind: "help" }
   | { kind: "keys" }
+  | { kind: "usage" }
   | { kind: "table-form"; op: TableFormOp; target?: string; q?: string };
 
 export type TableFormOp = "ask" | "propose" | "object" | "support" | "evidence" | "decide" | "settle" | "next";
@@ -372,6 +373,11 @@ function connect(roomId: string, after: number) {
     applyPatch(roomEvent, patch);
   });
   es.addEventListener("stream", (event) => applyStream(JSON.parse((event as MessageEvent).data)));
+  es.addEventListener("limits", (event) => {
+    const { limits } = JSON.parse((event as MessageEvent).data) as { limits: LimitSnapshot[] };
+    const { snap } = useStore.getState();
+    if (snap) useStore.setState({ snap: { ...snap, limits } });
+  });
   es.addEventListener("presence", (event) => {
     const { agents } = JSON.parse((event as MessageEvent).data) as { agents: Record<string, AgentPresence> };
     const { snap } = useStore.getState();

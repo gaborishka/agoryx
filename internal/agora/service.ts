@@ -12,9 +12,10 @@ import { createCodexRunner } from "./runners/codex.js";
 import type { AgentRunner } from "./runners/types.js";
 import { defaultRoster, parseAgents } from "./roster.js";
 import { newRoomId, RoomStore, slugify } from "./store.js";
-import { DEFAULT_SETTINGS, type ActorOrigin, type AgentKind, type RoomAgent, type RoomSettings, type RoomWorktree } from "./types.js";
+import { DEFAULT_SETTINGS, type ActorOrigin, type AgentKind, type LimitSnapshot, type RoomAgent, type RoomSettings, type RoomWorktree } from "./types.js";
 import { ensureAgentShim, prepareWorkspace } from "./workspace.js";
 import { jevReadMessage, jevSecondLook, jevThreshold } from "./jev.js";
+import { recordLimits } from "./limits-store.js";
 
 export { DEFAULT_AGENTS } from "./roster.js";
 
@@ -221,6 +222,8 @@ export const openEngine = (
     opsPollMs?: number;
     /** Issues each agent's key (see actor.ts). Default: signed with <AGORYX_HOME>/daemon.token, as the daemon does. */
     agentKey?: (agentId: string) => string | undefined;
+    /** Where the agents' limits go. Default: kept in <AGORYX_HOME>/limits.json (see limits-store.ts). */
+    onLimits?: (snapshot: LimitSnapshot) => void;
   } = {},
 ): RoomEngine => {
   const env = options.env ?? process.env;
@@ -237,6 +240,7 @@ export const openEngine = (
     secondLook: jevSecondLook(env),
     secondLookThreshold: jevThreshold(env),
     readMessage: jevReadMessage(env),
+    onLimits: options.onLimits ?? ((snapshot) => void recordLimits(env, snapshot)),
     ...(options.log ? { log: options.log } : {}),
     ...(options.opsPollMs ? { opsPollMs: options.opsPollMs } : {}),
   });

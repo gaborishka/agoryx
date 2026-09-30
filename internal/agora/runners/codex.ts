@@ -14,6 +14,9 @@ import {
 } from "./types.js";
 import type { Activity, TurnUsage } from "../types.js";
 import { BROWSER_SERVER, codexMcpArgs, describeBrowserTool } from "../browsertools.js";
+import { parseCodexRateLimits } from "../limits.js";
+import { readCodexSessionLimits } from "../limits-store.js";
+import { locateCodexRollout } from "../native.js";
 
 type Json = Record<string, unknown>;
 
@@ -291,6 +294,12 @@ class CodexLiveProcess implements LiveProcess {
 
   private onNotification(method: string, params: Json): void {
     const cur = this.current;
+    // The account's, not the thread's (it carries no threadId): whenever a turn is there to hear it.
+    if (method === "account/rateLimits/updated") {
+      const report = parseCodexRateLimits(params.rateLimits, undefined, { sparse: true });
+      if (cur && report) cur.callbacks.onLimits?.(report, "codex-app-server");
+      return;
+    }
     if (!cur || (params.threadId && params.threadId !== this.sessionId)) return;
     const turnId = str(params.turnId) ?? str(asObject(params.turn)?.id);
     if (method === "turn/started") {
@@ -591,6 +600,12 @@ export const createCodexRunner = (bin = process.env.AGORYX_CODEX_BIN || "codex")
     }
     if (outcome.spawnError) {
       return { status: "error", text: "", sessionId: null, error: { kind: "spawn", message: `could not start '${bin}': ${outcome.spawnError.message}` } };
+    }
+    // `codex exec --json` prints no limits; its session file has them on its token counts.
+    if (callbacks.onLimits && threadId) {
+      const file = locateCodexRollout(threadId, request.env);
+      const report = file ? readCodexSessionLimits(file) : null;
+      if (report) callbacks.onLimits(report, "codex-session");
     }
     if (outcome.timedOut) {
       return {

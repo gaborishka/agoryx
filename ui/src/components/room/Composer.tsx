@@ -28,6 +28,7 @@ import { baseName, names as nameList, plural } from "@/lib/format";
 import type { AgentModels, RoomAgent, RoomState } from "@/lib/types";
 import { useModels } from "@/lib/models";
 import { ModelMenu } from "@/components/room/ModelMenu";
+import { LimitsChip } from "@/components/room/Limits";
 import { ink, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -301,6 +302,7 @@ const ACCESS = [
 function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) => void }) {
   const room = useStore((s) => s.snap?.state);
   const presence = useStore((s) => s.snap?.presence);
+  const limits = useStore((s) => s.snap?.limits);
   const post = useStore((s) => s.post);
   const openDialog = useStore((s) => s.openDialog);
   const models = useModels();
@@ -376,8 +378,12 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
         <Kbd className="ml-1.5">{keyLabel("newline")}</Kbd> новий рядок
       </span>
       <div className="flex min-w-0 flex-wrap items-center justify-end gap-0.5">
-        {room.agents.map((a) => (
-          <AgentModel key={a.id} agent={a} models={models} disabled={!driven} working={presence?.[a.id] === "working"} />
+        {room.agents.map((a, index) => (
+          <span key={a.id} className="flex items-center">
+            <AgentModel agent={a} models={models} disabled={!driven} working={presence?.[a.id] === "working"} />
+            {/* Limits are the subscription's: shown once per kind of agent. */}
+            {room.agents.findIndex((other) => other.kind === a.kind) === index ? <LimitsChip kind={a.kind} limits={limits} className={quietButton} /> : null}
+          </span>
         ))}
       </div>
       {running ? <LoaderCircleIcon className="ml-1 size-4 shrink-0 animate-spin text-primary" aria-label="Агенти працюють" /> : null}

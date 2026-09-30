@@ -92,7 +92,7 @@ const uuidV7Time = (id: string): number | null => {
   return ms > Date.UTC(2020, 0, 1) && ms < Date.UTC(2100, 0, 1) ? ms : null;
 };
 
-const locateCodex = (sessionId: string, env: NodeJS.ProcessEnv): string | null => {
+const locateCodex = (sessionId: string, env: NodeJS.ProcessEnv, scan = true): string | null => {
   const root = codexRoot(env);
   const suffix = `-${sessionId}.jsonl`;
   const findIn = (dir: string): string | null => {
@@ -113,6 +113,15 @@ const locateCodex = (sessionId: string, env: NodeJS.ProcessEnv): string | null =
       }
     }
   }
+  if (!scan) {
+    // A thread started this turn is filed under today (or yesterday, just past midnight).
+    for (const offset of [0, -1]) {
+      const day = new Date(Date.now() + offset * 86_400_000);
+      const hit = findIn(join(root, String(day.getFullYear()), pad(day.getMonth() + 1), pad(day.getDate())));
+      if (hit) return hit;
+    }
+    return null;
+  }
   for (const year of safeReaddir(root).sort().reverse()) {
     for (const month of safeReaddir(join(root, year)).sort().reverse()) {
       for (const day of safeReaddir(join(root, year, month)).sort().reverse()) {
@@ -123,6 +132,9 @@ const locateCodex = (sessionId: string, env: NodeJS.ProcessEnv): string | null =
   }
   return null;
 };
+
+/** A Codex rollout by its thread id's own date (UUIDv7) or today's: no walk through every day, for a lookup after each turn. */
+export const locateCodexRollout = (threadId: string, env: NodeJS.ProcessEnv = process.env): string | null => locateCodex(threadId, env, false);
 
 export const locateNativeSession = (
   kind: AgentKind,

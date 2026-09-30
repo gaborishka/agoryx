@@ -9,6 +9,7 @@ import {
   PaletteIcon,
   PanelRightIcon,
   PlusIcon,
+  ReceiptIcon,
   RotateCcwIcon,
   ScaleIcon,
   SettingsIcon,
@@ -156,6 +157,7 @@ export function Palette() {
       })),
       { id: "changes", label: "Усі зміни кімнати", icon: GitCompareArrowsIcon, run: () => s.openChanges({ scope: "room" }), keywords: "diff" },
       { id: "revert", label: "Повернути теку до контрольної точки", icon: RotateCcwIcon, run: () => s.openDialog({ kind: "revert" }), keywords: "revert checkpoint контрольна точка відкотити" },
+      { id: "usage", label: "Витрати кімнати", icon: ReceiptIcon, run: () => s.openDialog({ kind: "usage" }), keywords: "витрати usage cost пробудження" },
       { id: "ask", label: "Покласти питання на стіл", icon: ScaleIcon, run: () => s.openDialog({ kind: "table-form", op: "ask" }) },
       { id: "settings", label: "Налаштування кімнати", icon: SettingsIcon, run: () => s.openDialog({ kind: "settings" }) },
     );

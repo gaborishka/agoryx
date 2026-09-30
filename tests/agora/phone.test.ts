@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createECDH, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -131,10 +131,16 @@ before(async () => {
     CLAUDE_CONFIG_DIR: join(home, "claude-config"),
     CODEX_HOME: join(home, "codex-home"),
   };
+  // Its own pages, so the test does not depend on whether ui/dist is built (without it the daemon serves web/).
+  const webDir = join(home, "web");
+  mkdirSync(webDir);
+  writeFileSync(join(webDir, "index.html"), "<!doctype html><title>Agoryx</title>");
+  writeFileSync(join(webDir, "manifest.webmanifest"), JSON.stringify({ name: "Agoryx" }));
   daemon = new AgoraDaemon({
     env,
     port: 0,
     advertise: false,
+    webDir,
     opsPollMs: 50,
     hosts: [TS_HOST],
     log: (line) => logs.push(line),

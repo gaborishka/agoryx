@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Activity, AgentKind, RoomSettings, TurnError, TurnUsage } from "../types.js";
+import type { Activity, AgentKind, LimitReport, LimitSnapshot, RoomSettings, TurnError, TurnUsage } from "../types.js";
 
 export interface TurnRequest {
   prompt: string;
@@ -20,6 +20,8 @@ export interface TurnCallbacks {
   /** Live text of the agent's current message. reset=true starts a new message buffer. */
   onText: (text: string, reset?: boolean) => void;
   onActivity: (activity: Activity) => void;
+  /** The CLI said where its subscription's limits stand (see limits.ts). */
+  onLimits?: (report: LimitReport, source: LimitSnapshot["source"]) => void;
 }
 
 export interface TurnResult {

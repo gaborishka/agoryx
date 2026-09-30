@@ -1,7 +1,9 @@
+import type { AgentUsage, RoomUsage, UsageTotals } from "@agora/usage";
+import { ReceiptIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
 import { ErrorNote, Hint, Loading } from "@/components/common/states";
-import { Stats } from "@/components/room/bits";
+import { Avatar, Stats } from "@/components/room/bits";
 import { RefChip } from "@/components/table/OpCard";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -13,7 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, roomPath, Unauthorized } from "@/lib/api";
 import { keyLabel, SHORTCUTS, withMod } from "@/lib/keys";
-import { names, plural } from "@/lib/format";
+import { cost, fullDate, names, plural, secs } from "@/lib/format";
 import { errText, useLoad } from "@/lib/load";
 import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { type DialogState, type TableFormOp, useStore } from "@/lib/store";
@@ -546,6 +548,145 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
   );
 }
 
+// --- what the room's wakes took -------------------------------------------------
+
+const ERROR_LABEL: Record<string, string> = {
+  rate_limit: "ліміт",
+  auth: "вхід",
+  context: "контекст",
+  timeout: "час вийшов",
+  spawn: "запуск",
+  session: "сесія",
+  unknown: "інше",
+};
+
+/**
+ * "12 с · ≈$0.041 · 3.2k/410 ток." — what a set of turns took, with only what the CLIs reported. The $ is Claude
+ * Code's estimate at API prices, not a charge: on a subscription nothing is billed per turn.
+ */
+const took = (totals: UsageTotals) => {
+  if (!totals.turns) return "—";
+  const parts = [secs(totals.ms)];
+  if (totals.costTurns) parts.push(`≈${cost(totals.costUsd)}`);
+  if (totals.inputTokens || totals.outputTokens) parts.push(`${tokens(totals.inputTokens)}/${tokens(totals.outputTokens)} ток.`);
+  return parts.join(" · ");
+};
+const tokens = (n: number) => (n < 1000 ? String(n) : `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`);
+
+function UsageDialog() {
+  const room = useStore((s) => s.snap?.state);
+  const roomId = room?.id ?? "";
+  const turns = room?.turns.length ?? 0;
+  // Read again when a turn is added or ends: the numbers are the turns' own.
+  const ended = room?.turns.filter((turn) => turn.status !== "running").length ?? 0;
+  const usage = useLoad(`${roomId}:usage:${turns}:${ended}`, () => api<RoomUsage>("GET", roomPath(roomId, "/usage")));
+  let body: ReactNode = <Loading />;
+  if (usage.error) body = <ErrorNote>{usage.error}</ErrorNote>;
+  else if (usage.data) {
+    const data = usage.data;
+    const priced = data.total.costTurns > 0;
+    const codex = data.agents.some((agent) => agent.kind === "codex" && agent.wakes);
+    body = data.total.turns || data.agents.some((agent) => agent.running) ? (
+      <>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <Figure label="ходів" value={String(data.total.turns)} />
+          <Figure label="відповіді" value={String(data.outcomes.replied.turns)} />
+          <Figure label="пропуски" value={String(data.outcomes.passed.turns)} sub={data.outcomes.passed.turns ? took(data.outcomes.passed) : undefined} />
+          <Figure
+            label="збої"
+            value={String(data.outcomes.failed.turns)}
+            sub={data.outcomes.stopped.turns ? `і ${data.outcomes.stopped.turns} зупинені` : undefined}
+          />
+        </div>
+        <div className="flex flex-col divide-y divide-border rounded-xl border border-border">
+          {data.agents.map((agent) => (
+            <AgentUsageRow key={agent.agent} usage={agent} />
+          ))}
+        </div>
+        <Hint>
+          Лише те, що вже сталося: з записаних ходів кімнати. Час — від початку до кінця ходу.
+          {priced ? " ≈$ — оцінка Claude Code за цінами API, не рахунок: на підписці за хід не платять." : ""}
+          {priced && codex ? " Codex такої оцінки не дає — лише токени." : ""}
+          {data.from ? ` Від ${fullDate(data.from)}.` : ""}
+        </Hint>
+      </>
+    ) : (
+      <Hint>Поки що жодного ходу — нічого рахувати.</Hint>
+    );
+  }
+  return (
+    <Shell
+      title={
+        <span className="flex items-center gap-2">
+          <ReceiptIcon className="size-4.5 text-primary" />
+          Витрати кімнати
+        </span>
+      }
+      sub={room?.name}
+    >
+      {body}
+    </Shell>
+  );
+}
+
+function Figure({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-xl bg-muted/60 px-3 py-2">
+      <div className="text-lead font-medium tabular-nums">{value}</div>
+      <div className="text-meta text-muted-foreground">{label}</div>
+      {sub ? <div className="truncate text-micro text-faint">{sub}</div> : null}
+    </div>
+  );
+}
+
+function AgentUsageRow({ usage }: { usage: AgentUsage }) {
+  const room = useStore((s) => s.snap?.state);
+  const productive = usage.outcomes.replied;
+  const passed = usage.outcomes.passed;
+  const wokenBy = Object.entries(usage.wokenBy).sort((a, b) => b[1] - a[1]);
+  const errors = Object.entries(usage.errors);
+  return (
+    <div className="flex flex-col gap-1.5 px-3.5 py-3">
+      <div className="flex items-center gap-2">
+        <Avatar handle={usage.agent} size={22} />
+        <span className="text-ui font-medium">{usage.label}</span>
+        <span className="ml-auto text-meta tabular-nums text-muted-foreground">
+          {usage.wakes ? `розбудили ${plural(usage.wakes, "раз", "рази", "разів")}` : "ще не будили"}
+          {usage.running ? ` · ${usage.running} зараз` : ""}
+        </span>
+      </div>
+      {usage.wakes ? (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-small">
+          <dt className="text-muted-foreground">відповіді {productive.turns}</dt>
+          <dd className="tabular-nums">{took(productive)}</dd>
+          <dt className="text-muted-foreground">пропуски {passed.turns}</dt>
+          <dd className="tabular-nums">{took(passed)}</dd>
+          {usage.outcomes.failed.turns ? (
+            <>
+              <dt className="text-destructive">збої {usage.outcomes.failed.turns}</dt>
+              <dd className="tabular-nums">
+                {took(usage.outcomes.failed)}
+                {errors.length ? <span className="text-muted-foreground"> · {errors.map(([kind, n]) => `${ERROR_LABEL[kind] ?? kind} ${n}`).join(", ")}</span> : null}
+              </dd>
+            </>
+          ) : null}
+          {usage.outcomes.stopped.turns ? (
+            <>
+              <dt className="text-muted-foreground">зупинені {usage.outcomes.stopped.turns}</dt>
+              <dd className="tabular-nums">{took(usage.outcomes.stopped)}</dd>
+            </>
+          ) : null}
+        </dl>
+      ) : null}
+      {wokenBy.length ? (
+        <div className="text-meta text-muted-foreground">
+          будили: {wokenBy.map(([who, n]) => `${participant(room, who).label} ${n}`).join(", ")}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 const render = (d: DialogState) => {
   switch (d.kind) {
     case "revert":
@@ -556,6 +697,8 @@ const render = (d: DialogState) => {
       return <HelpDialog />;
     case "keys":
       return <KeysDialog />;
+    case "usage":
+      return <UsageDialog />;
     case "table-form":
       return <TableFormDialog key={`${d.op}:${d.target ?? ""}`} op={d.op} target={d.target} q={d.q} />;
   }

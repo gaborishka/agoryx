@@ -20,11 +20,14 @@ import { readDoc, renderDiff } from "../../internal/agora/doc.js";
 import { describeRevert, planRevert, RevertError, undoableRevert, type RevertRequest } from "../../internal/agora/revert.js";
 import { changeStats, patchSection, workspaceTracking } from "../../internal/agora/workspace.js";
 import { RoomStore } from "../../internal/agora/store.js";
+import { headlineWindow, limitPace } from "../../internal/agora/limits.js";
+import { readLimits } from "../../internal/agora/limits-store.js";
+import { roomUsage, TURN_OUTCOMES, type UsageTotals } from "../../internal/agora/usage.js";
 import { applyTurnContext, TURN_FILE_ENV } from "../../internal/agora/turn-context.js";
 import { parseTableCommand, TABLE_USAGE } from "../../internal/agora/table-cli.js";
 import { TURN_ENV_VARS } from "../../internal/desktop/shellenv.js";
 import { describeTableOp, renderTableMarkdown } from "../../internal/agora/table.js";
-import type { Actor, ActorOrigin, AgentKind, AgentPresence, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
+import type { Actor, ActorOrigin, AgentKind, AgentPresence, EphemeralEvent, LimitSnapshot, LimitWindow, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
 import { CliUsageError, parseCliArgsOrThrow, type OptionSpec, type OutputWriter } from "./cli-args.js";
 
 export const AGORA_COMMANDS = new Set([
@@ -45,6 +48,7 @@ export const AGORA_COMMANDS = new Set([
   "diff",
   "revert",
   "profile",
+  "usage",
 ]);
 
 export const printAgoraUsage = (write: OutputWriter = console.log): void => {
@@ -66,6 +70,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx doc [-r room] [--log | --diff REV]   The room's canonical file: its text, its revisions, one revision's diff",
       "  agoryx diff [-r room] [TURN [PATH]]         What each turn changed: recent turns, or one turn's exact patch",
       "  agoryx revert [-r room] [SHA | --undo [N]] [--yes]   Return the folder to a checkpoint (no SHA: list them), or undo a return",
+      "  agoryx usage [room] [--json]      Your agents' subscription limits, as their CLIs last reported them, and what the room's wakes cost",
       "  agoryx profile [-r room]           Your profile (who you are, for the agents): where it is, and who in the room sees it",
       "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--autocommit on|off] [--access workspace|readonly] [--doc PATH|none]",
       "",
@@ -1251,6 +1256,129 @@ const runProfile = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+/** "1h 05m", "4m 10s", "12s". */
+const span = (ms: number): string => {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+};
+
+const windowName = (window: LimitWindow): string =>
+  window.id === "five_hour"
+    ? "5-hour"
+    : window.id === "seven_day"
+      ? "weekly"
+      : window.id.startsWith("seven_day_")
+        ? `weekly ${window.id.slice(10)}`
+        : window.minutes
+          ? `${window.minutes % 1440 === 0 ? `${window.minutes / 1440}-day` : window.minutes % 60 === 0 ? `${window.minutes / 60}-hour` : `${window.minutes}-min`}`
+          : window.id;
+
+/** One subscription's windows as lines: used, reset, and the pace (used against how much of the window has gone). */
+const limitLines = (snapshot: LimitSnapshot, now: number): string[] => {
+  const who = `${snapshot.kind}${snapshot.account === "default" ? "" : ` (${snapshot.account})`}${snapshot.plan ? ` · ${snapshot.plan}` : ""}`;
+  const head = `  ${pc.bold(who)}  ${pc.dim(`updated ${span(now - Date.parse(snapshot.at))} ago`)}${snapshot.limited ? pc.red("  limit reached") : ""}`;
+  if (snapshot.windows.length === 0) return [head, "    no windows reported"];
+  return [
+    head,
+    ...snapshot.windows.map((window) => {
+      const pace = limitPace(window, now);
+      const resets = window.resetsAt ? `resets ${localStamp(window.resetsAt)}` : "reset time unknown";
+      const hint =
+        pace.state === "ahead"
+          ? pc.yellow(`ahead of pace — runs out about ${localStamp(pace.runsOutAt!)}, before the reset`)
+          : pace.state === "on-pace"
+            ? pc.green("on pace")
+            : pace.state === "out"
+              ? pc.red("used up")
+              : pace.state === "reset"
+                ? pc.dim("has reset since")
+                : pace.state === "early"
+                  ? pc.dim("too early to say")
+                  : "";
+      return `    ${windowName(window).padEnd(10)} ${`${Math.round(window.usedPercent)}%`.padStart(4)}  ${resets}  ${hint}`;
+    }),
+  ];
+};
+
+/** Claude Code's estimate at API prices, not a charge: on a subscription nothing is billed per turn. */
+const money = (totals: UsageTotals): string => (totals.costTurns > 0 ? `≈$${totals.costUsd.toFixed(totals.costUsd < 1 ? 3 : 2)}` : "—");
+
+const runUsage = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, [ROOM_OPT, { long: "json", takesValue: false }]);
+  if (parsed.options.help) {
+    printAgoraUsage();
+    return 0;
+  }
+  const limits = readLimits();
+  const ref = parsed.options.room ?? parsed.positionals[0];
+  let usage = null;
+  if (ref || RoomStore.list(roomsDir()).length > 0) {
+    const store = RoomStore.open(roomsDir(), resolveRoom(ref));
+    usage = roomUsage(store.state, store.since(0));
+  }
+  if (parsed.options.json) {
+    console.log(JSON.stringify({ limits, usage }, null, 2));
+    return 0;
+  }
+  const now = Date.now();
+  console.log(pc.dim("Limits, as the agents' CLIs last reported them:"));
+  if (limits.length === 0) console.log("  unknown — none reported yet (they come with an agent's next turn)");
+  for (const snapshot of limits) for (const line of limitLines(snapshot, now)) console.log(line);
+  const headline = limits.flatMap((snapshot) => headlineWindow(snapshot.windows, now) ?? []);
+  if (headline.length === 0 && limits.length > 0) console.log(pc.dim("  (every window reported has reset since)"));
+  if (!usage) return 0;
+
+  console.log("");
+  console.log(pc.dim(`What the wakes in ${usage.name} cost${usage.from ? ` (${localStamp(usage.from)} – ${localStamp(usage.to!)})` : ""}:`));
+  if (usage.total.turns === 0 && usage.agents.every((agent) => agent.wakes === 0)) {
+    console.log("  no turns yet");
+    return 0;
+  }
+  const header = ["", "wakes", ...TURN_OUTCOMES, "time", "on passes", "cost", "on passes", "tokens in/out"];
+  const rows = usage.agents.map((agent) => [
+    agent.label,
+    String(agent.wakes) + (agent.running ? ` (${agent.running} running)` : ""),
+    ...TURN_OUTCOMES.map((outcome) => String(agent.outcomes[outcome].turns)),
+    span(agent.total.ms),
+    span(agent.outcomes.passed.ms),
+    money(agent.total),
+    money(agent.outcomes.passed),
+    `${agent.total.inputTokens}/${agent.total.outputTokens}`,
+  ]);
+  rows.push([
+    "all",
+    String(usage.agents.reduce((sum, agent) => sum + agent.wakes, 0)),
+    ...TURN_OUTCOMES.map((outcome) => String(usage.outcomes[outcome].turns)),
+    span(usage.total.ms),
+    span(usage.outcomes.passed.ms),
+    money(usage.total),
+    money(usage.outcomes.passed),
+    `${usage.total.inputTokens}/${usage.total.outputTokens}`,
+  ]);
+  const widths = header.map((cell, index) => Math.max(cell.length, ...rows.map((row) => row[index]!.length)));
+  const line = (cells: string[]) => `  ${cells.map((cell, index) => (index === 0 ? cell.padEnd(widths[index]!) : cell.padStart(widths[index]!))).join("  ")}`;
+  console.log(pc.dim(line(header)));
+  rows.forEach((row, index) => console.log(index === rows.length - 1 ? pc.bold(line(row)) : line(row)));
+  for (const agent of usage.agents) {
+    const woken = Object.entries(agent.wokenBy).sort((a, b) => b[1] - a[1]);
+    const errors = Object.entries(agent.errors);
+    if (woken.length === 0 && errors.length === 0) continue;
+    const parts = [
+      ...(woken.length ? [`woken by ${woken.map(([by, count]) => `${by} ${count}`).join(", ")}`] : []),
+      ...(errors.length ? [`failed: ${errors.map(([kind, count]) => `${kind} ${count}`).join(", ")}`] : []),
+    ];
+    console.log(pc.dim(`  ${agent.label}: ${parts.join("; ")}`));
+  }
+  if (usage.total.costTurns > 0) console.log(pc.dim("  ≈$ is Claude Code's estimate at API prices, not a charge: a subscription is not billed per turn."));
+  if (usage.agents.some((agent) => agent.kind === "codex")) console.log(pc.dim("  Codex gives no such estimate, only tokens."));
+  return 0;
+};
+
 export const runAgora = async (command: string, argv: string[]): Promise<number> => {
   switch (command) {
     case "up":
@@ -1286,6 +1414,8 @@ export const runAgora = async (command: string, argv: string[]): Promise<number>
       return runRevert(argv);
     case "profile":
       return runProfile(argv);
+    case "usage":
+      return runUsage(argv);
     default:
       throw new CliUsageError(`unknown room command '${command}'`, printAgoraUsage);
   }

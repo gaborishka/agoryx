@@ -8,6 +8,7 @@ import {
   MessagesSquareIcon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
+  ReceiptIcon,
   RotateCcwIcon,
   ScaleIcon,
   SettingsIcon,
@@ -377,6 +378,10 @@ export function RoomHeader() {
           <DropdownMenuItem onSelect={() => openDialog({ kind: "revert" })}>
             <RotateCcwIcon />
             Повернути теку…
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => openDialog({ kind: "usage" })}>
+            <ReceiptIcon />
+            Витрати кімнати
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openDialog({ kind: "settings" })}>
             <SettingsIcon />

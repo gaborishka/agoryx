@@ -13,6 +13,8 @@ import { planRevert, RevertError, type RevertRequest } from "./revert.js";
 import { linkedMedia, markdownTexts } from "./media.js";
 import { agentModels } from "./models.js";
 import { locateNativeSession } from "./native.js";
+import { readLimits, recordLimits } from "./limits-store.js";
+import { roomUsage } from "./usage.js";
 import { readTranscript } from "./transcript.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
@@ -24,7 +26,7 @@ import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js
 import { createRoom, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
-import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
+import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
 import { listWorkspaceFiles, repoRoot, resolveInside, workspacePaths, workspaceTracking } from "./workspace.js";
 
@@ -423,6 +425,7 @@ export class AgoraDaemon {
         agentKey: (agentId) => agentKey(this.token, fresh.id, agentId),
         runners: this.runners,
         log: (message) => this.log(`[${fresh.id}] ${message}`),
+        onLimits: (snapshot) => this.onLimits(snapshot),
         ...(this.options.opsPollMs ? { opsPollMs: this.options.opsPollMs } : {}),
       });
       // Deliver what the followed store has not read yet — including what the engine just appended on
@@ -441,6 +444,15 @@ export class AgoraDaemon {
       if (!(error instanceof RoomLockedError)) throw error;
       handle.lockedBy = error.message;
       handle.store.refresh();
+    }
+  }
+
+  /** An agent's CLI said where its limits stand: kept, and shown to every open room (limits are the account's). */
+  private onLimits(snapshot: LimitSnapshot): void {
+    const limits = recordLimits(this.env, snapshot);
+    if (!limits) return;
+    for (const handle of this.rooms.values()) {
+      for (const listener of handle.listeners) listener({ type: "limits", limits });
     }
   }
 
@@ -780,6 +792,12 @@ export class AgoraDaemon {
       return;
     }
 
+    // What each agent's CLI last said about its subscription's limits.
+    if (parts[0] === "limits" && parts.length === 1 && method === "GET") {
+      sendJson(res, 200, { limits: readLimits(this.env) });
+      return;
+    }
+
     if (parts[0] === "attention") return this.attentionApi(req, res, parts.slice(1), method, caller);
     if (parts[0] === "browser") return this.browserApi(req, res, parts.slice(1), method, caller);
 
@@ -845,6 +863,12 @@ export class AgoraDaemon {
 
     if (!action && method === "GET") {
       sendJson(res, 200, this.snapshot(handle));
+      return;
+    }
+
+    // What the room's wakes cost, from its recorded turns.
+    if (action === "usage" && method === "GET") {
+      sendJson(res, 200, roomUsage(handle.store.state, handle.store.since(0)));
       return;
     }
 
@@ -1054,6 +1078,7 @@ export class AgoraDaemon {
       ...(handle.lockedBy ? { lockedBy: handle.lockedBy } : {}),
       // Whether there is a profile at all, never what it says: the UI shows who is given it.
       profile: { path: profilePath(this.env), exists: readProfile(profilePath(this.env)) !== null },
+      limits: readLimits(this.env),
     };
   }
 
@@ -1172,6 +1197,10 @@ export class AgoraDaemon {
       }
       if (event.type === "presence") {
         res.write(`event: presence\ndata: ${JSON.stringify({ agents: this.presence(handle) })}\n\n`);
+        return;
+      }
+      if (event.type === "limits") {
+        res.write(`event: limits\ndata: ${JSON.stringify({ limits: event.limits })}\n\n`);
         return;
       }
       const state = handle.store.state;

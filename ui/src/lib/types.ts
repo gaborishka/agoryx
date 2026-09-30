@@ -1,5 +1,5 @@
 import type { AgentLook } from "@agora/look";
-import type { AgentPresence, AttentionItem, RoomAgent, RoomState, SystemNote, TableOp } from "@agora/types";
+import type { AgentPresence, AttentionItem, LimitSnapshot, RoomAgent, RoomState, SystemNote, TableOp } from "@agora/types";
 
 export type * from "@agora/types";
 
@@ -49,6 +49,8 @@ export interface Snapshot {
   lockedBy?: string;
   /** The human's profile: where it is and whether it exists (its text never reaches the UI). */
   profile?: { path: string; exists: boolean };
+  /** What each agent's CLI last said about its subscription's limits. */
+  limits?: LimitSnapshot[];
 }
 
 export type DiffItem = { t: "+" | "-" | " "; s: string } | { skip: number };

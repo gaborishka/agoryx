@@ -43,6 +43,25 @@ const sessionFile = (id) => join(stateDir, "sessions", `${kind}-${id}`);
 const counterFile = join(stateDir, `${kind}-turns`);
 
 const pad = (n) => String(n).padStart(2, "0");
+
+// $FAKE_RATE_LIMITS (JSON {used, resetsAt: epoch seconds, minutes?}): the limits the CLI reports, in its own shapes —
+// Claude's rate_limit_event, Codex app-server's account/rateLimits/updated and its session files' token_count.
+const fakeLimits = () => JSON.parse(process.env.FAKE_RATE_LIMITS);
+const codexRateLimits = (spelling) => {
+  const { used, resetsAt, minutes = 10080 } = fakeLimits();
+  return spelling === "snake"
+    ? { limit_id: "codex", primary: { used_percent: used, window_minutes: minutes, resets_at: resetsAt }, secondary: null, plan_type: "pro", rate_limit_reached_type: null }
+    : { limitId: "codex", primary: { usedPercent: used, windowDurationMins: minutes, resetsAt }, secondary: null, planType: "pro", rateLimitReachedType: null };
+};
+const claudeRateLimitEvent = (sessionId) => {
+  const { used, resetsAt } = fakeLimits();
+  return {
+    type: "rate_limit_event",
+    rate_limit_info: { status: "allowed", resetsAt, rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: used / 100, resetsAt }, seven_day: { utilization: used / 200, resetsAt: resetsAt + 86400 } } },
+    uuid: randomUUID(),
+    session_id: sessionId,
+  };
+};
 /** Appends one turn to the native session file the real CLI would keep. */
 const writeNativeTurn = (sessionId, prompt, reply, resumed) => {
   const now = new Date();
@@ -78,6 +97,7 @@ const writeNativeTurn = (sessionId, prompt, reply, resumed) => {
       { timestamp: ts, type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] } },
       { timestamp: ts, type: "event_msg", payload: { type: "item_completed", turn_id: turnId, item: { type: "UserMessage", id: randomUUID(), content: [{ type: "text", text: prompt }] } } },
       { timestamp: ts, type: "event_msg", payload: { type: "item_completed", turn_id: turnId, item: { type: "AgentMessage", id: randomUUID(), phase: "final_answer", content: [{ type: "Text", text: reply }] } } },
+      ...(process.env.FAKE_RATE_LIMITS ? [{ timestamp: ts, type: "event_msg", payload: { type: "token_count", info: null, rate_limits: codexRateLimits("snake") } }] : []),
       { timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: turnId, last_agent_message: reply } },
     );
   }
@@ -260,6 +280,7 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
   if (kind === "claude") {
     out({ type: "assistant", session_id: sessionId, message: { content: [{ type: "tool_use", id: `tu${turn}`, name: "Bash", input: { command } }] } });
     out({ type: "user", session_id: sessionId, message: { content: [{ type: "tool_result", tool_use_id: `tu${turn}`, content: "ok", is_error: false }] } });
+    if (process.env.FAKE_RATE_LIMITS) out(claudeRateLimitEvent(sessionId));
     out({ type: "stream_event", session_id: sessionId, event: { type: "message_start" } });
     for (const piece of reply.match(/.{1,8}/gs) ?? []) {
       out({ type: "stream_event", session_id: sessionId, event: { type: "content_block_delta", delta: { type: "text_delta", text: piece } } });
@@ -413,6 +434,7 @@ const runLiveCodex = async () => {
       }
       case "turn.completed":
         rpc({ method: "thread/tokenUsage/updated", params: { ...base, tokenUsage: { total: tokenUsage, last: tokenUsage } } });
+        if (process.env.FAKE_RATE_LIMITS) rpc({ method: "account/rateLimits/updated", params: { rateLimits: codexRateLimits("camel") } });
         return rpc({ method: "turn/completed", params: { threadId, turn: { id: base.turnId, status: "completed", error: null } } });
       case "turn.failed":
         rpc({ method: "error", params: { ...base, willRetry: false, error: { message: event.error.message } } });

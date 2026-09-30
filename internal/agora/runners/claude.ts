@@ -12,6 +12,7 @@ import {
 } from "./types.js";
 import type { Activity, ActivityKind, TurnUsage } from "../types.js";
 import { BROWSER_SERVER, claudeMcpConfig, describeBrowserTool } from "../browsertools.js";
+import { parseClaudeRateLimit } from "../limits.js";
 
 type Json = Record<string, unknown>;
 
@@ -186,6 +187,11 @@ class ClaudeTurn {
       this.confirmedSession = sid;
       callbacks.onSession(sid);
     }
+    if (type === "rate_limit_event") {
+      const report = parseClaudeRateLimit(event);
+      if (report) callbacks.onLimits?.(report, "claude-stream");
+      return;
+    }
     if (type === "stream_event") {
       const inner = asObject(event.event);
       if (inner?.type === "message_start") callbacks.onText("", true);
@@ -351,6 +357,11 @@ class ClaudeLiveProcess implements LiveProcess {
   private onEvent(event: Json): void {
     const cur = this.current;
     if (!cur) return;
+    // Limits are the subscription's, not the turn's: whenever they come.
+    if (event.type === "rate_limit_event") {
+      cur.turn.handle(event);
+      return;
+    }
     if (!cur.echoed) {
       const sid = str(event.session_id);
       if (sid && sid !== this.sessionId) {

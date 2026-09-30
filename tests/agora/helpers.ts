@@ -80,6 +80,8 @@ export const createTestRoom = (options: {
   readMessage?: import("../../internal/agora/jev.js").ReadMessage;
   /** false: the workspace is a folder the human brought (it exists, and is not a git repository). */
   createdWorkspace?: boolean;
+  /** Where the agents' limits go (see EngineOptions.onLimits). */
+  onLimits?: (snapshot: import("../../internal/agora/types.js").LimitSnapshot) => void;
 } = {}): TestRoom => {
   const home = mkdtempSync(join(tmpdir(), "agora-test-"));
   const roomsRoot = join(home, "rooms");
@@ -120,6 +122,7 @@ export const createTestRoom = (options: {
     ...(options.agentKey ? { agentKey: options.agentKey } : {}),
     ...(options.secondLook ? { secondLook: options.secondLook } : {}),
     ...(options.readMessage ? { readMessage: options.readMessage } : {}),
+    ...(options.onLimits ? { onLimits: options.onLimits } : {}),
     opsPollMs: 50,
     nativePollMs: 50,
   });

@@ -191,6 +191,50 @@ export interface TurnError {
 }
 
 // ---------------------------------------------------------------------------
+// Subscription limits, as the agents' CLIs report them (see limits.ts)
+// ---------------------------------------------------------------------------
+
+/** One usage window of a subscription (Claude's five_hour / seven_day, Codex's primary / secondary). */
+export interface LimitWindow {
+  /** The CLI's own name for it: "five_hour", "seven_day", "seven_day_opus"… (Claude), "primary" / "secondary" (Codex). */
+  id: string;
+  /** Its length: Codex reports it (window_minutes); for Claude it follows from the name (five_hour → 300). */
+  minutes?: number;
+  /** How much of it is used, 0–100 (Claude reports a fraction, Codex a percent). */
+  usedPercent: number;
+  /** When it resets (ISO). */
+  resetsAt?: string;
+  /** When the CLI said so (ISO). */
+  at: string;
+}
+
+/** What one CLI said about its limits: the windows it reported, and whether it is refusing now. */
+export interface LimitReport {
+  windows: LimitWindow[];
+  /** Every window the account has: windows missing from it are gone, not unreported (Codex session files; Claude's unifiedWindows — not Codex app-server's rolling updates). */
+  complete: boolean;
+  /** Claude's status ("allowed", "allowed_warning", "rejected"). */
+  status?: string;
+  /** The CLI says the limit is reached: Claude's status "rejected", Codex's rate_limit_reached_type. */
+  limited?: boolean;
+  /** Codex's plan_type ("plus", "pro"…). */
+  plan?: string;
+}
+
+/**
+ * The latest a CLI said about one subscription, kept in <AGORYX_HOME>/limits.json across restarts. `account` is
+ * the CLI's home when set (CLAUDE_CONFIG_DIR, CODEX_HOME), else "default": two homes are two logins.
+ */
+export interface LimitSnapshot extends LimitReport {
+  kind: AgentKind;
+  account: string;
+  /** Where it was read: Claude's stream-json, Codex's app-server, or a Codex session file. */
+  source: "claude-stream" | "codex-app-server" | "codex-session";
+  /** When it was last updated (ISO). */
+  at: string;
+}
+
+// ---------------------------------------------------------------------------
 // Table
 // ---------------------------------------------------------------------------
 
@@ -454,7 +498,9 @@ export type RoomEvent = RoomEventBody & { seq: number; ts: string };
 /** Non-persisted events broadcast to live listeners only. */
 export type EphemeralEvent =
   | { type: "turn.stream"; turnId: string; agent: string; text: string; reset?: boolean }
-  | { type: "presence"; agents: Record<string, AgentPresence> };
+  | { type: "presence"; agents: Record<string, AgentPresence> }
+  /** What the agents' CLIs last said about their subscriptions (every kind and account). */
+  | { type: "limits"; limits: LimitSnapshot[] };
 
 /** "native": someone is mid-exchange with the agent in its own session, outside the room. */
 export type AgentPresence = "idle" | "working" | "queued" | "native";

@@ -18,6 +18,9 @@ import { claimPairing, onThisComputer, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 // Settings, help and the table's forms: loaded with the first dialog, and fetched while idle.
+const loadSettings = () => import("@/components/settings/Settings");
+const Settings = lazy(() => loadSettings().then((m) => ({ default: m.Settings })));
+
 const loadDialogs = () => import("@/components/dialogs/Dialogs");
 const Dialogs = lazy(() => loadDialogs().then((m) => ({ default: m.Dialogs })));
 
@@ -151,7 +154,15 @@ function Shell() {
         </>
       ) : null}
       <main className="flex min-h-0 min-w-0 flex-1">
-        {route.kind === "room" ? <Room /> : route.kind === "new" ? <StartScreen /> : null}
+        {route.kind === "room" ? (
+          <Room />
+        ) : route.kind === "new" ? (
+          <StartScreen />
+        ) : route.kind === "settings" ? (
+          <Suspense fallback={null}>
+            <Settings section={route.section} />
+          </Suspense>
+        ) : null}
       </main>
       {route.kind === "room" ? <SidePanel overlay={!roomy} phone={phone} /> : null}
     </div>
@@ -166,7 +177,7 @@ export function App() {
   const browserOpen = useStore((s) => s.panel === "browser");
   useEffect(() => {
     // Warm the lazy chunks while the page is idle, so the first dialog or tab opens without a wait.
-    const warm = () => void Promise.all([loadDialogs(), warmPanels()]).catch(() => {});
+    const warm = () => void Promise.all([loadDialogs(), loadSettings(), warmPanels()]).catch(() => {});
     if ("requestIdleCallback" in window) {
       const id = window.requestIdleCallback(warm, { timeout: 4000 });
       return () => window.cancelIdleCallback(id);

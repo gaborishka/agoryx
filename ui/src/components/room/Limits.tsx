@@ -92,22 +92,45 @@ export function LimitsChip({ kind, limits, className }: { kind: AgentKind; limit
           <span className="text-small font-medium">{KIND_LABEL[kind]}</span>
           {snapshot?.plan ? <span className="text-meta text-muted-foreground">план {snapshot.plan}</span> : null}
         </div>
-        {!snapshot ? (
-          <p className="mt-2 text-small text-muted-foreground">Невідомо: CLI ще нічого не казав про ліміти. Дані прийдуть з наступним ходом агента.</p>
-        ) : (
-          <>
-            {snapshot.limited ? <p className="mt-2 text-small text-destructive">CLI каже: ліміт вичерпано.</p> : null}
-            {snapshot.windows.length === 0 ? <p className="mt-2 text-small text-muted-foreground">Вікна невідомі.</p> : null}
-            <ul className="mt-2 flex flex-col gap-3">
-              {snapshot.windows.map((window) => (
-                <LimitRow key={window.id} window={window} now={now} />
-              ))}
-            </ul>
-            <p className="mt-3 text-meta text-faint">{updated(snapshot.at, now)} · так каже сам CLI</p>
-          </>
-        )}
+        <LimitsBody snapshot={snapshot} now={now} />
       </PopoverContent>
     </Popover>
+  );
+}
+
+function LimitsBody({ snapshot, now }: { snapshot: LimitSnapshot | undefined; now: number }) {
+  return (
+    <>
+      {!snapshot ? (
+        <p className="mt-2 text-small text-muted-foreground">Невідомо: CLI ще нічого не казав про ліміти. Дані прийдуть з наступним ходом агента.</p>
+      ) : (
+        <>
+          {snapshot.limited ? <p className="mt-2 text-small text-destructive">CLI каже: ліміт вичерпано.</p> : null}
+          {snapshot.windows.length === 0 ? <p className="mt-2 text-small text-muted-foreground">Вікна невідомі.</p> : null}
+          <ul className="mt-2 flex flex-col gap-3">
+            {snapshot.windows.map((window) => (
+              <LimitRow key={window.id} window={window} now={now} />
+            ))}
+          </ul>
+          <p className="mt-3 text-meta text-faint">{updated(snapshot.at, now)} · так каже сам CLI</p>
+        </>
+      )}
+    </>
+  );
+}
+
+/** Every window one kind of agent's CLI last reported, as a block (the settings screen). */
+export function LimitsCard({ kind, limits }: { kind: AgentKind; limits: LimitSnapshot[] | undefined }) {
+  const now = useNow(true, 30_000);
+  const snapshot = latestFor(limits, kind);
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-ui font-medium">{KIND_LABEL[kind]}</span>
+        {snapshot?.plan ? <span className="text-meta text-muted-foreground">план {snapshot.plan}</span> : null}
+      </div>
+      <LimitsBody snapshot={snapshot} now={now} />
+    </div>
   );
 }
 

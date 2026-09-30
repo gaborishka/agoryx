@@ -1,11 +1,11 @@
-import { ChevronRightIcon, CircleHelpIcon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
+import { ChevronRightIcon, CircleHelpIcon, Settings2Icon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AgoraGlyph, Avatar, Tip } from "@/components/room/bits";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { local } from "@/lib/api";
 import { waitingReason } from "@/lib/attention";
-import { withMod } from "@/lib/keys";
+import { keyLabel, withMod } from "@/lib/keys";
 import { ago, baseName, names, plural, roomPreviewParts, shortPath } from "@/lib/format";
 import { ink, toneText } from "@/lib/room";
 import { useStore } from "@/lib/store";
@@ -365,15 +365,28 @@ export function Sidebar() {
         )}
       </div>
       <div className="flex items-center gap-1 border-t border-border/70 px-2 py-2">
-        <Button variant="ghost" size="sm" className="h-8 gap-2 text-small text-muted-foreground" onClick={() => openDialog({ kind: "help" })}>
-          <CircleHelpIcon className="size-4" />
-          Як це працює
-        </Button>
+        <Tip tip={`Налаштування · ${keyLabel("settings")}`}>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-current={route.kind === "settings" ? "page" : undefined}
+            className={cn("h-8 gap-2 text-small text-muted-foreground", route.kind === "settings" && "bg-accent text-foreground")}
+            onClick={() => go({ kind: "settings", section: "general" })}
+          >
+            <Settings2Icon className="size-4" />
+            Налаштування
+          </Button>
+        </Tip>
+        <Tip tip="Як це працює">
+          <Button variant="ghost" size="icon" className="ml-auto size-8 text-muted-foreground" aria-label="Як це працює" onClick={() => openDialog({ kind: "help" })}>
+            <CircleHelpIcon className="size-4" />
+          </Button>
+        </Tip>
         <Tip tip={device ? "Цей пристрій" : "Відкрити на телефоні"}>
           <Button
             variant="ghost"
             size="icon"
-            className="ml-auto size-8 text-muted-foreground"
+            className="size-8 text-muted-foreground"
             aria-label={device ? "Цей пристрій" : "Відкрити на телефоні"}
             onClick={() => openDialog({ kind: "phone" })}
           >

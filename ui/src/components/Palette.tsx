@@ -1,4 +1,5 @@
 import {
+  BotIcon,
   CircleHelpIcon,
   FileIcon,
   GitCompareArrowsIcon,
@@ -12,9 +13,11 @@ import {
   ReceiptIcon,
   RotateCcwIcon,
   ScaleIcon,
+  Settings2Icon,
   SettingsIcon,
   SmartphoneIcon,
   SquareIcon,
+  UserRoundIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { panelTabs, TABS } from "@/components/panel/SidePanel";
@@ -168,6 +171,9 @@ export function Palette() {
     }
   }
   actions.push(
+    { id: "prefs", label: "Налаштування", icon: Settings2Icon, run: () => s.go({ kind: "settings", section: "general" }), keywords: "settings preferences профіль агенти ліміти", hint: <Keys id="settings" /> },
+    { id: "profile", label: "Мій профіль", icon: UserRoundIcon, run: () => s.go({ kind: "settings", section: "profile" }), keywords: "profile про мене" },
+    { id: "roster", label: "Агенти нових кімнат", icon: BotIcon, run: () => s.go({ kind: "settings", section: "agents" }), keywords: "agents roster модель model" },
     { id: "theme", label: "Змінити тему", icon: PaletteIcon, run: theme.cycle, keywords: "theme dark light темна світла", hint: <CommandShortcut>{THEME_LABEL[theme.pref]}</CommandShortcut> },
     { id: "phone", label: device ? "Цей пристрій" : "Відкрити на телефоні", icon: SmartphoneIcon, run: () => s.openDialog({ kind: "phone" }), keywords: "телефон phone qr пристрій сповіщення" },
     { id: "keys", label: "Клавіші", icon: KeyboardIcon, run: () => s.openDialog({ kind: "keys" }), keywords: "скорочення shortcuts", hint: <Keys id="keys" /> },

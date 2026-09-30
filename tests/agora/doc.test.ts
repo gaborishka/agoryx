@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { diffHunks, diffLines, docHash, normalizeDocPath, renderDiff } from "../../internal/agora/doc.js";
 import { DocConflictError } from "../../internal/agora/engine.js";
+import { createRoom } from "../../internal/agora/service.js";
 import { createTestRoom, withTimeout } from "./helpers.js";
 
 const waitUntil = async (check: () => boolean, ms = 10_000) => {
@@ -145,6 +146,42 @@ test("the briefing names the canonical file; choosing one records the version th
     const first = room.invocations("claude")[0]!.prompt!;
     assert.match(first, /The room's canonical file: essay\.md/);
     assert.match(first, /essay\.md \(the room's canonical file\): 1 line, last changed by nobody yet/);
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a new room has no canonical file, even in a folder Agoryx creates", () => {
+  const home = mkdtempSync(join(tmpdir(), "agora-nodoc-"));
+  const env = { ...process.env, AGORYX_HOME: home, AGORYX_HUMAN: "Ivan" };
+  try {
+    const room = createRoom({ name: "Fresh", env });
+    assert.equal(room.state.settings.doc, null);
+    assert.equal(existsSync(join(room.state.workspace, "README.md")), false);
+    assert.equal(createRoom({ name: "Named", env, doc: "PLAN.md" }).state.settings.doc, "PLAN.md");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("without a canonical file the agents are told they can name one; an agent naming it is said by name", async () => {
+  const room = createTestRoom();
+  try {
+    room.engine.postHuman("Hello both");
+    await withTimeout(room.engine.waitIdle());
+    const prompt = room.invocations("claude")[0]!.prompt!;
+    assert.match(prompt, /The room has no canonical file\. .*any of you\n  can name it: `agoryx settings --doc <path>`/s);
+
+    writeFileSync(join(room.store.state.workspace, "PLAN.md"), "# Plan\n");
+    room.engine.updateSettings({ doc: "PLAN.md" }, "codex");
+    assert.equal(room.store.state.settings.doc, "PLAN.md");
+    assert.ok(room.store.state.messages.some((message) => /Codex changed the settings: canonical file PLAN\.md/.test(message.text)));
+    room.engine.postHuman("And now?");
+    await withTimeout(room.engine.waitIdle());
+    const after = room.invocations("claude").at(-1)!.prompt!;
+    // The next turn is told what changed: who named it, and the file as the room found it.
+    assert.match(after, /Codex changed the settings: canonical file PLAN\.md\./);
+    assert.match(after, /PLAN\.md \(the room's canonical file\) changed since your last turn/);
   } finally {
     await room.cleanup();
   }

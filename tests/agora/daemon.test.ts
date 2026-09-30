@@ -279,7 +279,8 @@ test("a room can start from its first message alone, and be renamed later", asyn
 });
 
 test("the canonical file: read it, edit it against a base, see each revision's diff", async () => {
-  const room = await newRoom("Daemon doc");
+  assert.equal((await call("GET", `/api/rooms/${(await newRoom("No doc")).id}/doc`)).status, 404, "a new room has none");
+  const room = await newRoom("Daemon doc", { doc: "README.md" });
   const first = await call("GET", `/api/rooms/${room.id}/doc`);
   assert.equal(first.status, 200, first.body);
   const doc = first.json<{ path: string; text: string; hash: string; exists: boolean }>();

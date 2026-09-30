@@ -1,10 +1,7 @@
 import {
   ArrowRightIcon,
   ArrowUpIcon,
-  CheckIcon,
   ChevronDownIcon,
-  FileTextIcon,
-  FileXIcon,
   InfinityIcon,
   LayoutTemplateIcon,
   MinusIcon,
@@ -22,7 +19,6 @@ import { type ModelChange, ModelMenu } from "@/components/room/ModelMenu";
 import { autosize } from "@/components/room/Composer";
 import { NavButton } from "@/components/room/RoomHeader";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
 import {
   Popover,
@@ -58,7 +54,6 @@ const EXAMPLES = [
 /** No limit: the room goes on until everyone passes, or you stop it. The same default as the daemon's. */
 const DEFAULT_BUDGET: number | null = null;
 const BUDGETS = [4, 8, 16, 32];
-const DOCS = ["README.md", "PLAN.md", "DESIGN.md"];
 
 /** Model and effort chosen here for each agent, by id; a key that is present overrides the roster (null: the CLI's default). */
 type Picks = Record<string, ModelChange>;
@@ -177,116 +172,6 @@ function PopHead({ title, text }: { title: string; text: string }) {
         {text}
       </p>
     </div>
-  );
-}
-
-/** The canonical file: undefined leaves the daemon's default (README.md in a new folder, none in yours). */
-function DocChip({
-  doc,
-  onDoc,
-  fallback,
-}: {
-  doc: string | null | undefined;
-  onDoc: (doc: string | null | undefined) => void;
-  fallback: string | null;
-}) {
-  const value = doc === undefined ? fallback : doc;
-  const [draft, setDraft] = useState("");
-  const [open, setOpen] = useState(false);
-  const pick = (next: string | null) => {
-    onDoc(next === fallback ? undefined : next);
-    setOpen(false);
-  };
-  const custom = value && !DOCS.includes(value) ? [value] : [];
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (next) setDraft("");
-      }}
-    >
-      <PopoverTrigger className={footChip}>
-        {value ? (
-          <FileTextIcon className="size-3.5 shrink-0 text-primary" />
-        ) : (
-          <FileXIcon className="size-3.5 shrink-0" />
-        )}
-        <span
-          className={cn(
-            "max-w-[150px] truncate",
-            value && "font-mono text-meta text-foreground",
-          )}
-        >
-          {value ?? "Без документа"}
-        </span>
-        <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 rounded-xl p-3">
-        <PopHead
-          title="Спільний документ"
-          text="Файл, який кімната пише разом. Кожна його версія зберігається з автором, тож видно, хто і що змінив."
-        />
-        <div className="mt-3 flex flex-col gap-0.5">
-          {[...DOCS, ...custom].map((name) => (
-            <button
-              key={name}
-              type="button"
-              onClick={() => pick(name)}
-              className="flex h-8 items-center gap-2 rounded-lg px-2 text-left font-mono text-small hover:bg-accent"
-            >
-              <FileTextIcon className="size-3.5 text-muted-foreground" />
-              <span className="flex-1 truncate">{name}</span>
-              {name === fallback ? (
-                <span className="font-sans text-micro text-faint">типово</span>
-              ) : null}
-              {value === name ? (
-                <CheckIcon className="size-3.5 text-primary" />
-              ) : null}
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => pick(null)}
-            className="flex h-8 items-center gap-2 rounded-lg px-2 text-left text-small hover:bg-accent"
-          >
-            <FileXIcon className="size-3.5 text-muted-foreground" />
-            <span className="flex-1">Без документа</span>
-            {fallback === null ? (
-              <span className="text-micro text-faint">типово</span>
-            ) : null}
-            {value === null ? (
-              <CheckIcon className="size-3.5 text-primary" />
-            ) : null}
-          </button>
-        </div>
-        <form
-          className="mt-2 flex gap-1.5 border-t border-border pt-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const path = draft.trim().replace(/^\.?\/+/, "");
-            if (path) pick(path);
-          }}
-        >
-          <Input
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder="docs/spec.md"
-            spellCheck={false}
-            className="h-8 font-mono text-small"
-          />
-          <Button
-            type="submit"
-            size="sm"
-            variant="secondary"
-            className="h-8"
-            disabled={!draft.trim()}
-          >
-            Обрати
-          </Button>
-        </form>
-      </PopoverContent>
-    </Popover>
   );
 }
 
@@ -424,7 +309,6 @@ export function StartScreen() {
   );
   const [worktree, setWorktree] = useState(() => local.get("worktree") === "1");
   const [base, setBase] = useState<string | null>(null);
-  const [doc, setDoc] = useState<string | null | undefined>(undefined);
   const [budget, setBudget] = useState<number | null>(() => {
     const n = Number.parseInt(local.get("budget") ?? "", 10);
     return n >= 1 && n <= 100 ? n : DEFAULT_BUDGET;
@@ -432,7 +316,6 @@ export function StartScreen() {
   const pickFolder = (path: string | null) => {
     setFolder(path);
     setBase(null);
-    setDoc(undefined);
     local.set("folder", path);
   };
   const git = useFolderGit(folder, () => pickFolder(null));
@@ -500,7 +383,6 @@ export function StartScreen() {
           ...(folder ? { dir: folder } : {}),
           ...(inWorktree ? { worktree: true, ...(base ? { base } : {}) } : {}),
           ...(budget !== DEFAULT_BUDGET ? { budget } : {}),
-          ...(doc !== undefined ? { doc } : {}),
           ...(picked ? { agents: seated.map(rosterEntry) } : {}),
         },
       );
@@ -597,11 +479,6 @@ export function StartScreen() {
                   />
                 ))}
                 <span aria-hidden className="mx-0.5 h-4 w-px bg-border" />
-                <DocChip
-                  doc={doc}
-                  onDoc={setDoc}
-                  fallback={folder ? null : "README.md"}
-                />
                 <BudgetChip budget={budget} onBudget={changeBudget} />
                 <Button
                   type="submit"

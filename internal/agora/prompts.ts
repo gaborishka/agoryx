@@ -288,7 +288,12 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
           `  Keep it the current version, not a log: the conversation and ${tracking === "git" ? "git" : "the kept changes"} hold the history. When others change it, your next turn shows you the diff.`,
           "",
         ]
-      : []),
+      : [
+          "The room has no canonical file. If the room starts making one text together (a plan, a spec, an essay), any of you",
+          "  can name it: `agoryx settings --doc <path>`. Everyone is then told, every revision is kept with its author, and the",
+          "  human reads it in its own panel. Code work rarely needs one.",
+          "",
+        ]),
     "The room has two surfaces, and they are not two chats:",
     "- The conversation is the talk: reasoning, questions to each other, what you did and found. It scrolls away.",
     "- The table is the room's working state — what the room currently holds: open questions, the real alternatives with the",

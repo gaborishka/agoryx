@@ -19,8 +19,6 @@ import { recordLimits } from "./limits-store.js";
 
 export { DEFAULT_AGENTS } from "./roster.js";
 
-export const DEFAULT_DOC = "README.md";
-
 /** "Ivan_Habor" / git "Ivan Habor" → "Ivan". */
 export const defaultHumanName = (env: NodeJS.ProcessEnv = process.env): string => {
   const fromEnv = env.AGORYX_HUMAN?.trim();
@@ -52,7 +50,7 @@ export interface CreateRoomOptions {
   network?: boolean;
   autoCommit?: boolean;
   access?: RoomSettings["access"];
-  /** The canonical file (relative to the workspace). Default: README.md in a workspace Agoryx creates; none in a directory you bring. */
+  /** The canonical file (relative to the workspace). Default: none; the room names one when it starts writing one text (`agoryx settings --doc`). */
   doc?: string | null;
   models?: Partial<Record<string, string>>;
   env?: NodeJS.ProcessEnv;
@@ -122,7 +120,6 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     }
     createdWorkspace = true;
   }
-  if (options.doc === undefined && createdWorkspace) doc = DEFAULT_DOC;
   const settings: RoomSettings = {
     ...DEFAULT_SETTINGS,
     ...(options.budget !== undefined ? { budget: options.budget } : {}),

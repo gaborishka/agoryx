@@ -76,6 +76,9 @@ export function useShortcuts() {
       event.preventDefault();
       if (event.repeat) return;
       switch (hit.id) {
+        case "settings":
+          s.go({ kind: "settings", section: s.route.kind === "settings" ? s.route.section : "general" });
+          break;
         case "keys":
           s.openDialog({ kind: "keys" });
           break;

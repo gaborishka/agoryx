@@ -10,12 +10,14 @@ const read = (): ThemePref => {
 };
 const resolve = (pref: ThemePref) => (pref === "system" ? (media.matches ? "dark" : "light") : pref);
 
-export const useTheme = create<{ pref: ThemePref; dark: boolean; cycle: () => void }>((set, get) => ({
+export const useTheme = create<{ pref: ThemePref; dark: boolean; cycle: () => void; set: (pref: ThemePref) => void }>((set, get) => ({
   pref: read(),
   dark: resolve(read()) === "dark",
   cycle() {
     const order: ThemePref[] = ["system", "light", "dark"];
-    const pref = order[(order.indexOf(get().pref) + 1) % order.length]!;
+    get().set(order[(order.indexOf(get().pref) + 1) % order.length]!);
+  },
+  set(pref) {
     local.set("theme", pref === "system" ? null : pref);
     set({ pref, dark: resolve(pref) === "dark" });
     paint();

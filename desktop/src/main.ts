@@ -852,6 +852,16 @@ const buildMenu = (): Menu =>
       submenu: [
         { role: "about", label: "Про Agoryx" },
         { type: "separator" },
+        {
+          label: "Налаштування…",
+          accelerator: "CmdOrCtrl+,",
+          // The page's own settings; the start page (doctor, the daemon down) has none.
+          click: () =>
+            onPage((page) => {
+              if (isDaemonUrl(page.getURL())) void page.executeJavaScript(`location.hash = "#settings"`).catch(() => {});
+            }),
+        },
+        { type: "separator" },
         { role: "hide", label: "Сховати Agoryx" },
         { role: "hideOthers", label: "Сховати інші" },
         { role: "unhide", label: "Показати всі" },

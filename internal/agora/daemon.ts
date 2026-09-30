@@ -3,6 +3,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { agentBehind } from "./agentprocs.js";
 import { AttentionBoard, parseView } from "./attention.js";
 import { BrowserFailure, BrowserRelay, sseHost } from "./browser.js";
@@ -20,10 +21,10 @@ import { roomUsage } from "./usage.js";
 import { readTranscript } from "./transcript.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
-import { profilePath, readProfile } from "./profile.js";
+import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
 import { parseSubscription, PushNotes, PushSender } from "./push.js";
 import { qrSvg } from "./qr.js";
-import { defaultRoster } from "./roster.js";
+import { defaultRoster, parseAgents, rosterPath, RosterError } from "./roster.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
 import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js";
@@ -302,6 +303,26 @@ const relay = (handle: RoomHandle): void => {
  * told to listen on the LAN too (`agoryx up --lan`); every /api call needs the
  * token from daemon.json on this computer, or a paired device's token (devices.ts).
  */
+
+/** This install's version, from the package.json above this file (source and dist alike); null if none is found. */
+let version: string | null | undefined;
+const agoryxVersion = (): string | null => {
+  if (version !== undefined) return version;
+  version = null;
+  for (let dir = dirname(fileURLToPath(import.meta.url)); dir !== dirname(dir); dir = dirname(dir)) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: string; version?: string };
+      if (parsed.name === "agoryx") {
+        version = parsed.version ?? null;
+        break;
+      }
+    } catch {
+      // Not here: one folder up.
+    }
+  }
+  return version;
+};
+
 export class AgoraDaemon {
   readonly env: NodeJS.ProcessEnv;
   readonly token: string;
@@ -967,10 +988,52 @@ export class AgoraDaemon {
         url: this.url,
         home: agoraHome(this.env),
         rooms: RoomStore.list(roomsDir(this.env)).length,
+        version: agoryxVersion(),
         // Which paired device asks (null: this computer, or an agent).
         device: device ? { id: device.id, name: device.name } : null,
         ...this.roster(),
       });
+      return;
+    }
+
+    // The human's own settings: their profile and the roster new rooms get. Never an agent's to change.
+    if ((parts[0] === "profile" || parts[0] === "roster") && parts.length === 1) {
+      if (method !== "GET" && caller.agent) throw new HttpError(403, `only the human changes their ${parts[0] === "profile" ? "profile" : "agents"}`);
+      if (parts[0] === "profile") {
+        const path = profilePath(this.env);
+        if (method === "PUT") {
+          const body = (await readBody(req)) as Record<string, unknown>;
+          if (typeof body.text !== "string") throw new HttpError(400, "text must be a string");
+          const text = body.text.replace(/\r\n/g, "\n");
+          if (text.trim()) {
+            mkdirSync(dirname(path), { recursive: true });
+            writeFileSync(path, text.endsWith("\n") ? text : `${text}\n`);
+          } else rmSync(path, { force: true });
+        } else if (method !== "GET") throw new HttpError(405, "GET or PUT");
+        let text = "";
+        try {
+          // The file ends with a newline; the text being edited does not.
+          text = readFileSync(path, "utf8").replace(/\n$/, "");
+        } catch {
+          // No profile yet.
+        }
+        sendJson(res, 200, { path, text, max: MAX_PROFILE_CHARS, truncated: readProfile(path)?.truncated ?? false });
+        return;
+      }
+      const path = rosterPath(this.env);
+      if (method === "PUT") {
+        const body = (await readBody(req)) as Record<string, unknown>;
+        let agents;
+        try {
+          agents = parseAgents(body.agents);
+        } catch (error) {
+          throw new HttpError(400, error instanceof RosterError ? error.message : String(error));
+        }
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, `${JSON.stringify({ agents }, null, 2)}\n`);
+      } else if (method === "DELETE") rmSync(path, { force: true });
+      else if (method !== "GET") throw new HttpError(405, "GET, PUT or DELETE");
+      sendJson(res, 200, { path, custom: existsSync(path), ...this.roster() });
       return;
     }
 

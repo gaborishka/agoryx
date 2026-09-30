@@ -37,6 +37,7 @@ interface Chord {
 
 export type ShortcutId =
   | "palette"
+  | "settings"
   | "keys"
   | "compose"
   | "prevRoom"
@@ -78,6 +79,7 @@ const view = (digit: "1" | "2"): Chord =>
 
 export const SHORTCUTS: readonly Shortcut[] = [
   { id: "palette", label: "Пошук і всі дії", group: "Загальне", when: "always", chord: { mod: true, code: "KeyK", label: "K" } },
+  { id: "settings", label: "Налаштування", group: "Загальне", when: "always", chord: { mod: true, code: "Comma", key: ",", label: "," } },
   { id: "keys", label: "Клавіші", group: "Загальне", when: "idle", chord: { shift: true, code: "Slash", key: "?", label: "?" } },
   { id: "compose", label: "До поля повідомлення", group: "Загальне", when: "idle", chord: { code: "Slash", key: "/", label: "/" } },
   { id: "close", label: "Закрити панель чи меню", group: "Загальне", when: "field", chord: { code: "Escape", label: "Esc" } },

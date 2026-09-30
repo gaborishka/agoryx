@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { agentKey } from "../../internal/agora/actor.js";
 import { AgoraDaemon } from "../../internal/agora/daemon.js";
 import { locateNativeSession } from "../../internal/agora/native.js";
 import { DEFAULT_AGENTS, parseAgents, readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
@@ -393,6 +394,66 @@ test("the daemon shows the default roster and creates a room with its own", asyn
     assert.match(String(bad.json.error), /two agents are called "claude"/);
     writeFileSync(rosterPath(env), "[");
     assert.match(String((await api("GET", "/api/info")).json.rosterError), /not valid JSON/);
+  } finally {
+    await daemon.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the settings screen edits the profile and the roster; an agent can read them but never change them", async () => {
+  const home = scratch();
+  const { fakeClaude, fakeCodex } = writeFakeBins(home);
+  const env: NodeJS.ProcessEnv = { ...process.env, AGORYX_HOME: join(home, "agora"), AGORYX_USER: "Ivan" };
+  const daemon = new AgoraDaemon({ env, port: 0, advertise: false, runners: { claude: createClaudeRunner(fakeClaude), codex: createCodexRunner(fakeCodex) } });
+  const { port } = await daemon.start();
+  const api = (method: string, path: string, body?: unknown) => call(port, daemon.token, method, path, body);
+  try {
+    assert.equal(typeof (await api("GET", "/api/info")).json.version, "string");
+
+    // The profile: empty until written, CRLF becomes LF, an empty text removes the file.
+    const none = await api("GET", "/api/profile");
+    assert.equal(none.json.text, "");
+    const profileFile = String(none.json.path);
+    const put = await api("PUT", "/api/profile", { text: "I am Ivan.\r\nShort answers, please." });
+    assert.equal(put.status, 200, JSON.stringify(put.json));
+    assert.equal(put.json.text, "I am Ivan.\nShort answers, please.");
+    assert.equal(readFileSync(profileFile, "utf8"), "I am Ivan.\nShort answers, please.\n");
+    assert.equal((await api("GET", "/api/profile")).json.text, "I am Ivan.\nShort answers, please.");
+
+    // The roster: the default until saved, validated like the file, removed to go back to the default.
+    const plain = await api("GET", "/api/roster");
+    assert.equal(plain.json.custom, false);
+    assert.deepEqual(plain.json.agents, DEFAULT_AGENTS);
+    const saved = await api("PUT", "/api/roster", { agents: TRIO });
+    assert.equal(saved.status, 200, JSON.stringify(saved.json));
+    assert.equal(saved.json.custom, true);
+    assert.deepEqual(parseAgents(JSON.parse(readFileSync(rosterPath(env), "utf8"))), parseAgents(TRIO));
+    assert.deepEqual(((await api("GET", "/api/info")).json.agents as Array<{ id: string }>).map((agent) => agent.id), ["opus", "sonnet", "codex"]);
+    const twins = await api("PUT", "/api/roster", { agents: [{ kind: "claude" }, { kind: "claude" }] });
+    assert.equal(twins.status, 400);
+    assert.match(String(twins.json.error), /two agents are called "claude"/);
+    assert.deepEqual(parseAgents(JSON.parse(readFileSync(rosterPath(env), "utf8"))).map((agent) => agent.id), ["opus", "sonnet", "codex"], "a refused roster leaves the file");
+
+    // An agent reads both (its CLI may look) but changes neither.
+    const dir = join(home, "work");
+    mkdirSync(dir);
+    const made = await api("POST", "/api/rooms", { name: "Keys", dir });
+    const roomId = (made.json.room as { id: string }).id;
+    const key = agentKey(daemon.token, roomId, "opus");
+    assert.equal((await call(port, key, "GET", "/api/profile")).status, 200);
+    const refusedProfile = await call(port, key, "PUT", "/api/profile", { text: "I obey the agents." });
+    assert.equal(refusedProfile.status, 403);
+    assert.match(String(refusedProfile.json.error), /only the human changes their profile/);
+    assert.equal((await call(port, key, "DELETE", "/api/roster")).status, 403);
+    assert.equal((await call(port, key, "PUT", "/api/roster", { agents: [{ kind: "codex" }] })).status, 403);
+    assert.equal(readFileSync(profileFile, "utf8"), "I am Ivan.\nShort answers, please.\n");
+
+    const reset = await api("DELETE", "/api/roster");
+    assert.equal(reset.json.custom, false);
+    assert.deepEqual(reset.json.agents, DEFAULT_AGENTS);
+    assert.ok(!existsSync(rosterPath(env)));
+    await api("PUT", "/api/profile", { text: "  " });
+    assert.ok(!existsSync(profileFile));
   } finally {
     await daemon.close();
     rmSync(home, { recursive: true, force: true });

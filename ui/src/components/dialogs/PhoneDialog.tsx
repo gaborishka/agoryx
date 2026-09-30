@@ -319,6 +319,12 @@ function DevicePanel({ device }: { device: { id: string; name: string } }) {
   );
 }
 
+/** On this computer: a code for the phone and the paired devices; on a paired device: this device. */
+export function PhonePanel() {
+  const device = useStore((s) => s.device);
+  return device ? <DevicePanel device={device} /> : <PairPanel />;
+}
+
 export function PhoneDialog() {
   const device = useStore((s) => s.device);
   return (

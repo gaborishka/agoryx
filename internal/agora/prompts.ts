@@ -164,6 +164,31 @@ interface TurnFiles {
   changes?: FileChange[];
 }
 
+/** A return of the folder to a checkpoint, as the agents read it. */
+const revertNote = (event: Extract<RoomEvent, { type: "workspace.reverted" }>, state: RoomState): string => {
+  const who = displayName(state, event.by);
+  const how = (status: string) => (status === "A" ? "back" : status === "D" ? "removed" : "as it was");
+  const listed = event.changes.slice(0, 20).map((change) => `${change.path} (${how(change.status)})`).join(", ");
+  const more = event.total > 20 ? ` (+${event.total - 20} more)` : "";
+  const files = `${event.total} file${event.total === 1 ? "" : "s"}`;
+  const where = event.fromRoom ? ` from room "${event.fromRoom.name}", which shares this folder,` : "";
+  const undone =
+    event.undoOf === undefined
+      ? undefined
+      : state.reverts.find((entry) => (event.fromRoom ? entry.fromRoom?.room === event.fromRoom.room && entry.fromRoom.seq === event.undoOf : !entry.fromRoom && entry.seq === event.undoOf));
+  const head =
+    event.undoOf !== undefined
+      ? `${who}${where} undid a return of the folder${undone ? ` to checkpoint ${undone.to.slice(0, 8)}` : ""}: ${files} are as they were just before that return: ${listed}${more}.`
+      : `${who}${where} returned the folder to checkpoint ${event.to.slice(0, 8)}${event.fromRoom ? "" : checkpointSubject(state, event.to)}: ${files} are as they were then: ${listed}${more}.`;
+  const left = event.left?.length ? ` These could not be written back and are as they were: ${event.left.slice(0, 20).join(", ")}.` : "";
+  return `${head}${left} Edits made to them in between are no longer on disk (the folder as it was just before is commit ${event.undo.slice(0, 8)}: git show ${event.undo.slice(0, 8)}). Messages and the table are unchanged; read the files again before you build on them.`;
+};
+
+const checkpointSubject = (state: RoomState, sha: string): string => {
+  const subject = state.commits.find((commit) => commit.sha === sha)?.subject;
+  return subject ? ` ("${subject}")` : "";
+};
+
 /** "↳ changed: a.ts +12 −3, b.ts +40 −0 (new) — the exact diff: agoryx diff t7" */
 const changedLine = (turnId: string, entry: TurnFiles, name: (handle: string) => string = (handle) => handle): string => {
   if (!entry.changes?.length) {
@@ -470,6 +495,10 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
       blocks.push(lines.join("\n"));
     } else if (event.type === "commit.created") {
       blocks.push(`── Agoryx · ${clock(event.ts)}\nworkspace checkpoint ${event.sha.slice(0, 8)}: ${event.subject}`);
+    } else if (event.type === "workspace.reverted") {
+      // Files under the agent's feet changed without a turn: it must know before it builds on them.
+      kept.add(blocks.length);
+      blocks.push(`── Agoryx · ${clock(event.ts)}\n${revertNote(event, state)}`);
     }
   }
 

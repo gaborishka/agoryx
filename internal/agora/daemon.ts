@@ -9,6 +9,7 @@ import { BrowserFailure, BrowserRelay, sseHost } from "./browser.js";
 import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, originName, originOf, readAgentKey } from "./actor.js";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch, roomWorkspaceDiff } from "./engine.js";
+import { planRevert, RevertError, type RevertRequest } from "./revert.js";
 import { linkedMedia, markdownTexts } from "./media.js";
 import { agentModels } from "./models.js";
 import { locateNativeSession } from "./native.js";
@@ -25,7 +26,7 @@ import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
-import { listWorkspaceFiles, repoRoot, resolveInside, workspacePaths } from "./workspace.js";
+import { listWorkspaceFiles, repoRoot, resolveInside, workspacePaths, workspaceTracking } from "./workspace.js";
 
 export interface DaemonOptions {
   env?: NodeJS.ProcessEnv;
@@ -916,6 +917,27 @@ export class AgoraDaemon {
       return;
     }
 
+    if (action === "revert" && method === "GET") {
+      // What returning the folder would change, for the human to confirm. Nothing is touched.
+      const undo = url.searchParams.get("undo");
+      const sha = url.searchParams.get("sha");
+      const busy = handle.engine ? handle.engine.revertBusy() : (handle.lockedBy ?? "the room is not available");
+      // Neither: whether the room can have checkpoints at all (only in a git repository).
+      if (undo === null && sha === null) {
+        sendJson(res, 200, { tracking: workspaceTracking(handle.store.state.workspace), busy });
+        return;
+      }
+      const request: RevertRequest = undo !== null ? { undoOf: Number(undo) } : { sha: sha ?? "" };
+      try {
+        const plan = planRevert(handle.store.state, request);
+        sendJson(res, 200, { ...plan, busy });
+      } catch (error) {
+        if (!(error instanceof RevertError)) throw error;
+        sendJson(res, error.status, { error: error.message, code: error.code });
+      }
+      return;
+    }
+
     if (method !== "POST") throw new HttpError(405, "method not allowed");
     const body = (await readBody(req)) as Record<string, unknown>;
     const engine = this.engineFor(handle);
@@ -995,6 +1017,21 @@ export class AgoraDaemon {
           }
           if (error instanceof DocTooLargeError) throw new HttpError(413, error.message);
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      case "revert": {
+        // The human's alone: an agent never rewinds the folder under the others.
+        if (caller.agent) throw new HttpError(403, "only the human returns the folder to a checkpoint");
+        const tree = typeof body.tree === "string" ? body.tree : undefined;
+        const request: RevertRequest =
+          typeof body.undo === "number" ? { undoOf: body.undo } : { sha: typeof body.sha === "string" ? body.sha : "" };
+        try {
+          const revert = engine.revertWorkspace({ ...request, ...(tree ? { tree } : {}) }, actor);
+          sendJson(res, 200, { revert });
+        } catch (error) {
+          if (!(error instanceof RevertError)) throw error;
+          sendJson(res, error.status, { error: error.message, code: error.code });
         }
         return;
       }

@@ -109,6 +109,7 @@ export const toneText: Record<Tone, string> = {
 export type FeedItem =
   | { key: string; seq: number; type: "msg"; m: MessageEntry }
   | { key: string; seq: number; type: "commit"; c: RoomState["commits"][number] }
+  | { key: string; seq: number; type: "revert"; r: RoomState["reverts"][number] }
   | { key: string; seq: number; type: "op"; op: TableOp }
   | { key: string; seq: number; type: "doc"; r: DocRevision };
 
@@ -158,6 +159,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   }
   for (const m of st.messages) items.push({ key: `m-${m.id}`, seq: m.seq, type: "msg", m });
   for (const c of st.commits) items.push({ key: `c-${c.sha}`, seq: c.seq, type: "commit", c });
+  for (const r of st.reverts ?? []) items.push({ key: `v-${r.seq}`, seq: r.seq, type: "revert", r });
   items.sort((a, b) => a.seq - b.seq);
 
   const name = (h: string) => nameOf(st, h);

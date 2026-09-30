@@ -6,12 +6,14 @@ import {
   closeSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -324,6 +326,26 @@ export const MAX_TURN_PATCH = 256 * 1024;
 const CUT_MARK = "… the patch is cut here";
 const MAX_PATHSPECS = 400;
 
+/** `git diff --numstat -z` and `--name-status -z` (without renames) as file changes. */
+const parseChanges = (numstat: string, names: string): FileChange[] => {
+  const statusOf = new Map<string, string>();
+  const nameParts = names.split("\0");
+  for (let i = 0; i + 1 < nameParts.length; i += 2) statusOf.set(nameParts[i + 1]!, nameParts[i]!.slice(0, 1));
+  const changes: FileChange[] = [];
+  for (const record of numstat.split("\0")) {
+    const match = /^(-|\d+)\t(-|\d+)\t(.+)$/s.exec(record);
+    if (!match) continue;
+    const path = match[3]!;
+    changes.push({
+      path,
+      status: statusOf.get(path) ?? "M",
+      added: match[1] === "-" ? null : Number(match[1]),
+      removed: match[2] === "-" ? null : Number(match[2]),
+    });
+  }
+  return changes;
+};
+
 /**
  * What changed between two snapshots, limited to `files` (the ones credited to
  * this turn — a parallel turn's edits are not in it). Null when git can't tell.
@@ -370,21 +392,7 @@ const diffTrees = (
   const numstat = track(root, [...base, "--numstat", "-z", "--", ...specs]);
   const names = track(root, [...base, "--name-status", "-z", "--", ...specs]);
   if (numstat === null || names === null) return null;
-  const statusOf = new Map<string, string>();
-  const nameParts = names.split("\0");
-  for (let i = 0; i + 1 < nameParts.length; i += 2) statusOf.set(nameParts[i + 1]!, nameParts[i]!.slice(0, 1));
-  const changes: FileChange[] = [];
-  for (const record of numstat.split("\0")) {
-    const match = /^(-|\d+)\t(-|\d+)\t(.+)$/s.exec(record);
-    if (!match) continue;
-    const path = match[3]!;
-    changes.push({
-      path,
-      status: statusOf.get(path) ?? "M",
-      added: match[1] === "-" ? null : Number(match[1]),
-      removed: match[2] === "-" ? null : Number(match[2]),
-    });
-  }
+  const changes = parseChanges(numstat, names);
   let patch = track(root, [...base, "-U3", "--", ...specs], 30_000) ?? "";
   const truncated = patch.length > MAX_TURN_PATCH;
   if (truncated) patch = `${patch.slice(0, MAX_TURN_PATCH)}\n${CUT_MARK} (${patch.length - MAX_TURN_PATCH} more chars): git diff ${before.slice(0, 12)} ${after.slice(0, 12)}\n`;
@@ -624,6 +632,229 @@ export const checkpointCommit = (root: string, subject: string, body: string, fi
     if (locked) rmSync(lock, { force: true });
     for (const path of [scratch, preserved, `${scratch}.lock`, `${preserved}.lock`]) rmSync(path, { force: true });
   }
+};
+
+// ---------------------------------------------------------------------------
+// Returning the folder to a checkpoint (and back)
+// ---------------------------------------------------------------------------
+
+const refRoom = (roomId: string): string => roomId.replace(/[^\w-]/g, "") || "room";
+
+/** Where the folder as it was just before a return is kept, so gc never drops it and the return can be undone. */
+export const revertRef = (roomId: string, n: number): string => `refs/agoryx/revert/${refRoom(roomId)}/${n}`;
+
+/** Where the whole folder at a checkpoint is kept when the checkpoint's commit does not hold all of it. */
+export const checkpointRef = (roomId: string, sha: string): string => `refs/agoryx/checkpoint/${refRoom(roomId)}/${sha.slice(0, 12)}`;
+
+const AGORYX_IDENT = ["-c", "user.name=Agoryx", "-c", "user.email=agoryx@localhost", "-c", "commit.gpgsign=false"];
+
+/** `tree` as a commit on `parent`, kept under `ref`; its sha, or null when git could not. */
+const keepTree = (root: string, tree: string, parent: string | undefined, ref: string, message: string): string | null => {
+  const sha = track(root, [...AGORYX_IDENT, "commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", message])?.trim();
+  if (!sha || track(root, ["update-ref", "-m", message, ref, sha]) === null) return null;
+  return sha;
+};
+
+/**
+ * The whole folder at a checkpoint, to return to later. A room alone in its folder commits all of it, so
+ * the commit is the folder. A room sharing the folder commits only its own files, so the rest (the human's
+ * untracked notes, uncommitted edits, other rooms' files) is kept as a commit on top of it under `ref`.
+ * Null when git cannot read the folder; the commit then stands for it.
+ */
+export const checkpointFolder = (root: string, sha: string, ref: string): string | null => {
+  const tree = snapshotTree(root);
+  const committed = track(root, ["rev-parse", "--verify", "--quiet", `${sha}^{tree}`])?.trim();
+  if (!tree || !committed) return null;
+  if (tree === committed) return sha;
+  return keepTree(root, tree, sha, ref, `agoryx: the folder at checkpoint ${sha.slice(0, 8)}`);
+};
+
+/** A path a return may write or remove: inside the workspace, never in .git or .agoryx. */
+const restorable = (path: string): boolean =>
+  Boolean(path) && !isAbsolute(path) && !path.split("/").some((part) => part === "" || part === "." || part === ".." || part === ".git" || part === AGORYX_DIR);
+
+const restorableChanges = (root: string, from: string, to: string): FileChange[] | null => {
+  const base = ["-c", "core.quotepath=off", "diff", "--no-renames", "--no-ext-diff", "--relative", from, to];
+  const numstat = track(root, [...base, "--numstat", "-z", "--", "."], 30_000);
+  const names = track(root, [...base, "--name-status", "-z", "--", "."], 30_000);
+  if (numstat === null || names === null) return null;
+  return parseChanges(numstat, names).filter((change) => restorable(change.path));
+};
+
+export type RevertPreview = { commit: string; tree: string; changes: FileChange[] } | { error: "missing" | "failed" };
+
+/**
+ * What returning the workspace to `target` (a commit) would change, from the files as they are now to
+ * the target's: A comes back, D goes away, M is rewritten. `tree` is the folder now as snapshotTree sees
+ * it (tracked and untracked files, .gitignore respected: ignored files are never part of a return).
+ * "missing": the repository has no such commit; "failed": git could not read the folder.
+ */
+export const revertPreview = (root: string, target: string): RevertPreview => {
+  const commit = track(root, ["rev-parse", "--verify", "--quiet", `${target}^{commit}`])?.trim();
+  if (!commit) return { error: "missing" };
+  const tree = snapshotTree(root);
+  if (!tree) return { error: "failed" };
+  const changes = restorableChanges(root, tree, commit);
+  return changes ? { commit, tree, changes } : { error: "failed" };
+};
+
+/**
+ * Make the paths in `changes` (from the folder now to `commit`) match `commit`. Removals go first: a file
+ * that becomes a folder, or the other way round, needs its old shape gone. git writes the rest from a
+ * scratch index: modes and symlinks come out right, nothing is written through a symlinked folder, and the
+ * repository's own index is never used, so a lock someone holds on it (an IDE, the human's git) does not
+ * matter. The scratch index is built before anything is touched. False when git failed somewhere.
+ */
+const applyTree = (root: string, commit: string, changes: FileChange[]): boolean => {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    return false;
+  }
+  const scratch = join(tmpdir(), `agoryx-restore-${process.pid}-${randomBytes(6).toString("hex")}`);
+  const env = { ...process.env, GIT_INDEX_FILE: scratch };
+  try {
+    if (track(root, ["read-tree", commit], 15_000, env) === null) return false;
+    const emptied = new Set<string>();
+    for (const change of changes.filter((entry) => entry.status === "D")) {
+      const parent = resolveInside(root, dirname(change.path));
+      if (!parent) continue;
+      try {
+        const full = join(parent, change.path.split("/").at(-1)!);
+        // lstat, and rm of the entry itself: a symlink goes, what it points to stays.
+        if (lstatSync(full).isDirectory()) continue;
+        rmSync(full, { force: true });
+        emptied.add(parent);
+      } catch {
+        // Already gone.
+      }
+    }
+    for (let dir of emptied) {
+      while (dir !== realRoot && dir.startsWith(`${realRoot}${sep}`)) {
+        try {
+          if (readdirSync(dir).length) break;
+          rmdirSync(dir);
+        } catch {
+          break;
+        }
+        dir = dirname(dir);
+      }
+    }
+    // checkout-index takes plain paths relative to the workspace (no pathspec magic).
+    const writes = changes.filter((entry) => entry.status !== "D").map((entry) => entry.path);
+    let ok = true;
+    for (let i = 0; i < writes.length; i += MAX_PATHSPECS) {
+      if (track(root, ["checkout-index", "-f", "--", ...writes.slice(i, i + MAX_PATHSPECS)], 60_000, env) === null) ok = false;
+    }
+    return ok;
+  } finally {
+    rmSync(scratch, { force: true });
+    rmSync(`${scratch}.lock`, { force: true });
+  }
+};
+
+/**
+ * Return the workspace's files to `target`'s, all or nothing. The folder as it is now is first kept as a
+ * commit under `ref` (the undo point); then every path that differs is written from the target, or removed
+ * when the target has no such file. If some path cannot be written, the folder is put back as it was and
+ * the return fails ("failed"); only if that too fails is a partial return reported (`left`: what still
+ * differs from the target; the undo point has the rest). HEAD, the branch and the index stay as they are.
+ * `after`: the folder right after, kept under `${ref}-after`, so an undo can tell what changed since.
+ * `expectTree`: the folder as the human saw it in the preview; if it moved on since, nothing is touched.
+ */
+export const restoreWorkspace = (
+  root: string,
+  target: string,
+  ref: string,
+  message: string,
+  expectTree?: string,
+): { undo: string; after: string | null; changes: FileChange[]; left: string[] } | { error: "missing" | "changed" | "same" | "failed" } => {
+  const preview = revertPreview(root, target);
+  if ("error" in preview) return preview;
+  if (expectTree && expectTree !== preview.tree) return { error: "changed" };
+  const { commit, tree, changes } = preview;
+  if (!changes.length) return { error: "same" };
+  const head = track(root, ["rev-parse", "--verify", "--quiet", "HEAD"])?.trim();
+  const undo = keepTree(root, tree, head || undefined, ref, message);
+  if (!undo) return { error: "failed" };
+  const now = (to: string) => {
+    const seen = revertPreview(root, to);
+    return "error" in seen ? null : seen;
+  };
+  applyTree(root, commit, changes);
+  let after = now(commit);
+  if (!after || after.changes.length) {
+    // Not all of it went: back to how the folder was, so a return is whole or does not happen.
+    const back = now(undo);
+    if (back && (!back.changes.length || (applyTree(root, undo, back.changes) && now(undo)?.changes.length === 0))) {
+      track(root, ["update-ref", "-d", ref]);
+      return { error: "failed" };
+    }
+    after = now(commit);
+  }
+  const left = after ? after.changes.map((entry) => entry.path) : changes.map((entry) => entry.path);
+  const kept = after ? keepTree(root, after.tree, undo, `${ref}-after`, `${message} (after)`) : null;
+  return { undo, after: kept, changes, left };
+};
+
+/** Paths that differ between the folder now and `commit` (what changed since); null when git cannot tell. */
+export const changedSince = (root: string, commit: string): string[] | null => {
+  const seen = revertPreview(root, commit);
+  return "error" in seen ? null : seen.changes.map((change) => change.path);
+};
+
+/**
+ * A return made from one room, for the other rooms sharing the folder: .agoryx/reverts/<room>.<seq>.json.
+ * Each of them records it once (in-process peers right away, a room of another process before its next
+ * turn), so their agents learn of it too.
+ */
+export interface RevertMarker {
+  room: string;
+  name: string;
+  seq: number;
+  ts: string;
+  to: string;
+  undo: string;
+  changes: FileChange[];
+  total: number;
+  undoOf?: number;
+  left?: string[];
+}
+
+const revertsDir = (root: string): string => join(root, AGORYX_DIR, "reverts");
+
+export const markRevert = (root: string, marker: RevertMarker): void => {
+  const dir = roomDirName(marker.room);
+  if (!dir) return;
+  const target = join(revertsDir(root), `${dir}.${marker.seq}.json`);
+  const partial = `${target}.${randomBytes(4).toString("hex")}.tmp`;
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(partial, JSON.stringify(marker));
+    renameSync(partial, target);
+  } catch {
+    rmSync(partial, { force: true });
+  }
+};
+
+/** Returns made from rooms other than `room` in this folder, oldest first. */
+export const revertMarkers = (root: string, room: string): RevertMarker[] => {
+  const dir = revertsDir(root);
+  if (!existsSync(dir)) return [];
+  const own = roomDirName(room);
+  const found: RevertMarker[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const marker = JSON.parse(readFileSync(join(dir, name), "utf8")) as RevertMarker;
+      if (typeof marker?.room !== "string" || typeof marker.seq !== "number" || typeof marker.to !== "string" || !Array.isArray(marker.changes)) continue;
+      if (roomDirName(marker.room) !== own) found.push(marker);
+    } catch {
+      // Half-written or not ours.
+    }
+  }
+  return found.sort((a, b) => a.ts.localeCompare(b.ts) || a.seq - b.seq);
 };
 
 // ---------------------------------------------------------------------------

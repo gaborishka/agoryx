@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import pc from "picocolors";
 import { actorIn, AGENT_KEY_ENV, loadOrCreateToken, originName, originOf, readAgentKey } from "../../internal/agora/actor.js";
@@ -16,7 +17,8 @@ import { describeProfile, profilePath, readProfile } from "../../internal/agora/
 import { readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
 import { createRoom, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
-import { changeStats, patchSection } from "../../internal/agora/workspace.js";
+import { describeRevert, planRevert, RevertError, undoableRevert, type RevertRequest } from "../../internal/agora/revert.js";
+import { changeStats, patchSection, workspaceTracking } from "../../internal/agora/workspace.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { applyTurnContext, TURN_FILE_ENV } from "../../internal/agora/turn-context.js";
 import { parseTableCommand, TABLE_USAGE } from "../../internal/agora/table-cli.js";
@@ -41,6 +43,7 @@ export const AGORA_COMMANDS = new Set([
   "settings",
   "doc",
   "diff",
+  "revert",
   "profile",
 ]);
 
@@ -62,6 +65,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx resume [-r room]            Native session commands (claude --resume / codex resume)",
       "  agoryx doc [-r room] [--log | --diff REV]   The room's canonical file: its text, its revisions, one revision's diff",
       "  agoryx diff [-r room] [TURN [PATH]]         What each turn changed: recent turns, or one turn's exact patch",
+      "  agoryx revert [-r room] [SHA | --undo [N]] [--yes]   Return the folder to a checkpoint (no SHA: list them), or undo a return",
       "  agoryx profile [-r room]           Your profile (who you are, for the agents): where it is, and who in the room sees it",
       "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--autocommit on|off] [--access workspace|readonly] [--doc PATH|none]",
       "",
@@ -239,6 +243,9 @@ export class TranscriptPrinter {
       }
       case "commit.created":
         this.out(pc.dim(`  ✓ checkpoint ${event.sha.slice(0, 7)} — ${event.files} file${event.files === 1 ? "" : "s"}\n`));
+        return;
+      case "workspace.reverted":
+        this.out(`  ${pc.magenta("↺")} ${describeRevert(event, (handle) => this.plainName(handle))}${event.undoOf === undefined && !event.fromRoom ? pc.dim(` — agoryx revert --undo ${event.seq}`) : ""}\n`);
         return;
       case "run.ended":
         if (event.reason === "quiet") this.out(pc.dim(`  (quiet — ${event.turns} turn${event.turns === 1 ? "" : "s"})\n`));
@@ -1120,6 +1127,116 @@ const runDiff = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+/** "y" on the terminal; never asked without one (--yes instead). */
+const confirmOnTerminal = async (question: string): Promise<boolean> => {
+  if (!process.stdin.isTTY) return false;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return /^y(es)?$/i.test((await rl.question(question)).trim());
+  } finally {
+    rl.close();
+  }
+};
+
+const runRevert = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, [ROOM_OPT, { long: "undo", takesValue: false }, { long: "yes", short: "y", takesValue: false }]);
+  if (parsed.options.help) {
+    printAgoraUsage();
+    return 0;
+  }
+  const roomId = resolveRoom(parsed.options.room);
+  const store = RoomStore.open(roomsDir(), roomId);
+  const { state } = store;
+  const [ref] = parsed.positionals;
+  const stamp = (seq: number) => {
+    const event = store.events.find((entry) => entry.seq === seq);
+    return event ? localStamp(event.ts) : "";
+  };
+
+  if (!ref && !parsed.options.undo) {
+    if (!state.commits.length) {
+      // A checkpoint is a git commit: a folder without its own repository never gets one.
+      if (workspaceTracking(state.workspace) !== "git") console.log(pc.dim(`no checkpoints in ${state.name}: a checkpoint is a git commit, and ${state.workspace} is not a git repository (git init there, then agoryx settings --autocommit on)`));
+      else console.log(pc.dim(`no checkpoints in ${state.name}: they are made after each run while \`agoryx settings --autocommit on\`${state.settings.autoCommit ? " (it is on; none yet)" : ""}`));
+    }
+    for (const commit of [...state.commits].reverse().slice(0, 20)) {
+      console.log(`${pc.bold(commit.sha.slice(0, 7))} ${pc.dim(stamp(commit.seq))}  ${oneLine(commit.subject, 70)} ${pc.dim(`· ${commit.files} file${commit.files === 1 ? "" : "s"}`)}`);
+    }
+    const undoable = undoableRevert(state);
+    for (const revert of state.reverts.slice(-10)) {
+      const note = revert.undone !== undefined ? pc.dim(" (undone)") : revert === undoable ? pc.dim(` — agoryx revert --undo ${revert.seq}`) : "";
+      console.log(`${pc.magenta("↺")} ${pc.dim(stamp(revert.seq))} ${describeRevert(revert)}${note}`);
+    }
+    if (state.commits.length) console.log(pc.dim("return the folder to one: agoryx revert SHA (it shows the files and asks first)"));
+    return 0;
+  }
+
+  let request: RevertRequest;
+  if (parsed.options.undo) {
+    // Only the room's latest return, and never an undo (that would redo the return).
+    const seq = ref ? Number.parseInt(ref, 10) : undoableRevert(state)?.seq;
+    if (seq === undefined || !Number.isInteger(seq)) {
+      console.error("no return to undo: only the latest return of this room can be undone, and it is an undo or already undone — agoryx revert lists them");
+      return 1;
+    }
+    request = { undoOf: seq };
+  } else request = { sha: ref! };
+
+  const info = await findDaemon();
+  const local = info ? null : localConnEngine(store);
+  try {
+    const plan = info ? await daemonClient(info).revertPlan(roomId, request) : { ...planRevert(state, request), busy: local!.revertBusy() };
+    if (plan.busy) {
+      console.error(`cannot return the folder now: ${plan.busy} (agoryx stop)`);
+      return 1;
+    }
+    if (!plan.changes.length) {
+      console.log("the folder already matches it; nothing to change");
+      return 0;
+    }
+    const how = (status: string) => (status === "A" ? pc.green("back   ") : status === "D" ? pc.red("removed") : pc.yellow("changed"));
+    console.log(plan.undoOf !== undefined ? `Undo return #${plan.undoOf}: these files go back to how they were before it` : `Return ${state.name}'s folder to ${plan.to.slice(0, 7)} (${oneLine(plan.subject, 60)}):`);
+    for (const change of plan.changes.slice(0, 50)) console.log(`  ${how(change.status)} ${change.path} ${pc.dim(changeStats(change))}`);
+    if (plan.changes.length > 50) console.log(pc.dim(`  … and ${plan.changes.length - 50} more`));
+    if (plan.since?.length) {
+      console.log(pc.yellow(`Since that return these changed too, and go back as well: ${plan.since.slice(0, 20).join(", ")}${plan.since.length > 20 ? ` (+${plan.since.length - 20} more)` : ""}`));
+    }
+    console.log(pc.dim("The folder as it is now is kept first, so this can be undone. Messages and the table stay."));
+    if (!parsed.options.yes && !(await confirmOnTerminal("Go ahead? [y/N] "))) {
+      console.log(process.stdin.isTTY ? "nothing changed" : "nothing changed (add --yes to do it without a terminal)");
+      return process.stdin.isTTY ? 0 : 1;
+    }
+    const revert = info ? (await daemonClient(info).revert(roomId, request, plan.tree)).revert : local!.revertWorkspace({ ...request, tree: plan.tree }, localActor(store.state));
+    console.log(`${describeRevert(revert)}${revert.left?.length ? pc.red(` — could not write back: ${revert.left.join(", ")}`) : ""}`);
+    if (revert.undoOf === undefined) console.log(pc.dim(`undo: agoryx revert --undo ${revert.seq}`));
+    return 0;
+  } catch (error) {
+    if (error instanceof RevertError || error instanceof DaemonRequestError) {
+      console.error(error.message);
+      return 1;
+    }
+    throw error;
+  } finally {
+    await local?.close();
+  }
+};
+
+/** The room's engine in this process (no daemon runs); refused while another process drives the room. */
+const localConnEngine = (store: RoomStore): RoomEngine => {
+  try {
+    return openEngine(store);
+  } catch (error) {
+    if (error instanceof RoomLockedError) throw new Error(`${error.message}. Start the daemon (\`agoryx up -d\`) or stop that process first.`);
+    throw error;
+  }
+};
+
+/** Who acts from this terminal: the human, or the agent whose key or turn this is. */
+const localActor = (state: RoomState): Actor | undefined => {
+  const agent = localAgent();
+  return agent ? actorIn(state, agent) : undefined;
+};
+
 const runProfile = async (argv: string[]): Promise<number> => {
   const parsed = parse(argv, [ROOM_OPT]);
   if (parsed.options.help) {
@@ -1165,6 +1282,8 @@ export const runAgora = async (command: string, argv: string[]): Promise<number>
       return runDoc(argv);
     case "diff":
       return runDiff(argv);
+    case "revert":
+      return runRevert(argv);
     case "profile":
       return runProfile(argv);
     default:

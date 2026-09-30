@@ -320,7 +320,7 @@ the profile get it once, on their next turn.
 ### Checking the setup
 
 ```bash
-agoryx doctor           # node, this install, better-sqlite3, Claude Code / Codex and their logins, git, AGORYX_HOME, the daemon
+agoryx doctor           # node, this install, better-sqlite3, Claude Code / Codex and their logins, git, AGORYX_HOME, the daemon, the login service
 agoryx doctor --probe   # also one short real prompt to each logged-in agent, timed
 agoryx doctor --json    # { verdict, checks } for scripts
 ```
@@ -348,6 +348,11 @@ agoryx resume                                       # print `claude --resume …
 
 Without a running daemon, `say`, `table` and `more` drive the room in the current process until it goes
 quiet. With `agoryx up -d` the daemon drives all rooms and the CLI becomes a client.
+
+On macOS, `agoryx service install` makes the daemon a LaunchAgent for the current `AGORYX_HOME`: it starts
+at login and again after a crash, reads your login shell's environment at each start (the plist holds no
+keys), and logs to `<AGORYX_HOME>/daemon.log`. `agoryx down` stops it until the next login or
+`agoryx up -d`; `agoryx service status` and `uninstall` do the rest. See [DESKTOP.md](DESKTOP.md#the-daemon-at-login-without-the-app).
 
 ### Web UI
 
@@ -554,11 +559,12 @@ Without `--dir`, a room's workspace is `~/agoryx/<slug>/` (git-initialised); `AG
 | `internal/agora/attention.ts` | Rooms that wait for the human: what counts, what was seen (`attention.json`), where the human looks; `/api/attention` |
 | `internal/agora/browser.ts` | The room's browser: agents' commands relayed to the app's pane over `/api/browser` |
 | `internal/agora/browsertools.ts`, `bin/agoryx-mcp.mjs` | The MCP flags both CLIs get and the browser's trace labels; the zero-dependency MCP server the room hands them (`agoryx mcp` in the shim) |
-| `internal/desktop/` | Dependency-free core for the macOS app and `agoryx doctor`: login-shell environment (`shellenv.ts`), setup checks (`doctor.ts`), daemon supervisor (`supervisor.ts`), the attention follower (`attention.ts`), the room browser's host link and page helpers (`browserlink.ts`, `browserpage.ts`) |
+| `internal/desktop/` | Dependency-free core for the macOS app and `agoryx doctor`: login-shell environment (`shellenv.ts`), setup checks (`doctor.ts`), daemon supervisor (`supervisor.ts`), the attention follower (`attention.ts`), the room browser's host link and page helpers (`browserlink.ts`, `browserpage.ts`), the login service (`launchd.ts`) |
 | `internal/agora/profile.ts` | The human's profile: reading and cutting it, the prompt blocks, who sees it |
 | `internal/agora/blocks.ts` | Live html/svg fences: finding a block in a message by the hash of its body |
 | `cmd/agoryx/agora.ts` | `agoryx up/new/say/tail/table/doc/diff/profile/…` |
 | `cmd/agoryx/doctor.ts` | `agoryx doctor` |
+| `cmd/agoryx/service.ts` | `agoryx service install/uninstall/status` (macOS LaunchAgent) |
 | `ui/` | The web UI (React; `npm run build` builds it into `ui/dist`, which the daemon serves) |
 | `web/` | The older plain page, served only when `ui/dist` is not built |
 

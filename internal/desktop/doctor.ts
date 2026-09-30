@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findDaemon, readDaemonInfo } from "../agora/daemoninfo.js";
 import { agoraHome } from "../agora/paths.js";
+import { launchdContext, serviceStatus, type LaunchdContext } from "./launchd.js";
 import { findExecutable } from "./shellenv.js";
 
 /**
@@ -38,6 +39,8 @@ export interface DoctorOptions {
   timeoutMs?: number;
   /** Per trial call with `probe`; default 90s. */
   probeTimeoutMs?: number;
+  /** For tests: where the launchd service is looked for (the check runs on macOS only). */
+  launchd?: Partial<LaunchdContext>;
 }
 
 const MIN_NODE_MAJOR = 22;
@@ -326,7 +329,29 @@ export const runDoctor = async (options: DoctorOptions): Promise<DoctorCheck[]> 
     return check("daemon", "Daemon", "ok", stale ? `not running (pid ${stale.pid} in daemon.json does not answer at ${stale.url})` : "not running");
   });
 
-  const [nodeResult, agoryxResult, sqliteResult, claude, codex, gitResult, homeResult, daemonResult] = await Promise.all([
+  // macOS: whether the daemon starts at login (`agoryx service`). Not installed is fine: the app or `agoryx up` runs it.
+  const serviceCheck =
+    process.platform === "darwin"
+      ? guarded("service", "Login service", async () => {
+          const label = "Login service";
+          const ctx = launchdContext(env, options.launchd);
+          const status = await serviceStatus(ctx);
+          if (!status.installed && !status.loaded) return check("service", label, "ok", "not installed (`agoryx service install` starts the daemon at login)");
+          if (!status.installed) return check("service", label, "warn", `${ctx.label} is loaded but its plist is gone`, "agoryx service uninstall");
+          if (status.missing.length > 0) {
+            return check("service", label, "warn", `${ctx.label} runs ${status.missing.join(" and ")}, which no longer exist${status.missing.length === 1 ? "s" : ""}`, "agoryx service install");
+          }
+          if (!status.loaded) return check("service", label, "warn", `${ctx.label} is installed but not loaded`, "agoryx service install");
+          if (status.state === "running") return check("service", label, "ok", `${ctx.label}, running${status.pid ? ` (pid ${status.pid})` : ""}`);
+          const exit = status.lastExitCode ?? "";
+          if (exit && exit !== "0" && exit !== "(never exited)") {
+            return check("service", label, "warn", `${ctx.label}, not running (last exit code ${exit})`, `see ${quote(join(agoraHome(env), "daemon.log"))}, then agoryx service status`);
+          }
+          return check("service", label, "ok", `${ctx.label}, not running now (\`agoryx up -d\` starts it through launchd)`);
+        })
+      : null;
+
+  const [nodeResult, agoryxResult, sqliteResult, claude, codex, gitResult, homeResult, daemonResult, serviceResult] = await Promise.all([
     nodeCheck,
     agoryxCheck,
     sqliteCheck,
@@ -335,6 +360,7 @@ export const runDoctor = async (options: DoctorOptions): Promise<DoctorCheck[]> 
     gitCheck,
     homeCheck,
     daemonCheck,
+    serviceCheck,
   ]);
 
   const usable = [claude.usable ? "Claude" : "", codex.usable ? "Codex" : ""].filter(Boolean);
@@ -350,7 +376,7 @@ export const runDoctor = async (options: DoctorOptions): Promise<DoctorCheck[]> 
           claude.bin || codex.bin ? "log in: run `claude` and `/login`, or `codex login`" : (claude.check.fix ?? "curl -fsSL https://claude.ai/install.sh | bash"),
         );
 
-  const checks = [nodeResult, agoryxResult, sqliteResult, claude.check, codex.check, agents, gitResult, homeResult, daemonResult];
+  const checks = [nodeResult, agoryxResult, sqliteResult, claude.check, codex.check, agents, gitResult, homeResult, daemonResult, ...(serviceResult ? [serviceResult] : [])];
   if (!options.probe) return checks;
 
   // One real call per logged-in agent, from an empty folder (no project files or instructions to load).

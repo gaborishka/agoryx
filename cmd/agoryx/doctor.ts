@@ -24,7 +24,8 @@ export const printDoctorUsage = (write: OutputWriter = console.log): void => {
     "  -h, --help   Show this help message and exit",
     "",
     "Checks: Node.js (22+), this install and its build, better-sqlite3 under that node, Claude Code and",
-    "Codex (found, logged in), at least one usable agent, git, the state folder (AGORYX_HOME), the daemon.",
+    "Codex (found, logged in), at least one usable agent, git, the state folder (AGORYX_HOME), the daemon,",
+    "and on macOS the login service (`agoryx service`).",
     "Exits 1 when something is missing that Agoryx cannot run without.",
   ].join("\n"));
 };

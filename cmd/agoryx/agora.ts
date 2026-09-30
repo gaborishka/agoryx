@@ -28,7 +28,8 @@ import { readLimits } from "../../internal/agora/limits-store.js";
 import { roomUsage, TURN_OUTCOMES, type UsageTotals } from "../../internal/agora/usage.js";
 import { applyTurnContext, TURN_FILE_ENV } from "../../internal/agora/turn-context.js";
 import { parseTableCommand, TABLE_USAGE } from "../../internal/agora/table-cli.js";
-import { TURN_ENV_VARS } from "../../internal/desktop/shellenv.js";
+import { desktopEnv, TURN_ENV_VARS } from "../../internal/desktop/shellenv.js";
+import { launchdService, SERVICE_PINNED_VARS } from "../../internal/desktop/launchd.js";
 import { describeTableOp, renderTableMarkdown } from "../../internal/agora/table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, EphemeralEvent, LimitSnapshot, LimitWindow, RoomAgent, RoomEvent, RoomSettings, RoomState } from "../../internal/agora/types.js";
 import { CliUsageError, parseCliArgsOrThrow, type OptionSpec, type OutputWriter } from "./cli-args.js";
@@ -61,11 +62,12 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
     [
       "Rooms — Claude and Codex (or any agents you list) in one conversation, each in its own native session.",
       "",
-      "  agoryx up [--port N] [-d] [--lan] [--tailscale] [--allow-host NAME] [--local]",
+      "  agoryx up [--port N] [-d] [--lan] [--tailscale] [--allow-host NAME] [--local] [--login-env]",
       "                                     Start the daemon (web UI + API). -d runs it in the background.",
       "                                     --lan also listens on this computer's Wi-Fi/Ethernet address, for a phone on the same Wi-Fi;",
       "                                     --tailscale accepts this machine's *.ts.net name, for `tailscale serve` (HTTPS, notifications);",
       "                                     --local: this computer only (the default). The choice applies to a running daemon and is remembered",
+      "                                     --login-env: take PATH and keys from your login shell, as the launchd service does",
       "  agoryx pair                        Pair a phone: a QR code and a one-time code (5 minutes) to open Agoryx on it",
       "  agoryx devices [revoke ID]         Paired devices, and revoking one",
       "  agoryx down                        Stop the background daemon",
@@ -345,6 +347,23 @@ const dotenvFiles = (): string[] => {
   return files;
 };
 
+/**
+ * `agoryx up --login-env` (what the launchd service runs): the login shell's environment over this
+ * process's, as the app does, so the daemon and its agents get the PATH and keys of a terminal while the
+ * plist holds none of them. The home and workspace root stay the service's (SERVICE_PINNED_VARS).
+ */
+const takeLoginShellEnv = async (): Promise<"login-shell" | "fallback"> => {
+  const { env, source } = await desktopEnv(process.env);
+  for (const key of SERVICE_PINNED_VARS) {
+    const own = process.env[key];
+    if (own?.trim()) env[key] = own;
+    else delete env[key];
+  }
+  for (const [key, value] of Object.entries(env)) if (value !== undefined) process.env[key] = value;
+  for (const key of SERVICE_PINNED_VARS) if (env[key] === undefined) delete process.env[key];
+  return source;
+};
+
 /** Environment for a daemon started from here: never an agent turn's (its room, its key). */
 const daemonEnv = (): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -537,6 +556,19 @@ const startDaemonDetached = async (port?: number): Promise<DaemonInfo> => {
   const home = agoraHome();
   mkdirSync(home, { recursive: true });
   const logFile = join(home, "daemon.log");
+  // With the launchd service installed for this home, launchd starts it (and owns it): never a second one next to it.
+  const service = launchdService(process.env);
+  if (service && (await service.loaded().catch(() => false))) {
+    await service.kickstart();
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      const info = await findDaemon();
+      if (info) return info;
+    }
+    const tail = existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").slice(-15).join("\n") : "";
+    throw new Error(`launchd (${service.label}) did not bring the daemon up; see ${logFile} and \`agoryx service status\`\n${tail}`);
+  }
   const fd = openSync(logFile, "a");
   // How it is reachable besides this computer comes from exposure.json, as for any other start.
   const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "up", ...(port ? ["--port", String(port)] : [])], {
@@ -620,6 +652,7 @@ const runUp = async (argv: string[]): Promise<number> => {
     { long: "tailscale", takesValue: false },
     { long: "allow-host", takesValue: true },
     { long: "local", takesValue: false },
+    { long: "login-env", takesValue: false },
   ]);
   if (parsed.options.help) {
     printAgoraUsage();
@@ -668,6 +701,16 @@ const runUp = async (argv: string[]): Promise<number> => {
   }
   const exposure = chosen ?? readExposure();
   const stamp = (message: string) => console.log(`${pc.dim(new Date().toISOString().slice(11, 19))} ${message}`);
+  if (parsed.options["login-env"]) {
+    const source = await takeLoginShellEnv();
+    stamp(source === "login-shell" ? `environment from the login shell (${process.env.SHELL ?? "/bin/zsh"})` : "login shell unavailable: PATH from the service and the usual install folders");
+    // The probe took seconds: another start may have won meanwhile.
+    const late = await findDaemon();
+    if (late) {
+      console.log(`agoryx daemon already running at ${late.url} (pid ${late.pid})`);
+      return 0;
+    }
+  }
   let closing = false;
   let finish: () => void = () => {};
   const shutdown = (reason: string, by?: ActorOrigin | { human: true }) => {

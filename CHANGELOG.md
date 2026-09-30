@@ -10,6 +10,12 @@
   - Quitting leaves the daemon running. The menu item «Зупинити демона й вийти» (Stop Daemon and Quit) stops it through its API.
   - Its start page and menu are in Ukrainian, like the room UI.
   - Run it from the checkout with `npm run desktop`. Build it with `npm --prefix desktop run dist` (arm64 `.app` + `.dmg`, unsigned unless `AGORYX_SIGN_IDENTITY` is set). See [docs/DESKTOP.md](docs/DESKTOP.md).
+- **`agoryx service install|uninstall|status` (macOS):** the daemon as a LaunchAgent for the current `AGORYX_HOME`. It starts at login and again after a crash, without the app or a terminal.
+  - The plist holds PATH, SHELL and the home only; `up --login-env` reads keys from the login shell at each start.
+  - `agoryx down` stops it until the next login. The app and `agoryx up -d` start it through launchd instead of beside it.
+  - `agoryx doctor` reports the service, including a plist whose node or install is gone.
+- **The app checks who holds the daemon's port** (`lsof`) before attaching, and never gives the token to a process that is not the one in `daemon.json`.
+- **Source mode passes SIGTERM and SIGHUP on:** `bin/agoryx.js` without `dist/` hands them to the daemon it runs, so it closes its rooms instead of being orphaned.
 - **`agoryx doctor [--probe] [--json]`:** checks what a room needs here: Node and its sqlite module, the `claude` / `codex` CLIs and their logins, git, the state folder and the daemon. Each problem comes with the command that fixes it. `--probe` also makes one short real call to each logged-in agent.
 - **When a room waits for you:** the daemon knows which rooms need the human: an agent's `@<you>`, a run that ended (done, budget spent, stopped by an agent or cut short, or an agent's turn that failed). Seeing a room clears it.
   - The macOS app shows them in a menu-bar icon (a dot, and the rooms to open), as a Dock badge, and as notification banners (at most one per 10 s). The room on screen never counts.

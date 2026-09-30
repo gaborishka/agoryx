@@ -103,17 +103,21 @@ const footChip =
 /** You and the agents at one table (Claude and Codex unless agents.json says otherwise): the lines are the conversation between all of you. */
 function Seats({ agents }: { agents: RoomAgent[] }) {
   /** The line to the seat next to you, in that agent's colour (its own shade when its kind repeats). */
-  const Line = ({ agent }: { agent: RoomAgent | undefined }) => {
+  const Line = ({ agent, side }: { agent: RoomAgent | undefined; side: "left" | "right" }) => {
     const who = participant({ agents }, agent?.id ?? "");
     const tone = who.tone === "codex" ? "codex" : "claude";
     return (
       <span
         style={ink(who)}
         className={cn(
-          "relative block h-px w-10 sm:w-16",
-          tone === "claude"
-            ? "bg-gradient-to-r from-claude/50 to-human/40"
-            : "bg-gradient-to-r from-human/40 to-codex/50",
+          "relative block h-px w-10 sm:w-16 bg-gradient-to-r",
+          side === "left"
+            ? tone === "claude"
+              ? "from-claude/50 to-human/40"
+              : "from-codex/50 to-human/40"
+            : tone === "claude"
+              ? "from-human/40 to-claude/50"
+              : "from-human/40 to-codex/50",
         )}
       >
         <span
@@ -144,13 +148,15 @@ function Seats({ agents }: { agents: RoomAgent[] }) {
       <Avatar handle={agent.id} roster={agents} size={44} />
     </Seat>
   );
-  const left = agents.slice(0, Math.ceil(agents.length / 2));
-  const right = agents.slice(left.length);
+  // Claudes on your left, Codexes on your right, so the same kind sits together; one kind only: half and half.
+  const claudes = agents.filter((agent) => agent.kind === "claude");
+  const codexes = agents.filter((agent) => agent.kind !== "claude");
+  const [left, right] = claudes.length && codexes.length ? [claudes, codexes] : [agents.slice(0, Math.ceil(agents.length / 2)), agents.slice(Math.ceil(agents.length / 2))];
   return (
     <div className="flex items-start">
       <span className="flex gap-3">{left.map(seat)}</span>
       <span className="mx-1.5 mt-[22px]">
-        <Line agent={left.at(-1)} />
+        <Line agent={left.at(-1)} side="left" />
       </span>
       <Seat label="Ви">
         <span className="grid size-11 place-items-center rounded-[30%] bg-human-soft text-human ring-1 ring-human/25 ring-inset">
@@ -160,7 +166,7 @@ function Seats({ agents }: { agents: RoomAgent[] }) {
       {right.length ? (
         <>
           <span className="mx-1.5 mt-[22px]">
-            <Line agent={right[0]} />
+            <Line agent={right[0]} side="right" />
           </span>
           <span className="flex gap-3">{right.map(seat)}</span>
         </>
@@ -450,7 +456,8 @@ export function StartScreen() {
   const [agents, setAgents] = useState<RoomAgent[]>(DEFAULT_AGENTS);
   // A broken roster file (agents.json): said here, and no room is started until it reads again.
   const [rosterError, setRosterError] = useState<string | null>(null);
-  const who = names(agents.map((a) => a.label));
+  // Named as they sit: Claudes first, then Codexes.
+  const who = names([...agents.filter((a) => a.kind === "claude"), ...agents.filter((a) => a.kind !== "claude")].map((a) => a.label));
   const models = useModels();
   const [picks, setPicks] = useState<Picks>(readPicks);
   const seated = agents.map((agent) => withPick(agent, picks[agent.id]));

@@ -346,6 +346,37 @@ test("a turn's exact change: counts in the snapshot, the patch on request", asyn
   }
 });
 
+test("the room's whole change: the folder now against the tree before its first turn", async () => {
+  const room = await newRoom("Daemon room diff");
+  assert.equal((await call("GET", `/api/rooms/${room.id}/room-diff`)).status, 404, "no turn yet: nothing to count from");
+  // `once` rules are remembered by their index across tests; this test's rule is index 0 again.
+  rmSync(join(home, "fake-state", "used-rules.json"), { force: true });
+  writeFileSync(
+    join(home, "rules.json"),
+    JSON.stringify([{ agent: "claude", match: "gauge", write: { path: "gauge.ts", content: "export const g = 1;\n" }, reply: "Wrote gauge.ts.", once: true }]),
+  );
+  try {
+    await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "@claude write the gauge" } });
+    await waitFor(async () => {
+      const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+      return snap.state.turns.some((entry: any) => entry.changes?.length) && snap.state.runs.at(-1)?.status === "ended";
+    });
+    // The human's own edit after the turn counts too: it is the folder, not a turn.
+    writeFileSync(join(room.workspace, "notes.txt"), "by hand\n");
+    const reply = await call("GET", `/api/rooms/${room.id}/room-diff`);
+    assert.equal(reply.status, 200, reply.body);
+    const body = reply.json<any>();
+    assert.equal(body.base.kind, "turn");
+    const paths = body.changes.map((change: any) => change.path).sort();
+    assert.ok(paths.includes("gauge.ts") && paths.includes("notes.txt"), paths.join(","));
+    assert.ok(!paths.some((path: string) => path.startsWith(".agoryx/")), "Agoryx's own files are left out");
+    assert.match(body.patch, /\+export const g = 1;/);
+    assert.equal(body.truncated, false);
+  } finally {
+    writeFileSync(join(home, "rules.json"), "[]");
+  }
+});
+
 test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .git and symlink escapes", async () => {
   const room = await newRoom("Daemon raw");
   const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();

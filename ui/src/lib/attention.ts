@@ -65,11 +65,7 @@ const SHORT: Record<AttentionReason, (by: string | undefined) => string> = {
 };
 
 /**
- * The sidebar dot's tip: «Чекає на вас: агенти закінчили», and « · агенти працюють» while they do. A mention
- * already names who calls («Claude кличе вас»), so it goes without the prefix. The tray's copy is
- * internal/desktop/attention.ts.
+ * Why a room waits, in a few words: «агенти закінчили», «Claude кличе вас» (the sidebar puts «Чекає на вас» before
+ * all but a mention, which already says who calls). The tray's copy is internal/desktop/attention.ts.
  */
-export const waitingTip = (item: AttentionItem, running: boolean): string => {
-  const reason = SHORT[item.reason](item.by);
-  return `${item.reason === "mention" ? reason : `Чекає на вас: ${reason}`}${running ? " · агенти працюють" : ""}`;
-};
+export const waitingReason = (item: AttentionItem): string => SHORT[item.reason](item.by);

@@ -166,7 +166,7 @@ function Pane({ room, bridge }: { room: string; bridge: AgoryxBrowser }) {
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
-              className="h-8 text-[13px] md:text-[13px]"
+              className="h-8 text-small md:text-small"
             />
           </form>
           <Button
@@ -182,18 +182,18 @@ function Pane({ room, bridge }: { room: string; bridge: AgoryxBrowser }) {
           </Button>
         </div>
         {refusal ? (
-          <p role="status" className="px-1 text-[12.5px] text-destructive">
+          <p role="status" className="px-1 text-small text-destructive">
             Цю адресу не відкрити: {refusal}.
           </p>
         ) : null}
         {state?.crashed ? (
-          <p className="flex items-start gap-1.5 px-1 text-[12.5px] text-amber">
+          <p className="flex items-start gap-1.5 px-1 text-small text-amber">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
             <span>Сторінка аварійно закрилася. Натисніть «Оновити» або дочекайтеся наступної дії агента.</span>
           </p>
         ) : null}
         {driver && who ? (
-          <p className="flex items-center gap-2 px-1 text-[12.5px] text-muted-foreground">
+          <p className="flex items-center gap-2 px-1 text-small text-muted-foreground">
             <span className={cn("size-2 shrink-0 animate-breathe rounded-full", who.tone === "codex" ? "bg-codex" : "bg-claude")} style={ink(who)} />
             <span className="truncate">
               {driver.label} {VERB[driver.op] ?? "працює в браузері"}…
@@ -207,7 +207,7 @@ function Pane({ room, bridge }: { room: string; bridge: AgoryxBrowser }) {
             <span className="grid size-12 place-items-center rounded-2xl bg-secondary text-primary">
               <GlobeIcon className="size-5" />
             </span>
-            <p className="text-[14px] leading-relaxed text-pretty text-muted-foreground">
+            <p className="text-ui leading-relaxed text-pretty text-muted-foreground">
               {networkOn
                 ? "Тут з'явиться сторінка, яку відкриє агент. Можна відкрити й самому: введіть адресу вгорі."
                 : "У цій кімнаті вимкнено мережу, тож браузер теж вимкнено. Увімкнути мережу можна в налаштуваннях кімнати."}

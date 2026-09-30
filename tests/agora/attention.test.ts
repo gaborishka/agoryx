@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { AttentionBoard, attentionFile, attentionOf, parseView, type RoomListener } from "../../internal/agora/attention.js";
+import { AttentionBoard, attentionFile, attentionOf, parseView, type RoomListener, unreadIn } from "../../internal/agora/attention.js";
 import { roomsDir } from "../../internal/agora/paths.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { DEFAULT_SETTINGS, type ActorOrigin, type MessageKind, type RoomEvent, type RoomMessage, type TurnError } from "../../internal/agora/types.js";
@@ -216,6 +216,27 @@ test("seeding: a room without a cursor raises nothing; with one, the same items 
   second.track(room.store.id, () => reopened, new Set());
   assert.deepEqual(second.item(room.store.id), { room: room.store.id, name: "Seeded", seq: asked.seq, ts: asked.ts, reason: "mention", by: "Claude", text: "@ivan now?" });
   second.close();
+});
+
+test("unread: what others said above the seen cursor — not the human's own, a pass or a system line; cleared once seen", () => {
+  const env = newHome();
+  const room = makeRoom(env, "Unread");
+  room.say("before", "r0");
+  const board = new AttentionBoard({ env });
+  assert.equal(board.unread(room.store.id), undefined, "a room not followed has nothing to count against");
+  board.track(room.store.id, room.log, room.listeners);
+  assert.equal(board.unread(room.store.id), 0, "what was there before is not unread");
+  room.post("Ivan", "human", "go");
+  room.say("one", "r1");
+  room.post("codex", "pass", "");
+  room.post("agoryx", "system", "Ivan renamed the room");
+  room.post("codex", "agent", "two");
+  room.post("codex", "update", "still at it");
+  assert.equal(board.unread(room.store.id), 3);
+  assert.equal(unreadIn(room.store.state, 0), 4, "counted from the start, the earlier line too");
+  board.markSeen(room.store.id);
+  assert.equal(board.unread(room.store.id), 0);
+  board.close();
 });
 
 test("a room whose folder is gone is pruned; tracking twice adds one listener", () => {

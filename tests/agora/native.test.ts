@@ -300,6 +300,8 @@ test("while someone is mid-exchange with an agent in its own app, its room turn 
     await waitUntil(() => room.store.state.messages.some((message) => /Codex is busy in its own session/.test(message.text)));
     await waitUntil(() => room.store.state.turns.filter((turn) => turn.agent === "claude").every((turn) => turn.status !== "running"));
     assert.equal(codexTurns(), before, "codex has not been resumed under the human");
+    const busy = room.store.state.messages.find((message) => /Codex is busy in its own session/.test(message.text))!;
+    assert.deepEqual(busy.sys, { code: "agent.busy", agent: "Codex" });
 
     appendFileSync(file, jsonl([xEvent({ type: "task_complete", turn_id: "native-1", last_agent_message: "Store refactored." })]));
     await withTimeout(room.engine.waitIdle());

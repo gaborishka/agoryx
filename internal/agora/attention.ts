@@ -82,6 +82,18 @@ export const attentionOf = (state: RoomState, event: RoomEvent): Omit<AttentionI
   return { ...at, reason, text };
 };
 
+/** Messages above `cursor` the human has something to read in: not the human's own, not a pass, not a system line. Pure. */
+export const unreadIn = (state: RoomState, cursor: number): number => {
+  let count = 0;
+  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+    const message = state.messages[index]!;
+    if (message.seq <= cursor) break;
+    if (message.kind === "pass" || message.kind === "system" || message.kind === "human" || message.author === state.human) continue;
+    count += 1;
+  }
+  return count;
+};
+
 /** A view report from `POST /api/attention/view`, or the text of the 400. */
 export const parseView = (body: unknown): AttentionView | string => {
   const fields = (body && typeof body === "object" && !Array.isArray(body) ? body : {}) as Record<string, unknown>;
@@ -242,6 +254,21 @@ export class AttentionBoard {
       // the id stands in for the name
     }
     return { room, name, ...entry.item };
+  }
+
+  /**
+   * What was said in the room since the human last saw it: messages above the seen cursor that are not the
+   * human's own, a pass or a system line. Undefined for a room not followed (nothing to count against).
+   */
+  unread(room: string): number | undefined {
+    const entry = this.rooms.get(room);
+    const cursor = this.seen[room];
+    if (!entry || cursor === undefined) return undefined;
+    try {
+      return unreadIn(entry.log().state, cursor);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Newest first. */

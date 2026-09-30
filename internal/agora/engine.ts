@@ -28,6 +28,7 @@ import type {
   RoomMessage,
   RoomSettings,
   RunState,
+  SystemNote,
   TableOp,
   TurnState,
 } from "./types.js";
@@ -36,6 +37,7 @@ import {
   clearStaleAcks,
   diffSnapshots,
   drainOpsInbox,
+  forkPoint,
   markTurnLive,
   MAX_TREE_SNAPSHOT_DIRTY,
   messagePath,
@@ -49,6 +51,7 @@ import {
   treeChanges,
   workspacePaths,
   workspaceRooms,
+  workspaceDiff,
   workspaceTracking,
   writeAck,
   writeRoomMessage,
@@ -234,6 +237,33 @@ export const roomTurnPatch = (store: RoomStore, turnId: string): { patch: string
     // An old .agoryx/turns/ file is this room's only when no other room ever had this workspace.
     ownsLegacy: () => roomsSharingWorkspace(store).length === 1,
   });
+};
+
+/** Where the room's whole change is counted from: its worktree's fork point, or the tree before its first turn. */
+export type RoomDiffBase = { kind: "worktree"; ref: string; sha: string } | { kind: "turn"; turnId: string; ts: string };
+
+/**
+ * Everything the workspace differs by since the room began: the folder as it is now (untracked files too)
+ * against the commit its worktree branched from, or else the tree taken at the start of its first turn that
+ * has one. Other rooms in the same folder and the human's own edits show too: it is the folder, not a turn.
+ * Null when there is nothing to count from yet (no turn has run) or git can't tell.
+ */
+export const roomWorkspaceDiff = (
+  store: RoomStore,
+): ({ base: RoomDiffBase } & { changes: FileChange[]; patch: string; truncated: boolean }) | null => {
+  const { workspace, worktree } = store.state;
+  if (worktree) {
+    const sha = forkPoint(workspace, worktree.base);
+    const diff = sha ? workspaceDiff(workspace, sha) : null;
+    if (sha && diff) return { base: { kind: "worktree", ref: worktree.base, sha }, ...diff };
+  }
+  for (const event of store.events) {
+    if (event.type !== "turn.ended" || !event.trees) continue;
+    const diff = workspaceDiff(workspace, event.trees.before);
+    // The first turn's tree may be gone (git prunes loose objects); the next one still counts from early on.
+    if (diff) return { base: { kind: "turn", turnId: event.turnId, ts: event.ts }, ...diff };
+  }
+  return null;
 };
 
 /**
@@ -447,7 +477,7 @@ export class RoomEngine {
     const run = activeRun(this.state);
     if (run) {
       this.store.append({ type: "run.ended", runId: run.id, reason: "stopped", turns: run.used });
-      this.postSystem("Agoryx restarted in the middle of a run, so the run was stopped. Write anything, or ask for another round, to continue.", false);
+      this.postSystem("Agoryx restarted in the middle of a run, so the run was stopped. Write anything, or ask for another round, to continue.", { code: "run.restarted" }, false);
     }
   }
 
@@ -509,8 +539,8 @@ export class RoomEngine {
   }
 
   /** A line in the transcript saying what someone did. It wakes nobody. */
-  private postNote(actor: Actor, text: string): MessageEntry {
-    return this.postMessage({ author: actor.by, kind: "system", text, mentions: [], wakes: false, ...(actor.from ? { from: actor.from } : {}) });
+  private postNote(actor: Actor, text: string, sys: SystemNote): MessageEntry {
+    return this.postMessage({ author: actor.by, kind: "system", text, sys, mentions: [], wakes: false, ...(actor.from ? { from: actor.from } : {}) });
   }
 
   postHuman(text: string, author = this.state.human): MessageEntry {
@@ -555,10 +585,12 @@ export class RoomEngine {
   continueRun(by?: string | Actor): void {
     const actor = this.actor(by);
     this.benched.clear();
+    const who = actorLabel(this.state, actor.by);
     const message = this.postMessage({
       author: actor.by,
       kind: "system",
-      text: `${actorLabel(this.state, actor.by)} asked for another round.`,
+      text: `${who} asked for another round.`,
+      sys: { code: "run.continued", by: who },
       mentions: [],
       wakes: true,
       ...(actor.from ? { from: actor.from } : {}),
@@ -622,9 +654,12 @@ export class RoomEngine {
     this.store.append({ type: "settings.changed", patch: clean, ...actorFields(actor) });
     if (clean.doc !== undefined) this.recordDocBaseline();
     // The human sees what they changed; an agent's change is said in the transcript, by name.
-    if (!this.byHuman(actor)) this.postNote(actor, `${actorLabel(this.state, actor.by)} changed the settings: ${describeSettings(clean).join(", ")}.`);
-    else if (clean.doc !== undefined) {
-      this.postSystem(clean.doc ? `The room's canonical file is now ${clean.doc}.` : "The room no longer has a canonical file.", false);
+    if (!this.byHuman(actor)) {
+      const who = actorLabel(this.state, actor.by);
+      this.postNote(actor, `${who} changed the settings: ${describeSettings(clean).join(", ")}.`, { code: "settings.changed", by: who, patch: clean });
+    } else if (clean.doc !== undefined) {
+      if (clean.doc) this.postSystem(`The room's canonical file is now ${clean.doc}.`, { code: "doc.set", path: clean.doc }, false);
+      else this.postSystem("The room no longer has a canonical file.", { code: "doc.cleared" }, false);
     }
   }
 
@@ -655,7 +690,8 @@ export class RoomEngine {
       ...(change.model !== undefined ? [change.model ? `model ${change.model}` : "the CLI's default model"] : []),
       ...(change.effort !== undefined ? [change.effort ? `effort ${change.effort}` : "the CLI's default effort"] : []),
     ];
-    this.postNote(actor, `${actorLabel(this.state, actor.by)} set ${agent.label} to ${parts.join(", ")}.`);
+    const who = actorLabel(this.state, actor.by);
+    this.postNote(actor, `${who} set ${agent.label} to ${parts.join(", ")}.`, { code: "agent.changed", by: who, agent: agent.label, ...change });
     return this.state.agents.find((entry) => entry.id === agentId)!;
   }
 
@@ -666,7 +702,10 @@ export class RoomEngine {
     if (!clean) throw new Error("a room needs a name");
     if (clean === this.state.name) return;
     this.store.append({ type: "room.renamed", name: clean, ...actorFields(actor) });
-    if (!this.byHuman(actor)) this.postNote(actor, `${actorLabel(this.state, actor.by)} renamed the room to "${clean}".`);
+    if (!this.byHuman(actor)) {
+      const who = actorLabel(this.state, actor.by);
+      this.postNote(actor, `${who} renamed the room to "${clean}".`, { code: "room.renamed", by: who, name: clean });
+    }
   }
 
   /**
@@ -683,10 +722,11 @@ export class RoomEngine {
     if (run) {
       this.store.append({ type: "run.ended", runId: run.id, reason: "stopped", turns: run.used, ...(actor ? actorFields(actor) : {}) });
       if (actor && this.byHuman(actor)) {
-        if (reason === "human") this.postSystem(`${actor.by} stopped the run.`, false);
+        if (reason === "human") this.postSystem(`${actor.by} stopped the run.`, { code: "run.stopped", by: actor.by }, false);
       } else if (actor) {
         const who = actorLabel(this.state, actor.by);
-        this.postNote(actor, reason === "human" ? `${who} stopped the run.` : `${who} stopped the daemon, so the run was stopped.`);
+        if (reason === "human") this.postNote(actor, `${who} stopped the run.`, { code: "run.stopped", by: who });
+        else this.postNote(actor, `${who} stopped the daemon, so the run was stopped.`, { code: "daemon.stopped", by: who });
       }
       this.checkpoint(run);
     }
@@ -791,11 +831,13 @@ export class RoomEngine {
         // The run it was for has ended (stopped): what it says no longer has a run to join.
         if (!worth.length || this.closed || this.stopping || activeRun(this.state)?.id !== runId) return;
         const names = worth.map((entry) => entry.label);
-        const sure = worth.map((entry) => `${entry.label} ${Math.round(verdict.worth[entry.id]! * 100)}%`).join(", ");
+        const readers = worth.map((entry) => ({ label: entry.label, percent: Math.round(verdict.worth[entry.id]! * 100) }));
+        const sure = readers.map((reader) => `${reader.label} ${reader.percent}%`).join(", ");
         this.postMessage({
           author: "agoryx",
           kind: "system",
           text: `Jev: a second look at ${agent.label}'s answer seems worth a turn (${sure}) — ${names.join(" and ")} ${names.length === 1 ? "takes" : "take"} a look.`,
+          sys: { code: "jev.second_look", agent: agent.label, readers },
           mentions: worth.map((entry) => entry.id),
           wakes: true,
           turnId,
@@ -843,11 +885,13 @@ export class RoomEngine {
         // The run the message was said in has ended (stopped): what it asked no longer has a run to join.
         if (!meant.length || this.stopping || (message.runId && activeRun(this.state)?.id !== message.runId)) return;
         const names = meant.map((entry) => entry.label);
-        const sure = meant.map((entry) => `${entry.label} ${Math.round(verdict.addressed[entry.id]! * 100)}%`).join(", ");
+        const readers = meant.map((entry) => ({ label: entry.label, percent: Math.round(verdict.addressed[entry.id]! * 100) }));
+        const sure = readers.map((reader) => `${reader.label} ${reader.percent}%`).join(", ");
         const note = this.postMessage({
           author: "agoryx",
           kind: "system",
           text: `Jev: ${author.label}'s ${message.id} reads as meant for ${names.join(" and ")} (${sure}), with no @ — ${names.join(" and ")} ${names.length === 1 ? "is" : "are"} woken to answer it.`,
+          sys: { code: "jev.meant_for", agent: author.label, message: message.id, readers },
           mentions: meant.map((entry) => entry.id),
           wakes: true,
           ...(message.turnId ? { turnId: message.turnId } : {}),
@@ -977,6 +1021,7 @@ export class RoomEngine {
         left.length
           ? `Turn budget reached (${run.used} agent turns). Still open on the table: ${left.join(", ")} — write anything, or ask for another round, to continue.`
           : `Turn budget reached (${run.used} agent turns). Nothing is left open on the table — write anything to continue.`,
+        { code: "run.budget", turns: run.used, open: { questions: open.questions, options: open.options, steps: open.steps, disputes: open.disputes } },
         false,
       );
     }
@@ -1391,7 +1436,12 @@ export class RoomEngine {
             : error.kind === "spawn"
               ? ` (is \`${agent.kind}\` installed and on PATH?)`
               : "";
-      this.postSystem(`${agent.label} could not finish its turn: ${error.message}${hint}`, false, turnId);
+      this.postSystem(
+        `${agent.label} could not finish its turn: ${error.message}${hint}`,
+        { code: "turn.failed", agent: agent.label, cli: agent.kind, error: error.kind, message: error.message },
+        false,
+        turnId,
+      );
     }
 
     this.store.append({
@@ -1760,7 +1810,11 @@ export class RoomEngine {
     }
     if (!this.nativeBusyNoted.has(agent.id)) {
       this.nativeBusyNoted.add(agent.id);
-      this.postSystem(`${agent.label} is busy in its own session (someone is talking to it there). Its turn here starts when that exchange ends.`, false);
+      this.postSystem(
+        `${agent.label} is busy in its own session (someone is talking to it there). Its turn here starts when that exchange ends.`,
+        { code: "agent.busy", agent: agent.label },
+        false,
+      );
     }
     return true;
   }
@@ -1833,8 +1887,9 @@ export class RoomEngine {
     }
   }
 
-  private postSystem(text: string, wakes: boolean, turnId?: string): MessageEntry {
-    return this.postMessage({ author: "agoryx", kind: "system", text, mentions: [], wakes, ...(turnId ? { turnId } : {}) });
+  /** A line by Agoryx itself: `text` in English, `sys` what it means (see SystemNote). */
+  private postSystem(text: string, sys: SystemNote, wakes: boolean, turnId?: string): MessageEntry {
+    return this.postMessage({ author: "agoryx", kind: "system", text, sys, mentions: [], wakes, ...(turnId ? { turnId } : {}) });
   }
 
   private applyTableOp(raw: unknown, actor: Actor, isHuman: boolean, turnId: string | undefined): TableOp {
@@ -1851,6 +1906,14 @@ export class RoomEngine {
         author: by,
         kind: "decision",
         text: `Decision №${decision.n}: ${option?.id} «${option?.title}»${decision.note ? ` — ${decision.note}` : ""} (decided by ${who})`,
+        sys: {
+          code: "decision",
+          n: decision.n,
+          option: option?.id ?? decision.option,
+          title: option?.title ?? "",
+          ...(decision.note ? { note: decision.note } : {}),
+          by: who,
+        },
         mentions: [],
         // A human decision is news for the agents; an agent's decision rides on its own reply
         // (one from another room has none here).

@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { roomTurnPatch } from "../../internal/agora/engine.js";
 import {
+  forkPoint,
   MAX_TURN_PATCH,
   markTurnLive,
   patchSection,
@@ -17,6 +18,7 @@ import {
   treeChangedPaths,
   treeChanges,
   turnPatchPath,
+  workspaceDiff,
   writeTurnPatch,
 } from "../../internal/agora/workspace.js";
 import { createTestRoom, withTimeout } from "./helpers.js";
@@ -242,6 +244,38 @@ test("a workspace inside a larger repo sees only its own files, by paths relativ
       diff.changes.map((change) => [change.path, change.status, change.added, change.removed]),
       [["a.txt", "M", 1, 0], ["b.txt", "A", 1, 0]],
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a room's whole change: committed, uncommitted and new files against its fork point, only its own folder", () => {
+  const root = mkdtempSync(join(tmpdir(), "agora-whole-"));
+  try {
+    git(root, "init", "-q", "--initial-branch=main");
+    const ws = join(root, "app");
+    mkdirSync(ws);
+    writeFileSync(join(ws, "a.txt"), "one\n");
+    writeFileSync(join(root, "outside.txt"), "out\n");
+    git(root, "add", "-A");
+    git(root, "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "base");
+    git(root, "checkout", "-q", "-b", "room");
+    writeFileSync(join(ws, "a.txt"), "one\ntwo\n");
+    git(root, "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-am", "checkpoint");
+    writeFileSync(join(ws, "b.txt"), "new\n");
+    writeFileSync(join(root, "outside.txt"), "changed\n");
+    mkdirSync(join(ws, ".agoryx"));
+    writeFileSync(join(ws, ".agoryx", "state.json"), "{}\n");
+    const base = forkPoint(ws, "main")!;
+    assert.equal(base, git(root, "rev-parse", "main").trim());
+    const diff = workspaceDiff(ws, base)!;
+    assert.deepEqual(
+      diff.changes.map((change) => [change.path, change.status, change.added, change.removed]),
+      [["a.txt", "M", 1, 0], ["b.txt", "A", 1, 0]],
+    );
+    assert.match(diff.patch, /^diff --git a\/a\.txt b\/a\.txt/m);
+    assert.equal(workspaceDiff(ws, "0".repeat(40)), null, "a base git no longer has says nothing");
+    assert.equal(forkPoint(ws, "--output=x"), null);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -3,13 +3,12 @@ import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * Long text folded to a readable height, with a fade and a control to read the rest.
- * `fade` names the surface behind it, so the fade blends into the card and not a guess.
+ * Long text folded to a readable height, with a fade and a control to read the rest. The fade is a mask on
+ * the text itself, so it blends into whatever surface the text sits on.
  */
 export function Clamp({
   children,
   max,
-  fade = "from-card",
   more = "Читати повністю",
   className,
   open: forced,
@@ -17,7 +16,6 @@ export function Clamp({
   children: ReactNode;
   /** Folded height in px. */
   max: number;
-  fade?: string;
   more?: string;
   className?: string;
   /** Show it all, without the control. */
@@ -38,15 +36,19 @@ export function Clamp({
   const folded = long && !open && !forced;
   return (
     <div className={cn("relative", className)}>
-      <div ref={inner} className={cn(folded && "overflow-hidden")} style={folded ? { maxHeight: max } : undefined}>
+      <div
+        ref={inner}
+        className={cn(folded && "overflow-hidden [mask-image:linear-gradient(to_bottom,black_calc(100%-4.5rem),transparent)]")}
+        style={folded ? { maxHeight: max } : undefined}
+      >
         {children}
       </div>
-      {folded ? <div className={cn("pointer-events-none absolute inset-x-0 bottom-9 h-20 bg-gradient-to-t to-transparent", fade)} /> : null}
       {long && !forced ? (
         <button
           type="button"
           onClick={() => setOpen(!open)}
-          className="mt-1 inline-flex h-8 items-center gap-1 rounded-lg px-2 text-[13px] font-medium text-primary transition hover:bg-accent"
+          aria-expanded={open}
+          className="mt-1 inline-flex h-8 items-center gap-1 rounded-lg px-2 text-small font-medium text-primary transition hover:bg-accent"
         >
           {open ? <ChevronUpIcon className="size-4" /> : <ChevronDownIcon className="size-4" />}
           {open ? "Згорнути" : more}

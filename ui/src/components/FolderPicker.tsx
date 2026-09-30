@@ -33,8 +33,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { api, ApiError, Unauthorized } from "@/lib/api";
-import { baseName, plural, shortPath } from "@/lib/format";
+import { baseName, shortPath } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { t } from "@/lib/i18n";
 
 export interface FolderGit {
   root: string;
@@ -88,7 +89,7 @@ export function useFolderGit(
 }
 
 const chip =
-  "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[13px] text-muted-foreground transition hover:bg-card hover:text-foreground data-[state=open]:bg-card data-[state=open]:text-foreground";
+  "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-small text-muted-foreground transition hover:bg-card hover:text-foreground data-[state=open]:bg-card data-[state=open]:text-foreground";
 
 /**
  * Where the room works: a folder (or a fresh one Agoryx makes), and in a git repository the branch
@@ -176,7 +177,7 @@ export function FolderBar({
                     {r.git ? <FolderGit2Icon /> : <FolderIcon />}
                     <span className="flex min-w-0 flex-1 flex-col leading-tight">
                       <span className="truncate">{r.name}</span>
-                      <small className="truncate font-mono text-[11px] text-faint">
+                      <small className="truncate font-mono text-micro text-faint">
                         {shortPath(r.path)}
                       </small>
                     </span>
@@ -202,7 +203,7 @@ export function FolderBar({
           <div className={cn(chip, "gap-0 p-0 hover:bg-card")}>
             {worktree && git.branches.length ? (
               <DropdownMenu>
-                <Tip tip="Гілка, від якої почнеться worktree кімнати">
+                <Tip tip={t.worktree.from}>
                   <DropdownMenuTrigger className="inline-flex h-full min-w-0 items-center gap-1.5 rounded-l-lg pr-2 pl-2.5 hover:text-foreground">
                     <GitBranchIcon className="size-4 shrink-0" />
                     <span className="max-w-[160px] truncate font-medium text-foreground">
@@ -216,18 +217,18 @@ export function FolderBar({
                   className="max-h-80 w-64 overflow-y-auto"
                 >
                   <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                    Почати worktree від гілки
+                    {t.worktree.fromMenu}
                   </DropdownMenuLabel>
                   <DropdownMenuRadioGroup value={from} onValueChange={onBase}>
                     {git.branches.map((b) => (
                       <DropdownMenuRadioItem
                         key={b}
                         value={b}
-                        className="font-mono text-[12.5px]"
+                        className="font-mono text-small"
                       >
                         <span className="truncate">{b}</span>
                         {b === git.branch ? (
-                          <span className="ml-auto pl-2 font-sans text-[11px] text-faint">
+                          <span className="ml-auto pl-2 font-sans text-micro text-faint">
                             поточна
                           </span>
                         ) : null}
@@ -256,8 +257,8 @@ export function FolderBar({
             <Tip
               tip={
                 canWorktree
-                  ? "Окрема гілка й окрема тека для цієї кімнати. Агенти працюють в одному спільному worktree, а ваша тека й гілка лишаються як є."
-                  : "У репозиторії ще немає комітів — worktree нема від чого почати"
+                  ? t.worktree.about
+                  : t.worktree.noCommits
               }
             >
               <button
@@ -270,7 +271,7 @@ export function FolderBar({
               >
                 <span
                   className={cn(
-                    "grid size-3.5 place-items-center rounded-[4px] border transition",
+                    "grid size-3.5 place-items-center rounded border transition",
                     worktree
                       ? "border-primary bg-primary text-primary-foreground"
                       : "border-input bg-background",
@@ -280,7 +281,7 @@ export function FolderBar({
                     <CheckIcon className="size-3" strokeWidth={3} />
                   ) : null}
                 </span>
-                worktree
+                {t.worktree.label}
               </button>
             </Tip>
           </div>
@@ -289,15 +290,7 @@ export function FolderBar({
       {folder && git && worktree && git.dirty && from === git.branch ? (
         <p className="flex items-start gap-1.5 text-xs text-amber">
           <TriangleAlertIcon className="mt-px size-3.5 shrink-0" />
-          {plural(
-            git.dirty,
-            "незакомічена зміна",
-            "незакомічені зміни",
-            "незакомічених змін",
-          )}{" "}
-          у {baseName(folder)} не потраплять у worktree: він почнеться з
-          останнього коміту
-          {git.branch ? ` ${git.branch}` : ""}.
+          {t.worktree.dirty(git.dirty, baseName(folder), git.branch)}
         </p>
       ) : null}
       <FolderDialog
@@ -398,13 +391,13 @@ export function FolderDialog({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             spellCheck={false}
-            className="h-9 font-mono text-[12.5px]"
+            className="h-9 font-mono text-small"
             aria-label="Шлях"
           />
         </form>
-        {error ? <p className="text-[13px] text-destructive">{error}</p> : null}
+        {error ? <p className="text-small text-destructive">{error}</p> : null}
         {data?.git ? (
-          <div className="flex items-center gap-2 rounded-lg bg-secondary/70 px-3 py-2 text-[12.5px] text-secondary-foreground">
+          <div className="flex items-center gap-2 rounded-lg bg-secondary/70 px-3 py-2 text-small text-secondary-foreground">
             <FolderGit2Icon className="size-4 shrink-0" />
             <span className="min-w-0 truncate">
               git-репозиторій
@@ -423,7 +416,7 @@ export function FolderDialog({
         ) : null}
         <div className="scroll-thin -mx-2 min-h-[180px] flex-1 overflow-y-auto">
           {data && !data.dirs.length ? (
-            <p className="px-3 py-6 text-center text-[13px] text-muted-foreground">
+            <p className="px-3 py-6 text-center text-small text-muted-foreground">
               Тут немає вкладених тек
             </p>
           ) : null}
@@ -433,7 +426,7 @@ export function FolderDialog({
                 <button
                   type="button"
                   onClick={() => void go(d.path)}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13.5px] transition hover:bg-accent"
+                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-ui transition hover:bg-accent"
                 >
                   {d.git ? (
                     <FolderGit2Icon className="size-4 shrink-0 text-primary" />
@@ -442,7 +435,7 @@ export function FolderDialog({
                   )}
                   <span className="truncate">{d.name}</span>
                   {d.git ? (
-                    <span className="ml-auto text-[11px] text-faint">git</span>
+                    <span className="ml-auto text-micro text-faint">git</span>
                   ) : null}
                 </button>
               </li>

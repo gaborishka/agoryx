@@ -151,7 +151,7 @@ export function NativeBadge({ agent, label, tip }: { agent: string; label: strin
   const p = participant(room, agent);
   return (
     <Tip tip={tip}>
-      <span className={cn("inline-flex h-5 items-center rounded-full border border-dashed px-2 text-[11px] font-medium", nativeTone[p.tone])} style={ink(p)}>
+      <span className={cn("inline-flex h-5 items-center rounded-full border border-dashed px-2 text-micro font-medium", nativeTone[p.tone])} style={ink(p)}>
         {label}
       </span>
     </Tip>

@@ -25,6 +25,7 @@ import type {
   RoomSettings,
   RoomState,
   RoomWorktree,
+  SystemNote,
 } from "./types.js";
 
 export type StoreListener = (event: RoomEvent | EphemeralEvent) => void;
@@ -53,8 +54,13 @@ export interface RoomSummary {
    * `label` is the author's display name when an agent wrote it: a room list has no roster to look it up in.
    * `look`: that agent's shade and mark, only when it shares its kind with another agent in the room.
    */
-  lastMessage?: { author: string; text: string; label?: string; look?: AgentLook };
+  /** `sys`: what the line means when Agoryx wrote it (a decision), for a reader in another language. */
+  lastMessage?: { author: string; text: string; label?: string; look?: AgentLook; sys?: SystemNote };
   running: boolean;
+  /** Who sits in the room, in roster order: enough for a room list to draw their avatars. */
+  agents: Array<Pick<RoomAgent, "id" | "kind" | "label">>;
+  /** The agents whose turn runs now and since when; absent when nobody works. */
+  working?: Array<{ agent: string; since: string }>;
   /** The folder the human started the room in; absent when Agoryx made one. */
   folder?: string;
   /** The room's own branch, when it works in a worktree. */
@@ -224,6 +230,7 @@ export class RoomStore {
     const look = lastBy ? agentLook(this.state.agents, lastBy.id) : undefined;
     const lastGuest = last && !lastBy ? this.state.guests?.[last.author] : undefined;
     const lastLabel = lastBy ? lastBy.label : lastGuest ? originName(lastGuest) : undefined;
+    const working = this.state.turns.filter((turn) => turn.status === "running").map((turn) => ({ agent: turn.agent, since: turn.startedAt }));
     return {
       id: this.state.id,
       name: this.state.name,
@@ -231,8 +238,10 @@ export class RoomStore {
       createdAt: this.state.createdAt,
       updatedAt: lastEvent.ts,
       messages: this.state.messages.filter((message) => message.kind !== "pass").length,
-      ...(last ? { lastMessage: { author: last.author, text: last.text.slice(0, 200), ...(lastLabel ? { label: lastLabel } : {}), ...(look?.mark ? { look } : {}) } } : {}),
-      running: this.state.turns.some((turn) => turn.status === "running"),
+      ...(last ? { lastMessage: { author: last.author, text: last.text.slice(0, 200), ...(lastLabel ? { label: lastLabel } : {}), ...(look?.mark ? { look } : {}), ...(last.sys ? { sys: last.sys } : {}) } } : {}),
+      running: working.length > 0,
+      agents: this.state.agents.map(({ id, kind, label }) => ({ id, kind, label })),
+      ...(working.length > 0 ? { working } : {}),
       ...(this.state.worktree
         ? { folder: this.state.worktree.source, branch: this.state.worktree.branch }
         : this.state.createdWorkspace

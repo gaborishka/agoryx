@@ -280,6 +280,37 @@ test("GET /api/rooms carries waiting for the human only; agents get 403 on the a
   await seen(room);
 });
 
+test("GET /api/rooms: the roster and who works since when for everyone; unread for the human only, zero once seen", async () => {
+  setRules([
+    { id: "claude", match: "slow-11", sleepMs: 1500, reply: "first", once: true },
+    { id: "claude", match: "more-11", reply: "second", once: true },
+  ]);
+  const room = await newRoom("Listed");
+  type Listed = { rooms: Array<{ id: string; agents: Array<{ id: string; kind: string; label: string }>; working?: Array<{ agent: string; since: string }>; running: boolean; unread?: number }> };
+  const entry = async (token?: string) => (await call("GET", "/api/rooms", { token })).json<Listed>().rooms.find((listed) => listed.id === room);
+  assert.deepEqual((await entry())?.agents, [{ id: "claude", kind: "claude", label: "Claude" }]);
+  assert.equal((await entry())?.working, undefined);
+  assert.equal((await entry())?.unread, 0);
+
+  assert.equal((await call("POST", `/api/rooms/${room}/messages`, { body: { text: "slow-11" } })).status, 201);
+  await waitFor(async () => Boolean((await entry())?.working));
+  const working = (await entry())!;
+  assert.equal(working.running, true);
+  assert.equal(working.working?.[0]?.agent, "claude");
+  assert.ok(Number.isFinite(Date.parse(working.working?.[0]?.since ?? "")));
+  await ended(room, 1);
+  assert.equal((await entry())?.unread, 1, "the reply came after the human's message");
+  await say(room, "more-11");
+  assert.equal((await entry())?.unread, 1, "the human's own message marked the room seen");
+
+  const key = agentKey(daemon.token, room, "claude");
+  const asAgent = await entry(key);
+  assert.ok(asAgent && !("unread" in asAgent), JSON.stringify(asAgent));
+  assert.equal(asAgent.agents.length, 1);
+  await seen(room);
+  assert.equal((await entry())?.unread, 0);
+});
+
 test("a restart on the same home keeps the same items with the same seq, and what was cleared stays cleared", async () => {
   setRules([
     { id: "claude", match: "keep-8", reply: "@ivan keep this?", once: true },

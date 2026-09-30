@@ -2,13 +2,14 @@ import { ArrowLeftIcon, FileTextIcon, HistoryIcon, MessageSquareIcon, PencilIcon
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { CodeFile, DocDiff } from "@/components/code/Code";
+import { EmptyState, Hint, Loading } from "@/components/common/states";
 import { Markdown } from "@/components/md/Markdown";
 import { Avatar, Name, NativeBadge, Stats } from "@/components/room/bits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
 import { api, ApiError, roomPath, Unauthorized } from "@/lib/api";
 import { ago, ext, fullDate, plural, PROSE_EXT } from "@/lib/format";
+import { withMod } from "@/lib/keys";
 import { participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { DocNow, DocRevision, DocRevisionView, RoomState } from "@/lib/types";
@@ -46,34 +47,17 @@ function Bar({ children }: { children: React.ReactNode }) {
   return <div className="sticky top-0 z-10 -mx-4 mb-4 flex flex-wrap items-center gap-2 border-b border-border/70 bg-background/90 px-4 py-2.5 backdrop-blur">{children}</div>;
 }
 
-const Muted = ({ children }: { children: React.ReactNode }) => <p className="text-[13.5px] text-muted-foreground">{children}</p>;
-
-function Loading() {
-  return (
-    <div className="flex flex-col gap-3 p-4">
-      <Skeleton className="h-5 w-40" />
-      <Skeleton className="h-4 w-full" />
-      <Skeleton className="h-4 w-5/6" />
-      <Skeleton className="h-4 w-2/3" />
-    </div>
-  );
-}
-
 function NoDoc() {
   const post = useStore((s) => s.post);
   const driven = useStore((s) => s.snap?.driven);
   const [path, setPath] = useState("README.md");
   const [busy, setBusy] = useState(false);
   return (
-    <div className="flex flex-col items-center gap-4 px-6 py-14 text-center">
-      <span className="grid size-12 place-items-center rounded-2xl bg-secondary text-primary">
-        <FileTextIcon className="size-5" />
-      </span>
-      <h3 className="text-[17px] font-semibold">Спільний документ</h3>
-      <p className="max-w-[44ch] text-[14px] leading-relaxed text-pretty text-muted-foreground">
-        Кімната може писати один спільний текст — рішення, есе, специфікацію. Agoryx не каже, що в ньому має бути: лише пам'ятає кожну версію з автором і показує
-        кожному агенту, що змінили інші.
-      </p>
+    <EmptyState
+      icon={FileTextIcon}
+      title="Спільний документ"
+      text="Кімната може писати один спільний текст — рішення, есе, специфікацію. Agoryx не каже, що в ньому має бути: лише пам'ятає кожну версію з автором і показує кожному агенту, що змінили інші."
+    >
       {driven ? (
         <form
           className="flex w-full max-w-sm gap-2"
@@ -89,13 +73,13 @@ function NoDoc() {
             }
           }}
         >
-          <Input value={path} onChange={(e) => setPath(e.target.value)} spellCheck={false} aria-label="Файл у робочій теці" className="font-mono text-[13px]" />
+          <Input value={path} onChange={(e) => setPath(e.target.value)} spellCheck={false} aria-label="Файл у робочій теці" className="font-mono text-small" />
           <Button type="submit" disabled={busy || !path.trim()}>
             Призначити
           </Button>
         </form>
       ) : null}
-    </div>
+    </EmptyState>
   );
 }
 
@@ -132,7 +116,8 @@ export function DocPanel() {
   useEffect(() => {
     setDoc(null);
     setEdit(null);
-    setView("now");
+    // A revision named in the address survives the room loading under it.
+    setView(useStore.getState().docFocus ?? "now");
     setRevs(new Map());
   }, [roomId, docReset]);
   useEffect(() => {
@@ -144,6 +129,11 @@ export function DocPanel() {
     setEdit(null);
     setView(focus);
   }, [focus]);
+  // The revision on screen is the one in the address.
+  useEffect(() => {
+    const seq = typeof view === "number" ? view : null;
+    if (useStore.getState().docFocus !== seq) useStore.getState().setDocFocus(seq);
+  }, [view]);
   useEffect(() => {
     if (typeof view !== "number" || revs.has(view) || !roomId) return;
     api<DocRevisionView>("GET", `${roomPath(roomId, "/doc")}?rev=${view}`)
@@ -189,11 +179,11 @@ export function DocPanel() {
       >
         <Bar>
           <FileTextIcon className="size-4 text-primary" />
-          <span className="font-mono text-[12.5px]">{path}</span>
+          <span className="font-mono text-small">{path}</span>
           <span className="text-xs text-faint">редагування</span>
         </Bar>
         {edit.conflict !== undefined ? (
-          <div className="mb-3 flex flex-col gap-2 rounded-xl border border-destructive/30 bg-destructive-soft px-3.5 py-3 text-[13px] text-destructive">
+          <div className="mb-3 flex flex-col gap-2 rounded-xl border border-destructive/30 bg-destructive-soft px-3.5 py-3 text-small text-destructive">
             <span className="flex items-center gap-2 font-medium">
               <TriangleAlertIcon className="size-4" />
               Поки ви редагували, файл змінився. Ваш текст нікуди не дівся.
@@ -216,7 +206,7 @@ export function DocPanel() {
             </div>
           </div>
         ) : stale ? (
-          <div className="mb-3 rounded-xl bg-amber-soft px-3.5 py-2.5 text-[13px] text-amber">
+          <div className="mb-3 rounded-xl bg-amber-soft px-3.5 py-2.5 text-small text-amber">
             Тим часом файл змінено ({participant(room, stale).label}). Збереження нічого не перезапише мовчки — спершу покажемо конфлікт.
           </div>
         ) : null}
@@ -232,14 +222,14 @@ export function DocPanel() {
           }}
           spellCheck
           aria-label={path}
-          className="scroll-thin min-h-[320px] w-full flex-1 resize-none rounded-xl border border-input bg-paper p-4 font-mono text-[13px] leading-relaxed outline-none focus:border-ring/60 focus:ring-3 focus:ring-ring/15"
+          className="scroll-thin min-h-[320px] w-full flex-1 resize-none rounded-xl border border-input bg-paper p-4 font-mono text-small leading-relaxed outline-none focus:border-ring/60 focus:ring-3 focus:ring-ring/15"
         />
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-xs text-faint">Правка не будить агентів — вони побачать диф у своєму наступному ході.</span>
           <Button type="button" variant="ghost" className="ml-auto" onClick={() => setEdit(null)}>
             Скасувати
           </Button>
-          <Button type="submit" disabled={saving}>
+          <Button type="submit" disabled={saving} title={withMod("S")}>
             Зберегти
           </Button>
         </div>
@@ -251,13 +241,13 @@ export function DocPanel() {
   if (typeof view === "number") {
     const r = list.find((x) => x.seq === view);
     const rev = revs.get(view);
-    let body: React.ReactNode = <Loading />;
-    if (rev && "error" in rev) body = <div className="rounded-xl bg-destructive-soft px-3.5 py-3 text-[13px] text-destructive">{rev.error}</div>;
+    let body: React.ReactNode = <Loading lines={3} className="p-4" />;
+    if (rev && "error" in rev) body = <div className="rounded-xl bg-destructive-soft px-3.5 py-3 text-small text-destructive">{rev.error}</div>;
     else if (rev) {
-      if (rev.truncated) body = <Muted>Ця версія завелика (понад 256 КБ), тому Agoryx зберіг лише її відбиток і статистику.</Muted>;
+      if (rev.truncated) body = <Hint className="text-ui">Ця версія завелика (понад 256 КБ), тому Agoryx зберіг лише її відбиток і статистику.</Hint>;
       else if (rev.previous == null && rev.text != null) body = <DocBody path={path} text={rev.text} />;
-      else if (rev.text === null) body = <Muted>У цій версії файл видалено.</Muted>;
-      else body = rev.diff?.some((i) => "t" in i && i.t !== " ") ? <DocDiff items={rev.diff} /> : <Muted>Текст не змінився.</Muted>;
+      else if (rev.text === null) body = <Hint className="text-ui">У цій версії файл видалено.</Hint>;
+      else body = rev.diff?.some((i) => "t" in i && i.t !== " ") ? <DocDiff items={rev.diff} /> : <Hint className="text-ui">Текст не змінився.</Hint>;
     }
     const message = r?.turnId ? room.messages.find((m) => m.turnId === r.turnId && m.kind !== "update") : undefined;
     return (
@@ -270,7 +260,7 @@ export function DocPanel() {
           {r ? (
             <>
               <Avatar handle={revHandle(r)} size={20} />
-              <b className="text-[13px]">{revAuthor(room, r)}</b>
+              <b className="text-small">{revAuthor(room, r)}</b>
               <span className="text-xs text-muted-foreground">
                 <time title={fullDate(r.ts)}>{ago(r.ts)}</time> · {revWhere(room, r)}
               </span>
@@ -306,7 +296,7 @@ export function DocPanel() {
             {plural(list.length, "версія", "версії", "версій")} <span className="font-mono">{path}</span>
           </span>
         </Bar>
-        <p className="mb-4 text-[12.5px] leading-relaxed text-muted-foreground">
+        <p className="mb-4 text-small leading-relaxed text-muted-foreground">
           Хто б і де б не змінив файл — хід у кімнаті, власна сесія агента чи ваш редактор, — версія лишається тут з автором, а інші бачать диф у своєму
           наступному ході.
         </p>
@@ -319,7 +309,7 @@ export function DocPanel() {
                   <button type="button" onClick={() => setView(r.seq)} className="relative flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-accent">
                     <Avatar handle={revHandle(r)} size={24} className="ring-4 ring-background" />
                     <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="flex items-center gap-2 text-[13.5px] font-medium">
+                      <span className="flex items-center gap-2 text-ui font-medium">
                         {revAuthor(room, r)}
                         {r.native && who.agent ? <NativeBadge agent={r.by} label="у своїй сесії" tip={`Змінено в рідній сесії ${who.label}, поза ходом у кімнаті.`} /> : null}
                       </span>
@@ -341,21 +331,21 @@ export function DocPanel() {
             })}
           </ol>
         ) : (
-          <Muted>Версій ще немає.</Muted>
+          <Hint className="text-ui">Версій ще немає.</Hint>
         )}
       </div>
     );
   }
 
   // --- current text ----------------------------------------------------------
-  if (!doc || ("path" in doc && doc.path !== path)) return <Loading />;
-  if ("error" in doc) return <div className="m-4 rounded-xl bg-destructive-soft px-3.5 py-3 text-[13px] text-destructive">{doc.error}</div>;
+  if (!doc || ("path" in doc && doc.path !== path)) return <Loading lines={3} className="p-4" />;
+  if ("error" in doc) return <div className="m-4 rounded-xl bg-destructive-soft px-3.5 py-3 text-small text-destructive">{doc.error}</div>;
   const last = list.at(-1);
   return (
     <div className="px-4 pb-6">
       <Bar>
         <FileTextIcon className="size-4 text-primary" />
-        <span className="truncate font-mono text-[12.5px]" title="Спільний документ кімнати">
+        <span className="truncate font-mono text-small" title="Спільний документ кімнати">
           {path}
         </span>
         {last && last.by !== "agoryx" ? (
@@ -379,16 +369,16 @@ export function DocPanel() {
         </span>
       </Bar>
       {doc.truncated ? (
-        <Muted>Файл завеликий, щоб редагувати його тут: нижче лише його початок. Повністю — у робочій теці.</Muted>
+        <Hint className="text-ui">Файл завеликий, щоб редагувати його тут: нижче лише його початок. Повністю — у робочій теці.</Hint>
       ) : null}
       {doc.exists ? (
         doc.text.trim() ? (
           <DocBody path={path} text={doc.text} />
         ) : (
-          <Muted>Файл порожній.</Muted>
+          <Hint className="text-ui">Файл порожній.</Hint>
         )
       ) : (
-        <div className={cn("rounded-2xl border border-dashed border-border px-6 py-8 text-center text-[13.5px] text-muted-foreground")}>
+        <div className={cn("rounded-2xl border border-dashed border-border px-6 py-8 text-center text-ui text-muted-foreground")}>
           Файлу <code className="font-mono">{path}</code> ще немає. Агенти створять його, коли буде що записати, — або почніть ви.
         </div>
       )}

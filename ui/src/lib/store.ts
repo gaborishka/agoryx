@@ -37,6 +37,7 @@ export type DialogState =
   | { kind: "help" }
   | { kind: "keys" }
   | { kind: "usage" }
+  | { kind: "phone" }
   | { kind: "table-form"; op: TableFormOp; target?: string; q?: string };
 
 export type TableFormOp = "ask" | "propose" | "object" | "support" | "evidence" | "decide" | "settle" | "next";
@@ -58,6 +59,10 @@ interface Store {
   roomsLoaded: boolean;
   bootError: string | null;
   gate: boolean;
+  /** This browser as a paired device (a phone), or null on the computer itself. */
+  device: { id: string; name: string } | null;
+  /** Why a pairing code from the link or the form did not work. */
+  pairError: string | null;
   snap: Snapshot | null;
   /** Messages already shown once — only newer ones animate in. */
   seen: Set<string>;
@@ -126,6 +131,8 @@ export const useStore = create<Store>((set, get) => ({
   roomsLoaded: false,
   bootError: null,
   gate: false,
+  device: null,
+  pairError: null,
   snap: null,
   seen: new Set(),
   panel: null,
@@ -531,7 +538,47 @@ const followAddress = () =>
     if (hash && hash !== location.hash) history.replaceState(null, "", hash);
   });
 
+/** This browser is on the computer that runs the daemon (not a phone reaching it over the network). */
+export const onThisComputer = () => ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
+
+/** Why a code did not work, in the phone's words (the daemon says `reason`). */
+const PAIR_FAILURES: Record<string, string> = {
+  wrong: "Код неправильний, уже використаний або прострочений. Зробіть новий на комп'ютері.",
+  "slow-down": "Забагато неправильних кодів. Зачекайте хвилину.",
+  "typing-stopped": "Забагато неправильних спроб, тож цей код уже не можна ввести. Скануйте QR-код або зробіть новий код на комп'ютері.",
+};
+
+/** Trades a pairing code for this device's own token; the daemon keeps it as a cookie. Throws with the reason. */
+export const claimPairing = async (code: string) => {
+  try {
+    await api("POST", "/api/pair/claim", { code });
+  } catch (error) {
+    const reason = error instanceof ApiError ? String(error.body.reason ?? "") : "";
+    throw new Error(PAIR_FAILURES[reason] ?? "Не вдалося під'єднати цей пристрій. Перевірте, що телефон бачить комп'ютер, і спробуйте ще раз.");
+  }
+  useStore.setState({ pairError: null });
+};
+
+/** A room a notification was tapped for: the service worker asks an open page to show it. */
+const listenToServiceWorker = () => {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    const data = event.data as { type?: string; room?: string | null } | null;
+    if (data?.type === "open-room" && data.room) useStore.getState().go({ kind: "room", id: data.room });
+  });
+};
+
 export const boot = async () => {
+  // A link from the QR code: /?pair=CODE. The code leaves the address bar before anything else happens.
+  const pair = new URLSearchParams(location.search).get("pair");
+  if (pair !== null) {
+    history.replaceState(null, "", location.pathname + location.hash);
+    try {
+      await claimPairing(pair);
+    } catch (error) {
+      useStore.setState({ pairError: error instanceof Error ? error.message : String(error) });
+    }
+  }
   await useStore.getState().loadRooms();
   if (useStore.getState().gate || useStore.getState().bootError) return;
   syncRoute();
@@ -546,6 +593,13 @@ export const boot = async () => {
     (fn) => useStore.subscribe(fn),
   );
   setInterval(() => void useStore.getState().loadRooms(), 5000);
+  listenToServiceWorker();
+  try {
+    const info = await api<{ device: { id: string; name: string } | null }>("GET", "/api/info");
+    useStore.setState({ device: info.device ?? null });
+  } catch {
+    // an older daemon: this is the computer
+  }
 };
 
 // ---------------------------------------------------------------------------

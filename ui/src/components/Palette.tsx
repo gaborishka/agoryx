@@ -13,6 +13,7 @@ import {
   RotateCcwIcon,
   ScaleIcon,
   SettingsIcon,
+  SmartphoneIcon,
   SquareIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -115,6 +116,7 @@ export function Palette() {
   const driven = useStore((s) => s.snap?.driven ?? false);
   const panel = useStore((s) => s.panel);
   const view = useStore((s) => s.view);
+  const device = useStore((s) => s.device);
   const theme = useTheme();
   const [query, setQuery] = useState("");
   const words = wordsOf(query);
@@ -167,6 +169,7 @@ export function Palette() {
   }
   actions.push(
     { id: "theme", label: "Змінити тему", icon: PaletteIcon, run: theme.cycle, keywords: "theme dark light темна світла", hint: <CommandShortcut>{THEME_LABEL[theme.pref]}</CommandShortcut> },
+    { id: "phone", label: device ? "Цей пристрій" : "Відкрити на телефоні", icon: SmartphoneIcon, run: () => s.openDialog({ kind: "phone" }), keywords: "телефон phone qr пристрій сповіщення" },
     { id: "keys", label: "Клавіші", icon: KeyboardIcon, run: () => s.openDialog({ kind: "keys" }), keywords: "скорочення shortcuts", hint: <Keys id="keys" /> },
     { id: "help", label: "Як це працює", icon: CircleHelpIcon, run: () => s.openDialog({ kind: "help" }), keywords: "довідка help" },
   );

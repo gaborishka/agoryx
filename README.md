@@ -47,6 +47,46 @@ agoryx doctor                    # the same checks, in a terminal
 
 The app needs `node` >= 22 on the Mac: the daemon runs on it, not on Electron. See [docs/DESKTOP.md](docs/DESKTOP.md).
 
+## Rooms on a phone
+
+The daemon listens on 127.0.0.1 only unless you open it up. Either way a phone gets in only after you pair it.
+
+```bash
+# Same Wi-Fi (plain http: no notifications)
+agoryx up -d --lan
+
+# Anywhere on your tailnet, over HTTPS (notifications work)
+agoryx up -d --tailscale          # accepts this Mac's <machine>.<tailnet>.ts.net name
+tailscale serve --bg 7717         # Tailscale terminates HTTPS and proxies to the daemon
+
+agoryx up --local                 # this computer only again (the default)
+
+agoryx pair                       # QR code + one-time code (5 minutes); or «Відкрити на телефоні» in the UI
+agoryx devices                    # paired devices
+agoryx devices revoke <id>        # shut one out
+```
+
+- `--lan`, `--tailscale`, `--allow-host` and `--local` apply to a running daemon at once (no restart) and
+  are remembered in `$AGORYX_HOME/exposure.json`, so a daemon the Mac app restarts is reachable the same
+  way. The phone dialog on the computer has the same switch for the Wi-Fi.
+- `--lan` listens on the Mac's Wi-Fi and Ethernet addresses only, not on VPN tunnels or VM/Docker bridges.
+- A pairing works once and expires after five minutes. The QR link carries a long secret; the code to type
+  is short, so wrong codes are limited: five a minute per address (behind Tailscale serve, per tailnet
+  client), and after twenty in ten minutes from anywhere the live codes can no longer be typed. A scanned
+  QR link is never locked out by someone guessing.
+- The phone trades the code for a token of its own, kept as an HttpOnly cookie. The daemon stores only its
+  hash (`$AGORYX_HOME/devices.json`), never logs it, and refuses it (and pairing) from agents' processes.
+- The daemon's own token works on this computer only. Requests naming any other Host are refused
+  (DNS rebinding), and so are API calls from other origins.
+- File previews (`/raw/`) on a phone use a key of that device's own, which stops working when it is revoked;
+  the computer's key works on the computer only.
+- A phone acts as you in rooms, but cannot pair or revoke devices or stop the daemon.
+- On an iPhone, add Agoryx to the home screen («Поділитися» → «На початковий екран») for notifications.
+  The home-screen app keeps its own cookies, so type the code there once. Notifications need HTTPS.
+  The VAPID keys are made on first use in `$AGORYX_HOME/vapid.json`. A push carries only an id: the phone
+  asks the daemon what it says, so a push someone else sends with those keys shows nothing.
+- `--allow-host NAME` accepts another HTTPS proxy's host name in place of `--tailscale`.
+
 ## Prerequisites
 
 - Node.js >= 22

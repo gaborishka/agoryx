@@ -1,4 +1,4 @@
-import { ChevronRightIcon, CircleHelpIcon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SunIcon } from "lucide-react";
+import { ChevronRightIcon, CircleHelpIcon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AgoraGlyph, Avatar, Tip } from "@/components/room/bits";
 import { Button } from "@/components/ui/button";
@@ -262,6 +262,7 @@ export function Sidebar() {
   const go = useStore((s) => s.go);
   const openDialog = useStore((s) => s.openDialog);
   const setPaletteOpen = useStore((s) => s.setPaletteOpen);
+  const device = useStore((s) => s.device);
   const { pref, cycle } = useTheme();
   const ThemeIcon = pref === "dark" ? MoonIcon : pref === "light" ? SunIcon : MonitorIcon;
   const [filter, setFilterState] = useState<Filter>(readFilter);
@@ -368,8 +369,19 @@ export function Sidebar() {
           <CircleHelpIcon className="size-4" />
           Як це працює
         </Button>
+        <Tip tip={device ? "Цей пристрій" : "Відкрити на телефоні"}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="ml-auto size-8 text-muted-foreground"
+            aria-label={device ? "Цей пристрій" : "Відкрити на телефоні"}
+            onClick={() => openDialog({ kind: "phone" })}
+          >
+            <SmartphoneIcon className="size-4" />
+          </Button>
+        </Tip>
         <Tip tip={`${THEME_LABEL[pref]} — натисніть, щоб змінити`}>
-          <Button variant="ghost" size="icon" className="ml-auto size-8 text-muted-foreground" aria-label={THEME_LABEL[pref]} onClick={cycle}>
+          <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" aria-label={THEME_LABEL[pref]} onClick={cycle}>
             <ThemeIcon className="size-4" />
           </Button>
         </Tip>

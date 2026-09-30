@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import type { Socket } from "node:net";
+import { networkInterfaces } from "node:os";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -45,13 +46,28 @@ const processTable = async (): Promise<Map<number, Proc>> => {
   return table;
 };
 
-/** The processes holding the other end of a loopback connection to this daemon. */
+/** The peer's address, without the IPv4-in-IPv6 prefix. */
+const plainAddress = (address: string | undefined): string => (address ?? "").replace(/^::ffff:/i, "");
+
+/**
+ * Whether a connection comes from this computer: loopback, or one of its own addresses (a process here
+ * can reach the daemon through the LAN address it listens on too). A phone's connection is not.
+ */
+export const isLocalPeer = (address: string | undefined): boolean => {
+  const plain = plainAddress(address);
+  if (!plain) return false;
+  if (plain === "::1" || plain.startsWith("127.")) return true;
+  return Object.values(networkInterfaces()).some((list) => list?.some((entry) => entry.address === plain));
+};
+
+/** The processes holding the other end of a connection to this daemon from this computer. */
 const peerPids = async (socket: Socket): Promise<number[]> => {
   const port = socket.remotePort;
+  const address = plainAddress(socket.remoteAddress) || "127.0.0.1";
   if (!port) return [];
   let stdout: string;
   try {
-    ({ stdout } = await run("lsof", ["-nP", `-iTCP@127.0.0.1:${port}`, "-Fp"]));
+    ({ stdout } = await run("lsof", ["-nP", `-iTCP@${address.includes(":") ? `[${address}]` : address}:${port}`, "-Fp"]));
   } catch (error) {
     // lsof exits 1 when nothing matches (the peer is gone): no process, not a failed lookup.
     const failed = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
@@ -91,7 +107,8 @@ const byConnection = new WeakMap<Socket, Promise<AgentProcessOwner | UnknownOwne
  * remembered for the connection; the next request asks again.
  */
 export const agentBehind = (socket: Socket): Promise<AgentProcessOwner | UnknownOwner | null> => {
-  if (groups.size === 0) return Promise.resolve(null);
+  // Another machine (the human's phone) runs no agent of this daemon.
+  if (groups.size === 0 || !isLocalPeer(socket.remoteAddress)) return Promise.resolve(null);
   const known = byConnection.get(socket);
   if (known) return known;
   const lookup = (async () => {

@@ -34,3 +34,6 @@ desktop/build/
 .idea/
 # Local browser-automation artifacts
 .playwright-mcp/
+
+# PWA icons (ui/scripts/make-icons.mjs draws them at build time)
+ui/public/icons/

@@ -274,6 +274,12 @@
   #root {
     height: 100%;
   }
+  /* A phone: the visible height as the URL bar comes and goes, and clear of the notch and home indicator. */
+  body {
+    height: 100dvh;
+    box-sizing: border-box;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-size: 15px;
@@ -395,4 +401,14 @@ diffs-container,
 
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/* iOS zooms into a field whose text is under 16px when it is focused, and stays zoomed: not on a touch screen. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select,
+  [contenteditable="true"] {
+    font-size: max(16px, 1em) !important;
+  }
 }

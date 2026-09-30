@@ -81,6 +81,8 @@ const ROOT_COMMANDS = [
   "stop",
   "resume",
   "settings",
+  "pair",
+  "devices",
 ] as const;
 const APP_VERSION = resolveAppVersion();
 

@@ -33,6 +33,8 @@ export interface AttentionBoardOptions {
   viewTtlMs?: number;
   saveMs?: number;
   log?: (message: string) => void;
+  /** A room starts waiting for the human while the daemon runs (not for what was already waiting when it started). */
+  onRaise?: (item: AttentionItem) => void;
 }
 
 /** `<agoraHome>/attention.json`: the seen cursor per room. */
@@ -148,6 +150,7 @@ export class AttentionBoard {
   private readonly viewTtlMs: number;
   private readonly saveMs: number;
   private readonly log: (message: string) => void;
+  private readonly onRaise: (item: AttentionItem) => void;
   private readonly file: string;
   /** The highest seq the human has seen, per room. */
   private readonly seen: Record<string, number>;
@@ -164,6 +167,7 @@ export class AttentionBoard {
     this.viewTtlMs = options.viewTtlMs ?? 45_000;
     this.saveMs = options.saveMs ?? 1000;
     this.log = options.log ?? (() => {});
+    this.onRaise = options.onRaise ?? (() => {});
     this.file = attentionFile(this.env);
     this.seen = readSeen(this.file);
     // A room whose folder is gone has nothing left to wait for.
@@ -197,7 +201,11 @@ export class AttentionBoard {
       if (!("seq" in event) || typeof event.seq !== "number") return;
       try {
         if (this.watched(room)) this.advance(room, entry, event.seq);
-        else this.consider(room, entry, entry.log().state, event);
+        else {
+          const before = entry.item;
+          this.consider(room, entry, entry.log().state, event);
+          if (entry.item && entry.item !== before) this.raised(room);
+        }
       } catch (error) {
         this.failed(room, entry, error);
       }
@@ -312,6 +320,17 @@ export class AttentionBoard {
     // "Done" says less than a question, a stop, an error or a spent budget: it never hides one unseen.
     if (entry.item && found.reason === "done" && entry.item.reason !== "done") return;
     entry.item = found;
+  }
+
+  /** Tells onRaise; what it does never reaches the room's listeners. */
+  private raised(room: string): void {
+    const item = this.item(room);
+    if (!item) return;
+    try {
+      this.onRaise(item);
+    } catch (error) {
+      this.log(`attention: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private advance(room: string, entry: Tracked, seq: number): void {

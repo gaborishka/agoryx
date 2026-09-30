@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
@@ -8,6 +8,9 @@ import pc from "picocolors";
 import { actorIn, AGENT_KEY_ENV, loadOrCreateToken, originName, originOf, readAgentKey } from "../../internal/agora/actor.js";
 import { DaemonClient, DaemonRequestError, type DaemonStreamItem } from "../../internal/agora/client.js";
 import { AgoraDaemon, findDaemon, readDaemonInfo, type DaemonInfo } from "../../internal/agora/daemon.js";
+import { deviceLabel, DeviceRegistry, type DeviceInfo } from "../../internal/agora/devices.js";
+import { isExposed, readExposure, writeExposure, type Exposure } from "../../internal/agora/exposure.js";
+import { qrTerminal } from "../../internal/agora/qr.js";
 import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
 import { jevEnvFrom, JEV_ENV } from "../../internal/agora/jev.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
@@ -49,6 +52,8 @@ export const AGORA_COMMANDS = new Set([
   "revert",
   "profile",
   "usage",
+  "pair",
+  "devices",
 ]);
 
 export const printAgoraUsage = (write: OutputWriter = console.log): void => {
@@ -56,7 +61,13 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
     [
       "Rooms — Claude and Codex (or any agents you list) in one conversation, each in its own native session.",
       "",
-      "  agoryx up [--port N] [-d]          Start the daemon (web UI + API). -d runs it in the background",
+      "  agoryx up [--port N] [-d] [--lan] [--tailscale] [--allow-host NAME] [--local]",
+      "                                     Start the daemon (web UI + API). -d runs it in the background.",
+      "                                     --lan also listens on this computer's Wi-Fi/Ethernet address, for a phone on the same Wi-Fi;",
+      "                                     --tailscale accepts this machine's *.ts.net name, for `tailscale serve` (HTTPS, notifications);",
+      "                                     --local: this computer only (the default). The choice applies to a running daemon and is remembered",
+      "  agoryx pair                        Pair a phone: a QR code and a one-time code (5 minutes) to open Agoryx on it",
+      "  agoryx devices [revoke ID]         Paired devices, and revoking one",
       "  agoryx down                        Stop the background daemon",
       "  agoryx open [room]                 Open the web UI (starts the daemon if needed)",
       '  agoryx new ["name"] [--dir D [--worktree [--base BRANCH]]] [--budget N|none] [--doc PATH|none] [--agents FILE|JSON] [-m "first message"]   (no name: the message names it)',
@@ -527,6 +538,7 @@ const startDaemonDetached = async (port?: number): Promise<DaemonInfo> => {
   mkdirSync(home, { recursive: true });
   const logFile = join(home, "daemon.log");
   const fd = openSync(logFile, "a");
+  // How it is reachable besides this computer comes from exposure.json, as for any other start.
   const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "up", ...(port ? ["--port", String(port)] : [])], {
     detached: true,
     stdio: ["ignore", fd, fd],
@@ -556,29 +568,105 @@ const openUrl = (url: string): void => {
   }
 };
 
+/** This machine's name on its tailnet (`<machine>.<tailnet>.ts.net`), from the Tailscale CLI. */
+const tailscaleName = (): string => {
+  const candidates = ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"];
+  for (const bin of candidates) {
+    try {
+      const out = execFileSync(bin, ["status", "--json"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+      const name = String((JSON.parse(out) as { Self?: { DNSName?: unknown } }).Self?.DNSName ?? "").replace(/\.$/, "");
+      if (name) return name;
+    } catch {
+      // the next candidate
+    }
+  }
+  throw new CliUsageError("--tailscale: no running Tailscale found (`tailscale status` failed); install and log in to Tailscale, or name the host with --allow-host");
+};
+
+/** Where phones reach the daemon, as the terminal says it. */
+const printExposure = (exposure: { lan: boolean; hosts: string[]; addresses: string[] }, port: number, askedLan: boolean): void => {
+  const urls = [...exposure.hosts.map((host) => `https://${host}`), ...exposure.addresses.map((address) => `http://${address}:${port}`)];
+  if (askedLan && exposure.addresses.length === 0) console.log(pc.yellow("--lan: no Wi-Fi or Ethernet address on this computer; it listens on this computer only"));
+  if (urls.length === 0) {
+    console.log(pc.dim("reachable on this computer only"));
+    return;
+  }
+  for (const url of urls) console.log(`phones: ${pc.bold(url)}`);
+  console.log(pc.dim("pair one with `agoryx pair`; `agoryx up --local` closes it to this computer again"));
+};
+
+/** Applies the human's choice to a running daemon, without a restart. */
+const applyExposure = async (info: DaemonInfo, exposure: Exposure): Promise<number> => {
+  let result;
+  try {
+    result = await daemonClient(info).setExposure(exposure);
+  } catch (error) {
+    if (error instanceof DaemonRequestError && error.status === 404) {
+      console.error("this daemon is too old to change how it is reachable; restart it: `agoryx down`, then `agoryx up -d`");
+      return 1;
+    }
+    throw error;
+  }
+  printExposure(result, info.port, exposure.lan);
+  return 0;
+};
+
 const runUp = async (argv: string[]): Promise<number> => {
   const parsed = parse(argv, [
     { long: "port", short: "p", takesValue: true },
     { long: "detach", short: "d", takesValue: false },
     { long: "open", takesValue: false },
+    { long: "lan", takesValue: false },
+    { long: "tailscale", takesValue: false },
+    { long: "allow-host", takesValue: true },
+    { long: "local", takesValue: false },
   ]);
   if (parsed.options.help) {
     printAgoraUsage();
     return 0;
   }
   const port = parsed.options.port ? Number.parseInt(parsed.options.port, 10) : undefined;
+  // Exposure is opt-in. Flags given now are the human's choice: applied to a running daemon and saved for
+  // every later start (the app's, a restart after a crash); no flags: the saved choice (none by default).
+  const opens = Boolean(parsed.options.lan || parsed.options.tailscale || parsed.options["allow-host"]);
+  if (opens && parsed.options.local) throw new CliUsageError("--local closes the daemon to other devices; it does not go with --lan, --tailscale or --allow-host");
+  if ((opens || parsed.options.local) && inAgentTurn()) {
+    console.error("how the daemon is reachable from other devices is the human's to choose, not an agent's");
+    return 1;
+  }
+  const chosen: Exposure | null =
+    opens || parsed.options.local
+      ? {
+          lan: Boolean(parsed.options.lan),
+          hosts: [
+            ...(parsed.options["allow-host"] ?? "").split(",").map((host) => host.trim()).filter(Boolean),
+            ...(parsed.options.tailscale ? [tailscaleName()] : []),
+          ],
+        }
+      : null;
+  const existing = await findDaemon();
+  if (existing) {
+    console.log(`agoryx daemon ${parsed.options.detach ? "running" : "already running"} at ${pc.bold(existing.url)} (pid ${existing.pid})`);
+    let code = 0;
+    // The daemon saves the choice once it applied it.
+    if (chosen) code = await applyExposure(existing, chosen);
+    if (parsed.options.open) openUrl(`${existing.url}/?t=${encodeURIComponent(existing.token)}`);
+    return code;
+  }
+  if (chosen) writeExposure(chosen);
   if (parsed.options.detach) {
     const info = await startDaemonDetached(port);
     console.log(`agoryx daemon running at ${pc.bold(info.url)} (pid ${info.pid})`);
+    try {
+      printExposure(await daemonClient(info).exposure(), info.port, Boolean(chosen?.lan));
+    } catch {
+      // an older daemon: it says nothing about phones
+    }
     console.log(pc.dim("open the UI with `agoryx open`, stop it with `agoryx down`"));
     if (parsed.options.open) openUrl(`${info.url}/?t=${encodeURIComponent(info.token)}`);
     return 0;
   }
-  const existing = await findDaemon();
-  if (existing) {
-    console.log(`agoryx daemon already running at ${existing.url} (pid ${existing.pid})`);
-    return 0;
-  }
+  const exposure = chosen ?? readExposure();
   const stamp = (message: string) => console.log(`${pc.dim(new Date().toISOString().slice(11, 19))} ${message}`);
   let closing = false;
   let finish: () => void = () => {};
@@ -595,15 +683,19 @@ const runUp = async (argv: string[]): Promise<number> => {
     env,
     port: port ?? DEFAULT_PORT,
     log: stamp,
+    ...(exposure.lan ? { lan: true } : {}),
+    ...(exposure.hosts.length > 0 ? { hosts: exposure.hosts } : {}),
     // `agoryx down`: whoever asked (an agent with its key, or the human) is recorded in the rooms it stops.
     onDown: (by) => shutdown(`agoryx down by ${by ? originName(by) : "the human"}`, by ?? { human: true }),
   });
   const info = await daemon.start();
   if (startedBy) stamp(`started by ${startedBy}`);
+  if (!chosen && isExposed(exposure)) stamp("reachable from other devices as saved (`agoryx up --local` closes it to this computer)");
   const jevKey = JEV_ENV.slice(0, 2).find((name) => env[name]);
   const jevOff = String(env.AGORYX_JEV ?? "").trim().toLowerCase() === "off";
   stamp(jevOff ? "Jev off (AGORYX_JEV=off)" : jevKey ? `Jev on (${jevKey})` : "Jev off: no key");
   console.log(`agoryx daemon at ${pc.bold(info.url)}  ·  UI: agoryx open  ·  Ctrl-C to stop`);
+  if (parsed.options.tailscale) console.log(pc.dim(`for the phone over HTTPS, run once: tailscale serve --bg ${info.port}   (then: agoryx pair)`));
   if (parsed.options.open) openUrl(`${info.url}/?t=${encodeURIComponent(info.token)}`);
   await new Promise<void>((resolveUp) => {
     finish = resolveUp;
@@ -1379,6 +1471,83 @@ const runUsage = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+// ---------------------------------------------------------------------------
+// Phones: pairing and devices
+// ---------------------------------------------------------------------------
+
+const runPair = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, []);
+  if (parsed.options.help) {
+    printAgoraUsage();
+    return 0;
+  }
+  const info = await findDaemon();
+  if (!info) {
+    console.error("no agoryx daemon is running — start it with `agoryx up --lan` (or --tailscale), then pair");
+    return 1;
+  }
+  let paired;
+  try {
+    paired = await daemonClient(info).pair();
+  } catch (error) {
+    if (error instanceof DaemonRequestError && error.status === 409) {
+      console.error(error.message);
+      return 1;
+    }
+    throw error;
+  }
+  const [first, ...rest] = paired.links;
+  if (!first) return 1;
+  console.log(qrTerminal(first.url, { color: Boolean(process.stdout.isTTY) }));
+  console.log("");
+  console.log(`Scan it with the phone's camera, or open ${pc.bold(first.base)} on the phone and type the code ${pc.bold(paired.code)}.`);
+  for (const link of rest) console.log(pc.dim(`also: ${link.url}`));
+  const until = new Date(paired.expiresAt);
+  console.log(pc.dim(`The code works once, until ${clock(until.toISOString())}. See paired devices with \`agoryx devices\`.`));
+  if (first.kind === "lan") console.log(pc.dim("Plain http on the LAN: notifications need HTTPS (Tailscale serve, `agoryx up --tailscale`)."));
+  return 0;
+};
+
+const runDevices = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, []);
+  const [sub, id] = parsed.positionals;
+  if (parsed.options.help || (sub !== undefined && sub !== "revoke") || (sub === "revoke" && !id)) {
+    printAgoraUsage();
+    return parsed.options.help ? 0 : 2;
+  }
+  const info = await findDaemon();
+  // Without a daemon the file is read and changed here; with one, it is the daemon's to change.
+  const registry = info ? null : new DeviceRegistry();
+  if (sub === "revoke") {
+    let revoked: DeviceInfo | null = null;
+    if (info) {
+      try {
+        revoked = (await daemonClient(info).revokeDevice(id!)).revoked;
+      } catch (error) {
+        if (!(error instanceof DaemonRequestError) || error.status !== 404) throw error;
+      }
+    } else revoked = registry!.revoke(id!);
+    if (!revoked) {
+      console.error(`no paired device ${id} — \`agoryx devices\` lists them`);
+      return 1;
+    }
+    console.log(`revoked ${deviceLabel(revoked)}: its token no longer opens Agoryx`);
+    return 0;
+  }
+  const devices = info ? (await daemonClient(info).devices()).devices : registry!.list();
+  if (devices.length === 0) {
+    console.log("no paired devices — `agoryx pair` pairs a phone");
+    return 0;
+  }
+  for (const device of devices) {
+    console.log(
+      `${pc.bold(device.name || "unknown browser")} ${pc.dim(device.id)}  ${pc.dim(`paired ${localStamp(device.createdAt)} · last seen ${localStamp(device.lastSeen)}${device.push ? " · notifications on" : ""}`)}`,
+    );
+  }
+  console.log(pc.dim("revoke one with `agoryx devices revoke ID`"));
+  return 0;
+};
+
 export const runAgora = async (command: string, argv: string[]): Promise<number> => {
   switch (command) {
     case "up":
@@ -1416,6 +1585,10 @@ export const runAgora = async (command: string, argv: string[]): Promise<number>
       return runProfile(argv);
     case "usage":
       return runUsage(argv);
+    case "pair":
+      return runPair(argv);
+    case "devices":
+      return runDevices(argv);
     default:
       throw new CliUsageError(`unknown room command '${command}'`, printAgoraUsage);
   }

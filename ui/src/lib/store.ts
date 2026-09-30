@@ -31,6 +31,8 @@ export interface ChangesFocus {
 export type RoomView = "chat" | "table";
 
 export type DialogState =
+  /** Return the folder: to checkpoint `sha`, undo return `undo` (its seq), or neither: pick a checkpoint. */
+  | { kind: "revert"; sha?: string; undo?: number }
   | { kind: "settings" }
   | { kind: "help" }
   | { kind: "keys" }
@@ -285,6 +287,7 @@ type Patch = {
   settings?: Snapshot["state"]["settings"];
   name?: string;
   commits?: Snapshot["state"]["commits"];
+  reverts?: Snapshot["state"]["reverts"];
   docRevisions?: Snapshot["state"]["docRevisions"];
   guests?: Snapshot["state"]["guests"];
   agents?: Snapshot["state"]["agents"];
@@ -307,6 +310,7 @@ const applyPatch = (event: RoomEvent, patch: Patch) => {
   if (patch.table) st.table = patch.table;
   if (patch.settings) st.settings = patch.settings;
   if (patch.commits) st.commits = patch.commits;
+  if (patch.reverts) st.reverts = patch.reverts;
   if (patch.docRevisions) st.docRevisions = patch.docRevisions;
   if (patch.guests) st.guests = patch.guests;
   if (patch.agents) st.agents = patch.agents;

@@ -383,7 +383,29 @@ export type RoomEventBody =
   | { type: "room.renamed"; name: string; by?: string; from?: ActorOrigin }
   /** An agent's model or effort changed; null: back to the CLI's own default. Its next turn uses them. */
   | { type: "agent.changed"; agent: string; model?: string | null; effort?: string | null; by?: string; from?: ActorOrigin }
-  | { type: "commit.created"; sha: string; subject: string; files: number }
+  /** `folder`: the whole folder at this checkpoint, when the commit holds only the room's own files (a shared folder). */
+  | { type: "commit.created"; sha: string; subject: string; files: number; folder?: string }
+  /**
+   * The human returned the room's folder to a checkpoint (`to`), or undid such a return (`undoOf`: that
+   * return's seq, `to` its undo point). Only files changed: HEAD, the index, the messages and the table
+   * stay. `undo` is the folder as it was just before, a commit kept under `ref`; `after`, the folder right
+   * after. `changes` goes from the files then to the files now (A came back, D went away); `left`: paths
+   * that could not be written back. `fromRoom`: made in another room sharing the folder (`undoOf` is then
+   * that room's seq), recorded here so this room's agents learn of it too.
+   */
+  | {
+      type: "workspace.reverted";
+      to: string;
+      undo: string;
+      ref: string;
+      changes: FileChange[];
+      total: number;
+      by: string;
+      undoOf?: number;
+      left?: string[];
+      after?: string;
+      fromRoom?: { room: string; name: string; seq: number };
+    }
   /**
    * Jev's reading of an agent's message (see jev.ts): each other agent's probability that it is meant for them,
    * and, per paragraph (as prompts' paragraphs() splits it), the probability it holds a position the room still
@@ -468,6 +490,23 @@ export interface TurnState {
   changes?: FileChange[];
 }
 
+/** One return of the folder (see the workspace.reverted event); `undone`: the seq of the undo that reversed it. */
+export interface RevertEntry {
+  seq: number;
+  ts: string;
+  to: string;
+  undo: string;
+  ref: string;
+  changes: FileChange[];
+  total: number;
+  by: string;
+  undoOf?: number;
+  undone?: number;
+  left?: string[];
+  after?: string;
+  fromRoom?: { room: string; name: string; seq: number };
+}
+
 /** One file a turn changed. */
 export interface FileChange {
   /** Relative to the repository root, like git status. */
@@ -517,7 +556,9 @@ export interface RoomState {
   /** Hash of the human's profile each agent's session holds ("" or absent: none). */
   profiles: Record<string, string>;
   table: TableState;
-  commits: Array<{ sha: string; subject: string; files: number; seq: number }>;
+  commits: Array<{ sha: string; subject: string; files: number; seq: number; folder?: string }>;
+  /** Returns of the folder to a checkpoint and their undos, oldest first. */
+  reverts: RevertEntry[];
   /** Revisions of the canonical file (texts stay in the event log). */
   docRevisions: DocRevision[];
   counters: Record<string, number>;

@@ -11,6 +11,7 @@ import { buildTurnPrompt, paragraphs, parseMentions, passNote } from "./prompts.
 import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
 import { validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
+import { MAX_REVERT_CHANGES, REVERT_FAILURE, RevertError, revertTarget, type RevertRequest } from "./revert.js";
 import { RoomStore } from "./store.js";
 import { namesFile, shellWriteTargets, shellWrites, type ShellCwd } from "./shell-writes.js";
 import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
@@ -23,6 +24,7 @@ import type {
   FileChange,
   MessageEntry,
   MessageKind,
+  RevertEntry,
   RoomAgent,
   RoomEvent,
   RoomMessage,
@@ -34,6 +36,8 @@ import type {
 } from "./types.js";
 import {
   checkpointCommit,
+  checkpointFolder,
+  checkpointRef,
   clearStaleAcks,
   diffSnapshots,
   drainOpsInbox,
@@ -44,6 +48,10 @@ import {
   otherRoomTurns,
   prepareWorkspace,
   readTurnPatch,
+  markRevert,
+  restoreWorkspace,
+  revertMarkers,
+  revertRef,
   roomDirName,
   snapshotChanges,
   snapshotTree,
@@ -368,6 +376,7 @@ export class RoomEngine {
       this.writeMissingMessages();
       this.recover();
       this.recordDocBaseline();
+      this.absorbForeignReverts();
       // Table ops written while no engine ran, or taken by one that died before applying them.
       this.ingestOps();
     } catch (error) {
@@ -738,6 +747,101 @@ export class RoomEngine {
       return;
     }
     this.notifyIdle();
+  }
+
+  // -------------------------------------------------------------------------
+  // Returning the folder to a checkpoint
+  // -------------------------------------------------------------------------
+
+  /** Why the folder cannot be returned right now (someone is at work in it), or null. */
+  revertBusy(): string | null {
+    if (this.running.size > 0 || activeRun(this.state) || this.stopping) return "agents are working in this room; stop the run first";
+    const foreign = otherRoomTurns(this.state.workspace, this.state.id, Date.now()).filter((turn) => turn.endedAt === undefined);
+    if (foreign.length) return `a turn of ${this.roomHandles(foreign).join(", ")} is running in this folder; wait for it, or stop it there`;
+    return null;
+  }
+
+  /**
+   * The human returns the folder to one of the room's checkpoints, or undoes such a return. Only files
+   * change: the folder as it is is kept first (a commit under refs/agoryx/revert/…, never a stash), and
+   * the messages and the table stay, since they are what was said. Nobody is woken; the agents read it
+   * in their next turn, those of other rooms sharing the folder too. `tree`: the folder as the human's
+   * preview saw it; if it moved on, nothing happens.
+   */
+  revertWorkspace(request: RevertRequest & { tree?: string }, by?: string | Actor): RevertEntry {
+    const actor = this.actor(by);
+    if (!this.byHuman(actor)) throw new RevertError("agent", "only the human returns the folder to a checkpoint");
+    const target = revertTarget(this.state, request);
+    const busy = this.revertBusy();
+    if (busy) throw new RevertError("busy", busy);
+    const ref = revertRef(this.state.id, this.state.reverts.length + 1);
+    const what = target.undoOf ? `undoing return #${target.undoOf.seq}` : `returning it to ${target.sha.slice(0, 8)}`;
+    const result = restoreWorkspace(this.state.workspace, target.source, ref, `agoryx(${this.state.name}): the folder before ${what}`, request.tree);
+    if ("error" in result) throw new RevertError(result.error, REVERT_FAILURE[result.error]);
+    this.store.append({
+      type: "workspace.reverted",
+      to: target.sha,
+      undo: result.undo,
+      ref,
+      changes: result.changes.slice(0, MAX_REVERT_CHANGES),
+      total: result.changes.length,
+      by: actor.by,
+      ...(target.undoOf ? { undoOf: target.undoOf.seq } : {}),
+      ...(result.left.length ? { left: result.left.slice(0, MAX_REVERT_CHANGES) } : {}),
+      ...(result.after ? { after: result.after } : {}),
+    });
+    const entry = this.state.reverts.at(-1)!;
+    // The canonical file moved with the folder: a revision by whoever returned it, as any other edit.
+    this.recordDoc(actor.by);
+    // Other rooms in this folder: their agents' files may have moved too.
+    markRevert(this.state.workspace, {
+      room: this.state.id,
+      name: this.state.name,
+      seq: entry.seq,
+      ts: entry.ts,
+      to: entry.to,
+      undo: entry.undo,
+      changes: entry.changes,
+      total: entry.total,
+      ...(entry.undoOf !== undefined ? { undoOf: entry.undoOf } : {}),
+      ...(entry.left ? { left: entry.left } : {}),
+    });
+    for (const peer of enginesHere.get(workspaceKey(this.state.workspace)) ?? []) if (peer !== this) peer.absorbForeignReverts();
+    // With checkpoints on, the return is a checkpoint of its own, so the next run's is not credited with it.
+    if (this.state.settings.autoCommit) {
+      const shared = roomsSharingWorkspace(this.store).length > 1;
+      const who = actorLabel(this.state, entry.by);
+      const subject = `agoryx(${this.state.name}): ${entry.undoOf !== undefined ? `${who} undid return #${entry.undoOf} of the folder` : `${who} returned the folder to ${entry.to.slice(0, 8)}`}`;
+      this.recordCheckpoint(subject, "", shared ? [...new Set(result.changes.map((change) => change.path))] : undefined);
+    }
+    return entry;
+  }
+
+  /**
+   * Returns made from other rooms sharing this folder, recorded here once each (those made before this room
+   * existed are not its business), so this room's agents learn of them in their next turn.
+   */
+  absorbForeignReverts(): void {
+    const since = Date.parse(this.state.createdAt) || 0;
+    let doc = false;
+    for (const marker of revertMarkers(this.state.workspace, this.state.id)) {
+      if ((Date.parse(marker.ts) || 0) < since) continue;
+      if (this.state.reverts.some((entry) => entry.fromRoom?.room === marker.room && entry.fromRoom.seq === marker.seq)) continue;
+      this.store.append({
+        type: "workspace.reverted",
+        to: marker.to,
+        undo: marker.undo,
+        ref: "",
+        changes: marker.changes.slice(0, MAX_REVERT_CHANGES),
+        total: marker.total,
+        by: this.state.human,
+        ...(marker.undoOf !== undefined ? { undoOf: marker.undoOf } : {}),
+        ...(marker.left?.length ? { left: marker.left.slice(0, MAX_REVERT_CHANGES) } : {}),
+        fromRoom: { room: marker.room, name: marker.name, seq: marker.seq },
+      });
+      doc ||= Boolean(this.state.settings.doc && marker.changes.some((change) => change.path === this.state.settings.doc));
+    }
+    if (doc) this.recordDoc(this.state.human);
   }
 
   // -------------------------------------------------------------------------
@@ -1224,6 +1328,8 @@ export class RoomEngine {
   }
 
   private startTurn(agent: RoomAgent, run: RunState): void {
+    // A return made from another room (of another process) since: in this turn's delta.
+    this.absorbForeignReverts();
     const runner = this.runners[agent.kind]!;
     const turnId = `t${(this.state.counters.t ?? 0) + 1}`;
     const fromSeq = this.state.cursors[agent.id] ?? 0;
@@ -2124,9 +2230,14 @@ export class RoomEngine {
     // Alone in the directory, and no other room's turn ran during this run: everything, as always.
     const started = Date.parse(this.state.turns.find((turn) => turn.runId === run.id)?.startedAt ?? "") || 0;
     const shared = roomsSharingWorkspace(this.store).length > 1 || otherRoomTurns(this.state.workspace, this.state.id, started).length > 0;
-    const commit = shared
-      ? checkpointCommit(this.state.workspace, subject, lines.join("\n"), files, expectedTrees)
-      : checkpointCommit(this.state.workspace, subject, lines.join("\n"));
-    if (commit) this.store.append({ type: "commit.created", sha: commit.sha, subject, files: commit.files });
+    this.recordCheckpoint(subject, lines.join("\n"), shared ? files : undefined, shared ? expectedTrees : undefined);
+  }
+
+  /** A checkpoint commit (all of the folder, or only `files` in a shared one), and the whole folder at it, to return to. */
+  private recordCheckpoint(subject: string, body: string, files?: string[], expectedTrees?: ReadonlyMap<string, string>): void {
+    const commit = checkpointCommit(this.state.workspace, subject, body, files, expectedTrees);
+    if (!commit) return;
+    const folder = checkpointFolder(this.state.workspace, commit.sha, checkpointRef(this.state.id, commit.sha));
+    this.store.append({ type: "commit.created", sha: commit.sha, subject, files: commit.files, ...(folder && folder !== commit.sha ? { folder } : {}) });
   }
 }

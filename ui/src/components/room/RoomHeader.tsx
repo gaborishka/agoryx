@@ -8,6 +8,7 @@ import {
   MessagesSquareIcon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
+  RotateCcwIcon,
   ScaleIcon,
   SettingsIcon,
   TerminalIcon,
@@ -372,6 +373,10 @@ export function RoomHeader() {
           <DropdownMenuItem onSelect={() => openFile(null)}>
             <FolderIcon />
             Файли робочої теки
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => openDialog({ kind: "revert" })}>
+            <RotateCcwIcon />
+            Повернути теку…
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openDialog({ kind: "settings" })}>
             <SettingsIcon />

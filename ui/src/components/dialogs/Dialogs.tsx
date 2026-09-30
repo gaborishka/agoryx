@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
-import { Hint } from "@/components/common/states";
+import { ErrorNote, Hint, Loading } from "@/components/common/states";
+import { Stats } from "@/components/room/bits";
 import { RefChip } from "@/components/table/OpCard";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,13 +11,13 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Unauthorized } from "@/lib/api";
+import { api, ApiError, roomPath, Unauthorized } from "@/lib/api";
 import { keyLabel, SHORTCUTS, withMod } from "@/lib/keys";
-import { names } from "@/lib/format";
-import { errText } from "@/lib/load";
+import { names, plural } from "@/lib/format";
+import { errText, useLoad } from "@/lib/load";
 import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { type DialogState, type TableFormOp, useStore } from "@/lib/store";
-import type { RoomAgent } from "@/lib/types";
+import type { FileChange, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
 
@@ -45,6 +46,200 @@ function Shell({ title, sub, size = "md", children }: { title: ReactNode; sub?: 
     </Dialog>
   );
 }
+
+// --- returning the folder to a checkpoint --------------------------------------------
+
+type RevertPlan = { to: string; undoOf?: number; subject: string; tree: string; changes: FileChange[]; since?: string[]; busy: string | null };
+
+/** The daemon's refusals by code, in the room's words (its own text is for the CLI). */
+const REVERT_ERRORS: Record<string, string> = {
+  bad: "Такої контрольної точки в кімнаті немає.",
+  agent: "Повернути теку може лише людина.",
+  missing: "Цієї контрольної точки вже немає в репозиторії теки.",
+  undone: "Це повернення вже скасовано.",
+  later: "Скасувати можна лише останнє повернення.",
+  busy: "Агенти зараз працюють у теці. Спершу зупиніть їх.",
+  changed: "Тека змінилася, поки ви дивилися. Ось що зміниться тепер.",
+  same: "Тека вже така — змінювати нічого.",
+  failed: "git не зміг прочитати або записати теку, тож нічого не змінено.",
+};
+const revertError = (error: unknown) => {
+  const code = error instanceof ApiError ? error.body.code : undefined;
+  return typeof code === "string" && REVERT_ERRORS[code] ? REVERT_ERRORS[code] : errText(error);
+};
+
+const REVERT_HOW: Record<string, { text: string; className: string }> = {
+  A: { text: "повернеться", className: "text-add-ink" },
+  D: { text: "зникне", className: "text-del-ink" },
+};
+
+function RevertDialog({ sha, undo }: { sha?: string; undo?: number }) {
+  const room = useStore((s) => s.snap?.state);
+  const post = useStore((s) => s.post);
+  const openDialog = useStore((s) => s.openDialog);
+  const roomId = room?.id ?? "";
+  const [nonce, setNonce] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const query = undo !== undefined ? `undo=${undo}` : sha ? `sha=${encodeURIComponent(sha)}` : null;
+  const plan = useLoad(query ? `${roomId}:${query}:${nonce}` : null, () =>
+    api<RevertPlan>("GET", `${roomPath(roomId, "/revert")}?${query}`).catch((error: unknown) => {
+      throw error instanceof Unauthorized ? error : new Error(revertError(error));
+    }),
+  );
+  if (!query) return <CheckpointsDialog />;
+  const again = () => setNonce((n) => n + 1);
+  const stop = async () => {
+    setBusy(true);
+    try {
+      await post("/stop");
+      again();
+    } catch (error) {
+      fail(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const go = async () => {
+    if (!plan.data) return;
+    setBusy(true);
+    try {
+      await post("/revert", { ...(undo !== undefined ? { undo } : { sha: plan.data.to }), tree: plan.data.tree });
+      toast.success(undo !== undefined ? "Повернення скасовано" : "Теку повернуто");
+      openDialog(null);
+    } catch (error) {
+      const code = error instanceof ApiError ? error.body.code : undefined;
+      if (!(error instanceof Unauthorized)) toast.error(revertError(error));
+      // The folder or the room moved on: show what is true now.
+      if (code === "changed" || code === "busy" || code === "same") again();
+    } finally {
+      setBusy(false);
+    }
+  };
+  let body: ReactNode = <Loading />;
+  if (plan.error) body = <ErrorNote>{plan.error}</ErrorNote>;
+  else if (plan.data) {
+    const { changes, subject } = plan.data;
+    body = (
+      <>
+        {undo !== undefined ? (
+          <Hint>Файли стануть такими, якими були перед цим поверненням.</Hint>
+        ) : (
+          <Hint>
+            Тека стане такою, як у контрольній точці <span className="font-mono text-foreground">{plan.data.to.slice(0, 7)}</span>: {subject}
+          </Hint>
+        )}
+        {plan.data.busy ? (
+          <div className="flex flex-wrap items-center gap-3 rounded-xl bg-destructive-soft px-3.5 py-3 text-small text-destructive">
+            <span className="flex-1">Агенти зараз працюють у теці. Щоб повернути її, спершу зупиніть їх.</span>
+            <Button size="sm" variant="outline" disabled={busy} onClick={stop}>
+              Зупинити агентів
+            </Button>
+          </div>
+        ) : null}
+        {plan.data.since?.length ? (
+          <div className="rounded-xl bg-destructive-soft px-3.5 py-3 text-small text-destructive">
+            Після повернення в теці ще змінювалися файли — ці зміни теж зникнуть: <span className="font-mono">{plan.data.since.slice(0, 12).join(", ")}</span>
+            {plan.data.since.length > 12 ? ` і ще ${plan.data.since.length - 12}` : ""}.
+          </div>
+        ) : null}
+        {changes.length ? (
+          <div className="flex flex-col divide-y divide-border overflow-hidden rounded-xl border border-border">
+            {changes.map((c) => {
+              const how = REVERT_HOW[c.status] ?? { text: "зміниться", className: "text-foreground" };
+              return (
+                <div key={c.path} className="flex items-center gap-2 px-3 py-1.5 text-meta">
+                  <span className="min-w-0 flex-1 truncate font-mono">{c.path}</span>
+                  <Stats added={c.added} removed={c.removed} binary={c.added === null} />
+                  <span className={cn("w-20 text-right", how.className)}>{how.text}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <Hint>Тека вже така — змінювати нічого.</Hint>
+        )}
+        <Hint>
+          Спершу Agoryx збереже теку як є, тож це можна буде скасувати. Розмова і стіл лишаються; агенти дізнаються про це в наступному ході. Файли з .gitignore не
+          змінюються.
+        </Hint>
+      </>
+    );
+  }
+  const count = plan.data?.changes.length ?? 0;
+  return (
+    <Shell title={undo !== undefined ? "Скасувати повернення" : "Повернути теку сюди"} sub={room?.workspace} size="md">
+      {body}
+      <DialogFooter>
+        <Button type="button" variant="ghost" onClick={() => openDialog(null)}>
+          Скасувати
+        </Button>
+        <Button type="button" variant="destructive" disabled={busy || !count || Boolean(plan.data?.busy)} onClick={go}>
+          {undo !== undefined ? "Скасувати повернення" : `Повернути ${count ? plural(count, "файл", "файли", "файлів") : "теку"}`}
+        </Button>
+      </DialogFooter>
+    </Shell>
+  );
+}
+
+/** No checkpoint picked: the room's checkpoints to pick from, or how to get them. */
+function CheckpointsDialog() {
+  const room = useStore((s) => s.snap?.state);
+  const post = useStore((s) => s.post);
+  const openDialog = useStore((s) => s.openDialog);
+  const roomId = room?.id ?? "";
+  const commits = [...(room?.commits ?? [])].reverse();
+  const status = useLoad(commits.length ? null : `${roomId}:revert-status`, () => api<{ tracking: "git" | "shadow" | "none" }>("GET", roomPath(roomId, "/revert")));
+  const turnOn = async () => {
+    try {
+      await post("/settings", { autoCommit: true });
+      toast.success("Контрольні точки ввімкнено");
+    } catch (error) {
+      fail(error);
+    }
+  };
+  let body: ReactNode;
+  if (commits.length) {
+    body = (
+      <div className="flex flex-col divide-y divide-border overflow-hidden rounded-xl border border-border">
+        {commits.map((c) => (
+          <div key={c.sha} className="flex items-center gap-2 px-3 py-1.5 text-meta">
+            <span className="font-mono text-muted-foreground">{c.sha.slice(0, 7)}</span>
+            <span className="min-w-0 flex-1 truncate">{c.subject}</span>
+            <Button variant="ghost" size="xs" onClick={() => openDialog({ kind: "revert", sha: c.sha })}>
+              Повернути сюди
+            </Button>
+          </div>
+        ))}
+      </div>
+    );
+  } else if (status.error) body = <ErrorNote>{status.error}</ErrorNote>;
+  else if (!status.data) body = <Loading />;
+  else if (status.data.tracking !== "git") {
+    body = (
+      <Hint>
+        Контрольна точка — це git commit, а ця тека не git-репозиторій, тож кімната їх не робить. Зробіть у теці <code className="font-mono">git init</code> і ввімкніть
+        контрольні точки в налаштуваннях кімнати.
+      </Hint>
+    );
+  } else if (!room?.settings.autoCommit) {
+    body = (
+      <>
+        <Hint>Контрольних точок немає. Увімкніть їх — і після кожного раунду кімната робитиме git commit, до якого можна повернути теку.</Hint>
+        <Button className="w-fit" size="sm" onClick={turnOn}>
+          Увімкнути контрольні точки
+        </Button>
+      </>
+    );
+  } else {
+    body = <Hint>Контрольних точок ще немає. Перша з'явиться, коли агенти закінчать раунд, у якому змінили файли.</Hint>;
+  }
+  return (
+    <Shell title="Повернути теку" sub={room?.workspace} size="md">
+      {body}
+    </Shell>
+  );
+}
+
 
 // --- room settings -----------------------------------------------------------------------
 
@@ -353,6 +548,8 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
 
 const render = (d: DialogState) => {
   switch (d.kind) {
+    case "revert":
+      return <RevertDialog sha={d.sha} undo={d.undo} />;
     case "settings":
       return <SettingsDialog />;
     case "help":

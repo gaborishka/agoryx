@@ -1,14 +1,15 @@
-import { FileTextIcon, GitCommitHorizontalIcon, GavelIcon, InfoIcon, TriangleAlertIcon } from "lucide-react";
+import { FileTextIcon, GitCommitHorizontalIcon, GavelIcon, InfoIcon, RotateCcwIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
 import { motion } from "motion/react";
 import { memo, type ReactNode } from "react";
 import { Markdown } from "@/components/md/Markdown";
 import { OpCard, OpCards } from "@/components/table/OpCard";
+import { Button } from "@/components/ui/button";
 import { cost, passNote, plural, secs } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import { decisionOf, sysError, sysLine } from "@/lib/system";
 import { ink, nameOf, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
-import type { DocRevision, MessageEntry, TableOp, TurnState } from "@/lib/types";
+import type { DocRevision, MessageEntry, RevertEntry, TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Name, NativeBadge, NativeTag, Stats, Time, Tip } from "./bits";
 import { Clamp } from "@/components/common/Clamp";
@@ -186,8 +187,10 @@ export function DecisionLine({ m }: { m: MessageEntry }) {
 
 export function CommitLine({ c }: { c: { sha: string; subject: string; files: number } }) {
   const openChanges = useStore((s) => s.openChanges);
+  const openDialog = useStore((s) => s.openDialog);
+  const driven = useStore((s) => s.snap?.driven);
   return (
-    <div className="flex items-center gap-2 text-small text-muted-foreground">
+    <div className="group flex flex-wrap items-center gap-2 text-small text-muted-foreground">
       <span className="grid size-5 place-items-center rounded-md bg-add text-add-ink">
         <GitCommitHorizontalIcon className="size-3.5" />
       </span>
@@ -198,6 +201,67 @@ export function CommitLine({ c }: { c: { sha: string; subject: string; files: nu
         </button>{" "}
         · {plural(c.files, "файл", "файли", "файлів")}
       </span>
+      {driven ? (
+        <Button
+          variant="ghost"
+          size="xs"
+          className="text-muted-foreground opacity-70 group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
+          onClick={() => openDialog({ kind: "revert", sha: c.sha })}
+        >
+          <RotateCcwIcon />
+          Повернути теку сюди
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+/** The human returned the folder to a checkpoint (or undid that): only files moved, the conversation stays. */
+export function RevertLine({ r }: { r: RevertEntry }) {
+  const openChanges = useStore((s) => s.openChanges);
+  const openDialog = useStore((s) => s.openDialog);
+  const driven = useStore((s) => s.snap?.driven);
+  // Only this room's latest return can be undone, never an undo (that would redo it) nor another room's.
+  const undoable = useStore((s) => {
+    const last = s.snap?.state.reverts?.filter((entry) => !entry.fromRoom).at(-1);
+    return last?.seq === r.seq && last.undoOf === undefined && last.undone === undefined;
+  });
+  const files = plural(r.total, "файл", "файли", "файлів");
+  const where = r.fromRoom ? <> з кімнати «{r.fromRoom.name}»</> : null;
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-small text-muted-foreground">
+      <span className="grid size-5 place-items-center rounded-md bg-secondary text-primary">
+        <RotateCcwIcon className="size-3.5" />
+      </span>
+      <span>
+        <Name handle={r.by} />{" "}
+        {r.undoOf !== undefined ? (
+          <>
+            скасовує повернення теки{where} · {files}
+          </>
+        ) : (
+          <>
+            повертає теку до контрольної точки{" "}
+            <button type="button" className="font-mono text-meta text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openChanges({ scope: "commit", sha: r.to })}>
+              {r.to.slice(0, 7)}
+            </button>
+            {where} · {files}
+          </>
+        )}
+      </span>
+      {r.left?.length ? (
+        <Tip tip={`Не вдалося повернути: ${r.left.join(", ")}`}>
+          <span className="text-destructive">не все</span>
+        </Tip>
+      ) : null}
+      {r.undone !== undefined ? (
+        <span className="text-faint">скасовано</span>
+      ) : driven && undoable ? (
+        <Button variant="ghost" size="xs" className="text-muted-foreground hover:text-foreground" onClick={() => openDialog({ kind: "revert", undo: r.seq })}>
+          <Undo2Icon />
+          Скасувати повернення
+        </Button>
+      ) : null}
     </div>
   );
 }

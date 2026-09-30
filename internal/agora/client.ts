@@ -1,5 +1,6 @@
 import type { RoomSummary } from "./store.js";
-import type { AgentPresence, EphemeralEvent, MessageEntry, RoomAgent, RoomEvent, RoomSettings, RoomState, TableOp } from "./types.js";
+import type { RevertPlan, RevertRequest } from "./revert.js";
+import type { AgentPresence, EphemeralEvent, MessageEntry, RevertEntry, RoomAgent, RoomEvent, RoomSettings, RoomState, TableOp } from "./types.js";
 
 export interface RoomSnapshot {
   state: RoomState;
@@ -94,6 +95,18 @@ export class DaemonClient {
   /** Stop the daemon (it records who asked in the rooms whose runs it stops). */
   down(): Promise<{ ok: true }> {
     return this.request("POST", "/api/down", {});
+  }
+
+  /** What returning the folder to a checkpoint (or undoing return `undo`) would change; `busy` says why it cannot be done now. */
+  revertPlan(room: string, target: RevertRequest): Promise<RevertPlan & { busy: string | null }> {
+    const query = target.undoOf !== undefined ? `undo=${target.undoOf}` : `sha=${encodeURIComponent(target.sha)}`;
+    return this.request("GET", `/api/rooms/${encodeURIComponent(room)}/revert?${query}`);
+  }
+
+  /** Return the folder (the human's action); `tree` from the plan refuses it if the folder moved on since. */
+  revert(room: string, target: RevertRequest, tree?: string): Promise<{ revert: RevertEntry }> {
+    const body = target.undoOf !== undefined ? { undo: target.undoOf } : { sha: target.sha };
+    return this.request("POST", `/api/rooms/${encodeURIComponent(room)}/revert`, { ...body, ...(tree ? { tree } : {}) });
   }
 
   settings(room: string, patch: Partial<RoomSettings>): Promise<{ settings: RoomSettings }> {

@@ -21,6 +21,7 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   profiles: {},
   table: emptyTable(),
   commits: [],
+  reverts: [],
   docRevisions: [],
   counters: { m: 0, t: 0, r: 0 },
   guests: event.createdBy ? { [guestHandle(event.createdBy)]: event.createdBy } : {},
@@ -191,8 +192,19 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       });
       return;
     case "commit.created":
-      state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq });
+      state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq, ...(event.folder ? { folder: event.folder } : {}) });
       return;
+    case "workspace.reverted": {
+      const { type: _type, seq, ts, ...rest } = event;
+      state.reverts.push({ seq, ts, ...rest });
+      // An undo marks the return it undid: this room's own, or, for one made in another room, that room's.
+      const undone =
+        event.undoOf === undefined
+          ? undefined
+          : state.reverts.find((entry) => (event.fromRoom ? entry.fromRoom?.room === event.fromRoom.room && entry.fromRoom.seq === event.undoOf : !entry.fromRoom && entry.seq === event.undoOf));
+      if (undone) undone.undone = seq;
+      return;
+    }
     case "doc.revised":
       state.docRevisions.push({
         seq: event.seq,

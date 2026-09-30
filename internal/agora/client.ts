@@ -1,3 +1,4 @@
+import type { DeviceInfo } from "./devices.js";
 import type { RoomSummary } from "./store.js";
 import type { RevertPlan, RevertRequest } from "./revert.js";
 import type { AgentPresence, EphemeralEvent, MessageEntry, RevertEntry, RoomAgent, RoomEvent, RoomSettings, RoomState, TableOp } from "./types.js";
@@ -107,6 +108,29 @@ export class DaemonClient {
   revert(room: string, target: RevertRequest, tree?: string): Promise<{ revert: RevertEntry }> {
     const body = target.undoOf !== undefined ? { undo: target.undoOf } : { sha: target.sha };
     return this.request("POST", `/api/rooms/${encodeURIComponent(room)}/revert`, { ...body, ...(tree ? { tree } : {}) });
+  }
+
+  /** A one-time pairing code for a phone, with a link (and its QR) per address the daemon is reachable at. */
+  pair(): Promise<{ code: string; expiresAt: string; links: Array<{ url: string; base: string; kind: "https" | "lan"; qr: string }> }> {
+    return this.request("POST", "/api/pair", {});
+  }
+
+  devices(): Promise<{ devices: DeviceInfo[]; reach: Array<{ url: string; kind: "https" | "lan" }> }> {
+    return this.request("GET", "/api/devices");
+  }
+
+  revokeDevice(id: string): Promise<{ revoked: DeviceInfo }> {
+    return this.request("DELETE", `/api/devices/${encodeURIComponent(id)}`);
+  }
+
+  /** How the daemon is reachable besides this computer (LAN addresses it listens on, HTTPS proxy names). */
+  exposure(): Promise<{ lan: boolean; hosts: string[]; addresses: string[] }> {
+    return this.request("GET", "/api/exposure");
+  }
+
+  /** Changes it on the running daemon, without a restart. */
+  setExposure(exposure: { lan: boolean; hosts: string[] }): Promise<{ lan: boolean; hosts: string[]; addresses: string[] }> {
+    return this.request("POST", "/api/exposure", exposure);
   }
 
   settings(room: string, patch: Partial<RoomSettings>): Promise<{ settings: RoomSettings }> {

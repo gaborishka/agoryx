@@ -10,6 +10,8 @@ import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, origin
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch, roomWorkspaceDiff } from "./engine.js";
 import { planRevert, RevertError, type RevertRequest } from "./revert.js";
+import { deviceLabel, DeviceRegistry, formatCode, isDeviceToken, PairingError, type DeviceInfo } from "./devices.js";
+import { lanInterfaces, normalizeHosts, writeExposure, type Exposure } from "./exposure.js";
 import { linkedMedia, markdownTexts } from "./media.js";
 import { agentModels } from "./models.js";
 import { locateNativeSession } from "./native.js";
@@ -19,6 +21,8 @@ import { readTranscript } from "./transcript.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { profilePath, readProfile } from "./profile.js";
+import { parseSubscription, PushNotes, PushSender } from "./push.js";
+import { qrSvg } from "./qr.js";
 import { defaultRoster } from "./roster.js";
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
@@ -47,10 +51,41 @@ export interface DaemonOptions {
    * `by` is who asked, recorded in each room whose run it stops.
    */
   onDown?: (by: ActorOrigin | null) => void;
+  /**
+   * Also listen on this computer's LAN addresses, for a paired phone: true takes the private IPv4
+   * addresses of its Wi-Fi and Ethernet (not VPN tunnels or VM bridges; exposure.ts), or name them. Off
+   * by default: the daemon binds 127.0.0.1 only.
+   */
+  lan?: boolean | string[];
+  /**
+   * Host names an HTTPS proxy in front of the daemon serves it under — Tailscale serve's
+   * `<machine>.<tailnet>.ts.net`. Requests naming any other host are refused (DNS rebinding).
+   */
+  hosts?: string[];
+  /** Web Push: how notifications are sent (tests), and whether an http endpoint is taken (tests only). */
+  pushFetch?: typeof fetch;
+  pushAllowHttp?: boolean;
 }
 
-/** Who is calling the API: the human (the daemon's token), or an agent with its key (see actor.ts). */
-type Caller = { agent: null } | { agent: ActorOrigin };
+/**
+ * Who is calling the API: the human (the daemon's token on this computer, or a paired device's token),
+ * or an agent with its key (see actor.ts).
+ */
+type Caller = { agent: null; device?: DeviceInfo } | { agent: ActorOrigin };
+
+/** How a request reached the daemon: on this computer (loopback), over the LAN, or through an HTTPS proxy. */
+interface Reach {
+  /** Loopback socket and loopback Host: the only place the daemon's own token works. */
+  local: boolean;
+  /** Served over HTTPS by a proxy (Tailscale serve): cookies get Secure, and push can work. */
+  secure: boolean;
+}
+
+export { lanAddresses } from "./exposure.js";
+
+/** The addresses `lan` asks for, with the interface each is on (when known). */
+const lanTargets = (lan: boolean | string[] | undefined): Array<{ address: string; iface?: string }> =>
+  lan === true ? lanInterfaces() : Array.isArray(lan) ? lan.map((address) => ({ address })) : [];
 
 class HttpError extends Error {
   constructor(
@@ -77,6 +112,7 @@ const MIME: Record<string, string> = {
   ".webp": "image/webp",
   ".ico": "image/x-icon",
   ".json": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
   ".woff2": "font/woff2",
   ".woff": "font/woff",
   ".avif": "image/avif",
@@ -203,6 +239,9 @@ const safeEqual = (a: string, b: string): boolean => {
 
 const COOKIE = "agoryx_token";
 
+const loginCookie = (token: string, maxAge: number, secure: boolean): string =>
+  `${COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+
 const cookieValue = (req: IncomingMessage, name: string): string | undefined => {
   const header = req.headers.cookie;
   if (!header) return undefined;
@@ -211,6 +250,19 @@ const cookieValue = (req: IncomingMessage, name: string): string | undefined => 
     if (key === name) return decodeURIComponent(rest.join("="));
   }
   return undefined;
+};
+
+/**
+ * Who claims a pairing code, for its rate limit. Through the HTTPS proxy (Tailscale serve) every request
+ * comes from 127.0.0.1, so the client's address is the last X-Forwarded-For entry, the one the proxy
+ * added itself (a client can put anything in front of it).
+ */
+const claimantAddress = (req: IncomingMessage, reach: Reach): string => {
+  const peer = (req.socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
+  const forwarded = req.headers["x-forwarded-for"];
+  const last = (Array.isArray(forwarded) ? forwarded.join(",") : (forwarded ?? "")).split(",").pop()?.trim();
+  const viaProxy = reach.secure && (peer === "::1" || peer.startsWith("127."));
+  return viaProxy && last ? `via-proxy:${last}` : peer;
 };
 
 /** The built React UI (ui/dist, `npm run build:ui`) wins; the plain page in web/ is the fallback. */
@@ -246,8 +298,9 @@ const relay = (handle: RoomHandle): void => {
 
 /**
  * The Agoryx daemon: owns the room engines, exposes a small local HTTP API
- * (JSON + server-sent events) and serves the web UI. Bound to 127.0.0.1 only;
- * every /api call needs the token from daemon.json (or the page's meta tag).
+ * (JSON + server-sent events) and serves the web UI. Bound to 127.0.0.1 unless
+ * told to listen on the LAN too (`agoryx up --lan`); every /api call needs the
+ * token from daemon.json on this computer, or a paired device's token (devices.ts).
  */
 export class AgoraDaemon {
   readonly env: NodeJS.ProcessEnv;
@@ -260,7 +313,19 @@ export class AgoraDaemon {
   private readonly runners: Partial<Record<AgentKind, AgentRunner>>;
   private readonly webDir: string | null;
   private server: Server | null = null;
+  /** The same handler on the LAN addresses (`lan`), by address. */
+  private readonly lanServers = new Map<string, Server>();
+  private lanBound: string[] = [];
+  private httpsHosts: string[];
+  private handler: ((req: IncomingMessage, res: ServerResponse) => void) | null = null;
   private sseClients = new Set<ServerResponse>();
+  /** Each paired device's open event streams, ended when it is revoked. */
+  private readonly deviceStreams = new Map<string, Set<ServerResponse>>();
+  /** Paired phones (devices.ts) and the notifications they asked for (push.ts). */
+  readonly devices: DeviceRegistry;
+  private readonly push: PushSender;
+  /** What each push said: the phone fetches it (push.ts), so a push the daemon did not send shows nothing. */
+  private readonly pushNotes = new PushNotes();
   private heartbeat?: NodeJS.Timeout;
   /** Which rooms wait for the human (attention.ts). */
   private readonly attention: AttentionBoard;
@@ -273,7 +338,23 @@ export class AgoraDaemon {
     this.env = options.env ?? process.env;
     this.token = loadOrCreateToken(this.env);
     this.log = options.log ?? (() => {});
-    this.attention = new AttentionBoard({ env: this.env, log: this.log });
+    this.devices = new DeviceRegistry({ env: this.env });
+    this.push = new PushSender({
+      env: this.env,
+      devices: this.devices,
+      notes: this.pushNotes,
+      log: this.log,
+      ...(options.pushFetch ? { fetch: options.pushFetch } : {}),
+    });
+    this.httpsHosts = normalizeHosts(options.hosts ?? []);
+    this.attention = new AttentionBoard({
+      env: this.env,
+      log: this.log,
+      // A room starts waiting: the phones that asked for it are told.
+      onRaise: (item) => {
+        if (this.devices.pushTargets().length > 0) void this.push.notify(item);
+      },
+    });
     this.browser = new BrowserRelay({ log: (line) => this.log(line) });
     this.runners = options.runners ?? defaultRunners(this.env);
     this.webDir = options.webDir ?? findWebDir();
@@ -283,9 +364,61 @@ export class AgoraDaemon {
     return `http://127.0.0.1:${this.port}`;
   }
 
+  /** Where a phone reaches the daemon: HTTPS proxy names first (push works there), then the LAN addresses. */
+  reachUrls(): Array<{ url: string; kind: "https" | "lan" }> {
+    return [
+      ...this.httpsHosts.map((host) => ({ url: `https://${host}`, kind: "https" as const })),
+      ...this.lanBound.map((address) => ({ url: `http://${address}:${this.port}`, kind: "lan" as const })),
+    ];
+  }
+
+  /** How the running daemon is reachable besides this computer. */
+  exposure(): Exposure & { addresses: string[] } {
+    return { lan: this.lanBound.length > 0, hosts: [...this.httpsHosts], addresses: [...this.lanBound] };
+  }
+
+  /**
+   * Changes how the running daemon is reachable, without a restart: LAN listeners are opened or closed
+   * on the same port, and the HTTPS proxy names replaced. `agoryx up --lan` (or --local) on a running
+   * daemon, and the phone dialog's button, come here (through /api/exposure, which saves the choice).
+   */
+  async setExposure(exposure: { lan: boolean | string[]; hosts: string[] }): Promise<Exposure & { addresses: string[] }> {
+    if (!this.server || !this.handler) throw new Error("the daemon is not running");
+    const targets = lanTargets(exposure.lan);
+    const wanted = new Set(targets.map((target) => target.address));
+    for (const [address, server] of this.lanServers) {
+      if (wanted.has(address)) continue;
+      this.lanServers.delete(address);
+      server.close();
+      server.closeAllConnections?.();
+      this.log(`phones: stopped listening on ${address}`);
+    }
+    for (const { address, iface } of targets) {
+      if (this.lanServers.has(address)) continue;
+      const server = createServer(this.handler);
+      await new Promise<void>((resolveListen, reject) => {
+        server.once("error", reject);
+        server.listen(this.port, address, () => {
+          server.off("error", reject);
+          resolveListen();
+        });
+      }).catch((error: unknown) => {
+        throw new HttpError(409, `cannot listen on ${address}:${this.port}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      this.lanServers.set(address, server);
+      this.log(`phones: http://${address}:${this.port}${iface ? ` (${iface})` : ""} — pair one with \`agoryx pair\``);
+    }
+    this.lanBound = [...this.lanServers.keys()];
+    const hosts = normalizeHosts(exposure.hosts);
+    for (const host of hosts) if (!this.httpsHosts.includes(host)) this.log(`phones: https://${host} — pair one with \`agoryx pair\``);
+    this.httpsHosts = hosts;
+    if (exposure.lan && this.lanBound.length === 0) this.log("--lan: no Wi-Fi or Ethernet address on this computer; listening on this computer only");
+    return this.exposure();
+  }
+
   async start(): Promise<DaemonInfo> {
     const wanted = this.options.port ?? DEFAULT_PORT;
-    const server = createServer((req, res) => {
+    const handler = (req: IncomingMessage, res: ServerResponse) => {
       this.handle(req, res).catch((error: unknown) => {
         const status = error instanceof HttpError ? error.status : error instanceof TableOpError ? 400 : 500;
         const message = error instanceof Error ? error.message : String(error);
@@ -294,31 +427,54 @@ export class AgoraDaemon {
         if (!res.headersSent) sendJson(res, status, { error: message }, close);
         else res.end();
       });
-    });
+    };
+    this.handler = handler;
+    const server = createServer(handler);
     this.server = server;
-    const listen = (port: number) =>
+    const targets = lanTargets(this.options.lan);
+    const lan = targets.map((target) => target.address);
+    // Not fatal: a daemon the app restarts while the Mac is off Wi-Fi still serves this computer.
+    if (this.options.lan && lan.length === 0) this.log("--lan: no Wi-Fi or Ethernet address on this computer; listening on this computer only");
+    const listen = (port: number, target: Server = server, host = "127.0.0.1") =>
       new Promise<number>((resolveListen, reject) => {
         const onError = (error: NodeJS.ErrnoException) => {
-          server.off("listening", onListening);
+          target.off("listening", onListening);
           reject(error);
         };
         const onListening = () => {
-          server.off("error", onError);
-          const address = server.address();
+          target.off("error", onError);
+          const address = target.address();
           resolveListen(typeof address === "object" && address ? address.port : port);
         };
-        server.once("error", onError);
-        server.once("listening", onListening);
-        server.listen(port, "127.0.0.1");
+        target.once("error", onError);
+        target.once("listening", onListening);
+        target.listen(port, host);
       });
     let port: number | null = null;
     const attempts = wanted === 0 ? [0] : Array.from({ length: 20 }, (_, index) => wanted + index);
     for (const candidate of attempts) {
       try {
         port = await listen(candidate);
-        break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+        continue;
+      }
+      // The LAN addresses take the same port, or the next candidate is tried for all of them.
+      const bound = new Map<string, Server>();
+      try {
+        for (const address of lan) {
+          const extra = createServer(handler);
+          await listen(port, extra, address);
+          bound.set(address, extra);
+        }
+        for (const [address, extra] of bound) this.lanServers.set(address, extra);
+        this.lanBound = lan;
+        break;
+      } catch (error) {
+        for (const extra of bound.values()) extra.close();
+        await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+        port = null;
+        if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" || wanted === 0) throw error;
       }
     }
     if (port === null) throw new Error(`no free port in ${wanted}..${wanted + 19}`);
@@ -335,6 +491,11 @@ export class AgoraDaemon {
       chmodSync(path, 0o600);
     }
     this.log(`listening on ${this.url} (state: ${agoraHome(this.env)})`);
+    const ifaces = new Map(targets.map((target) => [target.address, target.iface]));
+    for (const { url } of this.reachUrls()) {
+      const iface = ifaces.get(new URL(url).hostname);
+      this.log(`phones: ${url}${iface ? ` (${iface})` : ""} — pair one with \`agoryx pair\``);
+    }
     this.watchRecentRooms();
     return info;
   }
@@ -374,9 +535,11 @@ export class AgoraDaemon {
       }),
     );
     this.attention.close();
+    this.devices.close();
     this.rooms.clear();
-    await new Promise<void>((resolveClose) => (this.server ? this.server.close(() => resolveClose()) : resolveClose()));
-    this.server?.closeAllConnections?.();
+    const servers = [this.server, ...this.lanServers.values()];
+    await Promise.all(servers.map((server) => new Promise<void>((resolveClose) => (server ? server.close(() => resolveClose()) : resolveClose()))));
+    for (const server of servers) server?.closeAllConnections?.();
     if (this.options.advertise !== false) {
       const path = daemonInfoPath(this.env);
       try {
@@ -482,23 +645,43 @@ export class AgoraDaemon {
   // HTTP
   // -------------------------------------------------------------------------
 
-  private checkHost(req: IncomingMessage): void {
+  /**
+   * The Host must name this daemon — loopback, a LAN address it listens on, or an HTTPS proxy name it was
+   * given — so a DNS-rebound name is refused; a request that says where it comes from (Origin) must come
+   * from one of those too, for the API and for anything that is not a plain read.
+   */
+  private checkHost(req: IncomingMessage, path: string): Reach {
     const host = (req.headers.host ?? "").toLowerCase();
-    const allowed = [`127.0.0.1:${this.port}`, `localhost:${this.port}`, `[::1]:${this.port}`];
-    if (!allowed.includes(host)) throw new HttpError(421, "unexpected Host header");
+    const loopback = [`127.0.0.1:${this.port}`, `localhost:${this.port}`, `[::1]:${this.port}`];
+    const lan = this.lanBound.map((address) => `${address}:${this.port}`);
+    const https = this.httpsHosts.flatMap((name) => [name, `${name}:443`]);
+    const isLoopback = loopback.includes(host);
+    if (!isLoopback && !lan.includes(host) && !https.includes(host)) throw new HttpError(421, "unexpected Host header");
     const origin = req.headers.origin;
-    if (origin && req.method !== "GET" && req.method !== "HEAD") {
-      const ok = allowed.some((entry) => origin.toLowerCase() === `http://${entry}`);
-      if (!ok) throw new HttpError(403, "cross-origin request refused");
+    if (origin && (path.startsWith("/api/") || (req.method !== "GET" && req.method !== "HEAD"))) {
+      const allowed = [...[...loopback, ...lan].map((entry) => `http://${entry}`), ...this.httpsHosts.map((name) => `https://${name}`)];
+      if (!allowed.includes(origin.toLowerCase())) throw new HttpError(403, "cross-origin request refused");
     }
+    const peer = (req.socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
+    return { local: isLoopback && (peer === "::1" || peer.startsWith("127.")), secure: https.includes(host) };
   }
 
-  private checkToken(req: IncomingMessage, url: URL): Caller {
+  private checkToken(req: IncomingMessage, url: URL, reach: Reach): Caller {
     const header = req.headers["x-agoryx-token"];
     const sent = Array.isArray(header) ? header[0] : header;
-    // An agent's key comes in the header only (the agent's CLI sends it); never as a browser login.
-    if (sent && isAgentKey(sent)) return { agent: this.agentOrigin(sent) };
-    const given = sent ?? cookieValue(req, COOKIE) ?? url.searchParams.get("token") ?? "";
+    // An agent's key comes in the header only (the agent's CLI sends it); never as a browser login, never from off this computer.
+    if (sent && isAgentKey(sent)) {
+      if (!reach.local) throw new HttpError(401, "an agent key works on this computer only");
+      return { agent: this.agentOrigin(sent) };
+    }
+    // A device token comes in the cookie (or the header), never in the URL.
+    const given = sent ?? cookieValue(req, COOKIE) ?? (reach.local ? url.searchParams.get("token") : null) ?? "";
+    if (isDeviceToken(given)) {
+      const device = this.devices.authenticate(given);
+      if (!device) throw new HttpError(401, "this device is not paired (revoked, or a wrong token) — pair it again with `agoryx pair` on the computer");
+      return { agent: null, device };
+    }
+    if (!reach.local) throw new HttpError(401, "from another device only a paired one gets in — pair it with `agoryx pair` on the computer");
     if (!given || !safeEqual(given, this.token)) throw new HttpError(401, "missing or wrong agoryx token (see daemon.json)");
     return { agent: null };
   }
@@ -519,7 +702,7 @@ export class AgoraDaemon {
     }
     throw new HttpError(
       403,
-      `this request comes from ${owner.agent}'s process (room ${owner.room}) with the human's token: an agent acts under its own key (${AGENT_KEY_ENV}), never as the human`,
+      `this request comes from ${owner.agent}'s process (room ${owner.room}) with the human's token (or a paired device's): an agent acts under its own key (${AGENT_KEY_ENV}), never as the human`,
     );
   }
 
@@ -550,19 +733,23 @@ export class AgoraDaemon {
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // The room's browser pane marks every request it makes: no page it opens reaches Agoryx.
     if (req.headers["x-agoryx-pane"] !== undefined) throw new HttpError(403, "the room's browser cannot open Agoryx itself");
-    this.checkHost(req);
     const url = new URL(req.url ?? "/", this.url);
     const path = url.pathname;
+    const reach = this.checkHost(req, path);
     if (path === "/api/health") {
       sendJson(res, 200, { ok: true, pid: process.pid, version: 1 });
       return;
     }
     if (path.startsWith("/raw/")) {
-      this.serveRaw(req, res, path);
+      this.serveRaw(req, res, path, reach);
+      return;
+    }
+    if (path === "/api/pair/claim") {
+      await this.claimPairing(req, res, reach);
       return;
     }
     if (path.startsWith("/api/")) {
-      const caller = this.checkToken(req, url);
+      const caller = this.checkToken(req, url, reach);
       if (!caller.agent) await this.refuseHumanTokenFromAgent(req);
       await this.api(req, res, url, caller);
       return;
@@ -570,11 +757,11 @@ export class AgoraDaemon {
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method not allowed");
     const login = url.searchParams.get("t");
     if (login !== null) {
-      // `agoryx open` hands the browser the token once; it lives on as a same-site cookie.
-      if (!safeEqual(login, this.token)) throw new HttpError(401, "wrong token — run `agoryx open` again");
+      // `agoryx open` hands the browser the token once; it lives on as a same-site cookie. On this computer only.
+      if (!reach.local || !safeEqual(login, this.token)) throw new HttpError(401, "wrong token — run `agoryx open` again");
       res.writeHead(302, {
         location: "/",
-        "set-cookie": `${COOKIE}=${encodeURIComponent(this.token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${60 * 60 * 24 * 30}`,
+        "set-cookie": loginCookie(this.token, 60 * 60 * 24 * 30, false),
         "cache-control": "no-store",
       });
       res.end();
@@ -583,16 +770,56 @@ export class AgoraDaemon {
     this.serveStatic(res, path);
   }
 
-  /** Per-room capability for /raw/: lets sandboxed previews load relative assets without the cookie. */
-  private rawKey(roomId: string): string {
-    return createHmac("sha256", this.token).update(`raw:${roomId}`).digest("hex").slice(0, 32);
+  /**
+   * POST /api/pair/claim {code}: a phone trades a pairing code for its own token, kept as an HttpOnly
+   * cookie (never in the body, never logged). No token needed; wrong codes are rate-limited (devices.ts).
+   */
+  private async claimPairing(req: IncomingMessage, res: ServerResponse, reach: Reach): Promise<void> {
+    if (req.method !== "POST") throw new HttpError(405, "method not allowed");
+    // A code shown on the human's screen is the human's: an agent's process cannot trade one.
+    if (await agentBehind(req.socket)) throw new HttpError(403, "a pairing code is for the human's phone, not for an agent's process");
+    const body = (await readBody(req, 4096)) as Record<string, unknown>;
+    let claimed;
+    try {
+      claimed = this.devices.claim(body.code, {
+        address: claimantAddress(req, reach),
+        ...(typeof req.headers["user-agent"] === "string" ? { userAgent: req.headers["user-agent"] } : {}),
+      });
+    } catch (error) {
+      // `reason` lets the phone say it in its own language.
+      if (error instanceof PairingError) return sendJson(res, error.status, { error: error.message, reason: error.reason });
+      throw error;
+    }
+    this.log(`paired a device: ${deviceLabel(claimed.device)}`);
+    sendJson(res, 201, { device: claimed.device }, { "set-cookie": loginCookie(claimed.token, 60 * 60 * 24 * 365, reach.secure) });
   }
 
-  private rawBase(roomId: string): string {
-    return `/raw/${encodeURIComponent(roomId)}/${this.rawKey(roomId)}/`;
+  /**
+   * Per-room capability for /raw/: lets sandboxed previews load relative assets without the cookie. On
+   * this computer it is the room's; a paired device gets one of its own (`<device id>.<key>`), which
+   * dies when the device is revoked. The computer's works only on this computer.
+   */
+  private rawKey(roomId: string, deviceId?: string): string {
+    const mac = createHmac("sha256", this.token)
+      .update(deviceId ? `raw:${deviceId}:${roomId}` : `raw:${roomId}`)
+      .digest("hex")
+      .slice(0, 32);
+    return deviceId ? `${deviceId}.${mac}` : mac;
   }
 
-  private serveRaw(req: IncomingMessage, res: ServerResponse, path: string): void {
+  private rawBase(roomId: string, device?: DeviceInfo): string {
+    return `/raw/${encodeURIComponent(roomId)}/${this.rawKey(roomId, device?.id)}/`;
+  }
+
+  /** Whether a /raw/ key opens this room from where the request came. */
+  private rawKeyOpens(roomId: string, key: string, reach: Reach): boolean {
+    const dot = key.indexOf(".");
+    if (dot < 0) return reach.local && safeEqual(key, this.rawKey(roomId));
+    const deviceId = key.slice(0, dot);
+    return /^[0-9a-f]+$/.test(deviceId) && this.devices.has(deviceId) && safeEqual(key, this.rawKey(roomId, deviceId));
+  }
+
+  private serveRaw(req: IncomingMessage, res: ServerResponse, path: string, reach: Reach): void {
     if (req.method !== "GET" && req.method !== "HEAD") throw new HttpError(405, "method not allowed");
     const [, , roomPart = "", key = "", ...rest] = path.split("/");
     let roomId = "";
@@ -601,7 +828,7 @@ export class AgoraDaemon {
     } catch {
       // Not a room id; falls through to 404.
     }
-    if (!/^[\w.-]+$/.test(roomId) || !safeEqual(key, this.rawKey(roomId))) throw new HttpError(404, "not found");
+    if (!/^[\w.-]+$/.test(roomId) || !this.rawKeyOpens(roomId, key, reach)) throw new HttpError(404, "not found");
     let relPath: string;
     try {
       relPath = rest.map((part) => decodeURIComponent(part)).join("/");
@@ -732,16 +959,23 @@ export class AgoraDaemon {
     const parts = url.pathname.split("/").filter(Boolean).slice(1); // drop "api"
     const method = req.method ?? "GET";
 
+    const device = caller.agent ? undefined : caller.device;
+
     if (parts[0] === "info" && method === "GET") {
       sendJson(res, 200, {
         pid: process.pid,
         url: this.url,
         home: agoraHome(this.env),
         rooms: RoomStore.list(roomsDir(this.env)).length,
+        // Which paired device asks (null: this computer, or an agent).
+        device: device ? { id: device.id, name: device.name } : null,
         ...this.roster(),
       });
       return;
     }
+
+    if (parts[0] === "pair" || parts[0] === "devices" || parts[0] === "exposure") return this.devicesApi(req, res, parts, method, caller);
+    if (parts[0] === "push") return this.pushApi(req, res, parts.slice(1), method, caller);
 
     if (parts[0] === "models" && parts.length === 1 && method === "GET") {
       sendJson(res, 200, await agentModels(this.env));
@@ -782,6 +1016,7 @@ export class AgoraDaemon {
     }
 
     if (parts[0] === "down" && parts.length === 1 && method === "POST") {
+      if (device) throw new HttpError(403, "a paired device cannot stop the daemon; stop it on the computer");
       this.log(`stopping: asked by ${caller.agent ? originName(caller.agent) : "the human"}`);
       sendJson(res, 200, { ok: true });
       const by = caller.agent;
@@ -862,7 +1097,7 @@ export class AgoraDaemon {
     const action = parts[2];
 
     if (!action && method === "GET") {
-      sendJson(res, 200, this.snapshot(handle));
+      sendJson(res, 200, this.snapshot(handle, device));
       return;
     }
 
@@ -879,7 +1114,7 @@ export class AgoraDaemon {
     }
 
     if (action === "events" && method === "GET") {
-      this.stream(req, res, handle, Number.parseInt(url.searchParams.get("after") ?? "", 10));
+      this.stream(req, res, handle, Number.parseInt(url.searchParams.get("after") ?? "", 10), device);
       return;
     }
 
@@ -1064,7 +1299,7 @@ export class AgoraDaemon {
     }
   }
 
-  private snapshot(handle: RoomHandle) {
+  private snapshot(handle: RoomHandle, device?: DeviceInfo) {
     const ops = handle.store
       .since(0)
       .flatMap((event) => (event.type === "table.op" ? [{ seq: event.seq, ts: event.ts, op: event.op }] : []));
@@ -1072,7 +1307,7 @@ export class AgoraDaemon {
       ...roomSnapshot(handle.store.state, handle.streams),
       presence: this.presence(handle),
       ops,
-      rawBase: this.rawBase(handle.store.id),
+      rawBase: this.rawBase(handle.store.id, device),
       resume: resumeCommands(handle.store, this.runners),
       driven: Boolean(handle.engine),
       ...(handle.lockedBy ? { lockedBy: handle.lockedBy } : {}),
@@ -1182,7 +1417,7 @@ export class AgoraDaemon {
     };
   }
 
-  private stream(req: IncomingMessage, res: ServerResponse, handle: RoomHandle, after: number): void {
+  private stream(req: IncomingMessage, res: ServerResponse, handle: RoomHandle, after: number, device?: DeviceInfo): void {
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-store",
@@ -1221,6 +1456,12 @@ export class AgoraDaemon {
     handle.listeners.add(send);
     const unsubscribe = () => handle.listeners.delete(send);
     this.sseClients.add(res);
+    // A revoked device's streams end with it.
+    const mine = device ? (this.deviceStreams.get(device.id) ?? new Set<ServerResponse>()) : null;
+    if (device && mine) {
+      mine.add(res);
+      this.deviceStreams.set(device.id, mine);
+    }
     handle.followers += 1;
     if (!handle.engine && !handle.followTimer) {
       // Another process drives this room: follow its event log.
@@ -1237,6 +1478,7 @@ export class AgoraDaemon {
     req.on("close", () => {
       unsubscribe();
       this.sseClients.delete(res);
+      mine?.delete(res);
       handle.followers -= 1;
       if (handle.followers <= 0 && handle.followTimer) {
         clearInterval(handle.followTimer);
@@ -1269,6 +1511,113 @@ export class AgoraDaemon {
       }
     }
     sendJson(res, 200, { rooms: this.attention.items() });
+  }
+
+  /**
+   * /api/pair and /api/devices: pairing codes and the paired devices. The human's on this computer only:
+   * neither an agent nor a paired device can pair another device or revoke one.
+   */
+  private async devicesApi(req: IncomingMessage, res: ServerResponse, parts: string[], method: string, caller: Caller): Promise<void> {
+    if (caller.agent) throw new HttpError(403, "pairing devices is the human's");
+    if (caller.device) throw new HttpError(403, "a paired device cannot pair or revoke devices; do it on the computer");
+    const reach = this.reachUrls();
+    if (parts[0] === "pair" && parts.length === 1) {
+      if (method !== "POST") throw new HttpError(405, "method not allowed");
+      if (reach.length === 0) {
+        throw new HttpError(
+          409,
+          "the daemon listens on this computer only: `agoryx up --lan` opens it to the same Wi-Fi (or `agoryx up --tailscale`, behind Tailscale serve); it applies to the running daemon and is remembered",
+        );
+      }
+      const { code, secret, expiresAt } = this.devices.createCode();
+      this.log(`made a pairing code (valid until ${expiresAt.slice(11, 19)} UTC)`);
+      // The link carries the long secret: a scanned QR code is never locked out by someone guessing typed codes.
+      const links = reach.map(({ url, kind }) => {
+        const link = `${url}/?pair=${secret}`;
+        return { url: link, base: url, kind, qr: `data:image/svg+xml;base64,${Buffer.from(qrSvg(link)).toString("base64")}` };
+      });
+      sendJson(res, 201, { code: formatCode(code), expiresAt, links });
+      return;
+    }
+    if (parts[0] === "devices" && parts.length === 1) {
+      if (method !== "GET") throw new HttpError(405, "method not allowed");
+      sendJson(res, 200, { devices: this.devices.list(), reach });
+      return;
+    }
+    if (parts[0] === "devices" && parts.length === 2) {
+      if (method !== "DELETE") throw new HttpError(405, "method not allowed");
+      const revoked = this.devices.revoke(decodeURIComponent(parts[1]!));
+      if (!revoked) throw new HttpError(404, "no such device");
+      for (const stream of this.deviceStreams.get(revoked.id) ?? []) stream.end();
+      this.deviceStreams.delete(revoked.id);
+      this.log(`revoked a device: ${deviceLabel(revoked)}`);
+      sendJson(res, 200, { revoked });
+      return;
+    }
+    if (parts[0] === "exposure" && parts.length === 1) {
+      // GET: how the daemon is reachable; POST {lan, hosts}: change it now, and keep the choice.
+      if (method === "GET") {
+        sendJson(res, 200, this.exposure());
+        return;
+      }
+      if (method !== "POST") throw new HttpError(405, "method not allowed");
+      const body = (await readBody(req, 4096)) as Record<string, unknown>;
+      if (typeof body.lan !== "boolean") throw new HttpError(400, "lan must be true or false");
+      if (body.hosts !== undefined && (!Array.isArray(body.hosts) || body.hosts.some((host) => typeof host !== "string"))) {
+        throw new HttpError(400, "hosts must be a list of host names");
+      }
+      const hosts = (body.hosts as string[] | undefined) ?? this.httpsHosts;
+      if (hosts.some((host) => !/^[a-z0-9.-]+$/i.test(host.trim().replace(/\.$/, "")))) throw new HttpError(400, "a host is a plain DNS name");
+      const applied = await this.setExposure({ lan: body.lan, hosts });
+      // The human's choice holds for the next start too (the app's, or after a crash).
+      writeExposure({ lan: body.lan, hosts: applied.hosts }, this.env);
+      sendJson(res, 200, applied);
+      return;
+    }
+    throw new HttpError(404, "unknown endpoint");
+  }
+
+  /**
+   * /api/push: a paired device's Web Push subscription. GET: the key to subscribe with and whether this
+   * device is subscribed; POST {subscription} (null clears it); POST /api/push/test sends one to it.
+   */
+  private async pushApi(req: IncomingMessage, res: ServerResponse, parts: string[], method: string, caller: Caller): Promise<void> {
+    if (caller.agent) throw new HttpError(403, "notifications are the human's");
+    const device = caller.device;
+    if (parts.length === 0 && method === "GET") {
+      sendJson(res, 200, {
+        publicKey: device ? this.push.publicKey : null,
+        subscribed: device ? this.devices.pushTargets().some((target) => target.device.id === device.id) : false,
+      });
+      return;
+    }
+    if (!device) throw new HttpError(403, "notifications go to a paired device; this computer has the app's own");
+    if (parts.length === 0 && method === "POST") {
+      const body = (await readBody(req, 16 * 1024)) as Record<string, unknown>;
+      if (body.subscription === null) {
+        this.devices.setPush(device.id, null);
+        sendJson(res, 200, { subscribed: false });
+        return;
+      }
+      const subscription = parseSubscription(body.subscription, { allowHttp: this.options.pushAllowHttp === true });
+      if (typeof subscription === "string") throw new HttpError(400, subscription);
+      this.devices.setPush(device.id, subscription);
+      this.log(`push: ${deviceLabel(device)} takes notifications`);
+      sendJson(res, 200, { subscribed: true });
+      return;
+    }
+    if (parts[0] === "test" && parts.length === 1 && method === "POST") {
+      sendJson(res, 200, await this.push.send({ title: "Agoryx", body: "Сповіщення працюють.", tag: "agoryx-test", room: null }, device.id));
+      return;
+    }
+    if (parts[0] === "note" && parts.length === 2 && method === "GET") {
+      // The service worker asks what a push said; one the daemon did not send to this device is not found.
+      const note = this.pushNotes.get(decodeURIComponent(parts[1]!), device.id);
+      if (!note) throw new HttpError(404, "no such notification");
+      sendJson(res, 200, note);
+      return;
+    }
+    throw new HttpError(404, "unknown endpoint");
   }
 
   /** /api/browser: agents' commands to the room's browser, and the app that hosts it. */
@@ -1304,7 +1653,7 @@ export class AgoraDaemon {
         sendJson(res, 200, { ok: true, result });
         return;
       }
-      if (caller.agent) throw new HttpError(403, "only the Agoryx app hosts the room's browser");
+      if (caller.agent || caller.device) throw new HttpError(403, "only the Agoryx app hosts the room's browser");
       if (parts[0] === "host" && parts.length === 1) {
         if (method !== "GET") throw new HttpError(405, "method not allowed");
         const detach = this.browser.attach(sseHost(res));

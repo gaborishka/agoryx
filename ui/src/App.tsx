@@ -8,11 +8,13 @@ import { RoomHeader } from "@/components/room/RoomHeader";
 import { Sidebar } from "@/components/Sidebar";
 import { StartScreen } from "@/components/StartScreen";
 import { TableBoard } from "@/components/table/TableBoard";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useShortcuts } from "@/hooks/use-shortcuts";
-import { useStore } from "@/lib/store";
+import { claimPairing, onThisComputer, useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 // Settings, help and the table's forms: loaded with the first dialog, and fetched while idle.
@@ -41,6 +43,47 @@ function Notice({ title, children }: { title: string; children: React.ReactNode 
         <div className="flex flex-col gap-3 text-body leading-relaxed text-muted-foreground">{children}</div>
       </div>
     </div>
+  );
+}
+
+/** Off this computer: the code `agoryx pair` shows, typed in (an iPhone's home-screen app has cookies of its own, so a scanned link does not carry over). */
+function PairForm() {
+  const pairError = useStore((s) => s.pairError);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await claimPairing(code);
+      location.replace("/");
+    } catch (error) {
+      useStore.setState({ pairError: error instanceof Error ? error.message : String(error) });
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <p>
+        Цей пристрій ще не під'єднано. На комп'ютері виконайте <code className="font-mono text-foreground">agoryx pair</code> або відкрийте «Відкрити на телефоні», а тоді скануйте QR-код чи введіть код тут.
+      </p>
+      <form onSubmit={submit} className="flex w-full gap-2">
+        <Input
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="ABCD-EFGH"
+          aria-label="Код з комп'ютера"
+          autoCapitalize="characters"
+          autoComplete="one-time-code"
+          spellCheck={false}
+          className="h-10 flex-1 text-center font-mono tracking-widest uppercase"
+        />
+        <Button type="submit" className="h-10" disabled={busy || code.replace(/[^0-9a-z]/gi, "").length < 8}>
+          Увійти
+        </Button>
+      </form>
+      {pairError ? <p className="text-small text-destructive">{pairError}</p> : null}
+    </>
   );
 }
 
@@ -136,8 +179,14 @@ export function App() {
   if (gate) {
     body = (
       <Notice title="Потрібен вхід">
-        <p>Цей браузер ще не має доступу до демона Agoryx. Відкрийте посилання з токеном командою:</p>
-        <Cmd>agoryx open</Cmd>
+        {onThisComputer() ? (
+          <>
+            <p>Цей браузер ще не має доступу до демона Agoryx. Відкрийте посилання з токеном командою:</p>
+            <Cmd>agoryx open</Cmd>
+          </>
+        ) : (
+          <PairForm />
+        )}
       </Notice>
     );
   } else if (bootError) {

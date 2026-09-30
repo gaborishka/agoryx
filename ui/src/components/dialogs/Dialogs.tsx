@@ -4,6 +4,7 @@ import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
 import { ErrorNote, Hint, Loading } from "@/components/common/states";
 import { Avatar, Stats } from "@/components/room/bits";
+import { PhoneDialog } from "@/components/dialogs/PhoneDialog";
 import { RefChip } from "@/components/table/OpCard";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -23,11 +24,11 @@ import type { FileChange, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
 
-const fail = (error: unknown) => {
+export const fail = (error: unknown) => {
   if (!(error instanceof Unauthorized)) toast.error(errText(error));
 };
 
-function Shell({ title, sub, size = "md", children }: { title: ReactNode; sub?: ReactNode; size?: "sm" | "md" | "lg"; children: ReactNode }) {
+export function Shell({ title, sub, size = "md", children }: { title: ReactNode; sub?: ReactNode; size?: "sm" | "md" | "lg"; children: ReactNode }) {
   const openDialog = useStore((s) => s.openDialog);
   return (
     <Dialog open onOpenChange={(open) => !open && openDialog(null)}>
@@ -699,6 +700,8 @@ const render = (d: DialogState) => {
       return <KeysDialog />;
     case "usage":
       return <UsageDialog />;
+    case "phone":
+      return <PhoneDialog />;
     case "table-form":
       return <TableFormDialog key={`${d.op}:${d.target ?? ""}`} op={d.op} target={d.target} q={d.q} />;
   }
@@ -708,7 +711,7 @@ export function Dialogs() {
   const dialog = useStore((s) => s.dialog);
   const snap = useStore((s) => Boolean(s.snap));
   if (!dialog) return null;
-  if (dialog.kind !== "help" && dialog.kind !== "keys" && !snap) return null;
+  if (dialog.kind !== "help" && dialog.kind !== "keys" && dialog.kind !== "phone" && !snap) return null;
   return render(dialog);
 }
 

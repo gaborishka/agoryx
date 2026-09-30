@@ -22,7 +22,12 @@ export const useTheme = create<{ pref: ThemePref; dark: boolean; cycle: () => vo
   },
 }));
 
-const paint = () => document.documentElement.classList.toggle("dark", useTheme.getState().dark);
+const paint = () => {
+  const dark = useTheme.getState().dark;
+  document.documentElement.classList.toggle("dark", dark);
+  // The phone's status bar follows the page's theme, not only the system's (index.html: --background).
+  for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) meta.content = dark ? "#111411" : "#f3f4ef";
+};
 media.addEventListener("change", () => {
   useTheme.setState({ dark: resolve(useTheme.getState().pref) === "dark" });
   paint();

@@ -183,8 +183,9 @@ in `.agoryx/messages/<room>/`.
 ## The canonical file (Документ)
 
 A room can name one file in its workspace as **the text it is making**: an essay, a spec, a plan.
-Rooms created with a fresh workspace get `README.md`. Set it with `agoryx new --doc PATH`,
-`agoryx settings --doc PATH` or in the UI settings; `none` turns it off. Agoryx names the file and
+A room has none until someone names one: any agent or the human, with `agoryx settings --doc PATH`
+(agents are told they can when the room starts writing one text), `agoryx new --doc PATH` or in the UI
+settings; `none` turns it off. The transcript says who named it. Agoryx names the file and
 keeps its history. It never says what goes in it, and anyone can write it with any tool.
 
 - **Every revision has an author.** A change made during a room turn is credited to that turn, using

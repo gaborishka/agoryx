@@ -56,6 +56,10 @@ test("marks: what sets the labels apart, else the place in the roster", () => {
   assert.deepEqual(marksFor(["Claude", "Claude 2"]), ["1", "2"]);
   assert.deepEqual(marksFor(["Sonnet", "Sonar"]), ["1", "2"]);
   assert.deepEqual(marksFor(["Claude A", "Claude B", "Claude C"]), ["A", "B", "C"]);
+  // The CLI's own agent next to one named for its model: C and O, not 1 and 2.
+  assert.deepEqual(marksFor(["Claude", "Claude Opus"]), ["C", "O"]);
+  assert.deepEqual(marksFor(["Claude", "Claude Opus", "Claude Sonnet"]), ["C", "O", "S"]);
+  assert.deepEqual(marksFor(["Claude", "Claude Code"]), ["1", "2"]);
 });
 
 // --- the page (ui/src/lib) --------------------------------------------------------------------------

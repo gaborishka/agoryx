@@ -18,7 +18,6 @@ import { LimitsCard } from "@/components/room/Limits";
 import { ModelMenu } from "@/components/room/ModelMenu";
 import { NavButton } from "@/components/room/RoomHeader";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -30,7 +29,7 @@ import { useModels } from "@/lib/models";
 import { DEFAULT_AGENTS } from "@/lib/room";
 import { type SettingsSection, useStore } from "@/lib/store";
 import { type ThemePref, useTheme } from "@/lib/theme";
-import type { AgentKind, LimitSnapshot, RoomAgent } from "@/lib/types";
+import type { AgentKind, AgentModels, LimitSnapshot, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /**
@@ -285,6 +284,21 @@ interface RosterFile {
 }
 
 const KIND_NAME: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex" };
+const KIND_SHORT: Record<AgentKind, string> = { claude: "Claude", codex: "Codex" };
+
+/**
+ * An agent is its CLI and its model, and so is its name: "Claude Opus", "Codex GPT-5" — never just "Opus",
+ * which reads as a third vendor next to Claude. The CLI's default model is plain "Claude"; a repeat gets 2, 3, …
+ */
+const nameFor = (kind: AgentKind, model: string | undefined, models: AgentModels | null, others: readonly RoomAgent[]) => {
+  const label = model ? (models?.[kind]?.models.find((m) => m.id === model)?.label ?? model) : "";
+  const base = label ? `${KIND_SHORT[kind]} ${label}` : KIND_SHORT[kind];
+  const free = (name: string) => !others.some((agent) => agent.label.toLowerCase() === name.toLowerCase() || agent.id === handleFor(name));
+  for (let n = 1; ; n += 1) {
+    const name = n === 1 ? base : `${base} ${n}`;
+    if (free(name)) return name;
+  }
+};
 
 /** "Opus 2" → "opus-2": the @handle the daemon takes (a letter, then letters, digits, _ and -). */
 const handleFor = (label: string) =>
@@ -313,7 +327,7 @@ function Agents() {
   const [agents, setAgents] = useState<RoomAgent[]>([]);
   const [busy, setBusy] = useState(false);
   const [kind, setKind] = useState<AgentKind>("claude");
-  const [name, setName] = useState("");
+  const [model, setModel] = useState<string>("");
   const take = useCallback((got: RosterFile) => {
     setFile(got);
     setAgents(got.agents ?? DEFAULT_AGENTS);
@@ -332,15 +346,19 @@ function Agents() {
         const next: RoomAgent = { ...agent, ...patch };
         for (const key of ["model", "effort"] as const) if (key in patch && !patch[key]) delete next[key];
         if (next.profile !== false) delete next.profile;
+        // A name made from the model follows the model ("Claude Opus" → "Claude Sonnet"); a name of one's own stays.
+        const others = list.filter((a) => a.id !== id);
+        if ("model" in patch && agent.label === nameFor(agent.kind, agent.model, models, others) && agent.label !== KIND_SHORT[agent.kind]) {
+          next.label = nameFor(agent.kind, next.model, models, others);
+          if (agent.id === handleFor(agent.label)) next.id = handleFor(next.label);
+        }
         return next;
       }),
     );
-  const handle = handleFor(name.trim());
-  const taken = agents.some((agent) => agent.id === handle || agent.label.toLowerCase() === name.trim().toLowerCase());
+  const name = nameFor(kind, model || undefined, models, agents);
   const add = () => {
-    if (!name.trim() || handle.length < 2 || taken) return;
-    setAgents((list) => [...list, { id: handle, kind, label: name.trim() }]);
-    setName("");
+    setAgents((list) => [...list, { id: handleFor(name), kind, label: name, ...(model ? { model } : {}) }]);
+    setModel("");
   };
   const done = (got: RosterFile, message: string) => {
     take(got);
@@ -435,7 +453,13 @@ function Agents() {
               add();
             }}
           >
-            <Select value={kind} onValueChange={(value) => setKind(value as AgentKind)}>
+            <Select
+              value={kind}
+              onValueChange={(value) => {
+                setKind(value as AgentKind);
+                setModel("");
+              }}
+            >
               <SelectTrigger className="w-full sm:w-40" aria-label="Який CLI">
                 <SelectValue />
               </SelectTrigger>
@@ -444,18 +468,27 @@ function Agents() {
                 <SelectItem value="codex">Codex</SelectItem>
               </SelectContent>
             </Select>
-            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Ім'я, напр. Opus" aria-label="Ім'я агента" className="sm:flex-1" />
-            <Button type="submit" variant="outline" disabled={!name.trim() || handle.length < 2 || taken} className="gap-1.5">
+            <Select value={model || "default"} onValueChange={(value) => setModel(value === "default" ? "" : value)}>
+              <SelectTrigger className="w-full sm:flex-1" aria-label="Модель">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">Типова модель CLI</SelectItem>
+                {(models?.[kind]?.models ?? []).map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button type="submit" variant="outline" className="gap-1.5">
               <PlusIcon className="size-4" />
               Додати
             </Button>
           </form>
           <Hint>
-            {name.trim() && handle.length >= 2
-              ? taken
-                ? "Таке ім'я вже є: агентів у кімнаті розрізняють за ним."
-                : `У кімнаті — @${handle}.`
-              : "Кілька агентів одного CLI можуть сидіти разом, напр. два Claude з різними моделями."}
+            Додасться «{name}» (@{handleFor(name)}). Кілька агентів одного CLI можуть сидіти разом — напр. Claude на Opus і Claude на
+            Sonnet: ім'я кожного каже, на якій він моделі.
           </Hint>
           <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
             <span className="truncate font-mono text-meta text-faint" title={file.path}>

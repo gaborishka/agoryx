@@ -38,6 +38,13 @@ export const marksFor = (labels: readonly string[]): string[] => {
   while (words.every((list) => list.length > shared + 1 && list[shared]!.toLowerCase() === words[0]![shared]!.toLowerCase())) shared += 1;
   const picked = words.map((list) => initial(list.slice(shared).join(" ")));
   if (picked.every(Boolean) && new Set(picked).size === picked.length) return picked;
+  // A label that is only the shared word ("Claude" next to "Claude Opus"): it keeps that word's initial and the
+  // others take what follows it — C, O. Not when what follows is a number ("Claude 2"): then 1, 2 reads better.
+  const head = words[0]![0]!.toLowerCase();
+  if (words.every((list) => list[0]!.toLowerCase() === head)) {
+    const own = words.map((list) => initial(list.length > 1 ? list.slice(1).join(" ") : list[0]!));
+    if (own.every((mark) => mark && !/\p{N}/u.test(mark)) && new Set(own).size === own.length) return own;
+  }
   return labels.map((_, index) => String(index + 1));
 };
 

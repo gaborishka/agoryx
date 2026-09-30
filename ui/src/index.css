@@ -88,12 +88,15 @@
   --fact: #9b4a7c;
   --amber: #b9851f;
   --amber-soft: #fbf3df;
+  --amber-foreground: #ffffff;
+  --amber-ink: #85590c;
   --shift: #6b54a8;
   --shift-soft: #f1edf9;
   --add: #e3f1e6;
   --add-ink: #1f5b33;
   --del: #f8e6e1;
   --del-ink: #8a3322;
+  --shadow-edge: 0 1px 0 rgb(30 40 30 / 0.03);
   --shadow-soft: 0 1px 2px rgb(30 40 30 / 0.05), 0 8px 24px rgb(30 40 30 / 0.06);
   --shadow-lift: 0 1px 2px rgb(30 40 30 / 0.06), 0 18px 48px rgb(30 40 30 / 0.12);
 }
@@ -161,14 +164,35 @@
   --fact: #db7aae;
   --amber: #e0ae4e;
   --amber-soft: #2a2415;
+  --amber-foreground: #111411;
+  --amber-ink: #e6b861;
   --shift: #b3a0ea;
   --shift-soft: #221d31;
   --add: #16301f;
   --add-ink: #9bd8ae;
   --del: #351c16;
   --del-ink: #f0a08c;
+  --shadow-edge: 0 1px 0 rgb(0 0 0 / 0.25);
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
   --shadow-lift: 0 1px 2px rgb(0 0 0 / 0.35), 0 18px 48px rgb(0 0 0 / 0.45);
+}
+
+/*
+ * One type scale for the whole page. Body text is 15px; the steps below it are for the room's
+ * dense parts (meta lines, tool rows, chips), the steps above for headings. Each step leaves its
+ * line height to the surrounding text, as the old per-component pixel sizes did.
+ */
+@theme {
+  --text-micro: 11px;
+  --text-meta: 12px;
+  --text-small: 13px;
+  --text-ui: 14px;
+  --text-body: 15px;
+  --text-lead: 17px;
+  --text-title: 20px;
+  --text-display: 26px;
+  /* The reading column: the feed, the composer and the table's text. */
+  --container-reading: 860px;
 }
 
 @theme inline {
@@ -212,12 +236,15 @@
   --color-fact: var(--fact);
   --color-amber: var(--amber);
   --color-amber-soft: var(--amber-soft);
+  --color-amber-foreground: var(--amber-foreground);
+  --color-amber-ink: var(--amber-ink);
   --color-shift: var(--shift);
   --color-shift-soft: var(--shift-soft);
   --color-add: var(--add);
   --color-add-ink: var(--add-ink);
   --color-del: var(--del);
   --color-del-ink: var(--del-ink);
+  --shadow-edge: var(--shadow-edge);
   --shadow-soft: var(--shadow-soft);
   --shadow-lift: var(--shadow-lift);
   --animate-breathe: breathe 1.8s ease-in-out infinite;
@@ -258,6 +285,14 @@
   [role="button"]:not(:disabled) {
     cursor: pointer;
   }
+  /*
+   * Keyboard focus is always visible: the same ring colour as the shadcn controls, drawn as an outline
+   * so it follows each element's own radius. Components that draw their own ring set outline-none.
+   */
+  :where(button, a[href], summary, [role="button"], [role="tab"], [role="link"], [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--ring) 60%, transparent);
+    outline-offset: 2px;
+  }
   ::selection {
     background: color-mix(in oklab, var(--primary) 22%, transparent);
   }
@@ -267,7 +302,7 @@
 /* Layered, so a size passed to <Markdown className> wins over the default. */
 @layer components {
   .prose-chat {
-    font-size: 15px;
+    font-size: var(--text-body);
     line-height: 1.62;
     overflow-wrap: anywhere;
   }

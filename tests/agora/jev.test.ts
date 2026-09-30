@@ -28,6 +28,7 @@ test("Jev judges a second look worth a turn: Agoryx says so, and only that agent
     const messages = room.store.state.messages;
     const note = messages.find((message) => message.author === "agoryx" && message.text.startsWith("Jev:"))!;
     assert.equal(note.text, "Jev: a second look at Claude's answer seems worth a turn (Codex 81%) — Codex takes a look.");
+    assert.deepEqual(note.sys, { code: "jev.second_look", agent: "Claude", readers: [{ label: "Codex", percent: 81 }] });
     assert.deepEqual(note.mentions, ["codex"]);
     const codex = room.invocations("codex");
     assert.equal(codex.length, 1, "woken by the note");
@@ -132,6 +133,7 @@ test("Jev reads a mid-turn say as meant for an idle agent, with no @: a note say
     assert.equal(ask.wakes, false, "no @: by the @ rule it wakes nobody");
     const note = state.messages.find((message) => message.author === "agoryx" && message.text.startsWith("Jev:"))!;
     assert.equal(note.text, `Jev: Claude's ${ask.id} reads as meant for Codex (Codex 93%), with no @ — Codex is woken to answer it.`);
+    assert.deepEqual(note.sys, { code: "jev.meant_for", agent: "Claude", message: ask.id, readers: [{ label: "Codex", percent: 93 }] });
     assert.deepEqual(note.mentions, ["codex"]);
     const claudeTurn = state.turns.find((turn) => turn.agent === "claude")!;
     const codexAsked = state.turns.filter((turn) => turn.agent === "codex")[1];

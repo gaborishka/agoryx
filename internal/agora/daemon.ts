@@ -8,7 +8,7 @@ import { AttentionBoard, parseView } from "./attention.js";
 import { BrowserFailure, BrowserRelay, sseHost } from "./browser.js";
 import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, originName, originOf, readAgentKey } from "./actor.js";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
-import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch } from "./engine.js";
+import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch, roomWorkspaceDiff } from "./engine.js";
 import { linkedMedia, markdownTexts } from "./media.js";
 import { agentModels } from "./models.js";
 import { locateNativeSession } from "./native.js";
@@ -790,7 +790,14 @@ export class AgoraDaemon {
           const handle = this.rooms.get(summary.id);
           if (!handle) return summary;
           // What the human has not seen is the human's: an agent key never learns it.
-          return { ...handle.store.summary(), driven: Boolean(handle.engine), ...(caller.agent ? {} : { waiting: this.attention.item(summary.id) }) };
+          if (caller.agent) return { ...handle.store.summary(), driven: Boolean(handle.engine) };
+          const unread = this.attention.unread(summary.id);
+          return {
+            ...handle.store.summary(),
+            driven: Boolean(handle.engine),
+            waiting: this.attention.item(summary.id),
+            ...(unread !== undefined ? { unread } : {}),
+          };
         });
         sendJson(res, 200, { rooms });
         return;
@@ -879,6 +886,14 @@ export class AgoraDaemon {
       const result = turn ? roomTurnPatch(handle.store, turnId) : null;
       if (!turn || !result) throw new HttpError(404, "this turn changed no files");
       sendJson(res, 200, { turnId, agent: turn.agent, changes: turn.changes ?? [], ...result });
+      return;
+    }
+
+    if (action === "room-diff" && method === "GET") {
+      // Asked for, never pushed: the room's whole change against where it began.
+      const result = roomWorkspaceDiff(handle.store);
+      if (!result) throw new HttpError(404, "nothing to compare with yet: no turn has run in this room");
+      sendJson(res, 200, result);
       return;
     }
 

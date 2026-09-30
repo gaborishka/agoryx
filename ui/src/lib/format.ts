@@ -1,5 +1,8 @@
 // Small formatting helpers shared by the whole UI (Ukrainian copy).
 
+import { decisionOf, sysLine } from "./system";
+import type { SystemNote } from "./types";
+
 export const clock = (iso: string) => {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -13,14 +16,7 @@ export const secs = (ms?: number | null) => {
   return s < 60 ? `${s} с` : `${Math.floor(s / 60)} хв ${String(s % 60).padStart(2, "0")} с`;
 };
 
-/** "1 хід", "3 ходи", "5 ходів". */
-export const plural = (n: number, one: string, few: string, many: string) => {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return `${n} ${one}`;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return `${n} ${few}`;
-  return `${n} ${many}`;
-};
+export { names, plural } from "./i18n/uk";
 
 export const ago = (iso: string) => {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -85,113 +81,47 @@ export const workspaceRel = (path: string | undefined, workspace: string | undef
   return rel;
 };
 
-const OPEN_ITEMS: Array<[RegExp, (n: number) => string]> = [
-  [/^(\d+) open questions?$/, (n) => plural(n, "питання", "питання", "питань")],
-  [/^(\d+) undecided proposals?$/, (n) => plural(n, "пропозиція без рішення", "пропозиції без рішення", "пропозицій без рішення")],
-  [/^(\d+) steps? to do$/, (n) => plural(n, "крок до виконання", "кроки до виконання", "кроків до виконання")],
-];
-
-/** "1 open question, 2 steps to do" → "1 питання, 2 кроки до виконання". */
-const openItems = (list: string) =>
-  list
-    .split(", ")
-    .map((item) => {
-      for (const [pattern, say] of OPEN_ITEMS) {
-        const m = pattern.exec(item);
-        if (m) return say(Number(m[1]));
-      }
-      return item;
-    })
-    .join(", ");
-
-const SYS_TEXT: Array<[RegExp, (...m: string[]) => string]> = [
-  [
-    /^Turn budget reached \((\d+) agent turns\)\.(?: Still open on the table: (.+?) —)?.*$/s,
-    (_, n, open) => `Агенти зробили ${plural(Number(n), "хід", "ходи", "ходів")} — розмова чекає на вас.${open ? ` На столі ще відкрито: ${openItems(open)}.` : ""}`,
-  ],
-  [/^Agoryx restarted in the middle of a run.*$/s, () => "Agoryx перезапустився посеред розмови, тож її зупинено. Напишіть щось або натисніть «Продовжити»."],
-  [/^The room's canonical file is now (.+)\.$/, (_, path) => `Спільний документ кімнати тепер — \`${path}\`.`],
-  [/^The room no longer has a canonical file\.$/, () => "У кімнати більше немає спільного документа."],
-  [/^(.+) stopped the run\.$/, () => "Розмову зупинено."],
-  [/^(.+) asked for another round\.$/, (_, who) => `${who} просить ще один раунд.`],
-  [/^(.+) stopped the daemon, so the run was stopped\.$/, (_, who) => `${who} зупиняє Agoryx, тож розмову зупинено.`],
-  [/^(.+?) changed the settings: (.+)\.$/s, (_, who, what) => `${who} змінює налаштування: ${settingsText(what)}.`],
-  [/^(.+?) renamed the room to "(.+)"\.$/s, (_, who, name) => `${who} перейменовує кімнату на «${name}».`],
-  [/^(.+?) could not finish its turn: (.*)$/s, (_, who, why) => `${who}: хід не вдалося завершити — ${why}`],
-  [/^(.+?) is busy in its own session.*$/s, (_, who) => `${who} зараз говорить у своїй сесії — хід у кімнаті почнеться після цього.`],
-];
-
-/** What an agent's settings change says ("budget 5 turns per run, network off", see describeSettings), in Ukrainian. */
-const SETTING_TEXT: Array<[RegExp, (...m: string[]) => string]> = [
-  [/^budget (\d+) turns per run$/, (_, n) => `ліміт ${plural(Number(n), "хід", "ходи", "ходів")} на розмову`],
-  [/^no turn budget$/, () => "без ліміту ходів"],
-  [/^access workspace$/, () => "агенти можуть редагувати теку"],
-  [/^access readonly$/, () => "лише читання"],
-  [/^network (on|off)$/, (_, v) => `мережа ${v === "on" ? "увімкнена" : "вимкнена"}`],
-  [/^autocommit (on|off)$/, (_, v) => `автокоміти ${v === "on" ? "увімкнені" : "вимкнені"}`],
-  [/^turn limit (\d+) min$/, (_, n) => `ліміт ходу ${n} хв`],
-  [/^canonical file (.+)$/, (_, path) => `спільний документ \`${path}\``],
-  [/^no canonical file$/, () => "без спільного документа"],
-];
-
-const settingsText = (what: string) =>
-  what
-    .split(", ")
-    .map((item) => {
-      for (const [pattern, say] of SETTING_TEXT) {
-        const m = pattern.exec(item);
-        if (m) return say(...m);
-      }
-      return item;
-    })
-    .join(", ");
-
-/**
- * A system line in Ukrainian. `who`: how the UI names the one who did it, when an agent did (its own
- * or another room's): the line says so by that name, and "stopped the run" is no longer anonymous.
- */
-export const sysText = (text: string, who?: string) => {
-  if (who) {
-    const stopped = /^(.+) stopped the run\.$/.exec(text);
-    if (stopped) return `${who} зупиняє розмову.`;
-    const round = /^(.+) asked for another round\.$/.exec(text);
-    if (round) return `${who} просить ще один раунд.`;
-  }
-  for (const [pattern, say] of SYS_TEXT) {
-    const m = pattern.exec(text);
-    if (m) return who && m.length > 1 ? say(m[0]!, who, ...m.slice(2)) : say(...m);
-  }
-  return text;
-};
-
-export const isSysError = (text: string) => /error|failed|could not finish|timed out|rate limit/i.test(text);
-
 export const passNote = (text: string) => {
   const t = text.trim();
   if (!t || /^::pass::$/i.test(t)) return "";
   return text.replace(/^[`"'*_\s]*::pass::[`"'*_\s.:—–-]*/i, "").trim();
 };
 
-/** "Claude", "Claude і Codex", "Opus, Sonnet і Codex": a room may seat any number of agents. */
-export const names = (list: string[]) => (list.length <= 1 ? (list[0] ?? "") : `${list.slice(0, -1).join(", ")} і ${list.at(-1)}`);
+type Last = { author: string; text: string; label?: string; sys?: SystemNote };
 
 /** The last line in a room list, in parts: who said it (by label — any agent, not only Claude and Codex) and a preview. */
-export const roomPreviewParts = (last: { author: string; text: string; label?: string } | undefined): { who: string; text: string } => {
+export const roomPreviewParts = (last: Last | undefined): { who: string; text: string } => {
   if (!last) return { who: "", text: "Ще без повідомлень" };
-  return { who: last.label ?? (last.author === "agoryx" ? "" : "Ви"), text: preview(last.text) };
+  // A line Agoryx wrote (a decision) in the UI's words; an older decision by its English.
+  const said = last.sys ? sysLine(last) : decisionOf(last) ? sysLine(last) : last.text;
+  return { who: last.label ?? (last.author === "agoryx" ? "" : "Ви"), text: preview(said) };
 };
 
-export const roomPreview = (last: { author: string; text: string; label?: string } | undefined) => {
+export const roomPreview = (last: Last | undefined) => {
   const { who, text } = roomPreviewParts(last);
   return `${who ? `${who}: ` : ""}${text}`;
 };
 
+/**
+ * Markdown's marks out and nothing else: headings, quotes, table bars, and emphasis, code or strike marks only
+ * where they come in pairs, so `test_calc.py`, `a * b` and `x > 0` read as written.
+ */
+export const unmark = (text: string) =>
+  text
+    .replace(/^[ \t]{0,3}(?:#{1,6}|>+)[ \t]?/gm, "")
+    .replace(/^[ \t]*\|[ \t:|-]*-[ \t:|-]*\|[ \t]*$/gm, "")
+    .replace(/^[ \t]*\|(.*)\|[ \t]*$/gm, (_, row: string) => row.replace(/\|/g, " "))
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/(^|[\s(«"'])(\*\*|__|~~)(?=\S)(.+?)(?<=\S)\2(?=[\s).,!?:;»"']|$)/gm, "$1$3")
+    .replace(/(^|[\s(«"'])([*_])(?=\S)(.+?)(?<=\S)\2(?=[\s).,!?:;»"']|$)/gm, "$1$3");
+
 /** Plain one-line preview of a markdown message. */
 export const preview = (text: string) =>
-  sysText(text)
-    .replace(/```[\s\S]*?(```|$)/g, " ")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/[#>*_`~|]/g, "")
+  unmark(
+    text
+      .replace(/```[\s\S]*?(```|$)/g, " ")
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1"),
+  )
     .replace(/\s+/g, " ")
     .trim();

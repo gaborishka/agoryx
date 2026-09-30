@@ -338,7 +338,33 @@ export const treeChanges = (
   // A turn that rewrote hundreds of files keeps its file list, without counts.
   if (files.length > MAX_PATHSPECS) return null;
   const prefix = repoPrefix(root);
-  const specs = files.map((file) => `:(top,literal)${prefix}${file}`);
+  return diffTrees(root, before, after, files.map((file) => `:(top,literal)${prefix}${file}`));
+};
+
+/**
+ * Everything that differs between `before` (a tree or commit) and the workspace as it is now: tracked and
+ * untracked files, .gitignore respected, Agoryx's own .agoryx/ left out. Null when git can't tell.
+ */
+export const workspaceDiff = (root: string, before: string): { changes: FileChange[]; patch: string; truncated: boolean } | null => {
+  // A tree git has since pruned (or never had) says nothing.
+  if (track(root, ["cat-file", "-e", before]) === null) return null;
+  const after = snapshotTree(root);
+  if (!after) return null;
+  return diffTrees(root, before, after, [".", `:(exclude)${AGORYX_DIR}`]);
+};
+
+/** Where `HEAD` forked from `base`: the commit a worktree room's branch started at, as far as git knows now. */
+export const forkPoint = (root: string, base: string): string | null => {
+  if (base.startsWith("-")) return null;
+  return track(root, ["merge-base", "HEAD", base])?.trim() || null;
+};
+
+const diffTrees = (
+  root: string,
+  before: string,
+  after: string,
+  specs: string[],
+): { changes: FileChange[]; patch: string; truncated: boolean } | null => {
   // --relative: paths in the counts and the patch are the workspace's, like everywhere else in the room.
   const base = ["-c", "core.quotepath=off", "diff", "--no-renames", "--no-ext-diff", "--no-color", "--relative", before, after];
   const numstat = track(root, [...base, "--numstat", "-z", "--", ...specs]);

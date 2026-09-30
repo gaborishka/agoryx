@@ -1,5 +1,5 @@
 import type { AgentLook } from "@agora/look";
-import type { AgentPresence, AttentionItem, RoomState, TableOp } from "@agora/types";
+import type { AgentPresence, AttentionItem, RoomAgent, RoomState, SystemNote, TableOp } from "@agora/types";
 
 export type * from "@agora/types";
 
@@ -11,11 +11,20 @@ export interface RoomSummary {
   updatedAt: string;
   messages: number;
   /** `label`: the author's display name when an agent wrote it; `look`: its shade and mark, only next to another of its kind. */
-  lastMessage?: { author: string; text: string; label?: string; look?: AgentLook };
+  lastMessage?: { author: string; text: string; label?: string; look?: AgentLook; sys?: SystemNote };
   running: boolean;
+  /** Who sits in the room, in roster order. */
+  agents?: Array<Pick<RoomAgent, "id" | "kind" | "label">>;
+  /** Whose turn runs now, and since when. */
+  working?: Array<{ agent: string; since: string }>;
+  /** The folder the human started the room in; absent when Agoryx made one. */
+  folder?: string;
+  branch?: string;
   driven?: boolean;
   /** The room waits for the human (the daemon sends it to the human only). */
   waiting?: AttentionItem;
+  /** Messages from others since the human last looked (attention.json's seen cursor); the human's only. */
+  unread?: number;
 }
 
 export interface StreamBuffer {

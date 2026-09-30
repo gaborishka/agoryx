@@ -98,7 +98,7 @@ const rosterEntry = ({ id, kind, label, model, effort, profile }: RoomAgent) => 
 });
 
 const footChip =
-  "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] text-muted-foreground transition hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground";
+  "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-small text-muted-foreground transition hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
 /** You and the agents at one table (Claude and Codex unless agents.json says otherwise): the lines are the conversation between all of you. */
 function Seats({ agents }: { agents: RoomAgent[] }) {
@@ -134,7 +134,7 @@ function Seats({ agents }: { agents: RoomAgent[] }) {
   }) => (
     <span className="flex flex-col items-center gap-1.5">
       {children}
-      <span className="text-[11.5px] font-medium tracking-wide text-muted-foreground">
+      <span className="text-meta font-medium tracking-wide text-muted-foreground">
         {label}
       </span>
     </span>
@@ -172,8 +172,8 @@ function Seats({ agents }: { agents: RoomAgent[] }) {
 function PopHead({ title, text }: { title: string; text: string }) {
   return (
     <div className="flex flex-col gap-1">
-      <div className="text-[13.5px] font-semibold">{title}</div>
-      <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+      <div className="text-ui font-semibold">{title}</div>
+      <p className="text-small leading-relaxed text-muted-foreground">
         {text}
       </p>
     </div>
@@ -215,7 +215,7 @@ function DocChip({
         <span
           className={cn(
             "max-w-[150px] truncate",
-            value && "font-mono text-[12px] text-foreground",
+            value && "font-mono text-meta text-foreground",
           )}
         >
           {value ?? "Без документа"}
@@ -233,12 +233,12 @@ function DocChip({
               key={name}
               type="button"
               onClick={() => pick(name)}
-              className="flex h-8 items-center gap-2 rounded-lg px-2 text-left font-mono text-[12.5px] hover:bg-accent"
+              className="flex h-8 items-center gap-2 rounded-lg px-2 text-left font-mono text-small hover:bg-accent"
             >
               <FileTextIcon className="size-3.5 text-muted-foreground" />
               <span className="flex-1 truncate">{name}</span>
               {name === fallback ? (
-                <span className="font-sans text-[11px] text-faint">типово</span>
+                <span className="font-sans text-micro text-faint">типово</span>
               ) : null}
               {value === name ? (
                 <CheckIcon className="size-3.5 text-primary" />
@@ -248,12 +248,12 @@ function DocChip({
           <button
             type="button"
             onClick={() => pick(null)}
-            className="flex h-8 items-center gap-2 rounded-lg px-2 text-left text-[13px] hover:bg-accent"
+            className="flex h-8 items-center gap-2 rounded-lg px-2 text-left text-small hover:bg-accent"
           >
             <FileXIcon className="size-3.5 text-muted-foreground" />
             <span className="flex-1">Без документа</span>
             {fallback === null ? (
-              <span className="text-[11px] text-faint">типово</span>
+              <span className="text-micro text-faint">типово</span>
             ) : null}
             {value === null ? (
               <CheckIcon className="size-3.5 text-primary" />
@@ -273,7 +273,7 @@ function DocChip({
             onChange={(event) => setDraft(event.target.value)}
             placeholder="docs/spec.md"
             spellCheck={false}
-            className="h-8 font-mono text-[12.5px]"
+            className="h-8 font-mono text-small"
           />
           <Button
             type="submit"
@@ -334,7 +334,7 @@ function BudgetChip({
                 type="button"
                 onClick={() => set(n)}
                 className={cn(
-                  "tabular h-7 rounded-md text-[13px] transition",
+                  "tabular h-7 rounded-md text-small transition",
                   budget === n
                     ? "bg-card font-semibold text-foreground shadow-soft"
                     : "text-muted-foreground hover:text-foreground",
@@ -353,7 +353,7 @@ function BudgetChip({
             >
               <MinusIcon className="size-3.5" />
             </button>
-            <span className="tabular w-7 text-center text-[13px] font-semibold">
+            <span className="tabular w-7 text-center text-small font-semibold">
               {budget ?? "—"}
             </span>
             <button
@@ -367,7 +367,7 @@ function BudgetChip({
           </div>
         </div>
         {budget !== null && (
-          <p className="mt-2.5 text-[12px] text-faint">
+          <p className="mt-2.5 text-meta text-faint">
             Незалежні перші відповіді теж рахуються — це вже 2 ходи.
           </p>
         )}
@@ -398,12 +398,12 @@ function Steps({ budget }: { budget: number | null }) {
     <ol className="grid gap-x-6 gap-y-3 sm:grid-cols-3">
       {steps.map((step, i) => (
         <li key={step.title} className="flex gap-2.5">
-          <span className="tabular mt-px grid size-5 shrink-0 place-items-center rounded-full border border-border text-[11px] font-semibold text-muted-foreground">
+          <span className="tabular mt-px grid size-5 shrink-0 place-items-center rounded-full border border-border text-micro font-semibold text-muted-foreground">
             {i + 1}
           </span>
           <span className="flex flex-col gap-0.5">
-            <span className="text-[13px] font-semibold">{step.title}</span>
-            <span className="text-[12.5px] leading-snug text-muted-foreground">
+            <span className="text-small font-semibold">{step.title}</span>
+            <span className="text-small leading-snug text-muted-foreground">
               {step.text}
             </span>
           </span>
@@ -537,7 +537,7 @@ export function StartScreen() {
                   ? `Спільна кімната для вас, ${who}`
                   : "Про що поговоримо?"}
               </h1>
-              <p className="max-w-[52ch] text-[15px] leading-relaxed text-pretty text-muted-foreground">
+              <p className="max-w-[52ch] text-body leading-relaxed text-pretty text-muted-foreground">
                 Одна розмова на всіх. Кожен агент працює у власній рідній
                 сесії, з усіма своїми інструментами, і бачить усе, що сказано в
                 кімнаті.
@@ -548,10 +548,10 @@ export function StartScreen() {
           <div className="flex flex-col gap-2">
             <form
               onSubmit={submit}
-              className="rounded-[24px] border border-input bg-card shadow-lift transition focus-within:border-ring/35"
+              className="rounded-3xl border border-input bg-card shadow-lift transition focus-within:border-ring/35"
             >
-              <div className="flex flex-wrap items-start gap-x-2 gap-y-1 rounded-t-[24px] border-b border-border/80 bg-muted/50 px-3 py-2">
-                <span className="pr-0.5 pl-1 text-[12px] leading-8 text-faint">
+              <div className="flex flex-wrap items-start gap-x-2 gap-y-1 rounded-t-3xl border-b border-border/80 bg-muted/50 px-3 py-2">
+                <span className="pr-0.5 pl-1 text-meta leading-8 text-faint">
                   Працюють у
                 </span>
                 <FolderBar
@@ -581,7 +581,8 @@ export function StartScreen() {
                 }}
                 placeholder={`Опишіть задачу чи питання для ${who}…`}
                 aria-label="Перше повідомлення"
-                className="scroll-thin block min-h-[108px] w-full resize-none bg-transparent px-5 pt-4 text-[16px] leading-relaxed outline-none placeholder:text-faint"
+                data-composer
+                className="scroll-thin block min-h-[108px] w-full resize-none bg-transparent px-5 pt-4 text-lead leading-relaxed outline-none placeholder:text-faint"
               />
               <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2.5">
                 {seated.map((agent) => (
@@ -591,7 +592,7 @@ export function StartScreen() {
                     seating={{ agents: seated }}
                     models={models}
                     side="bottom"
-                    className="h-8 rounded-full px-2.5 text-[12.5px] text-muted-foreground hover:text-foreground"
+                    className="h-8 rounded-full px-2.5 text-small text-muted-foreground hover:text-foreground"
                     onSet={(change) => pick(agent.id, change)}
                   />
                 ))}
@@ -615,15 +616,15 @@ export function StartScreen() {
               </div>
             </form>
             {rosterError ? (
-              <div role="alert" className="flex flex-col gap-1.5 rounded-2xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-[13px]">
+              <div role="alert" className="flex flex-col gap-1.5 rounded-2xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-small">
                 <span className="font-semibold text-destructive">Склад агентів не читається — кімнату не почати, доки його не виправлено</span>
-                <span className="font-mono text-[12px] break-words whitespace-pre-wrap text-muted-foreground">{rosterError}</span>
+                <span className="font-mono text-meta break-words whitespace-pre-wrap text-muted-foreground">{rosterError}</span>
                 <Button type="button" variant="outline" size="sm" className="self-start" onClick={loadRoster}>
                   Перевірити знову
                 </Button>
               </div>
             ) : null}
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 text-[12px] text-faint">
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 text-meta text-faint">
               <span>
                 Назва кімнати — з першого рядка; змінити можна будь-коли
               </span>
@@ -645,14 +646,14 @@ export function StartScreen() {
                 }}
                 className="group flex flex-col gap-1.5 rounded-2xl border border-border bg-card/60 p-3.5 text-left transition hover:-translate-y-px hover:border-input hover:bg-card hover:shadow-soft"
               >
-                <span className="flex items-center gap-2 text-[13px] font-semibold">
+                <span className="flex items-center gap-2 text-small font-semibold">
                   <span className="grid size-6 place-items-center rounded-lg bg-secondary text-primary">
                     <Icon className="size-3.5" />
                   </span>
                   {title}
                   <ArrowRightIcon className="ml-auto size-3.5 -translate-x-1 text-faint opacity-0 transition group-hover:translate-x-0 group-hover:opacity-100" />
                 </span>
-                <span className="text-[12.5px] leading-snug text-muted-foreground">
+                <span className="text-small leading-snug text-muted-foreground">
                   {example}
                 </span>
               </button>

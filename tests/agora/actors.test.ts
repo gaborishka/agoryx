@@ -14,7 +14,7 @@ import { createCodexRunner } from "../../internal/agora/runners/codex.js";
 import { eventPatch } from "../../internal/agora/snapshot.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { DEFAULT_SETTINGS, type RoomEvent, type RoomState } from "../../internal/agora/types.js";
-import { sysText } from "../../ui/src/lib/format.js";
+import { sysLine } from "../../ui/src/lib/system.js";
 import { participant } from "../../ui/src/lib/room.js";
 import { createTestRoom, withTimeout, writeFakeBins } from "./helpers.js";
 
@@ -398,17 +398,17 @@ test("a log from before authors were recorded reads as it did", () => {
     assert.equal(reopened.runs[0]?.status, "ended");
     assert.equal(eventPatch(reopened, store.events.at(-1)!).guests, undefined, "no guests in a patch that names none");
     // The UI's lines from those logs are unchanged.
-    assert.equal(sysText("Ivan stopped the run."), "Розмову зупинено.");
-    assert.equal(sysText("Ivan asked for another round."), "Ivan просить ще один раунд.");
+    assert.equal(sysLine({ text: "Ivan stopped the run." }), "Розмову зупинено.");
+    assert.equal(sysLine({ text: "Ivan asked for another round." }), "Ivan просить ще один раунд.");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test("the UI says which agent acted, and names an agent of another room with its room", () => {
-  assert.equal(sysText("Codex stopped the run.", "Codex"), "Codex зупиняє розмову.");
-  assert.equal(sysText("Claude changed the settings: budget 5 turns per run, network off.", "Claude"), "Claude змінює налаштування: ліміт 5 ходів на розмову, мережа вимкнена.");
-  assert.equal(sysText('Codex renamed the room to "Parser".', "Codex"), "Codex перейменовує кімнату на «Parser».");
+  assert.equal(sysLine({ text: "Codex stopped the run." }, "Codex"), "Codex зупиняє розмову.");
+  assert.equal(sysLine({ text: "Claude changed the settings: budget 5 turns per run, network off." }, "Claude"), "Claude змінює налаштування: ліміт 5 ходів на розмову, мережа вимкнена.");
+  assert.equal(sysLine({ text: 'Codex renamed the room to "Parser".' }, "Codex"), "Codex перейменовує кімнату на «Parser».");
   const seating = {
     agents: [{ id: "claude", kind: "claude" as const, label: "Claude" }],
     human: "Ivan",

@@ -83,7 +83,42 @@ export interface RoomMessage {
   nonce?: string;
   /** The author is an agent of another room (its key used here). */
   from?: ActorOrigin;
+  /**
+   * What a line Agoryx writes (a system line, a decision) means, as a stable code and its params: a reader
+   * says it in its own words (the UI, in Ukrainian). `text` stays the English line for the terminal, the
+   * agents and older readers. Absent on messages from before codes existed.
+   */
+  sys?: SystemNote;
 }
+
+/** Who asked for a second look or was meant by a message, and how sure Jev was (0–100). */
+export interface JevShare {
+  label: string;
+  percent: number;
+}
+
+/**
+ * The codes of the lines Agoryx writes. `by`, `agent`: labels as the room shows them (the human's name,
+ * an agent's label, a guest's "<agent>@<room>"). A code keeps its params once shipped; a new meaning is a new code.
+ */
+export type SystemNote =
+  | { code: "run.restarted" }
+  | { code: "run.budget"; turns: number; open: { questions: number; options: number; steps: number; disputes: number } }
+  | { code: "run.stopped"; by: string }
+  | { code: "run.continued"; by: string }
+  | { code: "daemon.stopped"; by: string }
+  | { code: "doc.set"; path: string }
+  | { code: "doc.cleared" }
+  | { code: "settings.changed"; by: string; patch: Partial<RoomSettings> }
+  | { code: "room.renamed"; by: string; name: string }
+  | { code: "agent.changed"; by: string; agent: string; model?: string | null; effort?: string | null }
+  | { code: "turn.failed"; agent: string; cli: AgentKind; error: TurnError["kind"]; message: string }
+  | { code: "agent.busy"; agent: string }
+  | { code: "jev.second_look"; agent: string; readers: JevShare[] }
+  | { code: "jev.meant_for"; agent: string; message: string; readers: JevShare[] }
+  | { code: "decision"; n: number; option: string; title: string; note?: string; by: string };
+
+export type SystemCode = SystemNote["code"];
 
 /**
  * An agent of another room acting here with its own room's key (see actor.ts): the room records

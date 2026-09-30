@@ -75,12 +75,12 @@ export function DataTable({ text, sep, cut, limit = 200, className }: { text: st
       }),
     [body, width],
   );
-  if (!rows.length) return <p className="text-[13px] text-muted-foreground">Порожня таблиця.</p>;
+  if (!rows.length) return <p className="text-small text-muted-foreground">Порожня таблиця.</p>;
   const shown = body.slice(0, limit);
   return (
     <div className={cn("overflow-hidden rounded-xl border border-border bg-card", className)}>
       <div className="max-h-[420px] overflow-auto">
-        <table className="w-full border-collapse text-[12.5px]">
+        <table className="w-full border-collapse text-small">
           <thead className="sticky top-0 z-10 bg-muted">
             <tr>
               {Array.from({ length: width }, (_, col) => (
@@ -103,7 +103,7 @@ export function DataTable({ text, sep, cut, limit = 200, className }: { text: st
           </tbody>
         </table>
       </div>
-      <div className="border-t border-border px-2.5 py-1.5 text-[11.5px] text-muted-foreground tabular">
+      <div className="border-t border-border px-2.5 py-1.5 text-meta text-muted-foreground tabular">
         {plural(body.length, "рядок", "рядки", "рядків")}
         {cut ? "+" : ""} · {plural(width, "стовпець", "стовпці", "стовпців")}
         {body.length > limit || cut ? ` · показано перші ${limit}` : ""}
@@ -115,7 +115,7 @@ export function DataTable({ text, sep, cut, limit = 200, className }: { text: st
 /** A workspace CSV/TSV, fetched and shown as a table. */
 export function CsvFile({ url, name, className }: { url: string; name: string; className?: string }) {
   const file = useRawText(url);
-  if (file.error) return <p className="text-[13px] text-destructive">{file.error}</p>;
+  if (file.error) return <p className="text-small text-destructive">{file.error}</p>;
   if (file.text === undefined) return <div className={cn("h-24 animate-pulse rounded-xl bg-muted", className)} />;
   return <DataTable text={file.text} sep={name.toLowerCase().endsWith(".tsv") ? "\t" : ","} cut={file.cut} className={className} />;
 }

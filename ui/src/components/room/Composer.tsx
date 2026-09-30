@@ -4,7 +4,6 @@ import {
   ChevronDownIcon,
   CornerDownLeftIcon,
   EyeIcon,
-  FileIcon,
   FolderOpenIcon,
   GitBranchIcon,
   LoaderCircleIcon,
@@ -19,10 +18,12 @@ import {
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Avatar, Stats } from "@/components/room/bits";
+import { Kbd } from "@/components/ui/kbd";
+import { Avatar } from "@/components/room/bits";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { local, Unauthorized } from "@/lib/api";
+import { useRoomDiff } from "@/lib/changes";
+import { keyLabel } from "@/lib/keys";
 import { baseName, names as nameList, plural } from "@/lib/format";
 import type { AgentModels, RoomAgent, RoomState } from "@/lib/types";
 import { useModels } from "@/lib/models";
@@ -62,7 +63,7 @@ export function StatusBar() {
     );
   }
   if (!rows.length) return null;
-  return <div className="flex w-full flex-col gap-1.5 px-1 text-[13px]">{rows}</div>;
+  return <div className="flex w-full flex-col gap-1.5 px-1 text-small">{rows}</div>;
 }
 
 export const autosize = (ta: HTMLTextAreaElement | null, max = 0.4) => {
@@ -149,7 +150,7 @@ export function Composer() {
       <RoomStrip />
       <form
         className={cn(
-          "rounded-[18px] border border-input bg-card shadow-soft transition focus-within:border-ring/60 focus-within:shadow-lift",
+          "rounded-2xl border border-input bg-card shadow-soft transition focus-within:border-ring/60 focus-within:shadow-lift",
           !driven && "opacity-60",
         )}
         onSubmit={(event) => {
@@ -167,8 +168,9 @@ export function Composer() {
             onKeyDown={onKey}
             placeholder={driven ? `Напишіть ${names}…` : "Кімнату веде інший процес — лише перегляд"}
             aria-label="Повідомлення"
-            title="Enter — надіслати, Shift+Enter — новий рядок"
-            className="scroll-thin block max-h-[40vh] min-h-[44px] overflow-y-hidden flex-1 resize-none bg-transparent py-2.5 text-[15px] leading-relaxed outline-none placeholder:text-faint"
+            aria-describedby="composer-keys"
+            data-composer
+            className="scroll-thin block max-h-[40vh] min-h-[44px] overflow-y-hidden flex-1 resize-none bg-transparent py-2.5 text-body leading-relaxed outline-none placeholder:text-faint"
           />
           <Button
             type="submit"
@@ -188,37 +190,18 @@ export function Composer() {
   );
 }
 
-/** Lines the room's turns changed, per file: what the strip's +/− counts and its list opens. */
-const roomChanges = (room: RoomState) => {
-  const files = new Map<string, { path: string; added: number; removed: number; status: string; turnId: string; binary: boolean }>();
-  for (const turn of room.turns) {
-    for (const c of turn.changes ?? []) {
-      const was = files.get(c.path);
-      files.set(c.path, {
-        path: c.path,
-        added: (was?.added ?? 0) + (c.added ?? 0),
-        removed: (was?.removed ?? 0) + (c.removed ?? 0),
-        status: c.status,
-        turnId: turn.id,
-        binary: (was?.binary ?? false) || c.added === null,
-      });
-    }
-  }
-  const list = [...files.values()];
-  return { list, added: list.reduce((n, f) => n + f.added, 0), removed: list.reduce((n, f) => n + f.removed, 0) };
-};
-
 /** Above the composer: where the room works (folder, branch), what its turns changed, and the run's state with its one action. */
 function RoomStrip() {
   const snap = useStore((s) => s.snap);
   const post = useStore((s) => s.post);
-  const openDialog = useStore((s) => s.openDialog);
+  const openFile = useStore((s) => s.openFile);
   const [busy, setBusy] = useState(false);
   const run = snap?.state.runs.at(-1);
   useEffect(() => setBusy(false), [run?.id, run?.status, run?.budget]);
   if (!snap) return null;
   const room = snap.state;
-  const changes = roomChanges(room);
+  // The pill counts what "Уся кімната" shows: the folder against where the room began, once a turn changed files.
+  const changed = room.turns.some((t) => t.changes?.length);
   const working = room.agents.filter((a) => snap.presence?.[a.id] === "working").map((a) => a.label);
   const act = (suffix: string) => {
     setBusy(true);
@@ -232,12 +215,12 @@ function RoomStrip() {
   const folder = room.worktree ? baseName(room.worktree.repo) : baseName(room.workspace);
 
   return (
-    <div className="flex min-h-10 items-center gap-2 rounded-[14px] bg-secondary/70 py-1.5 pr-1.5 pl-3.5 text-[13px]">
+    <div className="flex min-h-10 items-center gap-2 rounded-xl bg-secondary/70 py-1.5 pr-1.5 pl-3.5 text-small">
       <button
         type="button"
-        onClick={() => openDialog({ kind: "files" })}
-        title={room.workspace}
-        className="flex min-w-0 shrink items-center gap-2.5 font-mono text-[12.5px] text-muted-foreground transition hover:text-foreground"
+        onClick={() => openFile(null)}
+        title={`${room.workspace} — файли`}
+        className="flex min-w-0 shrink items-center gap-2.5 font-mono text-small text-muted-foreground transition hover:text-foreground"
       >
         <span className="truncate">{folder}</span>
         {room.worktree ? (
@@ -248,7 +231,7 @@ function RoomStrip() {
         ) : null}
       </button>
       {active || waiting ? (
-        <span className="flex min-w-0 flex-1 items-center justify-end gap-2 truncate text-[13px]">
+        <span className="flex min-w-0 flex-1 items-center justify-end gap-2 truncate text-small">
           <span className={cn(dot, active ? "animate-breathe bg-primary" : "bg-amber")} />
           <span className="truncate">
             {active
@@ -264,14 +247,14 @@ function RoomStrip() {
       ) : (
         <span className="flex-1" />
       )}
-      {changes.list.length ? <ChangesPill changes={changes} /> : null}
+      {changed ? <ChangesPill room={room} /> : null}
       {active ? (
-        <Button size="sm" variant="outline" className="h-7 rounded-[9px] bg-card text-destructive hover:bg-destructive-soft hover:text-destructive" disabled={busy} onClick={() => act("/stop")}>
+        <Button size="sm" variant="outline" className="h-7 rounded-md bg-card text-destructive hover:bg-destructive-soft hover:text-destructive" disabled={busy} onClick={() => act("/stop")}>
           <SquareIcon className="size-3 fill-current" />
           Зупинити
         </Button>
       ) : waiting ? (
-        <Button size="sm" variant="outline" className="h-7 rounded-[9px] bg-card" disabled={busy} onClick={() => act("/continue")}>
+        <Button size="sm" variant="outline" className="h-7 rounded-md bg-card" disabled={busy} onClick={() => act("/continue")}>
           <PlayIcon className="size-3 fill-current" />
           Продовжити
         </Button>
@@ -280,49 +263,31 @@ function RoomStrip() {
   );
 }
 
-function ChangesPill({ changes }: { changes: ReturnType<typeof roomChanges> }) {
-  const openDialog = useStore((s) => s.openDialog);
-  const [open, setOpen] = useState(false);
+function ChangesPill({ room }: { room: RoomState }) {
+  const openChanges = useStore((s) => s.openChanges);
+  const on = useStore((s) => s.panel === "diff" && s.changes.scope === "room");
+  const diff = useRoomDiff(room).data;
+  if (!diff?.changes.length) return null;
+  let added = 0;
+  let removed = 0;
+  for (const c of diff.changes) {
+    added += c.added ?? 0;
+    removed += c.removed ?? 0;
+  }
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          title="Рядки, які змінили ходи агентів у цій кімнаті"
-          className="tabular inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[9px] border border-border bg-card px-2.5 font-mono text-[12.5px] transition hover:border-ring/50"
-        >
-          <span className="text-add-ink">+{changes.added.toLocaleString("en-US")}</span>
-          <span className="text-del-ink">−{changes.removed.toLocaleString("en-US")}</span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-[340px] p-1">
-        <div className="px-2 py-1.5 text-[11.5px] text-muted-foreground">
-          {plural(changes.list.length, "файл", "файли", "файлів")} змінено ходами агентів — натисніть, щоб побачити останню зміну
-        </div>
-        <div className="scroll-thin max-h-[40vh] overflow-y-auto">
-          {changes.list.map((f) => (
-            <button
-              key={f.path}
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                openDialog({ kind: "turn-diff", turnId: f.turnId, path: f.path });
-              }}
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
-            >
-              <FileIcon className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
-                <span className="text-muted-foreground">{f.path.includes("/") ? f.path.slice(0, f.path.lastIndexOf("/") + 1) : ""}</span>
-                {baseName(f.path)}
-              </span>
-              <span className="shrink-0 text-[12px]">
-                <Stats added={f.added} removed={f.removed} deleted={f.status === "D"} binary={f.binary} />
-              </span>
-            </button>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
+    <button
+      type="button"
+      title={`${plural(diff.changes.length, "файл", "файли", "файлів")} змінено в теці — усі зміни кімнати`}
+      aria-pressed={on}
+      onClick={() => openChanges({ scope: "room" })}
+      className={cn(
+        "tabular inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 font-mono text-small transition hover:border-ring/50",
+        on && "border-ring/50",
+      )}
+    >
+      <span className="text-add-ink">+{added.toLocaleString("en-US")}</span>
+      <span className="text-del-ink">−{removed.toLocaleString("en-US")}</span>
+    </button>
   );
 }
 
@@ -351,7 +316,7 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
   const quiet = quietButton;
 
   return (
-    <div className="flex min-h-7 items-center gap-1 px-1">
+    <div className="@container flex min-h-7 items-center gap-1 px-1">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="icon" className="size-7 rounded-lg text-muted-foreground hover:text-foreground" disabled={!driven} aria-label="Звернутися" title="Звернутися до когось">
@@ -359,21 +324,21 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-[230px]">
-          <DropdownMenuLabel className="text-[11.5px] font-normal text-muted-foreground">Звернутися — будить лише названого</DropdownMenuLabel>
+          <DropdownMenuLabel className="text-meta font-normal text-muted-foreground">Звернутися — будить лише названого</DropdownMenuLabel>
           {room.agents.map((a) => (
             <DropdownMenuItem key={a.id} onSelect={() => mention(a.id)}>
               <Avatar handle={a.id} size={18} />
               {a.label}
-              <span className="ml-auto font-mono text-[11.5px] text-faint">@{a.id}</span>
+              <span className="ml-auto font-mono text-meta text-faint">@{a.id}</span>
             </DropdownMenuItem>
           ))}
           <DropdownMenuItem onSelect={() => mention("all")}>
             <UsersIcon className="size-4" />
             Усі
-            <span className="ml-auto font-mono text-[11.5px] text-faint">@all</span>
+            <span className="ml-auto font-mono text-meta text-faint">@all</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={() => openDialog({ kind: "files" })}>
+          <DropdownMenuItem onSelect={() => useStore.getState().openFile(null)}>
             <FolderOpenIcon className="size-4" />
             Робоча тека
           </DropdownMenuItem>
@@ -388,13 +353,13 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-[280px]">
-          <DropdownMenuLabel className="text-[11.5px] font-normal text-muted-foreground">Що агенти можуть робити</DropdownMenuLabel>
+          <DropdownMenuLabel className="text-meta font-normal text-muted-foreground">Що агенти можуть робити</DropdownMenuLabel>
           {ACCESS.map((m) => (
             <DropdownMenuItem key={m.id} onSelect={() => setMode(m)} className="items-start">
               <m.icon className="mt-0.5 size-4" />
               <span className="flex flex-col">
                 {m.label}
-                <span className="text-[11.5px] text-muted-foreground">{m.hint}</span>
+                <span className="text-meta text-muted-foreground">{m.hint}</span>
               </span>
               <CheckIcon className={cn("mt-0.5 ml-auto size-4", m.id === mode.id ? "opacity-100" : "opacity-0")} />
             </DropdownMenuItem>
@@ -406,7 +371,10 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <span className="flex-1" />
+      <span id="composer-keys" className={cn("min-w-0 flex-1 items-center gap-1 overflow-hidden px-1.5 text-meta whitespace-nowrap text-faint", driven ? "hidden pointer-fine:@min-[40rem]:flex" : "hidden")}>
+        <Kbd>{keyLabel("send")}</Kbd> надіслати
+        <Kbd className="ml-1.5">{keyLabel("newline")}</Kbd> новий рядок
+      </span>
       <div className="flex min-w-0 flex-wrap items-center justify-end gap-0.5">
         {room.agents.map((a) => (
           <AgentModel key={a.id} agent={a} models={models} disabled={!driven} working={presence?.[a.id] === "working"} />
@@ -417,7 +385,7 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
   );
 }
 
-const quietButton = "h-7 gap-1.5 rounded-lg px-2 text-[12.5px] font-normal text-muted-foreground hover:text-foreground";
+const quietButton = "h-7 gap-1.5 rounded-lg px-2 text-small font-normal text-muted-foreground hover:text-foreground";
 
 /** One agent in the footer: its model and effort, changed right here in one menu (for its next turn). */
 function AgentModel({ agent, models, disabled, working }: { agent: RoomAgent; models: AgentModels | null; disabled: boolean; working: boolean }) {

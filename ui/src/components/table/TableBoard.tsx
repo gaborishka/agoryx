@@ -20,7 +20,8 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Avatar, Name, Tip } from "@/components/room/bits";
-import { Clamp } from "@/components/room/Clamp";
+import { Clamp } from "@/components/common/Clamp";
+import { EmptyState } from "@/components/common/states";
 import { Markdown } from "@/components/md/Markdown";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -134,7 +135,7 @@ function Pill({ n, kind, tip }: { n: number; kind: "support" | "object" | "evide
   const [cls, Icon] = look[kind];
   return (
     <Tip tip={tip}>
-      <span className={cn("tabular inline-flex h-5 items-center gap-1 rounded-full px-1.5 text-[11.5px] font-semibold ring-1 ring-card", cls)}>
+      <span className={cn("tabular inline-flex h-5 items-center gap-1 rounded-full px-1.5 text-meta font-semibold ring-1 ring-card", cls)}>
         <Icon className="size-3" />
         {n}
       </span>
@@ -150,7 +151,7 @@ function EdgeRow({ x, room }: { x: Edge; room: RoomState }) {
     <li className="flex items-center gap-2">
       <span className="flex w-[5.5rem] shrink-0 items-center gap-1.5 sm:w-24">
         <Avatar handle={x.from} size={22} />
-        <Name handle={x.from} className="truncate text-[12.5px]" />
+        <Name handle={x.from} className="truncate text-small" />
       </span>
       <span className="relative flex h-7 min-w-16 flex-1 items-center justify-center">
         <span className={cn("absolute inset-x-0 top-1/2 border-t-2 border-dashed", hostile ? "border-destructive/35" : "border-add-ink/30")} />
@@ -163,7 +164,7 @@ function EdgeRow({ x, room }: { x: Edge; room: RoomState }) {
         </span>
       </span>
       <span className="flex w-[5.5rem] shrink-0 items-center justify-end gap-1.5 sm:w-24">
-        <Name handle={x.to} className="truncate text-[12.5px]" />
+        <Name handle={x.to} className="truncate text-small" />
         <Avatar handle={x.to} size={22} />
       </span>
     </li>
@@ -173,7 +174,7 @@ function EdgeRow({ x, room }: { x: Edge; room: RoomState }) {
 function TallyRow({ who, t }: { who: string; t: Tally }) {
   const cell = "tabular inline-flex items-center gap-1";
   return (
-    <li className="flex items-center gap-2 text-[12.5px]">
+    <li className="flex items-center gap-2 text-small">
       <Avatar handle={who} size={20} />
       <Name handle={who} className="min-w-0 truncate" />
       <span className="ml-auto flex items-center gap-3 text-muted-foreground">
@@ -237,8 +238,8 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
     <section className="overflow-hidden rounded-3xl border border-border bg-card shadow-soft">
       <div className="grid @3xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
         <div className="flex min-w-0 flex-col gap-4 p-5 sm:p-6">
-          <span className="text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">Де ми зараз</span>
-          <h2 className="flex flex-wrap gap-x-6 gap-y-1.5 font-serif text-[21px] leading-tight font-semibold tracking-tight sm:text-[24px]">
+          <span className="text-micro font-semibold tracking-[0.12em] text-muted-foreground uppercase">Де ми зараз</span>
+          <h2 className="flex flex-wrap gap-x-6 gap-y-1.5 font-serif text-title leading-tight font-semibold tracking-tight sm:text-display">
             {parts.length ? (
               parts.map(([text, tone]) => (
                 <span key={text} className={cn("inline-flex items-center gap-2.5 whitespace-nowrap", tone)}>
@@ -250,7 +251,7 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
               <span className="text-muted-foreground">На столі ще нічого не зважено</span>
             )}
           </h2>
-          {settled && parts.length ? <p className="-mt-2 text-[13.5px] text-muted-foreground">Відкритого нічого не лишилось — усе, що було на столі, закрито.</p> : null}
+          {settled && parts.length ? <p className="-mt-2 text-ui text-muted-foreground">Відкритого нічого не лишилось — усе, що було на столі, закрито.</p> : null}
           {hot ? (
             <button
               type="button"
@@ -261,12 +262,12 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
                 <FlameIcon className="size-4" />
               </span>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="text-[11.5px] font-semibold text-destructive">Найгарячіше зараз</span>
-                <span className="text-[14.5px] leading-snug font-semibold text-pretty">
-                  <span className="mr-1 font-mono text-[12px] text-muted-foreground">{hot.id}</span>
+                <span className="text-meta font-semibold text-destructive">Найгарячіше зараз</span>
+                <span className="text-body leading-snug font-semibold text-pretty">
+                  <span className="mr-1 font-mono text-meta text-muted-foreground">{hot.id}</span>
                   {hot.title}
                 </span>
-                <span className="text-[12px] text-muted-foreground">
+                <span className="text-meta text-muted-foreground">
                   {(() => {
                     const { sup, obj } = noteCounts(table, hot.id);
                     return `${plural(obj, "заперечення", "заперечення", "заперечень")} проти ${plural(sup, "підтримки", "підтримок", "підтримок")} · пропонує ${name(hot.by)}`;
@@ -285,12 +286,12 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
                 <FlameIcon className="size-4" />
               </span>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="text-[11.5px] font-semibold text-destructive">Оскаржено</span>
-                <span className="line-clamp-2 text-[14.5px] leading-snug font-semibold text-pretty">
-                  <span className="mr-1 font-mono text-[12px] text-muted-foreground">{hotPoint.id}</span>
+                <span className="text-meta font-semibold text-destructive">Оскаржено</span>
+                <span className="line-clamp-2 text-body leading-snug font-semibold text-pretty">
+                  <span className="mr-1 font-mono text-meta text-muted-foreground">{hotPoint.id}</span>
                   {hotPoint.text}
                 </span>
-                <span className="text-[12px] text-muted-foreground">
+                <span className="text-meta text-muted-foreground">
                   {hotPoint.id.startsWith("F") ? "факт" : "узгодив"} {name(hotPoint.by)} · заперечує {disputeOf(table, hotPoint).map(name).join(", ")}
                 </span>
               </span>
@@ -306,19 +307,19 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
                 <CircleHelpIcon className="size-4" />
               </span>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="text-[11.5px] font-semibold text-amber">Чекає варіантів</span>
-                <span className="line-clamp-2 text-[14.5px] leading-snug font-semibold text-pretty">{waiting.text}</span>
+                <span className="text-meta font-semibold text-amber">Чекає варіантів</span>
+                <span className="line-clamp-2 text-body leading-snug font-semibold text-pretty">{waiting.text}</span>
               </span>
               <ArrowRightIcon className="mt-2 size-4 shrink-0 text-amber/70 transition group-hover:translate-x-0.5" />
             </button>
           ) : null}
           {lean ? (
             <div className="flex flex-col gap-2 rounded-2xl border border-amber/30 bg-amber-soft/70 p-3.5">
-              <div className="flex items-center gap-2 text-[13px] font-semibold text-amber">
+              <div className="flex items-center gap-2 text-small font-semibold text-amber">
                 <ScaleIcon className="size-4" />
                 {lean.alone ? `Сперечається лише ${name(lean.loud)}` : `${name(lean.quiet)} не заперечує ${name(lean.loud)} у відповідь`}
               </div>
-              <p className="text-[13px] leading-relaxed text-pretty text-foreground/85">
+              <p className="text-small leading-relaxed text-pretty text-foreground/85">
                 {name(lean.loud)} — {plural(lean.objections, "заперечення", "заперечення", "заперечень")} до пунктів {name(lean.quiet)}, від {name(lean.quiet)} у відповідь — жодного
                 {lean.shifts ? `, зате ${plural(lean.shifts, "зміна думки", "зміни думки", "змін думки")}` : ""}. Згода без опору буває просто ввічливістю.
               </p>
@@ -326,7 +327,7 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-8 self-start rounded-lg bg-card text-[12.5px]"
+                  className="h-8 self-start rounded-lg bg-card text-small"
                   onClick={() =>
                     composeDraft(
                       `@${lean.quiet} ${name(lean.loud)} заперечує вже ${plural(lean.objections, "раз", "рази", "разів")}, а від тебе — жодного заперечення. З чим у позиції ${name(lean.loud)} ти насправді не погоджуєшся? Якщо заперечення є — поклади його на стіл; якщо згода справжня — поясни, що саме переконало.`,
@@ -342,7 +343,7 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
         </div>
         <div className="flex min-w-0 flex-col gap-4 border-t border-border bg-muted/40 p-5 sm:p-6 @3xl:border-t-0 @3xl:border-l">
           <div className="flex flex-col gap-2.5">
-            <span className="text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">Хто кому відповідав</span>
+            <span className="text-micro font-semibold tracking-[0.12em] text-muted-foreground uppercase">Хто кому відповідав</span>
             {edges.length ? (
               <ul className="flex flex-col gap-1.5">
                 {edges.slice(0, 5).map((x) => (
@@ -350,7 +351,7 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
                 ))}
               </ul>
             ) : (
-              <p className="text-[13px] leading-relaxed text-muted-foreground">
+              <p className="text-small leading-relaxed text-muted-foreground">
                 Ще ніхто не відповів на чужу пропозицію. Коли хтось підтримає, заперечить чи змінить думку — тут з’являться стрілки.
               </p>
             )}
@@ -375,13 +376,13 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
 function NoteItem({ n }: { n: TableNote }) {
   return (
     <div id={`ti-${n.id}`} className="scroll-mt-24 rounded-xl bg-card px-3 py-2 ring-1 ring-border/60">
-      <div className="mb-0.5 flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
+      <div className="mb-0.5 flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground">
         <Avatar handle={n.by} size={16} />
         <Name handle={n.by} className="font-medium" />
         {n.source ? <NoteSource source={n.source} /> : null}
       </div>
       <Clamp max={120} more="Далі">
-        <Markdown text={n.text} className="text-[13.5px] text-foreground" />
+        <Markdown text={n.text} className="text-ui text-foreground" />
       </Clamp>
     </div>
   );
@@ -392,7 +393,7 @@ function Side({ title, Icon, tone, notes, empty }: { title: string; Icon: typeof
   const shown = all ? notes : notes.slice(0, 3);
   return (
     <div className={cn("flex min-w-0 flex-col gap-2 rounded-2xl p-2.5", tone)}>
-      <div className="flex items-center gap-1.5 px-0.5 text-[12px] font-semibold">
+      <div className="flex items-center gap-1.5 px-0.5 text-meta font-semibold">
         <Icon className="size-3.5" />
         {title}
         <span className="tabular ml-auto font-medium opacity-70">{notes.length || ""}</span>
@@ -400,10 +401,10 @@ function Side({ title, Icon, tone, notes, empty }: { title: string; Icon: typeof
       {notes.length ? (
         shown.map((n) => <NoteItem key={n.id} n={n} />)
       ) : (
-        <p className="px-0.5 pb-0.5 text-[12.5px] text-muted-foreground/80">{empty}</p>
+        <p className="px-0.5 pb-0.5 text-small text-muted-foreground/80">{empty}</p>
       )}
       {notes.length > 3 ? (
-        <button type="button" onClick={() => setAll(!all)} className="self-start rounded-md px-1.5 py-0.5 text-[12px] font-medium text-primary hover:bg-card">
+        <button type="button" onClick={() => setAll(!all)} className="self-start rounded-md px-1.5 py-0.5 text-meta font-medium text-primary hover:bg-card">
           {all ? "Згорнути" : `Ще ${notes.length - 3}`}
         </button>
       ) : null}
@@ -445,13 +446,13 @@ function Shift({ c }: { c: TableItem }) {
     <div id={`ti-${c.id}`} className="flex scroll-mt-24 gap-2.5 rounded-xl border border-shift/20 bg-shift-soft/70 px-3 py-2">
       <RefreshCcwIcon className="mt-0.5 size-4 shrink-0 text-shift" />
       <div className="min-w-0">
-        <div className="flex items-center gap-1.5 text-[11.5px]">
+        <div className="flex items-center gap-1.5 text-meta">
           <Avatar handle={c.by} size={16} />
           <Name handle={c.by} />
           <span className="font-medium text-shift">змінює думку</span>
         </div>
-        <Clamp max={96} more="Далі" fade="from-shift-soft">
-          <Markdown text={c.text} className="mt-0.5 text-[13.5px]" />
+        <Clamp max={96} more="Далі">
+          <Markdown text={c.text} className="mt-0.5 text-ui" />
         </Clamp>
       </div>
     </div>
@@ -463,7 +464,7 @@ function Actions({ id }: { id: string }) {
   const driven = useStore((s) => s.snap?.driven);
   if (!driven) return null;
   const form = (op: TableFormOp) => () => openDialog({ kind: "table-form", op, target: id });
-  const btn = "h-8 rounded-lg px-2.5 text-[12.5px]";
+  const btn = "h-8 rounded-lg px-2.5 text-small";
   return (
     <div className="flex flex-wrap items-center gap-1 border-t border-border/70 px-4 py-2.5">
       <Button variant="ghost" size="sm" className={cn(btn, "text-add-ink hover:bg-add hover:text-add-ink")} onClick={form("support")}>
@@ -512,17 +513,17 @@ function Debate({ o, table, room }: { o: TableOption; table: TableState; room: R
       <div className="flex flex-col gap-2.5 p-4">
         <header className="flex flex-wrap items-center gap-2">
           <RefChip id={o.id} />
-          <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", v.cls)}>{v.label}</span>
-          <span className="ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+          <span className={cn("rounded-full px-2 py-0.5 text-micro font-semibold", v.cls)}>{v.label}</span>
+          <span className="ml-auto inline-flex items-center gap-1.5 text-meta text-muted-foreground">
             <Avatar handle={o.by} size={18} />
             <Name handle={o.by} className="font-medium" />
             пропонує
           </span>
         </header>
-        <h4 className={cn("text-[16.5px] leading-snug font-semibold text-balance", o.status === "withdrawn" && "line-through decoration-faint")}>{o.title}</h4>
+        <h4 className={cn("text-lead leading-snug font-semibold text-balance", o.status === "withdrawn" && "line-through decoration-faint")}>{o.title}</h4>
         {o.body ? (
           <Clamp max={140} more="Детальніше">
-            <Markdown text={o.body} source={`o:${o.id}`} className="text-[13.5px] text-foreground/90" />
+            <Markdown text={o.body} source={`o:${o.id}`} className="text-ui text-foreground/90" />
           </Clamp>
         ) : null}
         {o.file ? <FilePreview file={o.file} /> : null}
@@ -542,7 +543,7 @@ function Debate({ o, table, room }: { o: TableOption; table: TableState; room: R
           ))}
         </div>
       ) : live ? (
-        <p className="border-t border-border/70 bg-muted/30 px-4 py-2.5 text-[12.5px] text-muted-foreground">Ще ніхто не відповів на цю пропозицію.</p>
+        <p className="border-t border-border/70 bg-muted/30 px-4 py-2.5 text-small text-muted-foreground">Ще ніхто не відповів на цю пропозицію.</p>
       ) : null}
       {live ? <Actions id={o.id} /> : null}
     </article>
@@ -556,7 +557,7 @@ function QuestionActions({ q }: { q: string }) {
   const driven = useStore((s) => s.snap?.driven);
   if (!driven) return null;
   const btn =
-    "flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl border border-dashed border-input px-3 text-[13px] text-muted-foreground transition hover:border-primary/50 hover:bg-card hover:text-foreground";
+    "flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl border border-dashed border-input px-3 text-small text-muted-foreground transition hover:border-primary/50 hover:bg-card hover:text-foreground";
   return (
     <div className="flex flex-wrap gap-2">
       <button type="button" onClick={() => openDialog({ kind: "table-form", op: "propose", q })} className={btn}>
@@ -591,25 +592,25 @@ function Resolution({ q, table, room }: { q: TableQuestion; table: TableState; r
       <div className="min-w-0 flex-1">
         {decision ? (
           <>
-            <div className="flex flex-wrap items-center gap-1.5 text-[14.5px] font-semibold">
+            <div className="flex flex-wrap items-center gap-1.5 text-body font-semibold">
               <RefChip id={decision.option} />
               {chosen?.title ?? decision.option}
             </div>
             {decision.note ? (
-              <Clamp max={96} fade="from-secondary" more="Детальніше">
-                <Markdown text={decision.note} className="mt-1 text-[13.5px] text-muted-foreground" />
+              <Clamp max={96} more="Детальніше">
+                <Markdown text={decision.note} className="mt-1 text-ui text-muted-foreground" />
               </Clamp>
             ) : null}
-            <div className="mt-1 text-[11.5px] text-faint">
+            <div className="mt-1 text-meta text-faint">
               рішення №{decision.n} · {participant(room, decision.by).label}
             </div>
           </>
         ) : answer ? (
           <>
-            <Clamp max={120} fade="from-secondary" more="Детальніше">
-              <Markdown text={answer.text} className="text-[14.5px] font-medium" />
+            <Clamp max={120} more="Детальніше">
+              <Markdown text={answer.text} className="text-body font-medium" />
             </Clamp>
-            <div className="mt-1 flex items-center gap-1.5 text-[11.5px] text-faint">
+            <div className="mt-1 flex items-center gap-1.5 text-meta text-faint">
               <RefChip id={answer.id} />
               відповідь · {participant(room, answer.by).label}
             </div>
@@ -638,9 +639,9 @@ function Question({ q, table, room }: { q: TableQuestion; table: TableState; roo
   return (
     <section id={`q-${q.id}`} className={cn("flex scroll-mt-6 flex-col gap-3 rounded-3xl border border-border p-3 sm:p-4", closed ? "bg-background/40" : "bg-background/75")}>
       <header className="flex flex-col gap-2 px-1">
-        <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2 text-meta text-muted-foreground">
           <RefChip id={q.id} />
-          <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold", st.cls)}>
+          <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-micro font-semibold", st.cls)}>
             <st.Icon className="size-3" />
             {st.label}
           </span>
@@ -654,7 +655,7 @@ function Question({ q, table, room }: { q: TableQuestion; table: TableState; roo
             </span>
           ) : null}
         </div>
-        <Markdown text={q.text} className={cn("leading-snug font-semibold tracking-tight text-balance", closed ? "text-[16px]" : "text-[19px]")} />
+        <Markdown text={q.text} className={cn("leading-snug font-semibold tracking-tight text-balance", closed ? "text-lead" : "text-title")} />
       </header>
       {closed ? <Resolution q={q} table={table} room={room} /> : null}
       {shifts.map((c) => (
@@ -664,7 +665,7 @@ function Question({ q, table, room }: { q: TableQuestion; table: TableState; roo
         <button
           type="button"
           onClick={() => setShow(!show)}
-          className="inline-flex items-center gap-1 self-start rounded-lg px-2 py-1 text-[12.5px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="inline-flex items-center gap-1 self-start rounded-lg px-2 py-1 text-small font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <ChevronDownIcon className={cn("size-4 transition", show && "rotate-180")} />
           {show ? "Сховати варіанти" : `Як до цього дійшли · ${plural(options.length, "варіант", "варіанти", "варіантів")}`}
@@ -688,7 +689,7 @@ function Question({ q, table, room }: { q: TableQuestion; table: TableState; roo
 function RailSection({ id, title, Icon, aside, children }: { id: string; title: string; Icon: typeof CheckIcon; aside?: ReactNode; children: ReactNode }) {
   return (
     <section id={id} className="flex scroll-mt-6 flex-col gap-3 border-t border-border/70 pt-4 first:border-t-0 first:pt-0">
-      <h3 className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+      <h3 className="flex items-center gap-1.5 text-micro font-semibold tracking-wider text-muted-foreground uppercase">
         <Icon className="size-3.5" />
         {title}
         {aside ? <span className="ml-auto tracking-normal normal-case">{aside}</span> : null}
@@ -708,11 +709,11 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
   return (
     <aside className="flex flex-col gap-4 rounded-3xl border border-border bg-card p-4 shadow-soft sm:p-5">
       <header className="flex flex-col gap-0.5">
-        <h2 className="font-serif text-[19px] font-semibold tracking-tight">Спільна основа</h2>
-        <p className="text-[12.5px] text-muted-foreground">Те, що вже не треба доводити.</p>
+        <h2 className="font-serif text-title font-semibold tracking-tight">Спільна основа</h2>
+        <p className="text-small text-muted-foreground">Те, що вже не треба доводити.</p>
       </header>
       {empty ? (
-        <p className="rounded-2xl border border-dashed border-border px-3.5 py-3 text-[13px] leading-relaxed text-muted-foreground">
+        <p className="rounded-2xl border border-dashed border-border px-3.5 py-3 text-small leading-relaxed text-muted-foreground">
           Поки нічого не узгоджено. Щойно агенти в чомусь зійдуться, це з’явиться тут.
         </p>
       ) : null}
@@ -723,13 +724,13 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
               const o = table.options.find((x) => x.id === d.option);
               return (
                 <li key={d.id} className="flex gap-2.5">
-                  <span className="tabular mt-0.5 grid h-5 min-w-5 shrink-0 place-items-center rounded-md bg-primary px-1 text-[11px] font-bold text-primary-foreground">{d.n}</span>
-                  <div className="min-w-0 text-[13.5px]">
+                  <span className="tabular mt-0.5 grid h-5 min-w-5 shrink-0 place-items-center rounded-md bg-primary px-1 text-micro font-bold text-primary-foreground">{d.n}</span>
+                  <div className="min-w-0 text-ui">
                     <div className="leading-snug font-semibold">
                       <RefChip id={d.option} className="mr-1 align-[1px]" />
                       {o?.title ?? d.option}
                     </div>
-                    <div className="mt-0.5 text-[11.5px] text-faint">{participant(room, d.by).label}</div>
+                    <div className="mt-0.5 text-meta text-faint">{participant(room, d.by).label}</div>
                   </div>
                 </li>
               );
@@ -743,7 +744,7 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
             {ground.map((s) => (
               <li key={s.id} id={`ti-${s.id}`} className="flex scroll-mt-24 gap-2.5">
                 {s.fact ? (
-                  <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded bg-codex-soft font-mono text-[10px] font-bold text-codex" title="Факт">
+                  <span className="mt-0.5 grid size-4 shrink-0 place-items-center rounded bg-codex-soft font-mono text-micro font-bold text-codex" title="Факт">
                     F
                   </span>
                 ) : (
@@ -751,9 +752,9 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                 )}
                 <div className={cn("min-w-0", s.withdrawn && "opacity-60")}>
                   <Clamp max={88} more="Далі">
-                    <Markdown text={s.text} className={cn("text-[13.5px]", s.withdrawn && "line-through decoration-faint")} />
+                    <Markdown text={s.text} className={cn("text-ui", s.withdrawn && "line-through decoration-faint")} />
                   </Clamp>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-faint">
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-meta text-faint">
                     {s.q ? (
                       <span className="inline-flex items-center gap-1 text-primary">
                         відповідь на <RefChip id={s.q} />
@@ -793,9 +794,9 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                 <Avatar handle={c.by} size={18} className="mt-0.5" />
                 <div className="min-w-0">
                   <Clamp max={88} more="Далі">
-                    <Markdown text={c.text} className="text-[13.5px]" />
+                    <Markdown text={c.text} className="text-ui" />
                   </Clamp>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-faint">
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-meta text-faint">
                     <span className="font-medium text-shift">{participant(room, c.by).label}</span>
                     {c.target ? (
                       <span className="inline-flex items-center gap-1">
@@ -840,8 +841,8 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                   {n.done ? <CheckIcon className="size-3" strokeWidth={3} /> : null}
                 </button>
                 <div className="min-w-0">
-                  <Markdown text={n.text} className={cn("text-[13.5px]", n.done && "line-through decoration-faint")} />
-                  <div className="text-[11.5px] text-faint">
+                  <Markdown text={n.text} className={cn("text-ui", n.done && "line-through decoration-faint")} />
+                  <div className="text-meta text-faint">
                     {participant(room, n.by).label}
                     {n.doneBy && n.doneBy !== n.by ? ` · виконано: ${participant(room, n.doneBy).label}` : ""}
                   </div>
@@ -875,8 +876,8 @@ function Flow({ className, vertical }: { className?: string; vertical?: boolean 
               <Icon className="size-3.5" />
             </span>
             <span className="flex flex-col text-left leading-tight">
-              <b className="text-[12.5px] font-semibold">{label}</b>
-              <span className="text-[11px] text-muted-foreground">{hint}</span>
+              <b className="text-small font-semibold">{label}</b>
+              <span className="text-micro text-muted-foreground">{hint}</span>
             </span>
           </span>
           {!vertical && i < steps.length - 1 ? <ArrowRightIcon className="size-3.5 text-faint" /> : null}
@@ -890,17 +891,17 @@ function Help() {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="sm" className="h-8 rounded-lg px-2 text-[12.5px] text-muted-foreground">
+        <Button variant="ghost" size="sm" className="h-8 rounded-lg px-2 text-small text-muted-foreground">
           <CircleHelpIcon className="size-4" />
           Як читати
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="flex w-80 flex-col gap-3 rounded-2xl p-4">
-        <p className="text-[13px] leading-relaxed text-pretty">
+        <p className="text-small leading-relaxed text-pretty">
           Стіл — карта суперечки. Агенти самі кладуть сюди питання, варіанти й аргументи; ви бачите, де вони зійшлися, де ще сперечаються і хто кого переконав.
         </p>
         <Flow vertical />
-        <p className="text-[12px] leading-relaxed text-muted-foreground">Ви можете обрати варіант, додати аргумент або записати відповідь — агенти побачать це в наступному ході.</p>
+        <p className="text-meta leading-relaxed text-muted-foreground">Ви можете обрати варіант, додати аргумент або записати відповідь — агенти побачать це в наступному ході.</p>
       </PopoverContent>
     </Popover>
   );
@@ -919,7 +920,7 @@ function Toolbar() {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {items.map(([op, label, Icon]) => (
-        <Button key={op} variant="outline" size="sm" className="h-8 rounded-lg bg-card text-[12.5px]" onClick={() => openDialog({ kind: "table-form", op })}>
+        <Button key={op} variant="outline" size="sm" className="h-8 rounded-lg bg-card text-small" onClick={() => openDialog({ kind: "table-form", op })}>
           <Icon className="size-3.5" />
           {label}
         </Button>
@@ -930,21 +931,16 @@ function Toolbar() {
 
 function Empty() {
   return (
-    <div className="mx-auto flex max-w-2xl flex-col items-center gap-5 px-4 py-16 text-center">
-      <span className="grid size-14 place-items-center rounded-2xl bg-secondary text-primary shadow-soft">
-        <ScaleIcon className="size-6" />
-      </span>
-      <div className="flex flex-col gap-2">
-        <h2 className="font-serif text-[26px] font-semibold tracking-tight">Стіл порожній</h2>
-        <p className="mx-auto max-w-[52ch] text-[14.5px] leading-relaxed text-pretty text-muted-foreground">
-          Коли в розмові з’являється справжній вибір, агенти кладуть його сюди: питання, варіанти, а під кожним — хто за, хто проти і чим це доведено. Ви бачите, де
-          вони зійшлися, де сперечаються і хто кого переконав, — одним поглядом, а не в стрічці.
-        </p>
-      </div>
+    <EmptyState
+      icon={ScaleIcon}
+      title="Стіл порожній"
+      large
+      text="Коли в розмові з’являється справжній вибір, агенти кладуть його сюди: питання, варіанти, а під кожним — хто за, хто проти і чим це доведено. Ви бачите, де вони зійшлися, де сперечаються і хто кого переконав, — одним поглядом, а не в стрічці."
+    >
       <Flow className="justify-center" />
-      <p className="text-[13px] text-faint">Агенти роблять це самі. Або почніть ви:</p>
+      <p className="text-small text-faint">Агенти роблять це самі. Або почніть ви:</p>
       <Toolbar />
-    </div>
+    </EmptyState>
   );
 }
 
@@ -987,7 +983,7 @@ export function TableBoard() {
       ) : (
         <div className="@container mx-auto flex w-full max-w-[1320px] flex-col gap-5 px-3 pt-5 pb-10 sm:px-6">
           <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <h1 className="flex items-center gap-2 font-serif text-[26px] leading-none font-semibold tracking-tight">
+            <h1 className="flex items-center gap-2 font-serif text-display leading-none font-semibold tracking-tight">
               <ScaleIcon className="size-5 text-primary" />
               Стіл
             </h1>
@@ -1003,7 +999,7 @@ export function TableBoard() {
               ))}
               {loose.length ? (
                 <section className="flex flex-col gap-3 rounded-3xl border border-border bg-background/75 p-3 sm:p-4">
-                  <header className="px-1 text-[13px] text-muted-foreground">
+                  <header className="px-1 text-small text-muted-foreground">
                     <b className="font-semibold text-foreground">Пропозиції без окремого питання</b> · їх можна обрати напряму
                   </header>
                   {loose.map((o) => (
@@ -1012,14 +1008,14 @@ export function TableBoard() {
                 </section>
               ) : null}
               {!open.length && !loose.length ? (
-                <div className="flex items-center gap-3 rounded-3xl border border-dashed border-border px-5 py-4 text-[13.5px] text-muted-foreground">
+                <div className="flex items-center gap-3 rounded-3xl border border-dashed border-border px-5 py-4 text-ui text-muted-foreground">
                   <CheckIcon className="size-4 text-primary" />
                   Відкритих питань немає — усе, що було на столі, закрито.
                 </div>
               ) : null}
               {closed.length ? (
                 <>
-                  <h2 className="mt-2 flex items-center gap-2 px-1 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+                  <h2 className="mt-2 flex items-center gap-2 px-1 text-micro font-semibold tracking-wider text-muted-foreground uppercase">
                     <GavelIcon className="size-3.5" />
                     Закриті питання
                   </h2>

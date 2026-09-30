@@ -26,7 +26,7 @@ function Hello() {
         ))}
       </div>
       <h2 className="text-xl font-semibold tracking-tight text-balance">Кімната готова</h2>
-      <p className="text-[14.5px] leading-relaxed text-pretty text-muted-foreground">
+      <p className="text-body leading-relaxed text-pretty text-muted-foreground">
         Напишіть, що треба зробити чи обговорити. {names(room.agents.map((a) => a.label))} спершу візьмуться одночасно — з того самого місця, кажучи по ходу, хто що робить, — а далі говоритимуть по
         черзі — з усім, що вже сказано в кімнаті.
       </p>
@@ -46,8 +46,8 @@ function LiveTurn({ turn, ops }: { turn: TurnState; ops?: TableOp[] }) {
     <article className="relative min-w-0 rounded-2xl border border-border bg-card/80 p-4 shadow-soft sm:p-5">
       <header className="flex items-center gap-2">
         <Avatar handle={turn.agent} size={28} live />
-        <Name handle={turn.agent} className="text-[14.5px]" />
-        <Shimmer as="span" className="text-[13px]" duration={1.6}>
+        <Name handle={turn.agent} className="text-body" />
+        <Shimmer as="span" className="text-small" duration={1.6}>
           {`${label}…`}
         </Shimmer>
         <span className="tabular ml-auto text-xs text-faint">{elapsed}</span>
@@ -58,7 +58,7 @@ function LiveTurn({ turn, ops }: { turn: TurnState; ops?: TableOp[] }) {
           <Markdown text={stream.length > 2400 ? `…${stream.slice(-2400)}` : stream} streaming />
         </div>
       ) : !last.length ? (
-        <p className="mt-2 text-[13px] text-muted-foreground">
+        <p className="mt-2 text-small text-muted-foreground">
           Читає нове в кімнаті{room ? ` (${nameOf(room, turn.agent)} бачить усе до цього моменту)` : ""}…
         </p>
       ) : null}
@@ -92,7 +92,7 @@ function Item({ item, model, fresh, card, clamp }: { item: FeedItem; model: Feed
 /** A thin label over replies written at the same moment: the order below is not a conversation. */
 function RoundMark({ text, title, handles, action }: { text: string; title?: string; handles: string[]; action?: ReactNode }) {
   return (
-    <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
+    <div className="flex items-center gap-2 text-small text-muted-foreground">
       <div className="flex -space-x-1.5">
         {handles.map((h) => (
           <Avatar key={h} handle={h} size={18} className="ring-2 ring-background" />
@@ -126,7 +126,7 @@ function Round({ row, model, isFresh }: { row: Extract<FeedRow, { type: "group" 
       onClick={() => setCompare(!side)}
       aria-pressed={side}
       className={cn(
-        "hidden h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition md:inline-flex",
+        "hidden h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-meta font-medium transition md:inline-flex",
         side ? "bg-accent text-foreground" : "text-primary hover:bg-accent",
       )}
     >
@@ -137,7 +137,7 @@ function Round({ row, model, isFresh }: { row: Extract<FeedRow, { type: "group" 
   const mark = <RoundMark text={row.text} title={row.title} handles={row.items.map((g) => g.m.author)} action={toggle} />;
   if (!side) {
     return (
-      <div className="flex w-full max-w-[860px] flex-col gap-6 sm:px-2">
+      <div className="flex w-full max-w-reading flex-col gap-6 sm:px-2">
         {mark}
         {row.items.map((g) => (
           <Item key={g.key} item={g} model={model} fresh={isFresh(g.m.id)} clamp={720} />
@@ -147,7 +147,7 @@ function Round({ row, model, isFresh }: { row: Extract<FeedRow, { type: "group" 
   }
   return (
     <section className="@container flex w-full flex-col gap-3">
-      <div className="mx-auto w-full max-w-[860px] sm:px-2">{mark}</div>
+      <div className="mx-auto w-full max-w-reading sm:px-2">{mark}</div>
       <div className="grid items-start gap-3 @3xl:grid-cols-2">
         {row.items.map((g) => (
           <Item key={g.key} item={g} model={model} fresh={isFresh(g.m.id)} card clamp={440} />
@@ -196,13 +196,13 @@ export function Feed() {
           if (row.type === "hello") return <Hello key={row.key} />;
           if (row.type === "group") return <Round key={row.key} row={row} model={model} isFresh={isFresh} />;
           return (
-            <div key={row.key} className="w-full max-w-[860px] sm:px-2">
+            <div key={row.key} className="w-full max-w-reading sm:px-2">
               <Item item={row} model={model} fresh={row.type === "msg" && isFresh(row.m.id)} clamp={720} />
             </div>
           );
         })}
         {model.live.length ? (
-          <section className="flex w-full max-w-[860px] flex-col gap-3 sm:px-2">
+          <section className="flex w-full max-w-reading flex-col gap-3 sm:px-2">
             {model.liveDivider ? (
               <RoundMark text={model.liveDivider} handles={model.live.map((t) => t.agent)} />
             ) : null}
@@ -212,7 +212,7 @@ export function Feed() {
           </section>
         ) : null}
       </ConversationContent>
-      <ConversationScrollButton className="bottom-4 shadow-lift" title="Донизу" />
+      <ConversationScrollButton className="bottom-4 shadow-lift" title="Донизу" aria-label="Донизу, до нових повідомлень" />
     </Conversation>
   );
 }

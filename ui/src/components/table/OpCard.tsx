@@ -15,7 +15,8 @@ import {
   ThumbsUpIcon,
   UndoIcon,
 } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { useState } from "react";
+import { Clamp } from "@/components/common/Clamp";
 import { Markdown, rawUrl } from "@/components/md/Markdown";
 import { LiveFrame } from "@/components/md/LiveFrame";
 import { ext, FRAME_EXT, IMAGE_EXT, plural, workspaceRel } from "@/lib/format";
@@ -74,7 +75,7 @@ export const KIND_TONE: Record<TableOp["op"], string> = {
 export function Kind({ op }: { op: TableOp["op"] }) {
   const Icon = KIND_ICON[op];
   return (
-    <span className={cn("inline-flex items-center gap-1 text-[11px] font-semibold tracking-wide uppercase", KIND_TONE[op])}>
+    <span className={cn("inline-flex items-center gap-1 text-micro font-semibold tracking-wide uppercase", KIND_TONE[op])}>
       <Icon className="size-3.5" />
       {TC_KIND[op]}
     </span>
@@ -89,7 +90,7 @@ export function RefChip({ id, className }: { id: string; className?: string }) {
       onClick={() => goToRef(id)}
       title="Показати на столі"
       className={cn(
-        "inline-flex h-5 items-center rounded-md bg-secondary px-1.5 font-mono text-[11px] font-semibold text-secondary-foreground ring-1 ring-primary/15 transition hover:bg-primary hover:text-primary-foreground",
+        "inline-flex h-5 items-center rounded-md bg-secondary px-1.5 font-mono text-micro font-semibold text-secondary-foreground ring-1 ring-primary/15 transition hover:bg-primary hover:text-primary-foreground",
         className,
       )}
     >
@@ -108,15 +109,15 @@ export const noteCounts = (table: TableState, id: string) => {
 };
 
 export function Standing({ table, o }: { table: TableState; o: TableOption }) {
-  const pill = "inline-flex h-5 items-center gap-1 rounded-full px-2 text-[11px] font-medium";
+  const pill = "inline-flex h-5 items-center gap-1 rounded-full px-2 text-micro font-medium";
   if (o.status === "chosen") return <span className={cn(pill, "bg-primary text-primary-foreground")}>Обрано</span>;
   if (o.status === "withdrawn") return <span className={cn(pill, "bg-muted text-muted-foreground")}>Відкликано</span>;
   const q = o.q ? table.questions.find((x) => x.id === o.q) : null;
   if (q && q.status !== "open") return <span className={cn(pill, "bg-muted text-muted-foreground")}>{q.status === "decided" ? "Не обрано" : "Питання закрито"}</span>;
   const { sup, obj, ev } = noteCounts(table, o.id);
-  if (!sup && !obj && !ev) return <span className="text-[11px] text-faint">відкрито</span>;
+  if (!sup && !obj && !ev) return <span className="text-micro text-faint">відкрито</span>;
   return (
-    <span className="tabular inline-flex items-center gap-2 text-[11.5px] font-medium">
+    <span className="tabular inline-flex items-center gap-2 text-meta font-medium">
       {sup ? (
         <span className="text-add-ink" title={plural(sup, "підтримка", "підтримки", "підтримок")}>
           ✓ {sup}
@@ -138,11 +139,11 @@ export function Standing({ table, o }: { table: TableState; o: TableOption }) {
 
 export function FilePreview({ file }: { file: string }) {
   const rawBase = useStore((s) => s.snap?.rawBase);
-  const openDialog = useStore((s) => s.openDialog);
+  const openFile = useStore((s) => s.openFile);
   const kind = ext(file);
   if (rawBase && IMAGE_EXT.has(kind)) {
     return (
-      <button type="button" className="mt-2 block overflow-hidden rounded-lg border border-border bg-paper" onClick={() => openDialog({ kind: "file", path: file })} title={file}>
+      <button type="button" className="mt-2 block overflow-hidden rounded-lg border border-border bg-paper" onClick={() => openFile(file)} title={file}>
         <img src={rawUrl(rawBase, file)} alt={file} loading="lazy" className="max-h-72 max-w-full object-contain" />
       </button>
     );
@@ -150,7 +151,7 @@ export function FilePreview({ file }: { file: string }) {
   return (
     <div className="mt-2 overflow-hidden rounded-lg border border-border bg-paper">
       {rawBase && FRAME_EXT.has(kind) ? <LiveFrame src={rawUrl(rawBase, file)} title={file} initial={280} max={640} /> : null}
-      <button type="button" onClick={() => openDialog({ kind: "file", path: file })} className="flex w-full items-center gap-2 border-t border-border px-2.5 py-1.5 text-left text-xs first:border-t-0 hover:bg-accent">
+      <button type="button" onClick={() => openFile(file)} className="flex w-full items-center gap-2 border-t border-border px-2.5 py-1.5 text-left text-xs first:border-t-0 hover:bg-accent">
         <FileIcon className="size-3.5 text-muted-foreground" />
         <span className="truncate font-mono">{file}</span>
         <span className="ml-auto text-muted-foreground">переглянути</span>
@@ -161,7 +162,7 @@ export function FilePreview({ file }: { file: string }) {
 
 export function NoteSource({ source }: { source: string }) {
   const workspace = useStore((s) => s.snap?.state.workspace);
-  const openDialog = useStore((s) => s.openDialog);
+  const openFile = useStore((s) => s.openFile);
   if (/^https?:\/\//.test(source)) {
     return (
       <a href={source} target="_blank" rel="noopener noreferrer" className="truncate text-xs text-primary underline decoration-primary/30 underline-offset-2">
@@ -173,7 +174,7 @@ export function NoteSource({ source }: { source: string }) {
   if (rel && IMAGE_EXT.has(ext(rel))) return <FilePreview file={rel} />;
   if (rel) {
     return (
-      <button type="button" onClick={() => openDialog({ kind: "file", path: rel })} className="truncate font-mono text-xs text-primary hover:underline">
+      <button type="button" onClick={() => openFile(rel)} className="truncate font-mono text-xs text-primary hover:underline">
         {rel}
       </button>
     );
@@ -181,21 +182,7 @@ export function NoteSource({ source }: { source: string }) {
   return <span className="text-xs text-muted-foreground">{source}</span>;
 }
 
-const card = "rounded-xl border border-border bg-card px-3 py-2.5 shadow-[0_1px_0_rgb(0_0_0/0.02)]";
-
-function Clamp({ children, long }: { children: ReactNode; long: boolean }) {
-  const [open, setOpen] = useState(!long);
-  return (
-    <div className="relative mt-1.5">
-      <div className={cn(!open && "max-h-44 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}>{children}</div>
-      {!open ? (
-        <button type="button" onClick={() => setOpen(true)} className="mt-1 text-xs font-medium text-primary hover:underline">
-          Показати повністю
-        </button>
-      ) : null}
-    </div>
-  );
-}
+const card = "rounded-xl border border-border bg-card px-3 py-2.5 shadow-edge";
 
 function OptionActions({ id }: { id: string }) {
   const openDialog = useStore((s) => s.openDialog);
@@ -230,7 +217,6 @@ export function OpCard({ o }: { o: TableOp }) {
       const opt: TableOption = table.options.find((x) => x.id === o.id) ?? { id: o.id ?? "?", q: o.q ?? null, title: o.title, body: o.body, file: o.file, by: o.by, seq: 0, status: "open" };
       const q = opt.q ? table.questions.find((x) => x.id === opt.q) : null;
       const open = opt.status === "open" && (!q || q.status === "open");
-      const long = (opt.body?.length ?? 0) > 600 || /```|!\[/.test(opt.body ?? "");
       return (
         <div className={cn(card, "border-l-[3px] border-l-primary/60", opt.status === "withdrawn" && "opacity-60")}>
           <div className="flex flex-wrap items-center gap-2">
@@ -247,8 +233,8 @@ export function OpCard({ o }: { o: TableOp }) {
           </div>
           <div className="mt-1.5 font-semibold text-pretty">{opt.title}</div>
           {opt.body ? (
-            <Clamp long={long}>
-              <Markdown text={opt.body} source={`o:${opt.id}`} className="text-[14px]" />
+            <Clamp max={176} more="Показати повністю" className="mt-1.5">
+              <Markdown text={opt.body} source={`o:${opt.id}`} className="text-ui" />
             </Clamp>
           ) : null}
           {opt.file ? <FilePreview file={opt.file} /> : null}
@@ -266,7 +252,7 @@ export function OpCard({ o }: { o: TableOp }) {
           <div className="flex flex-wrap items-center gap-2">
             <Kind op="ask" />
             <RefChip id={q.id} />
-            <span className="ml-auto text-[11.5px] text-muted-foreground">
+            <span className="ml-auto text-meta text-muted-foreground">
               {decision ? (
                 <span className="font-medium text-primary">Вирішено: {decision.option}</span>
               ) : answer ? (
@@ -297,7 +283,7 @@ export function OpCard({ o }: { o: TableOp }) {
               до <RefChip id={o.target} /> <span className="truncate">{optionTitle(table, o.target)}</span>
             </span>
           </div>
-          <div className="mt-1.5 text-[14px] text-pretty">{o.text}</div>
+          <div className="mt-1.5 text-ui text-pretty">{o.text}</div>
           {o.source ? (
             <div className="mt-1.5 flex min-w-0">
               <NoteSource source={o.source} />
@@ -317,7 +303,7 @@ export function OpCard({ o }: { o: TableOp }) {
               </span>
             ) : null}
           </div>
-          <div className="mt-1.5 text-[14px] text-pretty">{o.text}</div>
+          <div className="mt-1.5 text-ui text-pretty">{o.text}</div>
         </div>
       );
     case "settle":
@@ -330,7 +316,7 @@ export function OpCard({ o }: { o: TableOp }) {
                 відповідь на <RefChip id={o.q} /> <span className="truncate">{table.questions.find((x) => x.id === o.q)?.text}</span>
               </span>
             </div>
-            <div className="mt-1.5 text-[14px] font-medium text-pretty">{o.text}</div>
+            <div className="mt-1.5 text-ui font-medium text-pretty">{o.text}</div>
           </div>
         );
       }
@@ -342,7 +328,7 @@ export function OpCard({ o }: { o: TableOp }) {
       return (
         <div className={cn(card, "flex items-baseline gap-2.5 border-primary/30 bg-secondary/60 py-2")}>
           <Kind op="decide" />
-          <span className="min-w-0 flex-1 text-[14px]">
+          <span className="min-w-0 flex-1 text-ui">
             <RefChip id={o.target} /> {optionTitle(table, o.target)}
             {o.note ? <span className="text-muted-foreground"> — {o.note}</span> : null}
           </span>
@@ -356,7 +342,7 @@ export function OpCard({ o }: { o: TableOp }) {
       return (
         <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
           <Kind op={o.op} />
-          <span className="min-w-0 flex-1 text-[14px]">
+          <span className="min-w-0 flex-1 text-ui">
             <RefChip id={o.target} /> {text}
           </span>
         </div>
@@ -372,9 +358,9 @@ function ItemCard({ o, table }: { o: Extract<TableOp, { op: "fact" | "settle" | 
   return (
     <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
       <Kind op={o.op} />
-      <span className={cn("min-w-0 flex-1 text-[14px]", (done || withdrawn) && "text-muted-foreground line-through")}>{o.text}</span>
-      {done ? <span className="text-[11px] font-medium text-add-ink">виконано</span> : null}
-      {withdrawn ? <span className="text-[11px] font-medium text-muted-foreground">відкликано</span> : null}
+      <span className={cn("min-w-0 flex-1 text-ui", (done || withdrawn) && "text-muted-foreground line-through")}>{o.text}</span>
+      {done ? <span className="text-micro font-medium text-add-ink">виконано</span> : null}
+      {withdrawn ? <span className="text-micro font-medium text-muted-foreground">відкликано</span> : null}
     </div>
   );
 }
@@ -391,7 +377,7 @@ function OptionChip({ o }: { o: TableOption }) {
         o.status === "withdrawn" && "opacity-55 line-through",
       )}
     >
-      <b className="font-mono text-[11px]">{o.id}</b>
+      <b className="font-mono text-micro">{o.id}</b>
       <span className="truncate">{o.title}</span>
     </button>
   );
@@ -422,7 +408,7 @@ function OpSummary({ ops, onOpen }: { ops: TableOp[]; onOpen: () => void }) {
   const counts = new Map<TableOp["op"], number>();
   for (const o of ops) counts.set(o.op, (counts.get(o.op) ?? 0) + 1);
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-muted/50 px-2.5 py-2 text-[12.5px]">
+    <div className="mt-3 flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-muted/50 px-2.5 py-2 text-small">
       <span className="font-medium text-muted-foreground">На столі:</span>
       {[...counts].map(([op, n]) => {
         const Icon = KIND_ICON[op];

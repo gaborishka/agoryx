@@ -1,19 +1,22 @@
 import {
   EllipsisIcon,
-  FileTextIcon,
   FolderIcon,
   GitBranchIcon,
+  GitCompareArrowsIcon,
   LayoutPanelLeftIcon,
   MenuIcon,
   MessagesSquareIcon,
+  PanelRightCloseIcon,
+  PanelRightOpenIcon,
   ScaleIcon,
   SettingsIcon,
   TerminalIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { BrowserToggle } from "@/components/browser/BrowserToggle";
+import { Driver, TABS } from "@/components/panel/SidePanel";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,12 +26,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useNow } from "@/hooks/use-now";
 import { api, roomPath, Unauthorized } from "@/lib/api";
-import { baseName, names, secs, shortPath } from "@/lib/format";
+import { baseName, secs, shortPath } from "@/lib/format";
+import { ariaKeys, keyLabel } from "@/lib/keys";
 import { ink, participant, profileLine, tableCount } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Tip } from "./bits";
+import { t } from "@/lib/i18n";
 
 function Presence({ a }: { a: RoomAgent }) {
   const now = useStore((s) => s.snap?.presence?.[a.id] ?? "idle");
@@ -51,14 +56,16 @@ function Presence({ a }: { a: RoomAgent }) {
         ? `${a.label} у черзі на хід`
         : `${a.label} чекає на нове в розмові`;
   const tip = `${seen ? `${state}. ${seen}` : state}. Натисніть — сесія збоку.`;
+  const short = working ? "працює" : now === "native" ? "у своїй сесії" : now === "queued" ? "у черзі" : "чекає";
   return (
     <Tip tip={tip}>
       <button
         type="button"
         onClick={() => openSession(a.id, true)}
+        aria-label={`${a.label}: ${short}. Відкрити сесію`}
         style={ink(who)}
         className={cn(
-          "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12.5px] transition",
+          "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-small transition",
           now === "idle"
             ? "border-border text-muted-foreground hover:bg-accent"
             : tone === "codex"
@@ -132,7 +139,7 @@ function Title() {
           aria-label="Назва кімнати"
           onBlur={() => void commit()}
           onKeyDown={(event) => event.key === "Escape" && setEditing(false)}
-          className="h-8 w-full rounded-lg border border-ring/50 bg-card px-2 text-[15px] font-semibold outline-none ring-3 ring-ring/15"
+          className="h-8 w-full rounded-lg border border-ring/50 bg-card px-2 text-body font-semibold outline-none ring-3 ring-ring/15"
         />
       </form>
     );
@@ -142,7 +149,7 @@ function Title() {
       type="button"
       onClick={() => setEditing(true)}
       title={createdBy ? `Перейменувати. Кімнату відкрито з кімнати «${createdBy.roomName}»: ${createdBy.label}` : "Перейменувати"}
-      className="-mx-1.5 min-w-0 truncate rounded-lg px-1.5 py-0.5 text-left text-[15px] font-semibold tracking-tight hover:bg-accent"
+      className="-mx-1.5 min-w-0 truncate rounded-lg px-1.5 py-0.5 text-left text-body font-semibold tracking-tight hover:bg-accent"
     >
       {name}
     </button>
@@ -173,7 +180,7 @@ function ViewSwitch() {
   const count = tableCount(room);
   const tab = (on: boolean) =>
     cn(
-      "inline-flex h-8 items-center gap-1.5 rounded-[9px] px-2.5 text-[13px] font-medium transition sm:px-3",
+      "inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-small font-medium transition sm:px-3",
       on
         ? "bg-card text-foreground shadow-soft ring-1 ring-border"
         : "text-muted-foreground hover:text-foreground",
@@ -184,30 +191,34 @@ function ViewSwitch() {
       aria-label="Вигляд кімнати"
       className="flex shrink-0 items-center gap-0.5 rounded-xl bg-muted p-1"
     >
-      <button
-        type="button"
-        role="tab"
-        aria-selected={view === "chat"}
-        aria-label="Розмова"
-        className={tab(view === "chat")}
-        onClick={() => setView("chat")}
-      >
-        <MessagesSquareIcon className="size-4" />
-        <span className="hidden @md:inline">Розмова</span>
-      </button>
-      <Tip tip="Стіл: питання, варіанти, аргументи й рішення — вибір, розкладений по поличках">
+      <Tip tip={<span>Розмова <Kbd>{keyLabel("chat")}</Kbd></span>}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "chat"}
+          aria-label="Розмова"
+          aria-keyshortcuts={ariaKeys("chat")}
+          className={tab(view === "chat")}
+          onClick={() => setView("chat")}
+        >
+          <MessagesSquareIcon className="size-4" />
+          <span className="hidden @min-[50rem]:inline">Розмова</span>
+        </button>
+      </Tip>
+      <Tip tip={<span>Стіл: питання, варіанти, аргументи й рішення — вибір, розкладений по поличках <Kbd>{keyLabel("table")}</Kbd></span>}>
         <button
           type="button"
           role="tab"
           aria-selected={view === "table"}
           aria-label={count ? `Стіл, відкритих: ${count}` : "Стіл"}
+          aria-keyshortcuts={ariaKeys("table")}
           className={tab(view === "table")}
           onClick={() => setView("table")}
         >
           <ScaleIcon className="size-4" />
-          <span className="hidden @md:inline">Стіл</span>
+          <span className="hidden @min-[50rem]:inline">Стіл</span>
           {count ? (
-            <span className="tabular grid h-4.5 min-w-4.5 place-items-center rounded-full bg-amber px-1 text-[10.5px] font-semibold text-white dark:text-background">
+            <span className="tabular grid h-4.5 min-w-4.5 place-items-center rounded-full bg-amber px-1 text-micro font-semibold text-amber-foreground">
               {count}
             </span>
           ) : null}
@@ -242,20 +253,20 @@ function useBranch(roomId: string, turns: number): string | null {
 /** Where the room works: its folder, and in git its branch and whether it is the room's own worktree. */
 function Place() {
   const room = useStore((s) => s.snap?.state);
-  const openDialog = useStore((s) => s.openDialog);
+  const openFile = useStore((s) => s.openFile);
   const branch = useBranch(room?.id ?? "", room?.turns.length ?? 0);
   if (!room) return null;
   const wt = room.worktree;
   const folder = wt ? wt.source : room.workspace;
   const tip = wt
-    ? `Worktree кімнати: гілка ${wt.branch} від ${wt.base}, тека ${room.workspace}. ${names(room.agents.map((a) => a.label))} працюють у ньому разом; ${wt.source} лишається як є.`
+    ? t.worktree.place(wt.branch, wt.base, room.workspace, room.agents.map((a) => a.label), wt.source)
     : `Робоча тека: ${room.workspace}${branch ? `, гілка ${branch}` : ""}`;
   return (
     <Tip tip={tip}>
       <button
         type="button"
-        onClick={() => openDialog({ kind: "files" })}
-        className="flex w-fit max-w-full min-w-0 items-center gap-1.5 text-[11px] text-faint hover:text-muted-foreground"
+        onClick={() => openFile(null)}
+        className="flex w-fit max-w-full min-w-0 items-center gap-1.5 text-micro text-faint hover:text-muted-foreground"
       >
         <span className="truncate font-mono">
           {wt ? baseName(folder) : shortPath(folder)}
@@ -267,8 +278,8 @@ function Place() {
           </span>
         ) : null}
         {wt ? (
-          <span className="shrink-0 rounded bg-secondary px-1 text-[10px] font-medium text-secondary-foreground">
-            worktree
+          <span className="shrink-0 rounded bg-secondary px-1 text-micro font-medium text-secondary-foreground">
+            {t.worktree.label}
           </span>
         ) : null}
       </button>
@@ -276,17 +287,45 @@ function Place() {
   );
 }
 
+/** One button for the side panel; it opens on the tab shown last. The dot: an agent drives the room's browser. */
+function PanelToggle() {
+  const panel = useStore((s) => s.panel);
+  const lastTab = useStore((s) => s.lastTab);
+  const togglePanel = useStore((s) => s.togglePanel);
+  const Icon = panel ? PanelRightCloseIcon : PanelRightOpenIcon;
+  return (
+    <Tip
+      tip={
+        <span>
+          {panel ? "Сховати панель" : `Панель: ${TABS[lastTab].label.toLowerCase()}, сесії, зміни, файли`} <Kbd>{keyLabel("panel")}</Kbd>
+        </span>
+      }
+    >
+      <Button
+        variant="ghost"
+        size="icon"
+        className={cn("size-8 text-muted-foreground", panel && "bg-secondary text-secondary-foreground hover:bg-secondary")}
+        aria-label="Панель"
+        data-panel-toggle
+        aria-keyshortcuts={ariaKeys("panel")}
+        aria-pressed={Boolean(panel)}
+        onClick={() => togglePanel()}
+      >
+        <span className="relative">
+          <Icon className="size-4.5" />
+          {panel === "browser" ? null : <Driver />}
+        </span>
+      </Button>
+    </Tip>
+  );
+}
+
 export function RoomHeader() {
   const room = useStore((s) => s.snap?.state);
-  const panel = useStore((s) => s.panel);
-  const togglePanel = useStore((s) => s.togglePanel);
   const openDialog = useStore((s) => s.openDialog);
+  const openFile = useStore((s) => s.openFile);
+  const openChanges = useStore((s) => s.openChanges);
   if (!room) return null;
-  const toggle = (on: boolean) =>
-    cn(
-      "h-8 gap-1.5 rounded-lg px-2.5 text-[13px] text-muted-foreground",
-      on && "bg-secondary text-secondary-foreground hover:bg-secondary",
-    );
   return (
     <header className="@container flex h-14 shrink-0 items-center gap-2 border-b border-border/70 bg-background/85 px-3 backdrop-blur sm:px-4">
       <NavButton />
@@ -295,31 +334,13 @@ export function RoomHeader() {
         <Place />
       </div>
       <ViewSwitch />
-      <div className="hidden items-center gap-1.5 @min-[40rem]:flex">
+      <div className="hidden items-center gap-1.5 @min-[36rem]:flex">
         {room.agents.map((a) => (
           <Presence key={a.id} a={a} />
         ))}
       </div>
-      <span className="mx-1 hidden h-5 w-px bg-border @min-[40rem]:block" />
-      <BrowserToggle className={toggle(panel === "browser")} />
-      <Tip
-        tip={
-          room.settings.doc
-            ? `Спільний документ: ${room.settings.doc}`
-            : "Спільний документ кімнати"
-        }
-      >
-        <Button
-          variant="ghost"
-          className={toggle(panel === "doc")}
-          aria-label="Документ"
-          aria-pressed={panel === "doc"}
-          onClick={() => togglePanel("doc")}
-        >
-          <FileTextIcon className="size-4" />
-          <span className="hidden @3xl:inline">Документ</span>
-        </Button>
-      </Tip>
+      <span className="mx-0.5 hidden h-5 w-px bg-border @min-[36rem]:block" />
+      <PanelToggle />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
@@ -340,11 +361,15 @@ export function RoomHeader() {
             <span className="flex flex-col">
               Сесії агентів
               <small className="text-xs text-muted-foreground">
-                Усе, що агенти робили у своїх сесіях; модель і effort
+                Усе, що агенти робили у своїх сесіях; {t.model.and}
               </small>
             </span>
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => openDialog({ kind: "files" })}>
+          <DropdownMenuItem onSelect={() => openChanges({ scope: "room" })}>
+            <GitCompareArrowsIcon />
+            Усі зміни кімнати
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => openFile(null)}>
             <FolderIcon />
             Файли робочої теки
           </DropdownMenuItem>
@@ -358,7 +383,7 @@ export function RoomHeader() {
           >
             <LayoutPanelLeftIcon />
             Усі дії
-            <span className="ml-auto text-xs text-faint">⌘K</span>
+            <span className="ml-auto font-mono text-xs text-faint">{keyLabel("palette")}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

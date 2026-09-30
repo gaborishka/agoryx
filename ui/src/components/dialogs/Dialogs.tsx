@@ -1,58 +1,28 @@
-import { ExternalLinkIcon, FileIcon, FolderOpenIcon } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
-import { CodeFile, Patch } from "@/components/code/Code";
-import { LiveFrame } from "@/components/md/LiveFrame";
-import { Markdown, MermaidFile, rawUrl } from "@/components/md/Markdown";
-import { DataTable, Player } from "@/components/md/Media";
-import { Avatar, Stats } from "@/components/room/bits";
+import { Hint } from "@/components/common/states";
 import { RefChip } from "@/components/table/OpCard";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { api, roomPath, Unauthorized } from "@/lib/api";
-import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, fullDate, IMAGE_EXT, kb, names, TABLE_EXT, VIDEO_EXT } from "@/lib/format";
+import { Unauthorized } from "@/lib/api";
+import { keyLabel, SHORTCUTS, withMod } from "@/lib/keys";
+import { names } from "@/lib/format";
+import { errText } from "@/lib/load";
 import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { type DialogState, type TableFormOp, useStore } from "@/lib/store";
-import type { FileChange, RoomAgent } from "@/lib/types";
+import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { t } from "@/lib/i18n";
 
-const errText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const fail = (error: unknown) => {
   if (!(error instanceof Unauthorized)) toast.error(errText(error));
 };
-
-/** Fetch once per key; returns [data, error]. */
-function useLoad<T>(key: string | null, fetcher: () => Promise<T>) {
-  const [state, setState] = useState<{ key: string | null; data?: T; error?: string }>({ key: null });
-  useEffect(() => {
-    if (!key) return;
-    let live = true;
-    setState({ key });
-    fetcher()
-      .then((data) => live && setState({ key, data }))
-      .catch((error) => live && !(error instanceof Unauthorized) && setState({ key, error: errText(error) }));
-    return () => {
-      live = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-  return state.key === key ? state : { key };
-}
-
-const Loading = () => (
-  <div className="flex flex-col gap-2.5 py-2">
-    <Skeleton className="h-4 w-1/3" />
-    <Skeleton className="h-40 w-full" />
-  </div>
-);
-const Err = ({ children }: { children: ReactNode }) => <div className="rounded-xl bg-destructive-soft px-3.5 py-3 text-[13px] text-destructive">{children}</div>;
-const Faint = ({ children, className }: { children: ReactNode; className?: string }) => <p className={cn("text-[12.5px] leading-relaxed text-muted-foreground", className)}>{children}</p>;
 
 function Shell({ title, sub, size = "md", children }: { title: ReactNode; sub?: ReactNode; size?: "sm" | "md" | "lg"; children: ReactNode }) {
   const openDialog = useStore((s) => s.openDialog);
@@ -67,283 +37,12 @@ function Shell({ title, sub, size = "md", children }: { title: ReactNode; sub?: 
         )}
       >
         <DialogHeader className="shrink-0 gap-0.5 border-b border-border px-5 pt-4 pb-3.5 pr-12 text-left">
-          <DialogTitle className="truncate text-[16px]">{title}</DialogTitle>
-          <DialogDescription className={cn("truncate font-mono text-[11.5px]", !sub && "sr-only")}>{sub || title}</DialogDescription>
+          <DialogTitle className="truncate text-lead">{title}</DialogTitle>
+          <DialogDescription className={cn("truncate font-mono text-meta", !sub && "sr-only")}>{sub || title}</DialogDescription>
         </DialogHeader>
         <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-5 py-4 *:shrink-0">{children}</div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-// --- a file in the workspace --------------------------------------------------
-
-type FileView = { path: string; text: string; size: number; mtime: string; binary: boolean; truncated: boolean };
-
-function FileDialog({ path }: { path: string }) {
-  const roomId = useStore((s) => s.snap?.state.id ?? "");
-  const rawBase = useStore((s) => s.snap?.rawBase ?? "");
-  const kind = ext(path);
-  const url = rawUrl(rawBase, path);
-  const image = IMAGE_EXT.has(kind) && kind !== "svg";
-  const media = VIDEO_EXT.has(kind) || AUDIO_EXT.has(kind);
-  const file = useLoad(image || media ? null : `${roomId}:${path}`, () => api<FileView>("GET", `${roomPath(roomId, "/file")}?path=${encodeURIComponent(path)}`));
-  const open = (
-    <Button asChild variant="outline" size="sm" className="w-fit">
-      <a href={url} target="_blank" rel="noopener noreferrer">
-        <ExternalLinkIcon className="size-3.5" />
-        Відкрити в новій вкладці
-      </a>
-    </Button>
-  );
-  let body: ReactNode = <Loading />;
-  if (image) {
-    body = (
-      <>
-        <div className="grid place-items-center rounded-xl border border-border bg-[conic-gradient(var(--muted)_25%,transparent_0_50%,var(--muted)_0_75%,transparent_0)] bg-[length:16px_16px] p-3">
-          <img src={url} alt={path} className="max-h-[70vh] max-w-full object-contain" />
-        </div>
-        {open}
-      </>
-    );
-  } else if (media) {
-    body = (
-      <>
-        <div className="grid place-items-center">
-          <Player url={url} kind={VIDEO_EXT.has(kind) ? "video" : "audio"} title={path} className={VIDEO_EXT.has(kind) ? "max-h-[70vh]" : undefined} />
-        </div>
-        {open}
-      </>
-    );
-  } else if (file.error) body = <Err>{file.error}</Err>;
-  else if (file.data) {
-    const f = file.data;
-    const meta = (
-      <Faint className="tabular">
-        {kb(f.size)} · змінено {fullDate(f.mtime)}
-        {f.truncated ? " · показано початок" : ""}
-      </Faint>
-    );
-    if (FRAME_EXT.has(kind) || kind === "svg") {
-      body = (
-        <>
-          {meta}
-          <div className="overflow-hidden rounded-xl border border-border bg-white">
-            <LiveFrame src={url} title={path} initial={520} max={1600} />
-          </div>
-          {open}
-          {!f.binary ? (
-            <details className="group">
-              <summary className="cursor-pointer text-[13px] text-muted-foreground select-none hover:text-foreground">Код</summary>
-              <CodeFile name={path} text={f.text} className="mt-2" />
-            </details>
-          ) : null}
-        </>
-      );
-    } else if ((TABLE_EXT.has(kind) || DIAGRAM_EXT.has(kind)) && !f.binary) {
-      body = (
-        <>
-          {meta}
-          {TABLE_EXT.has(kind) ? (
-            <DataTable text={f.text} sep={kind === "tsv" ? "\t" : ","} cut={f.truncated} limit={1000} />
-          ) : (
-            <div className="rounded-xl border border-border bg-paper p-3">
-              <MermaidFile url={url} />
-            </div>
-          )}
-          {open}
-          <details>
-            <summary className="cursor-pointer text-[13px] text-muted-foreground select-none hover:text-foreground">Сирий текст</summary>
-            <CodeFile name={path} text={f.text} className="mt-2" />
-          </details>
-        </>
-      );
-    } else if (f.binary) {
-      body = (
-        <>
-          {meta}
-          <Faint>Двійковий файл — попередній перегляд недоступний.</Faint>
-          {open}
-        </>
-      );
-    } else if (kind === "md" || kind === "markdown") {
-      body = (
-        <>
-          {meta}
-          <article className="rounded-xl border border-border bg-paper px-6 py-5">
-            <Markdown text={f.text} variant="doc" />
-          </article>
-          <details>
-            <summary className="cursor-pointer text-[13px] text-muted-foreground select-none hover:text-foreground">Сирий текст</summary>
-            <CodeFile name={path} text={f.text} className="mt-2" />
-          </details>
-        </>
-      );
-    } else {
-      body = (
-        <>
-          {meta}
-          <CodeFile name={path} text={f.text} />
-        </>
-      );
-    }
-  }
-  return (
-    <Shell title={baseName(path)} sub={path} size="lg">
-      {body}
-    </Shell>
-  );
-}
-
-// --- what one turn changed ------------------------------------------------------
-
-function TurnDiffDialog({ turnId, path }: { turnId: string; path?: string }) {
-  const room = useStore((s) => s.snap?.state);
-  const openDialog = useStore((s) => s.openDialog);
-  const roomId = room?.id ?? "";
-  const turn = room?.turns.find((t) => t.id === turnId);
-  const diff = useLoad(`${roomId}:${turnId}`, () =>
-    api<{ changes: FileChange[]; patch: string; truncated: boolean }>("GET", `${roomPath(roomId, "/turn-diff")}?turn=${encodeURIComponent(turnId)}`),
-  );
-  const [only, setOnly] = useState<string | undefined>(path);
-  useEffect(() => setOnly(path), [path]);
-  const who = turn ? participant(room, turn.agent).label : "";
-  let body: ReactNode = <Loading />;
-  if (diff.error) body = <Err>{diff.error}</Err>;
-  else if (diff.data) {
-    const { changes, patch, truncated } = diff.data;
-    const narrowed = only && changes.length > 1 ? only : undefined;
-    const shown = narrowed
-      ? (patch.split(/(?=^diff --git )/m).find((part) => {
-          const first = part.split("\n", 1)[0] ?? "";
-          return first.endsWith(` b/${narrowed}`) || first.includes(` a/${narrowed} `);
-        }) ?? patch)
-      : patch;
-    body = (
-      <>
-        <div className="flex flex-col divide-y divide-border overflow-hidden rounded-xl border border-border">
-          {changes.map((c) => (
-            <div key={c.path} className={cn("flex items-center gap-2 px-3 py-1.5 text-[12.5px]", narrowed === c.path && "bg-secondary/60")}>
-              <button type="button" className="min-w-0 flex-1 truncate text-left font-mono hover:underline" title="Показати лише цей файл" onClick={() => setOnly(c.path)}>
-                {c.path}
-              </button>
-              <Stats added={c.added} removed={c.removed} deleted={c.status === "D"} binary={c.added === null} isNew={c.status === "A"} />
-              {c.status !== "D" ? (
-                <button type="button" className="text-xs text-primary hover:underline" onClick={() => openDialog({ kind: "file", path: c.path })}>
-                  файл
-                </button>
-              ) : null}
-            </div>
-          ))}
-        </div>
-        {narrowed ? (
-          <Faint>
-            Лише <span className="font-mono">{narrowed}</span> ·{" "}
-            <button type="button" className="text-primary hover:underline" onClick={() => setOnly(undefined)}>
-              усі файли ходу
-            </button>
-          </Faint>
-        ) : null}
-        {truncated ? (
-          <Faint>
-            Патч великий — показано початок. Повністю: <code className="font-mono">agoryx diff {turnId}</code>
-          </Faint>
-        ) : null}
-        <Patch patch={shown} />
-        <Faint>
-          Точно те, що цей хід змінив у робочій теці: знімок git до і після ходу. Інші агенти бачать ці +/− у своїй дельті й можуть узяти патч командою{" "}
-          <code className="font-mono">agoryx diff {turnId}</code>.
-        </Faint>
-      </>
-    );
-  }
-  return (
-    <Shell
-      title={
-        <span className="flex items-center gap-2">
-          {turn ? <Avatar handle={turn.agent} size={22} /> : null}
-          Що змінив хід {who ? `${who} ` : ""}
-          <span className="font-mono text-[13px] text-muted-foreground">{turnId}</span>
-        </span>
-      }
-      sub={turn?.endedAt ? fullDate(turn.endedAt) : undefined}
-      size="lg"
-    >
-      {body}
-    </Shell>
-  );
-}
-
-// --- a checkpoint commit ----------------------------------------------------------
-
-function CommitDialog({ sha }: { sha: string }) {
-  const roomId = useStore((s) => s.snap?.state.id ?? "");
-  const commit = useLoad(`${roomId}:${sha}`, () => api<{ sha: string; text: string }>("GET", `${roomPath(roomId, "/commit")}?sha=${encodeURIComponent(sha)}`));
-  let body: ReactNode = <Loading />;
-  if (commit.error) body = <Err>{commit.error}</Err>;
-  else if (commit.data) {
-    const text = commit.data.text;
-    const at = text.search(/^diff --git /m);
-    const head = at < 0 ? text : text.slice(0, at);
-    const patch = at < 0 ? "" : text.slice(at);
-    body = (
-      <>
-        <pre className="scroll-thin overflow-x-auto rounded-xl border border-border bg-muted/50 px-3.5 py-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap">{head.trim()}</pre>
-        {patch ? <Patch patch={patch} /> : null}
-      </>
-    );
-  }
-  return (
-    <Shell title={`Контрольна точка ${sha.slice(0, 7)}`} sub="git show" size="lg">
-      {body}
-    </Shell>
-  );
-}
-
-// --- the workspace -----------------------------------------------------------------
-
-function FilesDialog() {
-  const room = useStore((s) => s.snap?.state);
-  const openDialog = useStore((s) => s.openDialog);
-  const roomId = room?.id ?? "";
-  const tree = useLoad(`${roomId}:tree`, () => api<{ files: string[] }>("GET", roomPath(roomId, "/tree")));
-  const [q, setQ] = useState("");
-  let body: ReactNode = <Loading />;
-  if (tree.error) body = <Err>{tree.error}</Err>;
-  else if (tree.data) {
-    const files = tree.data.files.filter((f) => !q || f.toLowerCase().includes(q.toLowerCase()));
-    body = tree.data.files.length ? (
-      <>
-        {tree.data.files.length > 12 ? <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Знайти файл…" className="h-8" autoFocus /> : null}
-        <div className="flex flex-col">
-          {files.map((f) => (
-            <button key={f} type="button" onClick={() => openDialog({ kind: "file", path: f })} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-accent">
-              <FileIcon className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate font-mono text-[12.5px]">
-                <span className="text-muted-foreground">{f.includes("/") ? f.slice(0, f.lastIndexOf("/") + 1) : ""}</span>
-                {baseName(f)}
-              </span>
-            </button>
-          ))}
-        </div>
-      </>
-    ) : (
-      <Faint>Поки що порожньо — агенти ще нічого не створили.</Faint>
-    );
-  }
-  return (
-    <Shell
-      title={
-        <span className="flex items-center gap-2">
-          <FolderOpenIcon className="size-4.5 text-primary" />
-          Робоча тека
-        </span>
-      }
-      sub={room?.workspace}
-    >
-      <Faint>Спільна git-тека кімнати. Агенти читають і пишуть тут.</Faint>
-      {body}
-    </Shell>
   );
 }
 
@@ -393,11 +92,11 @@ function SettingsDialog() {
           {limited && (
             <Input id="s-budget" aria-label="Ходів агентів на ваше повідомлення" type="number" min={1} max={100} value={budget} onChange={(e) => setBudget(e.target.value)} className="w-28" />
           )}
-          <Faint>
+          <Hint>
             {limited
               ? "Скільки ходів агенти роблять після вашого повідомлення, перш ніж зупинитися й чекати на вас."
               : "Без ліміту: агенти працюють, доки комусь є що додати, і кімната стихає, коли всі пасують. Зупинити можна будь-коли."}
-          </Faint>
+          </Hint>
         </div>
         <div className="flex flex-col gap-1.5">
           <Label>Доступ агентів</Label>
@@ -410,20 +109,20 @@ function SettingsDialog() {
               <SelectItem value="readonly">Лише читання</SelectItem>
             </SelectContent>
           </Select>
-          <Faint>Агенти працюють, як у вашому терміналі: Claude — з вашими налаштуваннями, Codex — у своїй пісочниці. «Лише читання» чи вимкнена мережа обмежують обох.</Faint>
+          <Hint>Агенти працюють, як у вашому терміналі: Claude — з вашими налаштуваннями, Codex — у своїй пісочниці. «Лише читання» чи вимкнена мережа обмежують обох.</Hint>
         </div>
         <label className="flex items-center justify-between gap-3 text-sm">
           Мережа для команд агентів
           <Switch checked={network} onCheckedChange={setNetwork} />
         </label>
         <label className="flex items-center justify-between gap-3 text-sm">
-          Контрольна точка (git commit) після кожного раунду
+          {t.checkpoint.setting}
           <Switch checked={autoCommit} onCheckedChange={setAutoCommit} />
         </label>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="s-doc">Спільний документ</Label>
-          <Input id="s-doc" value={doc} onChange={(e) => setDoc(e.target.value)} placeholder="README.md" spellCheck={false} className="font-mono text-[13px]" />
-          <Faint>Файл, який кімната пише разом. Порожньо — без нього.</Faint>
+          <Input id="s-doc" value={doc} onChange={(e) => setDoc(e.target.value)} placeholder="README.md" spellCheck={false} className="font-mono text-small" />
+          <Hint>Файл, який кімната пише разом. Порожньо — без нього.</Hint>
         </div>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => openDialog(null)}>
@@ -441,6 +140,7 @@ function SettingsDialog() {
 // --- help -------------------------------------------------------------------------------------
 
 function HelpDialog() {
+  const openDialog = useStore((s) => s.openDialog);
   // The room's own agents (any number, any mix); outside a room — the default pair.
   const agents = useStore((s) => s.snap?.state.agents) ?? DEFAULT_AGENTS;
   const at = (agent: RoomAgent) => {
@@ -449,7 +149,7 @@ function HelpDialog() {
       <span
         key={agent.id}
         style={ink(who)}
-        className={cn("rounded-md px-1.5 py-0.5 font-mono text-[12.5px]", who.tone === "codex" ? "bg-codex-soft text-codex" : "bg-claude-soft text-claude")}
+        className={cn("rounded-md px-1.5 py-0.5 font-mono text-small", who.tone === "codex" ? "bg-codex-soft text-codex" : "bg-claude-soft text-claude")}
       >
         @{agent.id}
       </span>
@@ -458,7 +158,7 @@ function HelpDialog() {
   const li = "relative pl-5 before:absolute before:top-[0.6em] before:left-1 before:size-1.5 before:rounded-full before:bg-primary/50";
   return (
     <Shell title="Як це працює">
-      <div className="flex flex-col gap-3.5 text-[14.5px] leading-relaxed">
+      <div className="flex flex-col gap-3.5 text-body leading-relaxed">
         <p>
           <b>Кімната</b> — одна розмова для вас і {names(agents.map((a) => a.label))}. Agoryx задає контекст, а не ролі: агенти працюють у своїх рідних сесіях з усіма своїми
           інструментами.
@@ -481,10 +181,42 @@ function HelpDialog() {
             <b>Документ</b> — один спільний файл, кожна версія з автором.
           </li>
         </ul>
-        <Faint className="text-[13px]">
+        <Hint className="text-small">
           Без браузера: <code className="font-mono">agoryx tail -f</code>, <code className="font-mono">agoryx say "…"</code>, <code className="font-mono">agoryx table</code>.
-          Сесію агента можна відкрити в Claude Code чи Codex — розмова там теж потрапить у кімнату. <kbd className="font-mono">⌘K</kbd> — усі дії.
-        </Faint>
+          Сесію агента можна відкрити в Claude Code чи Codex — розмова там теж потрапить у кімнату.{" "}
+          <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => openDialog({ kind: "keys" })}>
+            Клавіші
+          </button>{" "}
+          <Kbd>?</Kbd>
+
+        </Hint>
+      </div>
+    </Shell>
+  );
+}
+
+// --- keys ---------------------------------------------------------------------------------------
+
+function KeysDialog() {
+  const groups = [...new Set(SHORTCUTS.map((s) => s.group))];
+  return (
+    <Shell title="Клавіші" size="sm">
+      <div className="flex flex-col gap-4">
+        {groups.map((group) => (
+          <section key={group} className="flex flex-col gap-1">
+            <h3 className="text-meta font-medium text-muted-foreground">{group}</h3>
+            <dl className="flex flex-col">
+              {SHORTCUTS.filter((s) => s.group === group).map((s) => (
+                <div key={s.id} className="flex items-center gap-3 border-b border-border/60 py-1.5 last:border-0">
+                  <dt className="min-w-0 flex-1 text-ui">{s.label}</dt>
+                  <dd>
+                    <Kbd className="font-mono">{keyLabel(s.id)}</Kbd>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        ))}
       </div>
     </Shell>
   );
@@ -559,8 +291,8 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
           <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/50 px-3 py-2.5">
             <RefChip id={option.id} className="mt-0.5" />
             <div className="min-w-0">
-              <b className="text-[13.5px] leading-snug">{option.title}</b>
-              <div className="text-[11.5px] text-muted-foreground">{participant(room, option.by).label}</div>
+              <b className="text-ui leading-snug">{option.title}</b>
+              <div className="text-meta text-muted-foreground">{participant(room, option.by).label}</div>
             </div>
           </div>
         ) : null}
@@ -605,12 +337,12 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
             </Select>
           </div>
         ) : null}
-        <Faint>{op === "decide" ? "Рішення з'явиться в розмові, і агенти продовжать із нього." : "Агенти побачать це у своєму наступному ході."}</Faint>
+        <Hint>{op === "decide" ? "Рішення з'явиться в розмові, і агенти продовжать із нього." : "Агенти побачать це у своєму наступному ході."}</Hint>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => openDialog(null)}>
             Скасувати
           </Button>
-          <Button type="submit" disabled={busy || missing}>
+          <Button type="submit" disabled={busy || missing} title={form.fields.some((f) => f.area) ? withMod("Enter") : undefined}>
             {op === "decide" ? `Обрати ${target}` : "Покласти на стіл"}
           </Button>
         </DialogFooter>
@@ -621,18 +353,12 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
 
 const render = (d: DialogState) => {
   switch (d.kind) {
-    case "file":
-      return <FileDialog key={d.path} path={d.path} />;
-    case "turn-diff":
-      return <TurnDiffDialog turnId={d.turnId} path={d.path} />;
-    case "commit":
-      return <CommitDialog sha={d.sha} />;
-    case "files":
-      return <FilesDialog />;
     case "settings":
       return <SettingsDialog />;
     case "help":
       return <HelpDialog />;
+    case "keys":
+      return <KeysDialog />;
     case "table-form":
       return <TableFormDialog key={`${d.op}:${d.target ?? ""}`} op={d.op} target={d.target} q={d.q} />;
   }
@@ -642,7 +368,7 @@ export function Dialogs() {
   const dialog = useStore((s) => s.dialog);
   const snap = useStore((s) => Boolean(s.snap));
   if (!dialog) return null;
-  if (dialog.kind !== "help" && !snap) return null;
+  if (dialog.kind !== "help" && dialog.kind !== "keys" && !snap) return null;
   return render(dialog);
 }
 

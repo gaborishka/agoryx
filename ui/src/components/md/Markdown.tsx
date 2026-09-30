@@ -83,10 +83,10 @@ const isAbsPath = (path: string) => path.startsWith("/") || path.startsWith("~/"
 /** The file an embed pointed at is no longer where it was; the room kept no copy. */
 function Gone({ path }: { path: string }) {
   return (
-    <span title={path} className="my-1 inline-flex max-w-full items-center gap-2 rounded-lg border border-dashed border-border px-2.5 py-1.5 align-top text-[13px] text-muted-foreground">
+    <span title={path} className="my-1 inline-flex max-w-full items-center gap-2 rounded-lg border border-dashed border-border px-2.5 py-1.5 align-top text-small text-muted-foreground">
       <FileXIcon className="size-4 shrink-0" />
       <span className="shrink-0">файлу вже немає</span>
-      <span className="truncate font-mono text-[12px]">{path}</span>
+      <span className="truncate font-mono text-meta">{path}</span>
     </span>
   );
 }
@@ -100,7 +100,7 @@ function Source({ code: text, lang }: { code: string; lang: string }) {
       <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">
         <Code2Icon className="size-3.5" /> Код {lang.toUpperCase()}
       </summary>
-      <pre className="scroll-thin max-h-80 overflow-auto border-t border-border bg-code px-3 py-2.5 font-mono text-[12.5px] leading-relaxed">{text}</pre>
+      <pre className="scroll-thin max-h-80 overflow-auto border-t border-border bg-code px-3 py-2.5 font-mono text-small leading-relaxed">{text}</pre>
     </details>
   );
 }
@@ -113,8 +113,8 @@ const makeLiveRenderer = (source: Source, text: string) =>
     if (isIncomplete || !source || !rawBase || !block) {
       return (
         <div className="my-3 overflow-hidden rounded-xl border border-border bg-code">
-          <div className="border-b border-border px-3 py-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground">{lang.toUpperCase()}</div>
-          <pre className="scroll-thin max-h-96 overflow-auto px-3 py-2.5 font-mono text-[12.5px] leading-relaxed">{fence}</pre>
+          <div className="border-b border-border px-3 py-1.5 text-micro font-semibold tracking-wider text-muted-foreground">{lang.toUpperCase()}</div>
+          <pre className="scroll-thin max-h-96 overflow-auto px-3 py-2.5 font-mono text-small leading-relaxed">{fence}</pre>
         </div>
       );
     }
@@ -164,7 +164,7 @@ function Ref({ id }: { id: string }) {
       type="button"
       onClick={() => goToRef(id)}
       title="Показати на столі"
-      className="mx-px inline-flex items-center rounded-[5px] bg-secondary px-1 font-mono text-[0.84em] font-semibold text-secondary-foreground ring-1 ring-primary/15 transition hover:bg-primary hover:text-primary-foreground"
+      className="mx-px inline-flex items-center rounded bg-secondary px-1 font-mono text-[0.84em] font-semibold text-secondary-foreground ring-1 ring-primary/15 transition hover:bg-primary hover:text-primary-foreground"
     >
       {id}
     </button>
@@ -172,11 +172,11 @@ function Ref({ id }: { id: string }) {
 }
 
 function FileLink({ path, children }: { path: string; children: ReactNode }) {
-  const openDialog = useStore((s) => s.openDialog);
+  const openFile = useStore((s) => s.openFile);
   return (
     <button
       type="button"
-      onClick={() => openDialog({ kind: "file", path })}
+      onClick={() => openFile(path)}
       title={`Відкрити ${path}`}
       className="inline text-left text-primary underline decoration-primary/35 underline-offset-[3px] hover:decoration-current"
     >
@@ -205,7 +205,7 @@ function Link({ href, children }: ComponentProps<"a">) {
 function Embed({ src, alt }: ComponentProps<"img">) {
   const workspace = useStore((s) => s.snap?.state.workspace);
   const rawBase = useStore((s) => s.snap?.rawBase);
-  const openDialog = useStore((s) => s.openDialog);
+  const openFile = useStore((s) => s.openFile);
   const [gone, setGone] = useState(false);
   const url = typeof src === "string" ? (localPath(src) ?? src) : "";
   if (/^https?:|^data:image\//i.test(url)) {
@@ -223,7 +223,7 @@ function Embed({ src, alt }: ComponentProps<"img">) {
   if (!path || !rawBase) return <span className="text-muted-foreground">[{alt || url}]</span>;
   if (gone) return <Gone path={path} />;
   const file = rel ? rawUrl(rawBase, rel) : outsideUrl(rawBase, path);
-  const open = () => (rel ? openDialog({ kind: "file", path: rel }) : window.open(file, "_blank", "noopener"));
+  const open = () => (rel ? openFile(rel) : window.open(file, "_blank", "noopener"));
   const caption = alt || baseName(path);
   const e = ext(path);
   if (IMAGE_EXT.has(e)) {
@@ -270,7 +270,7 @@ function Embed({ src, alt }: ComponentProps<"img">) {
   return (
     <button type="button" onClick={open} className="my-1 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-sm hover:bg-accent">
       <FileIcon className="size-4 text-muted-foreground" />
-      <span className="font-mono text-[13px]">{baseName(path)}</span>
+      <span className="font-mono text-small">{baseName(path)}</span>
       <span className="text-xs text-muted-foreground">відкрити</span>
     </button>
   );
@@ -279,7 +279,7 @@ function Embed({ src, alt }: ComponentProps<"img">) {
 /** A workspace .mmd file, drawn like a ```mermaid fence. */
 export function MermaidFile({ url }: { url: string }) {
   const file = useRawText(url);
-  if (file.error) return <span className="text-[13px] text-destructive">{file.error}</span>;
+  if (file.error) return <span className="text-small text-destructive">{file.error}</span>;
   if (file.text === undefined) return <span className="block h-24 animate-pulse rounded-xl bg-muted" />;
   return <Markdown text={`\`\`\`mermaid\n${file.text.trim()}\n\`\`\``} />;
 }

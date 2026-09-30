@@ -3,13 +3,15 @@ import { motion } from "motion/react";
 import { memo, type ReactNode } from "react";
 import { Markdown } from "@/components/md/Markdown";
 import { OpCard, OpCards } from "@/components/table/OpCard";
-import { cost, isSysError, passNote, plural, secs, sysText } from "@/lib/format";
+import { cost, passNote, plural, secs } from "@/lib/format";
+import { t } from "@/lib/i18n";
+import { decisionOf, sysError, sysLine } from "@/lib/system";
 import { ink, nameOf, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { DocRevision, MessageEntry, TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Name, NativeBadge, NativeTag, Stats, Time, Tip } from "./bits";
-import { Clamp } from "./Clamp";
+import { Clamp } from "@/components/common/Clamp";
 import { TurnBar } from "./Trace";
 
 export function Fresh({ fresh, children, className, id }: { fresh: boolean; children: ReactNode; className?: string; id?: string }) {
@@ -33,8 +35,8 @@ function TurnMeta({ turn }: { turn?: TurnState }) {
   return (
     <>
       {bits.length ? <span className="tabular text-xs text-faint">{bits.join(" · ")}</span> : null}
-      {turn.status === "error" ? <span className="rounded-full bg-destructive-soft px-2 text-[11px] font-medium text-destructive">помилка</span> : null}
-      {turn.status === "interrupted" ? <span className="rounded-full bg-amber-soft px-2 text-[11px] font-medium text-amber">перервано</span> : null}
+      {turn.status === "error" ? <span className="rounded-full bg-destructive-soft px-2 text-micro font-medium text-destructive">помилка</span> : null}
+      {turn.status === "interrupted" ? <span className="rounded-full bg-amber-soft px-2 text-micro font-medium text-amber">перервано</span> : null}
     </>
   );
 }
@@ -73,14 +75,14 @@ export const AgentMessage = memo(function AgentMessage({
       {card ? <span aria-hidden className={cn("absolute inset-x-0 top-0 h-[3px]", cardTone[p.tone])} style={ink(p)} /> : null}
       <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Avatar handle={m.author} size={28} />
-        <Name handle={m.author} className="text-[14.5px]" />
+        <Name handle={m.author} className="text-body" />
         <NativeTag m={m} />
         <Time iso={m.ts} />
         <TurnMeta turn={turn} />
       </header>
       <div className={cn("relative mt-1.5", !card && "pl-[38px]")}>
         {!card ? <span className={cn("absolute top-1 bottom-1 left-[13px] w-[2px] rounded-full opacity-0 transition group-hover/msg:opacity-100", railTone[p.tone])} style={ink(p)} /> : null}
-        {clamp ? <Clamp max={clamp} fade={card ? "from-card" : "from-background"}>{text}</Clamp> : text}
+        {clamp ? <Clamp max={clamp}>{text}</Clamp> : text}
         <OpCards ops={ops} compact={Boolean(clamp)} />
         <TurnBar turn={turn} docs={docs} compact={Boolean(clamp)} text={m.text} />
       </div>
@@ -111,7 +113,7 @@ export function PassLine({ m, turn, ops, docs }: { m: MessageEntry; turn?: TurnS
       : `пропускає хід — ${note || "нема що додати"}`;
   return (
     <div>
-      <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+      <div className="flex items-center gap-2 text-small text-muted-foreground">
         <Avatar handle={m.author} size={20} />
         <span>
           <Name handle={m.author} /> {silent}
@@ -130,7 +132,7 @@ export function PassLine({ m, turn, ops, docs }: { m: MessageEntry; turn?: TurnS
 /** What an agent said while it worked (`agoryx say`): a line in the flow, not a turn's reply. */
 export function UpdateLine({ m }: { m: MessageEntry }) {
   return (
-    <div className="flex items-start gap-2 text-[13.5px]">
+    <div className="flex items-start gap-2 text-ui">
       <Avatar handle={m.author} size={20} className="mt-0.5" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
@@ -140,7 +142,7 @@ export function UpdateLine({ m }: { m: MessageEntry }) {
           </Tip>
           <Time iso={m.ts} />
         </div>
-        <Markdown text={m.text} className="text-[13.5px] leading-relaxed text-muted-foreground" />
+        <Markdown text={m.text} className="text-ui leading-relaxed text-muted-foreground" />
       </div>
     </div>
   );
@@ -150,45 +152,48 @@ export function SystemLine({ m }: { m: MessageEntry }) {
   const room = useStore((s) => s.snap?.state);
   // A line an agent's action wrote (it is the author): say who, by the name the UI gives it.
   const who = m.author !== "agoryx" && m.author !== room?.human ? nameOf(room, m.author) : undefined;
-  const err = isSysError(m.text);
+  const err = sysError(m);
   const Icon = err ? TriangleAlertIcon : InfoIcon;
   return (
     <div
       className={cn(
-        "mx-auto flex max-w-[92%] items-start gap-2 rounded-xl px-3 py-2 text-[13px]",
+        "mx-auto flex max-w-[92%] items-start gap-2 rounded-xl px-3 py-2 text-small",
         err ? "bg-destructive-soft text-destructive" : "text-muted-foreground",
       )}
     >
       <Icon className="mt-0.5 size-4 shrink-0" />
-      <Markdown text={sysText(m.text, who)} className="text-[13px] leading-relaxed" />
+      <Markdown text={sysLine(m, who)} className="text-small leading-relaxed" />
     </div>
   );
 }
 
 export function DecisionLine({ m }: { m: MessageEntry }) {
+  // From its code, or read back from an older room's English; a line neither covers shows as written.
+  const d = decisionOf(m);
   return (
     <div className="flex items-start gap-3 rounded-2xl border border-primary/25 bg-secondary/70 px-4 py-3">
       <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
         <GavelIcon className="size-4" />
       </span>
       <div className="min-w-0">
-        <div className="text-[11px] font-semibold tracking-wider text-primary uppercase">Рішення</div>
-        <Markdown text={m.text} className="text-[14.5px]" />
+        <div className="text-micro font-semibold tracking-wider text-primary uppercase">{t.decision.title(d?.n)}</div>
+        <Markdown text={d ? t.decision.body(d) : m.text} className="text-body" />
+        {d ? <div className="text-meta text-muted-foreground">{t.decision.by(d.by)}</div> : null}
       </div>
     </div>
   );
 }
 
 export function CommitLine({ c }: { c: { sha: string; subject: string; files: number } }) {
-  const openDialog = useStore((s) => s.openDialog);
+  const openChanges = useStore((s) => s.openChanges);
   return (
-    <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+    <div className="flex items-center gap-2 text-small text-muted-foreground">
       <span className="grid size-5 place-items-center rounded-md bg-add text-add-ink">
         <GitCommitHorizontalIcon className="size-3.5" />
       </span>
       <span>
         Контрольна точка{" "}
-        <button type="button" className="font-mono text-[12px] text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openDialog({ kind: "commit", sha: c.sha })}>
+        <button type="button" className="font-mono text-meta text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openChanges({ scope: "commit", sha: c.sha })}>
           {c.sha.slice(0, 7)}
         </button>{" "}
         · {plural(c.files, "файл", "файли", "файлів")}
@@ -202,7 +207,7 @@ export function DocLine({ r }: { r: DocRevision }) {
   const room = useStore((s) => s.snap?.state);
   const who = participant(room, r.by);
   return (
-    <div className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-2 text-small text-muted-foreground">
       <span className="grid size-5 place-items-center rounded-md bg-secondary text-primary">
         <FileTextIcon className="size-3.5" />
       </span>
@@ -222,7 +227,7 @@ export function DocLine({ r }: { r: DocRevision }) {
           <Name handle={r.by} />
         )}{" "}
         змінює{" "}
-        <button type="button" className="font-mono text-[12px] text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openDocRevision(r.seq)}>
+        <button type="button" className="font-mono text-meta text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openDocRevision(r.seq)}>
           {r.path}
         </button>
       </span>
@@ -237,7 +242,7 @@ export function StandaloneOp({ op }: { op: TableOp }) {
   const who = participant(room, op.by);
   return (
     <div>
-      <div className="mb-1.5 flex items-center gap-2 text-[13px] text-muted-foreground">
+      <div className="mb-1.5 flex items-center gap-2 text-small text-muted-foreground">
         <Avatar handle={op.by} size={20} />
         <Name handle={op.by} />
         <span>на столі</span>

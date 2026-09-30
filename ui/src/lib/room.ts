@@ -74,7 +74,7 @@ export const inkColor = (who: Pick<Participant, "kind" | "shade" | "mark"> | und
  * (the author's label and, next to another of its kind, its look), so an agent's line is not
  * put on "Ви" until the next reload.
  */
-export const lastLine = (room: RoomState, m: Pick<MessageEntry, "author" | "text">): NonNullable<RoomSummary["lastMessage"]> => {
+export const lastLine = (room: RoomState, m: Pick<MessageEntry, "author" | "text" | "sys">): NonNullable<RoomSummary["lastMessage"]> => {
   const agent = room.agents.find((a) => a.id === m.author);
   const look = agent ? agentLook(room.agents, agent.id) : undefined;
   return {
@@ -82,6 +82,7 @@ export const lastLine = (room: RoomState, m: Pick<MessageEntry, "author" | "text
     text: m.text.slice(0, 200),
     ...(agent ? { label: agent.label } : {}),
     ...(look?.mark ? { look } : {}),
+    ...(m.sys ? { sys: m.sys } : {}),
   };
 };
 

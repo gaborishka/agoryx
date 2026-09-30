@@ -3,12 +3,12 @@ import {
   AppWindowIcon,
   BanIcon,
   BrainIcon,
-  ChevronRightIcon,
   DotIcon,
   FileTextIcon,
   FilePenLineIcon,
   FileSearchIcon,
   GlobeIcon,
+  ListIcon,
   type LucideIcon,
   NetworkIcon,
   NotebookPenIcon,
@@ -17,7 +17,6 @@ import {
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 import { rawUrl } from "@/components/md/Markdown";
 import { Player } from "@/components/md/Media";
@@ -64,8 +63,8 @@ export function ActivityRow({ a }: { a: Activity }) {
       <span className="min-w-0 flex-1 pb-1.5">
         <span
           className={cn(
-            "block text-[13px] leading-6 text-muted-foreground",
-            wrap ? "whitespace-pre-wrap break-words" : "truncate font-mono text-[12px]",
+            "block text-small leading-6 text-muted-foreground",
+            wrap ? "whitespace-pre-wrap break-words" : "truncate font-mono text-meta",
             a.kind === "thinking" && "italic",
             fail && "text-destructive",
           )}
@@ -73,7 +72,7 @@ export function ActivityRow({ a }: { a: Activity }) {
         >
           {label}
         </span>
-        {a.detail && fail ? <span className="mt-0.5 block whitespace-pre-wrap break-words font-mono text-[11.5px] text-destructive/80">{a.detail.slice(0, 500)}</span> : null}
+        {a.detail && fail ? <span className="mt-0.5 block whitespace-pre-wrap break-words font-mono text-meta text-destructive/80">{a.detail.slice(0, 500)}</span> : null}
       </span>
     </li>
   );
@@ -105,7 +104,7 @@ const CARD_KIND: Array<[Set<string>, LucideIcon, string]> = [
  */
 function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact?: boolean }) {
   const rawBase = useStore((s) => s.snap?.rawBase);
-  const openDialog = useStore((s) => s.openDialog);
+  const openFile = useStore((s) => s.openFile);
   const [broken, setBroken] = useState<Set<string>>(new Set());
   const [more, setMore] = useState(false);
   if (!rawBase) return null;
@@ -123,7 +122,7 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
         const url = rawUrl(rawBase, f);
         if (IMAGE_EXT.has(e)) {
           return (
-            <button key={f} type="button" title={f} onClick={() => openDialog({ kind: "file", path: f })} className="group flex max-w-[260px] flex-col gap-1 text-left">
+            <button key={f} type="button" title={f} onClick={() => openFile(f)} className="group flex max-w-[260px] flex-col gap-1 text-left">
               <img
                 src={url}
                 alt={f}
@@ -131,7 +130,7 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
                 onError={() => hide(f)}
                 className={cn("rounded-lg border border-border bg-paper object-cover transition group-hover:shadow-soft", compact ? "h-24" : "h-36", "max-w-full")}
               />
-              <span className="truncate font-mono text-[11px] text-muted-foreground">{baseName(f)}</span>
+              <span className="truncate font-mono text-micro text-muted-foreground">{baseName(f)}</span>
             </button>
           );
         }
@@ -139,7 +138,7 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
           return (
             <div key={f} className="flex max-w-[360px] flex-col gap-1">
               <Player url={url} kind={VIDEO_EXT.has(e) ? "video" : "audio"} title={f} className={VIDEO_EXT.has(e) ? (compact ? "max-h-28" : "max-h-48") : "w-[300px]"} />
-              <span className="truncate font-mono text-[11px] text-muted-foreground">{baseName(f)}</span>
+              <span className="truncate font-mono text-micro text-muted-foreground">{baseName(f)}</span>
             </div>
           );
         }
@@ -149,15 +148,15 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
             key={f}
             type="button"
             title={f}
-            onClick={() => openDialog({ kind: "file", path: f })}
+            onClick={() => openFile(f)}
             className="flex max-w-[260px] items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2 text-left transition hover:border-input hover:bg-accent hover:shadow-soft"
           >
             <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-secondary text-primary">
               <Icon className="size-4" />
             </span>
             <span className="min-w-0">
-              <span className="block truncate font-mono text-[12px] text-foreground">{baseName(f)}</span>
-              <span className="block text-[11px] text-muted-foreground">{label} · відкрити</span>
+              <span className="block truncate font-mono text-meta text-foreground">{baseName(f)}</span>
+              <span className="block text-micro text-muted-foreground">{label} · відкрити</span>
             </span>
           </button>
         );
@@ -166,7 +165,7 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
         <button
           type="button"
           onClick={() => setMore(true)}
-          className="flex h-12 items-center rounded-xl border border-dashed border-border px-3 text-[12px] text-muted-foreground transition hover:border-input hover:bg-accent hover:text-foreground"
+          className="flex h-12 items-center rounded-xl border border-dashed border-border px-3 text-meta text-muted-foreground transition hover:border-input hover:bg-accent hover:text-foreground"
         >
           ще {files.length - shown.length}
         </button>
@@ -176,9 +175,11 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
 }
 
 export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?: DocRevision[]; compact?: boolean; text?: string }) {
-  const [open, setOpen] = useState(false);
   const [all, setAll] = useState(false);
-  const openDialog = useStore((s) => s.openDialog);
+  const openChanges = useStore((s) => s.openChanges);
+  const openFile = useStore((s) => s.openFile);
+  // The chip whose turn and file the panel shows now.
+  const shown = useStore((s) => (s.panel === "diff" && s.changes.scope === "turn" && s.changes.turn === turn?.id ? s.changes : null));
   const openDocRevision = useStore((s) => s.openDocRevision);
   const room = useStore((s) => s.snap?.state);
   const docPaths = new Set((docs ?? []).map((r) => r.path));
@@ -196,11 +197,13 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
     <div className="mt-2.5">
       {turn ? <Made turn={turn} text={text} compact={compact} /> : null}
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5 first:mt-0">
-        {acts ? (
-          <button type="button" className={cn(chip, open && "bg-accent text-foreground")} onClick={() => setOpen(!open)} aria-expanded={open}>
-            <ChevronRightIcon className={cn("size-3.5 transition-transform", open && "rotate-90")} />
-            {plural(acts, "дія", "дії", "дій")}
-          </button>
+        {acts && turn ? (
+          <Tip tip="Що агент робив цей хід — у панелі «Зміни»">
+            <button type="button" className={cn(chip, shown?.acts && "bg-accent text-foreground")} onClick={() => openChanges({ scope: "turn", turn: turn.id, acts: true })}>
+              <ListIcon className="size-3.5" />
+              {plural(acts, "дія", "дії", "дій")}
+            </button>
+          </Tip>
         ) : null}
         {shownDocs.map((r) => (
           <Tip key={r.seq} tip="Правка спільного документа — показати, що змінилося">
@@ -218,9 +221,13 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
               key={c.path}
               tip={`Що саме цей хід змінив у ${c.path}${alongside.length ? ` — тим часом цей файл редагували й інші: ${alongside.join(", ")}, тож зміна не лише цього ходу` : ""}`}
             >
-              <button type="button" className={chip} onClick={() => turn && openDialog({ kind: "turn-diff", turnId: turn.id, path: c.path })}>
+              <button
+                type="button"
+                className={cn(chip, shown?.path === c.path && "border-input bg-accent text-foreground")}
+                onClick={() => turn && openChanges({ scope: "turn", turn: turn.id, path: c.path })}
+              >
                 <FilePenLineIcon className="size-3.5" />
-                <span className="truncate font-mono text-[11.5px]">{baseName(c.path)}</span>
+                <span className="truncate font-mono text-meta">{baseName(c.path)}</span>
                 <Stats added={c.added} removed={c.removed} deleted={c.status === "D"} binary={c.added === null} isNew={c.status === "A"} />
                 {alongside.length ? <span className="text-muted-foreground">+ {alongside.join(", ")}</span> : null}
               </button>
@@ -228,9 +235,9 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
           );
         })}
         {shownFiles.map((f) => (
-          <button key={f} type="button" className={chip} title={f} onClick={() => openDialog({ kind: "file", path: f })}>
+          <button key={f} type="button" className={chip} title={f} onClick={() => openFile(f)}>
             <NotebookPenIcon className="size-3.5" />
-            <span className="truncate font-mono text-[11.5px]">{baseName(f)}</span>
+            <span className="truncate font-mono text-meta">{baseName(f)}</span>
           </button>
         ))}
         {hidden > 0 ? (
@@ -239,19 +246,6 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
           </button>
         ) : null}
       </div>
-      <AnimatePresence initial={false}>
-        {open && turn ? (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
-            className="overflow-hidden"
-          >
-            <ActivityList items={turn.activity} className="mt-2.5 rounded-xl border border-border bg-muted/40 px-3 pt-2.5 pb-1" />
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
     </div>
   );
 }

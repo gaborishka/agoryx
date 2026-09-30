@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { withMod } from "@/lib/keys";
 
 export const copyText = async (text: string, select?: HTMLElement | null) => {
   try {
@@ -11,7 +12,7 @@ export const copyText = async (text: string, select?: HTMLElement | null) => {
       const sel = window.getSelection();
       sel?.removeAllRanges();
       sel?.addRange(range);
-      toast("Виділено — натисніть ⌘C");
+      toast(`Виділено — натисніть ${withMod("C")}`);
     } else toast.error("Не вдалося скопіювати");
   }
 };

@@ -41,7 +41,7 @@ export function Patch({ patch, focus, className }: { patch: string; focus?: stri
     }
   }, [patch]);
   if (!files.length) {
-    return <pre className={cn("scroll-thin overflow-auto rounded-xl border border-border bg-code p-3 font-mono text-[12px]", className)}>{patch}</pre>;
+    return <pre className={cn("scroll-thin overflow-auto rounded-xl border border-border bg-code p-3 font-mono text-meta", className)}>{patch}</pre>;
   }
   const ordered = focus ? [...files.filter((f) => f.name === focus), ...files.filter((f) => f.name !== focus)] : files;
   return (
@@ -66,7 +66,7 @@ export function DocDiff({ items }: { items: DiffItem[] }) {
       return (
         <tr key={index} className="bg-muted/60 text-faint">
           <td className="w-10 select-none px-2 text-right" />
-          <td className="px-3 py-1 font-sans text-[11.5px]">… {plural(item.skip, "рядок", "рядки", "рядків")} без змін</td>
+          <td className="px-3 py-1 font-sans text-meta">… {plural(item.skip, "рядок", "рядки", "рядків")} без змін</td>
         </tr>
       );
     }
@@ -84,7 +84,7 @@ export function DocDiff({ items }: { items: DiffItem[] }) {
   });
   return (
     <div className="scroll-thin overflow-auto rounded-xl border border-border bg-code">
-      <table className="w-full border-collapse font-mono text-[12.5px] leading-[1.6]">
+      <table className="w-full border-collapse font-mono text-small leading-[1.6]">
         <tbody>{rows}</tbody>
       </table>
     </div>

@@ -12,6 +12,7 @@ import {
   RotateCcwIcon,
   ScaleIcon,
   SettingsIcon,
+  SquareTerminalIcon,
   TerminalIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -324,6 +325,33 @@ function PanelToggle() {
   );
 }
 
+/** The room's terminals under it: shown or hidden (they run on while hidden). */
+function TerminalToggle() {
+  const open = useStore((s) => s.terminalOpen);
+  const setOpen = useStore((s) => s.setTerminalOpen);
+  return (
+    <Tip
+      tip={
+        <span>
+          {open ? "Hide the terminal" : "Terminal in the room's folder"} <Kbd>{keyLabel("terminal")}</Kbd>
+        </span>
+      }
+    >
+      <Button
+        variant="ghost"
+        size="icon"
+        className={cn("hidden size-8 text-muted-foreground sm:inline-flex", open && "bg-secondary text-secondary-foreground hover:bg-secondary")}
+        aria-label="Terminal"
+        aria-keyshortcuts={ariaKeys("terminal")}
+        aria-pressed={open}
+        onClick={() => setOpen(!open)}
+      >
+        <SquareTerminalIcon className="size-4.5" />
+      </Button>
+    </Tip>
+  );
+}
+
 export function RoomHeader() {
   const room = useStore((s) => s.snap?.state);
   const openDialog = useStore((s) => s.openDialog);
@@ -344,6 +372,7 @@ export function RoomHeader() {
         ))}
       </div>
       <span className="mx-0.5 hidden h-5 w-px bg-border @min-[36rem]:block" />
+      <TerminalToggle />
       <PanelToggle />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

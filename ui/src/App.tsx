@@ -21,6 +21,8 @@ import { cn } from "@/lib/utils";
 const loadSettings = () => import("@/components/settings/Settings");
 const Settings = lazy(() => loadSettings().then((m) => ({ default: m.Settings })));
 
+const TerminalDrawer = lazy(() => import("@/components/terminal/Terminals").then((m) => ({ default: m.TerminalDrawer })));
+
 const loadDialogs = () => import("@/components/dialogs/Dialogs");
 const Dialogs = lazy(() => loadDialogs().then((m) => ({ default: m.Dialogs })));
 
@@ -115,6 +117,8 @@ function RoomLoading() {
 function Room() {
   const loaded = useStore((s) => Boolean(s.snap));
   const view = useStore((s) => s.view);
+  const terminal = useStore((s) => s.terminalOpen);
+  const roomId = useStore((s) => s.snap?.state.id);
   if (!loaded) return <RoomLoading />;
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -126,6 +130,11 @@ function Room() {
           <Composer />
         </div>
       </div>
+      {terminal ? (
+        <Suspense fallback={null}>
+          <TerminalDrawer key={roomId} />
+        </Suspense>
+      ) : null}
     </div>
   );
 }

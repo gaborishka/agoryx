@@ -46,7 +46,7 @@ export default defineConfig({
   server: {
     // AGORYX_UI_DAEMON: another daemon (a demo one on its own AGORYX_HOME and port).
     proxy: {
-      "/api": { target: process.env.AGORYX_UI_DAEMON ?? "http://127.0.0.1:7717", changeOrigin: false },
+      "/api": { target: process.env.AGORYX_UI_DAEMON ?? "http://127.0.0.1:7717", changeOrigin: false, ws: true },
       "/raw": { target: process.env.AGORYX_UI_DAEMON ?? "http://127.0.0.1:7717", changeOrigin: false },
     },
   },

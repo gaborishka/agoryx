@@ -71,7 +71,7 @@ export function useShortcuts() {
       }
       if (s.dialog || s.paletteOpen || layerOpen() || !allowed(hit, event.target)) return;
       const room = s.route.kind === "room" && s.snap ? s.snap.state : null;
-      const inRoom = ["chat", "table", "panel", "session", "stop"].includes(hit.id);
+      const inRoom = ["chat", "table", "panel", "session", "terminal", "stop"].includes(hit.id);
       if (inRoom && !room) return;
       event.preventDefault();
       if (event.repeat) return;
@@ -102,6 +102,9 @@ export function useShortcuts() {
           break;
         case "session":
           s.openSession(undefined, true);
+          break;
+        case "terminal":
+          s.setTerminalOpen(!s.terminalOpen);
           break;
         case "stop":
           stopAgents();

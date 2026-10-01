@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
+import { WebSocketServer } from "ws";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentBehind } from "./agentprocs.js";
@@ -33,6 +35,7 @@ import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
+import { TerminalError, TerminalHub } from "./terminal.js";
 import { listWorkspaceFiles, repoRoot, resolveInside, workspacePaths, workspaceTracking } from "./workspace.js";
 
 export interface DaemonOptions {
@@ -94,6 +97,8 @@ class HttpError extends Error {
     message: string,
     /** The response also closes the connection (the request's body was not read to its end). */
     readonly closeConnection = false,
+    /** More for the page than the message: what is there now, on a conflict. */
+    readonly extra?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -173,6 +178,7 @@ const FRAME_REPORTER = Buffer.from(
 
 const MAX_BODY = 1024 * 1024;
 const MAX_FILE_PREVIEW = 2 * 1024 * 1024;
+const hashOf = (bytes: Buffer) => createHash("sha1").update(bytes).digest("hex");
 
 /**
  * Whether a resolved (real) path is the workspace's git directory or inside it — by real path, so a
@@ -186,6 +192,24 @@ const inGitDir = (workspace: string, full: string): boolean => {
     return false;
   }
   return full === gitDir || full.startsWith(`${gitDir}${sep}`);
+};
+
+/**
+ * Where a save lands, by real path: a file that does not exist yet is placed under its nearest existing folder,
+ * which must itself be inside the workspace (a symlinked folder must not lead out).
+ */
+const resolveForWrite = (root: string, relPath: string): string | null => {
+  const cleaned = relPath.replace(/^\/+/, "");
+  const full = resolve(root, cleaned);
+  if (full === root || !full.startsWith(`${root}${sep}`)) return null;
+  const rest: string[] = [];
+  let at = full;
+  while (!existsSync(at)) {
+    rest.unshift(basename(at));
+    at = dirname(at);
+  }
+  const real = resolveInside(root, at === root ? "." : at.slice(root.length + 1));
+  return real ? join(real, ...rest) : null;
 };
 
 const readBody = (req: IncomingMessage, limit = MAX_BODY): Promise<unknown> =>
@@ -352,6 +376,9 @@ export class AgoraDaemon {
   private readonly attention: AttentionBoard;
   /** The room's browser: agents' commands to the app's pane (browser.ts). */
   private readonly browser: BrowserRelay;
+  /** The human's terminals in rooms' folders (terminal.ts), reached over a WebSocket. */
+  private readonly terminals: TerminalHub;
+  private readonly sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   port = 0;
 
   constructor(options: DaemonOptions = {}) {
@@ -377,6 +404,7 @@ export class AgoraDaemon {
       },
     });
     this.browser = new BrowserRelay({ log: (line) => this.log(line) });
+    this.terminals = new TerminalHub(this.env);
     this.runners = options.runners ?? defaultRunners(this.env);
     this.webDir = options.webDir ?? findWebDir();
   }
@@ -416,7 +444,7 @@ export class AgoraDaemon {
     }
     for (const { address, iface } of targets) {
       if (this.lanServers.has(address)) continue;
-      const server = createServer(this.handler);
+      const server = this.serverFor(this.handler);
       await new Promise<void>((resolveListen, reject) => {
         server.once("error", reject);
         server.listen(this.port, address, () => {
@@ -437,6 +465,67 @@ export class AgoraDaemon {
     return this.exposure();
   }
 
+  /** One listener: the handler, and WebSocket upgrades (the terminals) checked as the API is. */
+  private serverFor(handler: (req: IncomingMessage, res: ServerResponse) => void): Server {
+    const server = createServer(handler);
+    server.on("upgrade", (req, socket, head) => {
+      this.upgrade(req, socket, head).catch((error: unknown) => {
+        const status = error instanceof HttpError ? error.status : error instanceof TerminalError ? error.status : 500;
+        const message = error instanceof Error ? error.message : String(error);
+        if (status >= 500) this.log(`error: ${error instanceof Error ? (error.stack ?? message) : message}`);
+        if (socket.writable) socket.end(`HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : status === 404 ? "Not Found" : "Error"}\r\nconnection: close\r\ncontent-type: text/plain\r\n\r\n${message}`);
+        socket.destroy();
+      });
+    });
+    return server;
+  }
+
+  /**
+   * GET /api/rooms/<room>/terminals/<id>/socket as a WebSocket: the human's page and one terminal. Host,
+   * Origin and token are checked as for the API; an agent's key is refused, and so is the human's token
+   * from an agent's process.
+   */
+  private async upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    socket.on("error", () => {});
+    if (req.headers["x-agoryx-pane"] !== undefined) throw new HttpError(403, "the room's browser cannot open Agoryx itself");
+    const url = new URL(req.url ?? "/", this.url);
+    const reach = this.checkHost(req, url.pathname);
+    // A WebSocket always says where it comes from: a page elsewhere must not reach a shell.
+    if (!req.headers.origin) throw new HttpError(403, "a terminal needs the Agoryx page");
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length !== 6 || parts[0] !== "api" || parts[1] !== "rooms" || parts[3] !== "terminals" || parts[5] !== "socket") throw new HttpError(404, "unknown endpoint");
+    const caller = this.checkToken(req, url, reach);
+    if (caller.agent) throw new HttpError(403, "terminals are the human's: an agent has its own shell");
+    await this.refuseHumanTokenFromAgent(req);
+    const handle = this.room(parts[2]!);
+    const room = handle.store.state.id;
+    const id = decodeURIComponent(parts[4]!);
+    // Unknown terminal: refused before the upgrade, so the page can tell it is gone.
+    if (!this.terminals.list(room).some((t) => t.id === id)) throw new TerminalError("no such terminal in this room", 404);
+    this.sockets.handleUpgrade(req, socket, head, (ws) => {
+      let detach: (() => void) | null = null;
+      try {
+        detach = this.terminals.attach(room, id, (message) => {
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
+          if (message.t === "closed") ws.close(1000, "closed");
+        });
+      } catch {
+        ws.close(4404, "no such terminal");
+        return;
+      }
+      ws.on("message", (data, binary) => {
+        if (binary) return;
+        try {
+          this.terminals.receive(room, id, JSON.parse(data.toString()));
+        } catch {
+          // a closed terminal, or not JSON
+        }
+      });
+      ws.on("close", () => detach?.());
+      ws.on("error", () => detach?.());
+    });
+  }
+
   async start(): Promise<DaemonInfo> {
     const wanted = this.options.port ?? DEFAULT_PORT;
     const handler = (req: IncomingMessage, res: ServerResponse) => {
@@ -445,12 +534,12 @@ export class AgoraDaemon {
         const message = error instanceof Error ? error.message : String(error);
         if (status >= 500) this.log(`error: ${error instanceof Error ? (error.stack ?? message) : message}`);
         const close: Record<string, string> = error instanceof HttpError && error.closeConnection ? { connection: "close" } : {};
-        if (!res.headersSent) sendJson(res, status, { error: message }, close);
+        if (!res.headersSent) sendJson(res, status, { ...(error instanceof HttpError ? error.extra : undefined), error: message }, close);
         else res.end();
       });
     };
     this.handler = handler;
-    const server = createServer(handler);
+    const server = this.serverFor(handler);
     this.server = server;
     const targets = lanTargets(this.options.lan);
     const lan = targets.map((target) => target.address);
@@ -484,7 +573,7 @@ export class AgoraDaemon {
       const bound = new Map<string, Server>();
       try {
         for (const address of lan) {
-          const extra = createServer(handler);
+          const extra = this.serverFor(handler);
           await listen(port, extra, address);
           bound.set(address, extra);
         }
@@ -546,6 +635,8 @@ export class AgoraDaemon {
     this.sseClients.clear();
     // The app's browser host stream is not in sseClients: end it here, or server.close() waits for it.
     this.browser.close();
+    this.terminals.closeAll();
+    for (const ws of this.sockets.clients) ws.terminate();
     await Promise.all(
       [...this.rooms.values()].map(async (handle) => {
         if (handle.followTimer) clearInterval(handle.followTimer);
@@ -1202,6 +1293,14 @@ export class AgoraDaemon {
       return;
     }
 
+    if (action === "file" && method === "POST") {
+      // The human's editor saves. An agent writes files with its own tools, not through the page's API.
+      if (caller.agent) throw new HttpError(403, "the editor is the human's: an agent writes files with its own tools");
+      const body = (await readBody(req, MAX_FILE_PREVIEW + 64 * 1024)) as Record<string, unknown>;
+      sendJson(res, 200, this.writeWorkspaceFile(handle, body.path, body.text, body.base));
+      return;
+    }
+
     if (action === "turn-diff" && method === "GET") {
       const turnId = url.searchParams.get("turn") ?? "";
       if (!/^t\d{1,9}$/.test(turnId)) throw new HttpError(400, "bad turn id");
@@ -1257,6 +1356,11 @@ export class AgoraDaemon {
         if (!(error instanceof RevertError)) throw error;
         sendJson(res, error.status, { error: error.message, code: error.code });
       }
+      return;
+    }
+
+    if (action === "terminals") {
+      await this.terminalsApi(req, res, handle, parts.slice(3), method, caller);
       return;
     }
 
@@ -1506,7 +1610,43 @@ export class AgoraDaemon {
       binary,
       truncated: stats.size > length,
       text: binary ? "" : preview.toString("utf8"),
+      // What a save names as the version it edited; only a whole text file can be edited.
+      hash: binary || stats.size > length ? null : hashOf(preview),
     };
+  }
+
+  /**
+   * The human's save from the editor. `base` is the hash of the version the editor opened (null: a new file); if the
+   * file changed on disk since, nothing is written and 409 says what is there now, so an agent's edit is never lost.
+   */
+  private writeWorkspaceFile(handle: RoomHandle, relPath: unknown, text: unknown, base: unknown) {
+    if (typeof relPath !== "string" || !relPath.trim()) throw new HttpError(400, "path is required");
+    if (typeof text !== "string") throw new HttpError(400, "text is required");
+    if (base !== null && typeof base !== "string") throw new HttpError(400, "base is required: the hash the editor opened, or null for a new file");
+    const root = handle.store.state.workspace;
+    const full = resolveForWrite(root, relPath);
+    const agoryxDir = full ? join(realpathSync(root), ".agoryx") : "";
+    const inAgoryx = full ? full === agoryxDir || full.startsWith(agoryxDir + sep) : false;
+    const gitNamed = relPath.split(/[\\/]/).includes(".git");
+    if (!full || gitNamed || inGitDir(root, full) || inAgoryx) throw new HttpError(403, "this path is not the human's to edit here");
+    const bytes = Buffer.from(text, "utf8");
+    if (bytes.length > MAX_FILE_PREVIEW) throw new HttpError(413, "too large for the editor");
+    if (existsSync(full)) {
+      const stats = statSync(full);
+      if (!stats.isFile()) throw new HttpError(400, "not a file");
+      const now = stats.size > MAX_FILE_PREVIEW ? null : hashOf(readFileSync(full));
+      if (now !== base) {
+        const current = now === null ? null : this.readWorkspaceFile(handle, relPath);
+        throw new HttpError(409, "the file changed on disk since it was opened", false, { hash: now, text: current?.text ?? null });
+      }
+    } else if (base !== null) {
+      throw new HttpError(409, "the file was removed since it was opened", false, { hash: null, text: null });
+    } else {
+      mkdirSync(dirname(full), { recursive: true });
+    }
+    writeFileSync(full, bytes);
+    const stats = statSync(full);
+    return { path: relPath, size: stats.size, mtime: stats.mtime.toISOString(), hash: hashOf(bytes) };
   }
 
   private stream(req: IncomingMessage, res: ServerResponse, handle: RoomHandle, after: number, device?: DeviceInfo): void {
@@ -1577,6 +1717,45 @@ export class AgoraDaemon {
         delete handle.followTimer;
       }
     });
+  }
+
+  /**
+   * /api/rooms/<room>/terminals: the human's shells in the room's folder. GET lists them; POST {cols, rows}
+   * opens one; POST <id>/input {text} types into it; POST <id>/rename {title}; POST <id>/close ends it. What
+   * a shell prints and what is typed live go over its WebSocket (upgrade()).
+   */
+  private async terminalsApi(req: IncomingMessage, res: ServerResponse, handle: RoomHandle, rest: string[], method: string, caller: Caller): Promise<void> {
+    if (caller.agent) throw new HttpError(403, "terminals are the human's: an agent has its own shell");
+    const room = handle.store.state.id;
+    try {
+      if (rest.length === 0 && method === "GET") {
+        sendJson(res, 200, { terminals: this.terminals.list(room) });
+        return;
+      }
+      if (method !== "POST") throw new HttpError(405, "method not allowed");
+      const body = (await readBody(req, 64 * 1024)) as Record<string, unknown>;
+      if (rest.length === 0) {
+        const terminal = this.terminals.open(room, handle.store.state.workspace, body);
+        if (typeof body.text === "string" && body.text) this.terminals.write(room, terminal.id, body.text);
+        sendJson(res, 201, { terminal });
+        return;
+      }
+      const [id, what] = rest;
+      if (rest.length !== 2 || !id) throw new HttpError(404, "unknown endpoint");
+      if (what === "input") {
+        if (typeof body.text !== "string") throw new HttpError(400, "text is required");
+        this.terminals.write(room, id, body.text);
+        sendJson(res, 200, { ok: true });
+      } else if (what === "rename") {
+        sendJson(res, 200, { terminal: this.terminals.rename(room, id, String(body.title ?? "")) });
+      } else if (what === "close") {
+        this.terminals.close(room, id);
+        sendJson(res, 200, { ok: true });
+      } else throw new HttpError(404, "unknown endpoint");
+    } catch (error) {
+      if (error instanceof TerminalError) throw new HttpError(error.status, error.message);
+      throw error;
+    }
   }
 
   /** /api/attention: which rooms wait for the human, and where the human looks. The human's only; no stream. */

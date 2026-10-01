@@ -220,7 +220,7 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
   const agreed = table.settled.length + table.facts.filter((f) => !f.withdrawn).length + table.decisions.length - contested.length;
   const shifts = shiftsOf(table).length;
   const parts: Array<[string, string]> = [];
-  if (agreed) parts.push([`Agreed on ${plural(agreed, "point", "points")}`, "text-meet"]);
+  if (agreed) parts.push([`Agreed on ${plural(agreed, "point", "points")}`, "text-meet-ink"]);
   const quarrels = disputes.length + contested.length;
   if (quarrels) parts.push([plural(quarrels, "open dispute", "open disputes"), "text-destructive"]);
   if (openQ.length) parts.push([plural(openQ.length, "unanswered question", "unanswered questions"), "text-amber"]);
@@ -574,8 +574,8 @@ function QuestionActions({ q }: { q: string }) {
 
 const STATUS: Record<TableQuestion["status"], { label: string; cls: string; Icon: typeof CheckIcon }> = {
   open: { label: "Open", cls: "bg-amber-soft text-amber", Icon: CircleHelpIcon },
-  answered: { label: "Answered", cls: "bg-meet/10 text-meet", Icon: BadgeCheckIcon },
-  decided: { label: "Settled", cls: "bg-meet/10 text-meet", Icon: GavelIcon },
+  answered: { label: "Answered", cls: "bg-meet/10 text-meet-ink", Icon: BadgeCheckIcon },
+  decided: { label: "Settled", cls: "bg-meet/10 text-meet-ink", Icon: GavelIcon },
 };
 
 /** How a closed question was closed: the chosen option, or the settled answer. */

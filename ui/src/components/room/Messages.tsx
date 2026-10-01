@@ -1,6 +1,7 @@
-import { FileTextIcon, GitCommitHorizontalIcon, GavelIcon, InfoIcon, RotateCcwIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
+import { FileTextIcon, GitCommitHorizontalIcon, InfoIcon, RotateCcwIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
 import { motion } from "motion/react";
 import { memo, type ReactNode } from "react";
+import { Mark } from "@/components/brand/Mark";
 import { Markdown } from "@/components/md/Markdown";
 import { OpCard, OpCards } from "@/components/table/OpCard";
 import { Button } from "@/components/ui/button";
@@ -178,12 +179,11 @@ export function DecisionLine({ m }: { m: MessageEntry }) {
   // From its code, or read back from an older room's English; a line neither covers shows as written.
   const d = decisionOf(m);
   return (
-    // Where the voices meet: the logo's crossing colour marks what the room settled.
-    <div className="relative flex items-start gap-3 overflow-hidden rounded-2xl border border-meet/20 bg-meet-soft py-3.5 pr-4 pl-5 shadow-edge">
-      <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-meet" />
-      <GavelIcon className="mt-1 size-4 shrink-0 text-meet" />
+    // What the room settled is the one place the page turns over: ink ground, the mark in paper.
+    <div className="settled flex items-start gap-3 rounded-2xl px-4 py-3.5 shadow-edge">
+      <Mark className="mt-1 size-4" />
       <div className="min-w-0">
-        <div className="font-display text-lead font-[650] text-meet">{t.decision.title(d?.n)}</div>
+        <div className="font-display text-lead font-[650] text-meet-ink">{t.decision.title(d?.n)}</div>
         <Markdown text={d ? t.decision.body(d) : m.text} className="text-body" />
         {d ? <div className="text-meta text-muted-foreground">{t.decision.by(d.by)}</div> : null}
       </div>

@@ -40,8 +40,8 @@ const lazyMermaid = (base: MermaidConfig): DiagramPlugin => {
     },
   };
 };
-const mermaidLight = lazyMermaid({ theme: "neutral", fontFamily: "Commissioner Variable, system-ui, sans-serif" });
-const mermaidDark = lazyMermaid({ theme: "dark", fontFamily: "Commissioner Variable, system-ui, sans-serif", darkMode: true });
+const mermaidLight = lazyMermaid({ theme: "neutral", fontFamily: "Instrument Sans Variable, system-ui, sans-serif" });
+const mermaidDark = lazyMermaid({ theme: "dark", fontFamily: "Instrument Sans Variable, system-ui, sans-serif", darkMode: true });
 
 const translations: Partial<StreamdownTranslations> = {
   close: "Close",

@@ -10,7 +10,7 @@ export type RoomDiff = Diff & { base: RoomBase };
 /** A missing diff is "nothing to show", not an error. */
 export const orNull = <T,>(promise: Promise<T>) => promise.catch((error) => (error instanceof ApiError && error.status === 404 ? null : Promise.reject(error)));
 
-// The composer's +/− and the Зміни panel's "Уся кімната" show the same diff; one request serves both.
+// The composer's +/− and the Changes panel's "Whole room" show the same diff; one request serves both.
 let last: { key: string; promise: Promise<RoomDiff | null> } | null = null;
 
 const keyOf = (room: RoomState) => `${room.id}:${room.turns.filter((t) => t.status !== "running").length}:${room.commits.length}`;

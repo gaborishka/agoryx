@@ -235,8 +235,8 @@ test("who sees the profile: the CLI and the UI say it from the roster and the ro
 
     assert.equal(profileLine(AGENTS[0]!, { exists: false }), null);
     assert.equal(profileLine(AGENTS[0]!, undefined), null);
-    assert.match(profileLine(AGENTS[0]!, { exists: true })!, /Бачить ваш профіль/);
-    assert.match(profileLine(AGENTS[1]!, { exists: true })!, /вимкнено/);
+    assert.match(profileLine(AGENTS[0]!, { exists: true })!, /Sees your profile/);
+    assert.match(profileLine(AGENTS[1]!, { exists: true })!, /turned off/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

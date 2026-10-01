@@ -36,13 +36,19 @@ function TurnMeta({ turn }: { turn?: TurnState }) {
   return (
     <>
       {bits.length ? <span className="tabular text-xs text-faint">{bits.join(" · ")}</span> : null}
-      {turn.status === "error" ? <span className="rounded-full bg-destructive-soft px-2 text-micro font-medium text-destructive">помилка</span> : null}
-      {turn.status === "interrupted" ? <span className="rounded-full bg-amber-soft px-2 text-micro font-medium text-amber">перервано</span> : null}
+      {turn.status === "error" ? <span className="rounded-full bg-destructive-soft px-2 text-micro font-medium text-destructive">error</span> : null}
+      {turn.status === "interrupted" ? <span className="rounded-full bg-amber-soft px-2 text-micro font-medium text-amber">interrupted</span> : null}
     </>
   );
 }
 
-const railTone = { claude: "bg-claude/35", codex: "bg-codex/35", human: "bg-human/35", sys: "bg-border" } as const;
+/** The voice rail: always there, faint; the whole voice lights up while the reader is on the turn. */
+const railTone = {
+  claude: "bg-claude/40 group-hover/msg:bg-claude/85",
+  codex: "bg-codex/40 group-hover/msg:bg-codex/85",
+  human: "bg-human/40 group-hover/msg:bg-human/85",
+  sys: "bg-border",
+} as const;
 
 const cardTone = { claude: "bg-claude", codex: "bg-codex", human: "bg-human", sys: "bg-border" } as const;
 
@@ -82,7 +88,7 @@ export const AgentMessage = memo(function AgentMessage({
         <TurnMeta turn={turn} />
       </header>
       <div className={cn("relative mt-1.5", !card && "pl-[38px]")}>
-        {!card ? <span className={cn("absolute top-1 bottom-1 left-[13px] w-[2px] rounded-full opacity-0 transition group-hover/msg:opacity-100", railTone[p.tone])} style={ink(p)} /> : null}
+        {!card ? <span aria-hidden className={cn("absolute top-0.5 bottom-1 left-[13px] w-[2px] rounded-full transition-colors duration-300", railTone[p.tone])} style={ink(p)} /> : null}
         {clamp ? <Clamp max={clamp}>{text}</Clamp> : text}
         <OpCards ops={ops} compact={Boolean(clamp)} />
         <TurnBar turn={turn} docs={docs} compact={Boolean(clamp)} text={m.text} />
@@ -94,7 +100,7 @@ export const AgentMessage = memo(function AgentMessage({
 export const HumanMessage = memo(function HumanMessage({ m }: { m: MessageEntry }) {
   return (
     <div className="flex flex-col items-end gap-1 pl-[12%]">
-      <div className="max-w-full rounded-2xl rounded-br-md bg-human-soft px-4 py-2.5 text-foreground ring-1 ring-human/15">
+      <div className="max-w-full rounded-[20px] rounded-br-[6px] bg-human-soft px-4 py-2.5 text-foreground ring-1 ring-human/20">
         <Markdown text={m.text} source={`m:${m.id}`} />
       </div>
       <div className="flex items-center gap-2 pr-1">
@@ -108,10 +114,10 @@ export const HumanMessage = memo(function HumanMessage({ m }: { m: MessageEntry 
 export function PassLine({ m, turn, ops, docs }: { m: MessageEntry; turn?: TurnState; ops?: TableOp[]; docs?: DocRevision[] }) {
   const note = passNote(m.text);
   const silent = ops?.length
-    ? `без слів — ${ops.length === 1 ? "хід" : "ходи"} на столі`
+    ? `said nothing, made ${ops.length === 1 ? "a move" : "moves"} on the table`
     : turn?.files?.length || docs?.length
-      ? "без слів — лише зміни"
-      : `пропускає хід — ${note || "нема що додати"}`;
+      ? "said nothing, only made changes"
+      : `passes — ${note || "nothing to add"}`;
   return (
     <div>
       <div className="flex items-center gap-2 text-small text-muted-foreground">
@@ -138,8 +144,8 @@ export function UpdateLine({ m }: { m: MessageEntry }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <Name handle={m.author} />
-          <Tip tip="Написано під час роботи — це ще не відповідь за хід">
-            <span className="text-xs text-muted-foreground">по ходу</span>
+          <Tip tip="Written while working — not the turn’s reply yet">
+            <span className="text-xs text-muted-foreground">while working</span>
           </Tip>
           <Time iso={m.ts} />
         </div>
@@ -172,12 +178,12 @@ export function DecisionLine({ m }: { m: MessageEntry }) {
   // From its code, or read back from an older room's English; a line neither covers shows as written.
   const d = decisionOf(m);
   return (
-    <div className="flex items-start gap-3 rounded-2xl border border-primary/25 bg-secondary/70 px-4 py-3">
-      <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
-        <GavelIcon className="size-4" />
-      </span>
+    // Where the voices meet: the logo's crossing colour marks what the room settled.
+    <div className="relative flex items-start gap-3 overflow-hidden rounded-2xl border border-meet/20 bg-meet-soft py-3.5 pr-4 pl-5 shadow-edge">
+      <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-meet" />
+      <GavelIcon className="mt-1 size-4 shrink-0 text-meet" />
       <div className="min-w-0">
-        <div className="text-micro font-semibold tracking-wider text-primary uppercase">{t.decision.title(d?.n)}</div>
+        <div className="font-display text-lead font-[650] text-meet">{t.decision.title(d?.n)}</div>
         <Markdown text={d ? t.decision.body(d) : m.text} className="text-body" />
         {d ? <div className="text-meta text-muted-foreground">{t.decision.by(d.by)}</div> : null}
       </div>
@@ -195,11 +201,11 @@ export function CommitLine({ c }: { c: { sha: string; subject: string; files: nu
         <GitCommitHorizontalIcon className="size-3.5" />
       </span>
       <span>
-        Контрольна точка{" "}
+        Checkpoint{" "}
         <button type="button" className="font-mono text-meta text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openChanges({ scope: "commit", sha: c.sha })}>
           {c.sha.slice(0, 7)}
         </button>{" "}
-        · {plural(c.files, "файл", "файли", "файлів")}
+        · {plural(c.files, "file", "files")}
       </span>
       {driven ? (
         <Button
@@ -209,7 +215,7 @@ export function CommitLine({ c }: { c: { sha: string; subject: string; files: nu
           onClick={() => openDialog({ kind: "revert", sha: c.sha })}
         >
           <RotateCcwIcon />
-          Повернути теку сюди
+          Revert folder to here
         </Button>
       ) : null}
     </div>
@@ -226,8 +232,8 @@ export function RevertLine({ r }: { r: RevertEntry }) {
     const last = s.snap?.state.reverts?.filter((entry) => !entry.fromRoom).at(-1);
     return last?.seq === r.seq && last.undoOf === undefined && last.undone === undefined;
   });
-  const files = plural(r.total, "файл", "файли", "файлів");
-  const where = r.fromRoom ? <> з кімнати «{r.fromRoom.name}»</> : null;
+  const files = plural(r.total, "file", "files");
+  const where = r.fromRoom ? <> from room “{r.fromRoom.name}”</> : null;
   return (
     <div className="flex flex-wrap items-center gap-2 text-small text-muted-foreground">
       <span className="grid size-5 place-items-center rounded-md bg-secondary text-primary">
@@ -237,11 +243,11 @@ export function RevertLine({ r }: { r: RevertEntry }) {
         <Name handle={r.by} />{" "}
         {r.undoOf !== undefined ? (
           <>
-            скасовує повернення теки{where} · {files}
+            undoes the folder revert{where} · {files}
           </>
         ) : (
           <>
-            повертає теку до контрольної точки{" "}
+            reverts the folder to checkpoint{" "}
             <button type="button" className="font-mono text-meta text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openChanges({ scope: "commit", sha: r.to })}>
               {r.to.slice(0, 7)}
             </button>
@@ -250,16 +256,16 @@ export function RevertLine({ r }: { r: RevertEntry }) {
         )}
       </span>
       {r.left?.length ? (
-        <Tip tip={`Не вдалося повернути: ${r.left.join(", ")}`}>
-          <span className="text-destructive">не все</span>
+        <Tip tip={`Couldn’t revert: ${r.left.join(", ")}`}>
+          <span className="text-destructive">partial</span>
         </Tip>
       ) : null}
       {r.undone !== undefined ? (
-        <span className="text-faint">скасовано</span>
+        <span className="text-faint">undone</span>
       ) : driven && undoable ? (
         <Button variant="ghost" size="xs" className="text-muted-foreground hover:text-foreground" onClick={() => openDialog({ kind: "revert", undo: r.seq })}>
           <Undo2Icon />
-          Скасувати повернення
+          Undo revert
         </Button>
       ) : null}
     </div>
@@ -277,11 +283,11 @@ export function DocLine({ r }: { r: DocRevision }) {
       </span>
       <span>
         {r.among ? (
-          <Tip tip="Файл змінився, поки ходи йшли паралельно, і кімната не бачить, чий це хід.">
+          <Tip tip="The file changed while turns ran in parallel, and the room can’t tell whose turn it was.">
             <span>
               {r.among.map((id, i) => (
                 <span key={id}>
-                  {i ? " або " : ""}
+                  {i ? " or " : ""}
                   <Name handle={id} />
                 </span>
               ))}
@@ -290,13 +296,13 @@ export function DocLine({ r }: { r: DocRevision }) {
         ) : (
           <Name handle={r.by} />
         )}{" "}
-        змінює{" "}
+        changes{" "}
         <button type="button" className="font-mono text-meta text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openDocRevision(r.seq)}>
           {r.path}
         </button>
       </span>
       <Stats added={r.added} removed={r.removed} deleted={r.deleted} />
-      {r.native && who.agent ? <NativeBadge agent={r.by} label="у своїй сесії" tip={`Змінено в рідній сесії ${who.label}, поза ходом у кімнаті.`} /> : null}
+      {r.native && who.agent ? <NativeBadge agent={r.by} label="in own session" tip={`Changed in ${who.label}’s own session, outside a room turn.`} /> : null}
     </div>
   );
 }
@@ -309,8 +315,8 @@ export function StandaloneOp({ op }: { op: TableOp }) {
       <div className="mb-1.5 flex items-center gap-2 text-small text-muted-foreground">
         <Avatar handle={op.by} size={20} />
         <Name handle={op.by} />
-        <span>на столі</span>
-        {who.agent && !op.turnId ? <NativeBadge agent={op.by} label="у своїй сесії" tip={`Зроблено з рідної сесії ${who.label}, поза ходом у кімнаті.`} /> : null}
+        <span>on the table</span>
+        {who.agent && !op.turnId ? <NativeBadge agent={op.by} label="in own session" tip={`Done from ${who.label}’s own session, outside a room turn.`} /> : null}
       </div>
       <div className="pl-7">
         <OpCard o={op} />

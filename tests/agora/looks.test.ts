@@ -103,12 +103,12 @@ test("the start screen looks agents up in the roster it is about to seat, with t
 });
 
 test("a live message keeps its author in the room list: label and (next to another of its kind) look", () => {
-  // Before: the live update dropped the label, so the list said "Ви: …" for an agent's reply until a reload.
+  // Before: the live update dropped the label, so the list said "You: …" for an agent's reply until a reload.
   const trio = room(TRIO);
   const line = lastLine(trio, { author: "sonnet", text: "**Agreed**, ship it" });
   assert.deepEqual(line, { author: "sonnet", text: "**Agreed**, ship it", label: "Sonnet", look: { kind: "claude", shade: 1, mark: "S" } });
   assert.equal(roomPreview(line), "Sonnet: Agreed, ship it");
-  assert.deepEqual(roomPreviewParts(lastLine(trio, { author: "Ivan", text: "hi" })), { who: "Ви", text: "hi" });
+  assert.deepEqual(roomPreviewParts(lastLine(trio, { author: "Ivan", text: "hi" })), { who: "You", text: "hi" });
   assert.deepEqual(lastLine(room(DEFAULT_AGENTS), { author: "claude", text: "x".repeat(300) }), { author: "claude", text: "x".repeat(200), label: "Claude" });
   assert.deepEqual(ink(line.look), { "--claude": "var(--claude-1)", "--claude-soft": "var(--claude-soft-1)" });
 });

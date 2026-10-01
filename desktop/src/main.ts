@@ -264,19 +264,19 @@ interface StartState {
 }
 
 const STEPS: ReadonlyArray<Pick<Step, "id" | "label">> = [
-  { id: "env", label: "Читаю середовище оболонки" },
-  { id: "doctor", label: "Перевіряю інструменти" },
-  { id: "daemon", label: "Запускаю Agoryx" },
+  { id: "env", label: "Reading the shell environment" },
+  { id: "doctor", label: "Checking tools" },
+  { id: "daemon", label: "Starting Agoryx" },
 ];
 
 const freshSteps = (): Step[] => STEPS.map((step) => ({ ...step, status: "wait" }));
 
-const daemonStep = (status: StepStatus): Step[] => [{ id: "daemon", label: "Запускаю Agoryx", status }];
+const daemonStep = (status: StepStatus): Step[] => [{ id: "daemon", label: "Starting Agoryx", status }];
 
 let win: BrowserWindow | null = null;
 /** What the window shows: the start page, or the daemon's UI. */
 let view: "start" | "daemon" = "start";
-let state: StartState = { rev: 0, title: "Відкриваю Agoryx", steps: freshSteps(), checks: [], actions: [], busy: true };
+let state: StartState = { rev: 0, title: "Opening Agoryx", steps: freshSteps(), checks: [], actions: [], busy: true };
 
 let core: DesktopCore | null = null;
 let paths: AgoraPaths | null = null;
@@ -289,7 +289,7 @@ let settling: Promise<unknown> = Promise.resolve();
 /** The daemon the window shows (or will show again); null while there is none. */
 let daemon: DaemonInfo | null = null;
 let checks: DoctorCheck[] = [];
-/** Warnings waiting for "Відкрити Agoryx", as warningsKey() gives them. */
+/** Warnings waiting for "Open Agoryx", as warningsKey() gives them. */
 let pendingWarnings: string | null = null;
 /** A start sequence (or a doctor run) is under way: buttons wait, menu items that would race it do nothing. */
 let busy = false;
@@ -372,7 +372,7 @@ const boot = (): Promise<void> =>
     dropSupervisor();
     daemon = null;
     pendingWarnings = null;
-    show({ title: "Відкриваю Agoryx", steps: withRunning(freshSteps(), "env"), checks: [], actions: [], busy: true });
+    show({ title: "Opening Agoryx", steps: withRunning(freshSteps(), "env"), checks: [], actions: [], busy: true });
     const root = agoryxRoot();
     if (!core || !paths) {
       try {
@@ -382,7 +382,7 @@ const boot = (): Promise<void> =>
           id: "agoryx",
           label: "Agoryx",
           status: "fail",
-          detail: `не вдалося завантажити ${coreEntry(root)}: ${firstLine(error)}`,
+          detail: `could not load ${coreEntry(root)}: ${firstLine(error)}`,
           fix: app.isPackaged ? "reinstall Agoryx.app" : `cd ${root} && npm run build:core`,
         };
         return blocked([missing], withStep("env", "fail"));
@@ -392,20 +392,20 @@ const boot = (): Promise<void> =>
     daemonEnv = env;
     // Stop Daemon and Quit meanwhile: the start sequence ends here.
     if (stopping) return;
-    const read = source === "login-shell" ? "з вашої login-оболонки" : "оболонка не відповіла; беру звичні теки встановлення";
+    const read = source === "login-shell" ? "from your login shell" : "the shell did not answer; using the usual install folders";
     update({ steps: withRunning(withStep("env", "done", read), "doctor") });
     checks = await core.runDoctor({ env, root });
     if (stopping) return;
     const verdict = core.doctorVerdict(checks);
     if (verdict === "fail") return blocked(checks, withStep("doctor", "fail"));
     const warnings = checks.filter((check) => check.status !== "ok").length;
-    const steps = withStep("doctor", "done", warnings ? `${warnings} ${warningWord(warnings)}` : "усе знайдено");
+    const steps = withStep("doctor", "done", warnings ? `${warnings} ${warningWord(warnings)}` : "everything found");
     const key = warningsKey(checks);
     if (verdict === "warn" && key !== acceptedWarnings()) {
       pendingWarnings = key;
       return update({
-        title: "Agoryx може запуститися, але є попередження",
-        note: "Відкрийте зараз або виправте це й натисніть «Спробувати знову». Цей екран повернеться, лише коли зміниться якась перевірка.",
+        title: "Agoryx can start, but there are warnings",
+        note: "Open it now, or fix these and click “Try again”. This screen comes back only when a check changes.",
         steps,
         checks,
         actions: ["open", "retry"],
@@ -416,19 +416,15 @@ const boot = (): Promise<void> =>
     await startDaemon();
   });
 
-/** "попередження" in Ukrainian: 1 попередження, 2–4 попередження, 5+ попереджень (11–14 too). */
-const warningWord = (count: number): string => {
-  const tens = count % 100;
-  const ones = count % 10;
-  return ones >= 1 && ones <= 4 && (tens < 11 || tens > 14) ? "попередження" : "попереджень";
-};
+/** "1 warning", "3 warnings". */
+const warningWord = (count: number): string => (count === 1 ? "warning" : "warnings");
 
 const withRunning = (steps: Step[], id: StepId): Step[] => steps.map((step) => (step.id === id ? { ...step, status: "run" } : step));
 
 const blocked = (found: DoctorCheck[], steps: Step[]): void =>
   update({
-    title: "Agoryx спершу потрібно кілька речей",
-    note: "Нічого не запущено. Виправте позначене ✕ і натисніть «Спробувати знову».",
+    title: "Agoryx needs a few things first",
+    note: "Nothing was started. Fix the items marked ✕ and click “Try again”.",
     steps,
     checks: found,
     actions: ["retry"],
@@ -439,7 +435,7 @@ const ensureSupervisor = (): Supervisor => {
   if (supervisor) return supervisor;
   if (!core || !daemonEnv) throw new Error("the environment has not been read yet");
   const node = core.findExecutable("node", daemonEnv);
-  if (!node) throw new Error("node немає у вашому PATH (brew install node)");
+  if (!node) throw new Error("node is not in your PATH (brew install node)");
   const next = new core.DaemonSupervisor({ root: agoryxRoot(), node, env: daemonEnv, log: (message) => console.log(`[agoryx] ${message}`) });
   next.on("down", onDown);
   next.on("up", showDaemon);
@@ -469,7 +465,7 @@ const startDaemon = async (): Promise<void> => {
     showDaemon(info);
   } catch (error) {
     if (stopping) return;
-    update({ title: "Agoryx не вдалося запустити", note: undefined, steps: withStep("daemon", "fail"), error: startError(error), actions: ["retry", "log"], busy: false });
+    update({ title: "Agoryx could not start", note: undefined, steps: withStep("daemon", "fail"), error: startError(error), actions: ["retry", "log"], busy: false });
   }
 };
 
@@ -484,7 +480,7 @@ const onDown = (): void => {
   if (stopping) return;
   daemon = null;
   attention?.setDaemon(null);
-  show({ title: "Agoryx зупинився — перезапускаю…", steps: daemonStep("run"), checks: [], actions: ["log"], busy: true });
+  show({ title: "Agoryx stopped — restarting…", steps: daemonStep("run"), checks: [], actions: ["log"], busy: true });
 };
 
 const onFailed = (failure: SupervisorFailure): void => {
@@ -492,8 +488,8 @@ const onFailed = (failure: SupervisorFailure): void => {
   daemon = null;
   attention?.setDaemon(null);
   show({
-    title: "Agoryx зупинився й не піднявся",
-    note: "Кілька спроб поспіль запустити його знову не вдалися. Зазвичай журнал каже чому.",
+    title: "Agoryx stopped and did not come back",
+    note: "Several attempts in a row to start it again failed. The log usually says why.",
     steps: daemonStep("fail"),
     checks: [],
     error: { message: failure.message, logTail: failure.logTail.trimEnd() || undefined, logPath: logFile() ?? undefined },
@@ -502,7 +498,7 @@ const onFailed = (failure: SupervisorFailure): void => {
   });
 };
 
-/** "Відкрити Agoryx": past the warnings (remembered), or back to the UI from the doctor. */
+/** "Open Agoryx": past the warnings (remembered), or back to the UI from the doctor. */
 const openAnyway = async (): Promise<void> => {
   if (pendingWarnings !== null) {
     acceptWarnings(pendingWarnings);
@@ -517,20 +513,20 @@ const openAnyway = async (): Promise<void> => {
   await boot();
 };
 
-/** The check list on demand (menu "Перевірити інструменти", the page's "Перевірити ще раз" / "Перевірити агентів"). */
+/** The check list on demand (menu "Check Tools", the page's "Check again" / "Check agents"). */
 const runChecks = (probe: boolean): Promise<void> => {
   // Nothing to check with yet (the core did not load): the start sequence says why.
   if (!core || !daemonEnv) return boot();
   return exclusive(async () => {
     if (!core || !daemonEnv) return;
-    const title = "Перевірка";
-    const note = probe ? "Надсилаю кожному агентові, у якого виконано вхід, один короткий запит…" : "Перевіряю інструменти…";
+    const title = "Checks";
+    const note = probe ? "Sending one short request to each agent that is signed in…" : "Checking tools…";
     // The last run's checks would read as this run's answer: only the running step shows until it is in.
-    const running: Step[] = [{ id: "doctor", label: probe ? "Перевіряю інструменти й агентів" : "Перевіряю інструменти", status: "run" }];
+    const running: Step[] = [{ id: "doctor", label: probe ? "Checking tools and agents" : "Checking tools", status: "run" }];
     show({ title, note, steps: running, checks: [], actions: [], busy: true });
     checks = await core.runDoctor({ env: daemonEnv, root: agoryxRoot(), probe });
     const actions: Action[] = daemon ? ["open", "doctor", "probe", "log"] : pendingWarnings !== null ? ["open", "retry", "probe"] : ["retry", "probe"];
-    show({ title, note: daemon ? "Agoryx працює далі, поки ви дивитеся." : undefined, steps: [], checks, actions, busy: false });
+    show({ title, note: daemon ? "Agoryx keeps running while you look." : undefined, steps: [], checks, actions, busy: false });
   });
 };
 
@@ -539,7 +535,7 @@ const restartDaemon = (): Promise<void> => {
   return exclusive(async () => {
     const running = supervisor!;
     daemon = null;
-    show({ title: "Перезапускаю Agoryx", steps: daemonStep("run"), checks: [], actions: [], busy: true });
+    show({ title: "Restarting Agoryx", steps: daemonStep("run"), checks: [], actions: [], busy: true });
     try {
       const info = await running.restart();
       if (stopping) return;
@@ -549,13 +545,13 @@ const restartDaemon = (): Promise<void> => {
       if (info && daemon !== info) showDaemon(info);
     } catch (error) {
       if (stopping) return;
-      show({ title: "Agoryx не вдалося перезапустити", steps: daemonStep("fail"), checks: [], error: startError(error), actions: ["retry", "log"], busy: false });
+      show({ title: "Agoryx could not restart", steps: daemonStep("fail"), checks: [], error: startError(error), actions: ["retry", "log"], busy: false });
     }
   });
 };
 
-/** The one button of the app's dialogs; Electron's own "OK" would be the only English word in them. */
-const OK = ["Гаразд"];
+/** The one button of the app's dialogs. */
+const OK = ["OK"];
 
 /**
  * Quitting leaves the daemon running; this is the one way the app stops it. It wins over whatever is
@@ -564,7 +560,7 @@ const OK = ["Гаразд"];
 const stopAndQuit = async (): Promise<void> => {
   if (stopping) return;
   stopping = true;
-  show({ title: "Зупиняю Agoryx", note: "Поточні ходи агентів зупиняться.", steps: [], checks: [], actions: [], busy: true });
+  show({ title: "Stopping Agoryx", note: "The agents’ current turns will stop.", steps: [], checks: [], actions: [], busy: true });
   let why: string | null = null;
   try {
     // Picked while the shell is still being read (the first start): read it here rather than not stop.
@@ -576,18 +572,18 @@ const stopAndQuit = async (): Promise<void> => {
   } catch (error) {
     why = firstLine(error);
   }
-  if (why !== null) await dialog.showMessageBox({ type: "warning", message: "Agoryx не зупинився", detail: why, buttons: OK });
+  if (why !== null) await dialog.showMessageBox({ type: "warning", message: "Agoryx did not stop", detail: why, buttons: OK });
   app.quit();
 };
 
 const openLog = async (): Promise<void> => {
   const file = logFile();
   if (!file || !existsSync(file)) {
-    await dialog.showMessageBox({ type: "info", message: "Журналу демона ще немає", detail: file ?? "Звідси демона ще не запускали.", buttons: OK });
+    await dialog.showMessageBox({ type: "info", message: "No daemon log yet", detail: file ?? "The daemon has not been started from here yet.", buttons: OK });
     return;
   }
   const error = await shell.openPath(file);
-  if (error) await dialog.showMessageBox({ type: "warning", message: "Не вдалося відкрити журнал демона", detail: `${file}\n${error}`, buttons: OK });
+  if (error) await dialog.showMessageBox({ type: "warning", message: "Could not open the daemon log", detail: `${file}\n${error}`, buttons: OK });
 };
 
 // ---------------------------------------------------------------------------
@@ -759,8 +755,8 @@ const createWindow = (): BrowserWindow => {
     // -3: aborted, i.e. a newer load replaced this one.
     if (!isMainFrame || code === -3 || stopping || !isDaemonUrl(url)) return;
     show({
-      title: "Agoryx не відповідає",
-      note: "Якщо він зупинився, застосунок запустить його знову; інакше натисніть «Спробувати знову».",
+      title: "Agoryx is not responding",
+      note: "If it stopped, the app will start it again; otherwise click “Try again”.",
       steps: [],
       checks: [],
       error: { message: `${description} (${new URL(url).host})` },
@@ -835,7 +831,7 @@ const listen = (): void => {
 // ---------------------------------------------------------------------------
 
 /**
- * «Вигляд» acts on the focused window's own page (the UI, or a daemon child window), never on the focused
+ * “View” acts on the focused window's own page (the UI, or a daemon child window), never on the focused
  * contents: with the room's browser focused, the roles would reload it, zoom it (moving the agents' coordinates)
  * or open its DevTools.
  */
@@ -844,16 +840,16 @@ const onPage = (act: (page: WebContents) => void): void => {
   if (target && !target.isDestroyed()) act(target.webContents);
 };
 
-/** The standard menus spelled out, so that they speak Ukrainian like the rest (Electron's role menus are English). */
+/** The standard menus spelled out, with the app's own Daemon menu and a View menu that acts on the page (see onPage). */
 const buildMenu = (): Menu =>
   Menu.buildFromTemplate([
     {
       label: app.name,
       submenu: [
-        { role: "about", label: "Про Agoryx" },
+        { role: "about", label: "About Agoryx" },
         { type: "separator" },
         {
-          label: "Налаштування…",
+          label: "Settings…",
           accelerator: "CmdOrCtrl+,",
           // The page's own settings; the start page (doctor, the daemon down) has none.
           click: () =>
@@ -862,71 +858,71 @@ const buildMenu = (): Menu =>
             }),
         },
         { type: "separator" },
-        { role: "hide", label: "Сховати Agoryx" },
-        { role: "hideOthers", label: "Сховати інші" },
-        { role: "unhide", label: "Показати всі" },
+        { role: "hide", label: "Hide Agoryx" },
+        { role: "hideOthers", label: "Hide Others" },
+        { role: "unhide", label: "Show All" },
         { type: "separator" },
-        { role: "quit", label: "Вийти з Agoryx" },
+        { role: "quit", label: "Quit Agoryx" },
       ],
     },
     {
-      label: "Демон",
+      label: "Daemon",
       submenu: [
         {
-          label: "Перевірити інструменти",
+          label: "Check Tools",
           click: () => {
             focusWindow();
             void runChecks(false);
           },
         },
-        { label: "Відкрити журнал демона", click: () => void openLog() },
+        { label: "Open Daemon Log", click: () => void openLog() },
         { type: "separator" },
         {
-          label: "Перезапустити демона",
+          label: "Restart Daemon",
           click: () => {
             focusWindow();
             void restartDaemon();
           },
         },
-        { label: "Зупинити демона й вийти", click: () => void stopAndQuit() },
+        { label: "Stop Daemon and Quit", click: () => void stopAndQuit() },
       ],
     },
     {
-      label: "Редагування",
+      label: "Edit",
       submenu: [
-        { role: "undo", label: "Скасувати" },
-        { role: "redo", label: "Повторити" },
+        { role: "undo", label: "Undo" },
+        { role: "redo", label: "Redo" },
         { type: "separator" },
-        { role: "cut", label: "Вирізати" },
-        { role: "copy", label: "Копіювати" },
-        { role: "paste", label: "Вставити" },
-        { role: "pasteAndMatchStyle", label: "Вставити без форматування" },
-        { role: "delete", label: "Видалити" },
-        { role: "selectAll", label: "Вибрати все" },
+        { role: "cut", label: "Cut" },
+        { role: "copy", label: "Copy" },
+        { role: "paste", label: "Paste" },
+        { role: "pasteAndMatchStyle", label: "Paste and Match Style" },
+        { role: "delete", label: "Delete" },
+        { role: "selectAll", label: "Select All" },
       ],
     },
     {
-      label: "Вигляд",
+      label: "View",
       submenu: [
-        { label: "Оновити", accelerator: "CmdOrCtrl+R", click: () => onPage((page) => page.reload()) },
-        { label: "Оновити повністю", accelerator: "Shift+CmdOrCtrl+R", click: () => onPage((page) => page.reloadIgnoringCache()) },
-        { label: "Інструменти розробника", accelerator: "Alt+CmdOrCtrl+I", click: () => onPage((page) => page.toggleDevTools()) },
+        { label: "Reload", accelerator: "CmdOrCtrl+R", click: () => onPage((page) => page.reload()) },
+        { label: "Force Reload", accelerator: "Shift+CmdOrCtrl+R", click: () => onPage((page) => page.reloadIgnoringCache()) },
+        { label: "Toggle Developer Tools", accelerator: "Alt+CmdOrCtrl+I", click: () => onPage((page) => page.toggleDevTools()) },
         { type: "separator" },
-        { label: "Справжній розмір", accelerator: "CmdOrCtrl+0", click: () => onPage((page) => page.setZoomLevel(0)) },
-        { label: "Збільшити", accelerator: "CmdOrCtrl+Plus", click: () => onPage((page) => page.setZoomLevel(page.getZoomLevel() + 0.5)) },
-        { label: "Зменшити", accelerator: "CmdOrCtrl+-", click: () => onPage((page) => page.setZoomLevel(page.getZoomLevel() - 0.5)) },
+        { label: "Actual Size", accelerator: "CmdOrCtrl+0", click: () => onPage((page) => page.setZoomLevel(0)) },
+        { label: "Zoom In", accelerator: "CmdOrCtrl+Plus", click: () => onPage((page) => page.setZoomLevel(page.getZoomLevel() + 0.5)) },
+        { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: () => onPage((page) => page.setZoomLevel(page.getZoomLevel() - 0.5)) },
         { type: "separator" },
-        { role: "togglefullscreen", label: "На весь екран" },
+        { role: "togglefullscreen", label: "Toggle Full Screen" },
       ],
     },
     {
       role: "windowMenu",
-      label: "Вікно",
+      label: "Window",
       submenu: [
-        { role: "minimize", label: "Згорнути" },
-        { role: "zoom", label: "Масштабувати" },
+        { role: "minimize", label: "Minimize" },
+        { role: "zoom", label: "Zoom" },
         { type: "separator" },
-        { role: "front", label: "Усі вікна наперед" },
+        { role: "front", label: "Bring All to Front" },
       ],
     },
   ]);
@@ -957,7 +953,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("activate", () => {
     if (app.isReady()) focusWindow();
   });
-  // Quit leaves the daemon running: rooms keep going. Only "Зупинити демона й вийти" stops it.
+  // Quit leaves the daemon running: rooms keep going. Only "Stop Daemon and Quit" stops it.
   app.on("before-quit", () => {
     attention?.dispose();
     panes.close();

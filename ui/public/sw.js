@@ -30,7 +30,7 @@ self.addEventListener("push", (event) => {
         response = await fetch(`/api/push/note/${encodeURIComponent(id)}`, { credentials: "same-origin", cache: "no-store" });
       } catch {
         // The daemon cannot be reached from here right now: say only that something waits, never what.
-        await show({ title: "Agoryx", body: "Нове сповіщення — відкрийте Agoryx, щоб побачити.", tag: "agoryx-unverified" });
+        await show({ title: "Agoryx", body: "New notification — open Agoryx to see it.", tag: "agoryx-unverified" });
         return;
       }
       // Not the daemon's push (or not for this device, or this device was revoked): nothing is shown.

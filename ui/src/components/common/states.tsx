@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 export function Loading({ lines = 3, block = false, className }: { lines?: number; block?: boolean; className?: string }) {
   const widths = ["w-full", "w-5/6", "w-2/3", "w-4/5"];
   return (
-    <div role="status" aria-label="Завантаження" className={cn("flex flex-col gap-2.5", className)}>
+    <div role="status" aria-label="Loading" className={cn("flex flex-col gap-2.5", className)}>
       <Skeleton className="h-4 w-2/5 max-w-48" />
       {block ? <Skeleton className="h-40 w-full" /> : widths.slice(0, lines).map((w) => <Skeleton key={w} className={cn("h-3.5", w)} />)}
     </div>
@@ -56,7 +56,7 @@ export function EmptyState({
       </span>
       {title || text ? (
         <div className="flex flex-col items-center gap-2">
-          {title ? <h2 className={cn("font-semibold", large ? "font-serif text-display tracking-tight" : "text-lead")}>{title}</h2> : null}
+          {title ? <h2 className={cn("font-semibold", large ? "font-display text-display" : "text-lead")}>{title}</h2> : null}
           {text ? (
             <p className={cn("leading-relaxed text-pretty text-muted-foreground", large ? "max-w-[52ch] text-body" : "max-w-[44ch] text-ui")}>{text}</p>
           ) : null}

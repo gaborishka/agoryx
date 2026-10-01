@@ -51,20 +51,20 @@ function Presence({ a }: { a: RoomAgent }) {
   const working = now === "working" && turn;
   const seen = profileLine(a, profile);
   const state = working
-    ? `${a.label} зараз робить хід у кімнаті`
+    ? `${a.label} is taking a turn in the room`
     : now === "native"
-      ? `З ${a.label} зараз розмовляють напряму, у власній сесії; хід у кімнаті почнеться після цього`
+      ? `${a.label} is in a direct conversation in its own session; its room turn starts after that`
       : now === "queued"
-        ? `${a.label} у черзі на хід`
-        : `${a.label} чекає на нове в розмові`;
-  const tip = `${seen ? `${state}. ${seen}` : state}. Натисніть — сесія збоку.`;
-  const short = working ? "працює" : now === "native" ? "у своїй сесії" : now === "queued" ? "у черзі" : "чекає";
+        ? `${a.label} is queued for a turn`
+        : `${a.label} is waiting for something new in the conversation`;
+  const tip = `${seen ? `${state}. ${seen}` : state}. Click to open the session on the side.`;
+  const short = working ? "working" : now === "native" ? "in own session" : now === "queued" ? "queued" : "waiting";
   return (
     <Tip tip={tip}>
       <button
         type="button"
         onClick={() => openSession(a.id, true)}
-        aria-label={`${a.label}: ${short}. Відкрити сесію`}
+        aria-label={`${a.label}: ${short}. Open session`}
         style={ink(who)}
         className={cn(
           "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-small transition",
@@ -77,9 +77,11 @@ function Presence({ a }: { a: RoomAgent }) {
       >
         <span
           className={cn(
-            "size-1.5 rounded-full",
+            "size-2 rounded-full",
             now === "idle"
-              ? "bg-faint"
+              ? tone === "codex"
+                ? "bg-codex/50"
+                : "bg-claude/50"
               : tone === "codex"
                 ? "bg-codex"
                 : "bg-claude",
@@ -89,14 +91,14 @@ function Presence({ a }: { a: RoomAgent }) {
         <b className="font-semibold">{a.label}</b>
         {working ? (
           <span className="tabular hidden opacity-80 md:inline">
-            працює · {secs(tick - new Date(turn.startedAt).getTime())}
+            working · {secs(tick - new Date(turn.startedAt).getTime())}
           </span>
         ) : null}
         {now === "native" ? (
-          <span className="hidden opacity-80 md:inline">у своїй сесії</span>
+          <span className="hidden opacity-80 md:inline">in own session</span>
         ) : null}
         {now === "queued" ? (
-          <span className="hidden opacity-80 md:inline">у черзі</span>
+          <span className="hidden opacity-80 md:inline">queued</span>
         ) : null}
       </button>
     </Tip>
@@ -138,10 +140,10 @@ function Title() {
           defaultValue={name}
           maxLength={120}
           spellCheck={false}
-          aria-label="Назва кімнати"
+          aria-label="Room name"
           onBlur={() => void commit()}
           onKeyDown={(event) => event.key === "Escape" && setEditing(false)}
-          className="h-8 w-full rounded-lg border border-ring/50 bg-card px-2 text-body font-semibold outline-none ring-3 ring-ring/15"
+          className="h-8 w-full rounded-lg border border-ring/50 bg-card px-2 font-display text-lead font-[650] outline-none ring-3 ring-ring/15"
         />
       </form>
     );
@@ -150,8 +152,8 @@ function Title() {
     <button
       type="button"
       onClick={() => setEditing(true)}
-      title={createdBy ? `Перейменувати. Кімнату відкрито з кімнати «${createdBy.roomName}»: ${createdBy.label}` : "Перейменувати"}
-      className="-mx-1.5 min-w-0 truncate rounded-lg px-1.5 py-0.5 text-left text-body font-semibold tracking-tight hover:bg-accent"
+      title={createdBy ? `Rename. This room was opened from room “${createdBy.roomName}”: ${createdBy.label}` : "Rename"}
+      className="-mx-1.5 min-w-0 truncate rounded-lg px-1.5 py-0.5 text-left font-display text-lead leading-tight font-[650] hover:bg-accent"
     >
       {name}
     </button>
@@ -165,7 +167,7 @@ export function NavButton() {
       variant="ghost"
       size="icon"
       className="size-8 lg:hidden"
-      aria-label="Кімнати"
+      aria-label="Rooms"
       onClick={() => setNavOpen(true)}
     >
       <MenuIcon className="size-4.5" />
@@ -190,35 +192,35 @@ function ViewSwitch() {
   return (
     <div
       role="tablist"
-      aria-label="Вигляд кімнати"
+      aria-label="Room view"
       className="flex shrink-0 items-center gap-0.5 rounded-xl bg-muted p-1"
     >
-      <Tip tip={<span>Розмова <Kbd>{keyLabel("chat")}</Kbd></span>}>
+      <Tip tip={<span>Conversation <Kbd>{keyLabel("chat")}</Kbd></span>}>
         <button
           type="button"
           role="tab"
           aria-selected={view === "chat"}
-          aria-label="Розмова"
+          aria-label="Conversation"
           aria-keyshortcuts={ariaKeys("chat")}
           className={tab(view === "chat")}
           onClick={() => setView("chat")}
         >
           <MessagesSquareIcon className="size-4" />
-          <span className="hidden @min-[50rem]:inline">Розмова</span>
+          <span className="hidden @min-[50rem]:inline">Conversation</span>
         </button>
       </Tip>
-      <Tip tip={<span>Стіл: питання, варіанти, аргументи й рішення — вибір, розкладений по поличках <Kbd>{keyLabel("table")}</Kbd></span>}>
+      <Tip tip={<span>Table: questions, options, arguments and decisions — the choice laid out piece by piece <Kbd>{keyLabel("table")}</Kbd></span>}>
         <button
           type="button"
           role="tab"
           aria-selected={view === "table"}
-          aria-label={count ? `Стіл, відкритих: ${count}` : "Стіл"}
+          aria-label={count ? `Table, ${count} open` : "Table"}
           aria-keyshortcuts={ariaKeys("table")}
           className={tab(view === "table")}
           onClick={() => setView("table")}
         >
           <ScaleIcon className="size-4" />
-          <span className="hidden @min-[50rem]:inline">Стіл</span>
+          <span className="hidden @min-[50rem]:inline">Table</span>
           {count ? (
             <span className="tabular grid h-4.5 min-w-4.5 place-items-center rounded-full bg-amber px-1 text-micro font-semibold text-amber-foreground">
               {count}
@@ -262,7 +264,7 @@ function Place() {
   const folder = wt ? wt.source : room.workspace;
   const tip = wt
     ? t.worktree.place(wt.branch, wt.base, room.workspace, room.agents.map((a) => a.label), wt.source)
-    : `Робоча тека: ${room.workspace}${branch ? `, гілка ${branch}` : ""}`;
+    : `Working folder: ${room.workspace}${branch ? `, branch ${branch}` : ""}`;
   return (
     <Tip tip={tip}>
       <button
@@ -299,7 +301,7 @@ function PanelToggle() {
     <Tip
       tip={
         <span>
-          {panel ? "Сховати панель" : `Панель: ${TABS[lastTab].label.toLowerCase()}, сесії, зміни, файли`} <Kbd>{keyLabel("panel")}</Kbd>
+          {panel ? "Hide panel" : `Panel: ${TABS[lastTab].label.toLowerCase()}, sessions, changes, files`} <Kbd>{keyLabel("panel")}</Kbd>
         </span>
       }
     >
@@ -307,7 +309,7 @@ function PanelToggle() {
         variant="ghost"
         size="icon"
         className={cn("size-8 text-muted-foreground", panel && "bg-secondary text-secondary-foreground hover:bg-secondary")}
-        aria-label="Панель"
+        aria-label="Panel"
         data-panel-toggle
         aria-keyshortcuts={ariaKeys("panel")}
         aria-pressed={Boolean(panel)}
@@ -349,7 +351,7 @@ export function RoomHeader() {
             variant="ghost"
             size="icon"
             className="size-8 text-muted-foreground"
-            aria-label="Ще"
+            aria-label="More"
           >
             <EllipsisIcon className="size-4.5" />
           </Button>
@@ -361,38 +363,38 @@ export function RoomHeader() {
           >
             <TerminalIcon className="mt-0.5" />
             <span className="flex flex-col">
-              Сесії агентів
+              Agent sessions
               <small className="text-xs text-muted-foreground">
-                Усе, що агенти робили у своїх сесіях; {t.model.and}
+                Everything agents did in their own sessions; {t.model.and}
               </small>
             </span>
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openChanges({ scope: "room" })}>
             <GitCompareArrowsIcon />
-            Усі зміни кімнати
+            All room changes
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openFile(null)}>
             <FolderIcon />
-            Файли робочої теки
+            Working folder files
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openDialog({ kind: "revert" })}>
             <RotateCcwIcon />
-            Повернути теку…
+            Revert folder…
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openDialog({ kind: "usage" })}>
             <ReceiptIcon />
-            Витрати кімнати
+            Room costs
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openDialog({ kind: "settings" })}>
             <SettingsIcon />
-            Налаштування кімнати
+            Room settings
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onSelect={() => useStore.getState().setPaletteOpen(true)}
           >
             <LayoutPanelLeftIcon />
-            Усі дії
+            All actions
             <span className="ml-auto font-mono text-xs text-faint">{keyLabel("palette")}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>

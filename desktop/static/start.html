@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="uk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
@@ -11,14 +11,14 @@
 <body>
 <main class="start">
   <header class="head">
-    <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5.5" r="3.2"/><circle cx="5.5" cy="17" r="3.2"/><circle cx="18.5" cy="17" r="3.2"/></svg>
+    <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><defs><clipPath id="mark-l"><path d="M3.4 21 L8 21 L15.2 3 L10.6 3 Z"/></clipPath></defs><path class="l" d="M3.4 21 L8 21 L15.2 3 L10.6 3 Z"/><path class="r" d="M20.6 21 L16 21 L8.8 3 L13.4 3 Z"/><path class="m" d="M20.6 21 L16 21 L8.8 3 L13.4 3 Z" clip-path="url(#mark-l)"/><circle class="d" cx="12" cy="16.5" r="1.5"/></svg>
     <div class="head-text" aria-live="polite">
-      <h1 id="title">Відкриваю Agoryx</h1>
+      <h1 id="title">Opening Agoryx</h1>
       <p id="note" class="note" hidden></p>
     </div>
   </header>
 
-  <ol id="steps" class="steps" aria-label="Хід запуску"></ol>
+  <ol id="steps" class="steps" aria-label="Startup progress"></ol>
 
   <section id="problem" class="problem" hidden>
     <p id="problem-message" class="problem-message"></p>
@@ -26,7 +26,7 @@
     <p id="problem-path" class="problem-path" hidden></p>
   </section>
 
-  <ul id="checks" class="checks" aria-label="Перевірки" hidden></ul>
+  <ul id="checks" class="checks" aria-label="Checks" hidden></ul>
 
   <div id="actions" class="actions"></div>
 </main>

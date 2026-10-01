@@ -1,6 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "@fontsource-variable/onest/wght.css";
+@import "@fontsource-variable/commissioner/full.css";
 @import "@fontsource-variable/literata/wght.css";
 @import "@fontsource-variable/jetbrains-mono/wght.css";
 @import "streamdown/styles.css";
@@ -12,50 +12,53 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * Agora: stone ground, olive-sage for the human and the room itself, two agent
- * inks — Claude's fired clay and Codex's deep water. Neutrals lean green so the
- * page reads as one material, not a grey template.
+ * Agoryx: many voices, one square. The chrome is ink on porcelain and stays quiet; colour belongs
+ * to the voices alone — Claude's fired clay, Codex's deep water, the human's laurel. Where two voices
+ * overlap (the logo's crossing), their mix appears — plum, clay and water together: --meet. It marks
+ * only what the room settled: decisions, the chosen option, answered questions.
  */
 :root {
-  --radius: 0.7rem;
-  --background: #f3f4ef;
-  --foreground: #1b211d;
-  --canvas: #eceee7;
+  --radius: 0.75rem;
+  --background: #f6f5f8;
+  --foreground: #1e1a26;
+  --canvas: #efedf2;
   --card: #ffffff;
-  --card-foreground: #1b211d;
+  --card-foreground: #1e1a26;
   --popover: #ffffff;
-  --popover-foreground: #1b211d;
-  --primary: #2e5a48;
-  --primary-foreground: #ffffff;
-  --secondary: #e6ebe4;
-  --secondary-foreground: #1f3a2f;
-  --muted: #eceee8;
-  --muted-foreground: #5d675f;
-  --faint: #8c948d;
-  --accent: #e3e9e1;
-  --accent-foreground: #1b211d;
-  --destructive: #b4533a;
-  --destructive-soft: #fbefea;
-  --border: #dde1d7;
-  --input: #d3d8cd;
-  --ring: #2e5a48;
-  --sidebar: #eceee7;
-  --paper: #fffffe;
-  --code: #f5f6f1;
+  --popover-foreground: #1e1a26;
+  --primary: #241e2f;
+  --primary-foreground: #fbfaff;
+  --secondary: #ebe8f0;
+  --secondary-foreground: #2a2436;
+  --muted: #eeecf2;
+  --muted-foreground: #615b6d;
+  --faint: #76707f;
+  --accent: #ebe8f0;
+  --accent-foreground: #1e1a26;
+  --destructive: #b8452e;
+  --destructive-soft: #fbece7;
+  --border: #e3e0e9;
+  --input: #d7d3df;
+  --ring: #6b6478;
+  --sidebar: #efedf2;
+  --paper: #ffffff;
+  --code: #f4f3f7;
+  --meet: #84306c;
+  --meet-soft: #f6e8f1;
   /*
    * Several agents of one kind: each gets a shade of its kind's family (internal/agora/look.ts),
    * set per element as --claude: var(--claude-N). Shade 0 is the kind's own colour; clay stays warm
    * and water stays cool, so the family still says which CLI it is.
    */
-  --claude-0: #c4663f;
-  --claude-1: oklch(0.58 0.12 78);
-  --claude-2: oklch(0.54 0.15 12);
+  --claude-0: #b44f29;
+  --claude-1: oklch(0.53 0.12 78);
+  --claude-2: oklch(0.52 0.15 12);
   --claude-3: oklch(0.46 0.08 52);
-  --claude-4: oklch(0.65 0.15 33);
-  --claude-5: oklch(0.55 0.1 95);
+  --claude-4: oklch(0.55 0.15 33);
+  --claude-5: oklch(0.52 0.1 95);
   --claude-6: oklch(0.44 0.12 26);
-  --claude-7: oklch(0.67 0.11 62);
-  --claude-soft-0: #f7ebe4;
+  --claude-7: oklch(0.54 0.11 62);
+  --claude-soft-0: #fbede6;
   --claude-soft-1: oklch(0.955 0.03 78);
   --claude-soft-2: oklch(0.955 0.025 12);
   --claude-soft-3: oklch(0.95 0.02 52);
@@ -63,15 +66,15 @@
   --claude-soft-5: oklch(0.955 0.03 95);
   --claude-soft-6: oklch(0.95 0.025 26);
   --claude-soft-7: oklch(0.96 0.025 62);
-  --codex-0: #2f7896;
-  --codex-1: oklch(0.56 0.09 192);
+  --codex-0: #2670a6;
+  --codex-1: oklch(0.52 0.09 192);
   --codex-2: oklch(0.5 0.13 268);
   --codex-3: oklch(0.43 0.06 238);
-  --codex-4: oklch(0.63 0.1 218);
-  --codex-5: oklch(0.53 0.08 178);
-  --codex-6: oklch(0.57 0.11 252);
+  --codex-4: oklch(0.53 0.1 218);
+  --codex-5: oklch(0.51 0.08 178);
+  --codex-6: oklch(0.53 0.11 252);
   --codex-7: oklch(0.4 0.09 258);
-  --codex-soft-0: #e5f0f4;
+  --codex-soft-0: #e7f0f8;
   --codex-soft-1: oklch(0.955 0.02 192);
   --codex-soft-2: oklch(0.95 0.025 268);
   --codex-soft-3: oklch(0.95 0.015 238);
@@ -83,51 +86,54 @@
   --claude-soft: var(--claude-soft-0);
   --codex: var(--codex-0);
   --codex-soft: var(--codex-soft-0);
-  --human: #2e5a48;
-  --human-soft: #e2ebe4;
-  --fact: #9b4a7c;
-  --amber: #b9851f;
+  --human: #3d8a4b;
+  --human-soft: #e7f2e8;
+  --human-ink: #2c6b39;
+  --fact: #5c5668;
+  --amber: #b97f0e;
   --amber-soft: #fbf3df;
   --amber-foreground: #ffffff;
   --amber-ink: #85590c;
-  --shift: #6b54a8;
-  --shift-soft: #f1edf9;
+  --shift: #7a5a72;
+  --shift-soft: #f3edf1;
   --add: #e3f1e6;
   --add-ink: #1f5b33;
   --del: #f8e6e1;
   --del-ink: #8a3322;
-  --shadow-edge: 0 1px 0 rgb(30 40 30 / 0.03);
-  --shadow-soft: 0 1px 2px rgb(30 40 30 / 0.05), 0 8px 24px rgb(30 40 30 / 0.06);
-  --shadow-lift: 0 1px 2px rgb(30 40 30 / 0.06), 0 18px 48px rgb(30 40 30 / 0.12);
+  --shadow-edge: 0 1px 0 rgb(36 26 50 / 0.04);
+  --shadow-soft: 0 1px 2px rgb(36 26 50 / 0.05), 0 10px 28px -6px rgb(36 26 50 / 0.08);
+  --shadow-lift: 0 1px 2px rgb(36 26 50 / 0.06), 0 22px 56px -10px rgb(36 26 50 / 0.18);
 }
 
 .dark {
   color-scheme: dark;
-  --background: #111411;
-  --foreground: #e7ebe5;
-  --canvas: #0d100d;
-  --card: #181c18;
-  --card-foreground: #e7ebe5;
-  --popover: #1b201b;
-  --popover-foreground: #e7ebe5;
-  --primary: #86c0a2;
-  --primary-foreground: #0e1a13;
-  --secondary: #1f2a23;
-  --secondary-foreground: #cfe3d6;
-  --muted: #1c211c;
-  --muted-foreground: #a0a9a1;
-  --faint: #6f7870;
-  --accent: #222922;
-  --accent-foreground: #e7ebe5;
-  --destructive: #f08f74;
-  --destructive-soft: #2d1d17;
-  --border: #283028;
-  --input: #323b32;
-  --ring: #86c0a2;
-  --sidebar: #0d100d;
-  --paper: #161a16;
-  --code: #131713;
-  --claude-0: #e58a60;
+  --background: #15131c;
+  --foreground: #ece9f2;
+  --canvas: #100f16;
+  --card: #1c1a25;
+  --card-foreground: #ece9f2;
+  --popover: #211e2b;
+  --popover-foreground: #ece9f2;
+  --primary: #ece9f2;
+  --primary-foreground: #17141f;
+  --secondary: #25222f;
+  --secondary-foreground: #dcd7e6;
+  --muted: #1f1c28;
+  --muted-foreground: #a7a1b4;
+  --faint: #857f92;
+  --accent: #26232f;
+  --accent-foreground: #ece9f2;
+  --destructive: #f0876b;
+  --destructive-soft: #2e1b18;
+  --border: #2a2634;
+  --input: #37323f;
+  --ring: #8f889c;
+  --sidebar: #100f16;
+  --paper: #1a1823;
+  --code: #17151e;
+  --meet: #e7a3d1;
+  --meet-soft: #2a1a26;
+  --claude-0: #ee8a5e;
   --claude-1: oklch(0.78 0.11 78);
   --claude-2: oklch(0.72 0.13 12);
   --claude-3: oklch(0.7 0.07 52);
@@ -135,7 +141,7 @@
   --claude-5: oklch(0.8 0.1 95);
   --claude-6: oklch(0.65 0.12 26);
   --claude-7: oklch(0.84 0.08 62);
-  --claude-soft-0: #2c1d15;
+  --claude-soft-0: #2e1d18;
   --claude-soft-1: oklch(0.26 0.035 78);
   --claude-soft-2: oklch(0.26 0.035 12);
   --claude-soft-3: oklch(0.25 0.025 52);
@@ -143,7 +149,7 @@
   --claude-soft-5: oklch(0.26 0.03 95);
   --claude-soft-6: oklch(0.25 0.035 26);
   --claude-soft-7: oklch(0.27 0.03 62);
-  --codex-0: #63abcb;
+  --codex-0: #5caee0;
   --codex-1: oklch(0.76 0.09 192);
   --codex-2: oklch(0.7 0.11 268);
   --codex-3: oklch(0.66 0.05 238);
@@ -151,7 +157,7 @@
   --codex-5: oklch(0.74 0.08 178);
   --codex-6: oklch(0.72 0.1 252);
   --codex-7: oklch(0.6 0.1 258);
-  --codex-soft-0: #14252d;
+  --codex-soft-0: #14222f;
   --codex-soft-1: oklch(0.25 0.03 192);
   --codex-soft-2: oklch(0.25 0.035 268);
   --codex-soft-3: oklch(0.24 0.02 238);
@@ -159,15 +165,16 @@
   --codex-soft-5: oklch(0.25 0.03 178);
   --codex-soft-6: oklch(0.25 0.03 252);
   --codex-soft-7: oklch(0.24 0.035 258);
-  --human: #86c0a2;
-  --human-soft: #1b2a21;
-  --fact: #db7aae;
+  --human: #7fcb8a;
+  --human-soft: #1a2a1f;
+  --human-ink: #a3dcab;
+  --fact: #b9b2c5;
   --amber: #e0ae4e;
   --amber-soft: #2a2415;
-  --amber-foreground: #111411;
+  --amber-foreground: #17141f;
   --amber-ink: #e6b861;
-  --shift: #b3a0ea;
-  --shift-soft: #221d31;
+  --shift: #c9a9c0;
+  --shift-soft: #241c23;
   --add: #16301f;
   --add-ink: #9bd8ae;
   --del: #351c16;
@@ -196,7 +203,7 @@
 }
 
 @theme inline {
-  --font-sans: "Onest Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: "Commissioner Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-serif: "Literata Variable", Georgia, "Times New Roman", serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
   --radius-sm: calc(var(--radius) - 4px);
@@ -233,6 +240,9 @@
   --color-codex-soft: var(--codex-soft);
   --color-human: var(--human);
   --color-human-soft: var(--human-soft);
+  --color-human-ink: var(--human-ink);
+  --color-meet: var(--meet);
+  --color-meet-soft: var(--meet-soft);
   --color-fact: var(--fact);
   --color-amber: var(--amber);
   --color-amber-soft: var(--amber-soft);
@@ -285,7 +295,7 @@
     font-size: 15px;
     line-height: 1.55;
     overflow: hidden;
-    font-feature-settings: "ss01", "cv11";
+    font-variation-settings: "FLAR" 0, "VOLM" 0;
   }
   button:not(:disabled),
   [role="button"]:not(:disabled) {
@@ -374,10 +384,39 @@
 .prose-doc :where(code, pre) { font-family: var(--font-mono); }
 
 /* Streamdown blocks sit on our surfaces, not theirs. */
+/* One frame per code block: the outer card; the body sits flush inside it, the language label is quiet. */
 [data-streamdown="code-block"] {
   border-color: var(--border) !important;
   background: var(--code) !important;
   border-radius: 12px !important;
+  gap: 0 !important;
+  padding: 0 !important;
+  overflow: hidden;
+}
+[data-streamdown="code-block-header"] {
+  height: 2.25rem !important;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-meta) !important;
+}
+[data-streamdown="code-block-header"] > span {
+  margin-left: 0 !important;
+}
+[data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
+  top: 0.125rem !important;
+  margin-top: -2.25rem !important;
+  height: 2.25rem !important;
+  padding-right: 0.375rem;
+}
+[data-streamdown="code-block-actions"] {
+  border-color: transparent !important;
+  background: transparent !important;
+}
+[data-streamdown="code-block-body"] {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 0.875rem 1rem !important;
 }
 [data-streamdown="mermaid-block"] {
   border-color: var(--border) !important;
@@ -411,4 +450,75 @@ diffs-container,
   [contenteditable="true"] {
     font-size: max(16px, 1em) !important;
   }
+}
+
+/*
+ * Commissioner's flare axis: at display sizes the stroke ends open like letters cut in stone —
+ * the agora's inscriptions. Body text keeps FLAR 0 so it reads as a plain grotesque.
+ */
+@utility font-display {
+  font-family: var(--font-sans);
+  font-variation-settings: "FLAR" 100, "VOLM" 40;
+  letter-spacing: -0.028em;
+}
+
+/* The start screen's square gathering (components/brand/Agora.tsx): one sequence, once. */
+.agora .agora-row {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: agora-row 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.agora .agora-leg,
+.agora .agora-meet,
+.agora .agora-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.agora .agora-leg-l { animation: agora-leg-l 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.agora .agora-leg-r { animation: agora-leg-r 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.agora .agora-meet { animation: agora-fade 0.3s ease-out 0.5s both; }
+.agora .agora-dot { animation: agora-dot 0.45s cubic-bezier(0.3, 1.5, 0.5, 1) 0.62s both; }
+.agora .agora-seat { animation: agora-seat 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+@keyframes agora-row {
+  from { opacity: 0; transform: scale(0.82); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes agora-leg-l {
+  from { opacity: 0; transform: translate(-5px, 3px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes agora-leg-r {
+  from { opacity: 0; transform: translate(5px, 3px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes agora-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes agora-dot {
+  from { opacity: 0; transform: translateY(-4px) scale(0.3); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes agora-seat {
+  from { opacity: 0; scale: 0.7; }
+  to { opacity: 1; scale: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* A live turn's band (room/Feed.tsx): the working voice, breathing. */
+.live-band {
+  animation: live-band 2.4s ease-in-out infinite;
+}
+@keyframes live-band {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }

@@ -58,14 +58,11 @@ test("lookingAt: no room for the start page, a preview, another origin, #new, an
   for (const hash of ["#%", "#%E0%A4%A"]) assert.deepEqual(lookingAt(at(`${ORIGIN}/${hash}`)), { room: null, looking: true }, hash);
 });
 
-test("roomsWord: Ukrainian plurals", () => {
-  assert.equal(roomsWord(1), "1 кімната чекає на вас");
-  assert.equal(roomsWord(2), "2 кімнати чекають на вас");
-  assert.equal(roomsWord(5), "5 кімнат чекають на вас");
-  assert.equal(roomsWord(11), "11 кімнат чекають на вас");
-  assert.equal(roomsWord(21), "21 кімната чекає на вас");
-  assert.equal(roomsWord(22), "22 кімнати чекають на вас");
-  assert.equal(roomsWord(12), "12 кімнат чекають на вас");
+test("roomsWord: one room, several rooms", () => {
+  assert.equal(roomsWord(1), "1 room is waiting for you");
+  assert.equal(roomsWord(2), "2 rooms are waiting for you");
+  assert.equal(roomsWord(11), "11 rooms are waiting for you");
+  assert.equal(roomsWord(21), "21 rooms are waiting for you");
 });
 
 const item = (fields: Partial<AttentionItem> = {}): AttentionItem => ({
@@ -79,24 +76,24 @@ const item = (fields: Partial<AttentionItem> = {}): AttentionItem => ({
 });
 
 test("trayLabel: the name and a short reason, the name cut at 40", () => {
-  assert.equal(trayLabel(item()), "Parser — агенти закінчили");
-  assert.equal(trayLabel(item({ reason: "budget" })), "Parser — ліміт ходів вичерпано");
-  assert.equal(trayLabel(item({ reason: "stopped", by: "Codex" })), "Parser — зупинено");
-  assert.equal(trayLabel(item({ reason: "stopped" })), "Parser — зупинено");
-  assert.equal(trayLabel(item({ reason: "mention", by: "Claude" })), "Parser — Claude кличе вас");
-  assert.equal(trayLabel(item({ reason: "error", by: "Codex" })), "Parser — хід Codex не вдався");
+  assert.equal(trayLabel(item()), "Parser — agents finished");
+  assert.equal(trayLabel(item({ reason: "budget" })), "Parser — turn limit reached");
+  assert.equal(trayLabel(item({ reason: "stopped", by: "Codex" })), "Parser — stopped");
+  assert.equal(trayLabel(item({ reason: "stopped" })), "Parser — stopped");
+  assert.equal(trayLabel(item({ reason: "mention", by: "Claude" })), "Parser — Claude is calling you");
+  assert.equal(trayLabel(item({ reason: "error", by: "Codex" })), "Parser — Codex’s turn failed");
   const long = trayLabel(item({ name: "x".repeat(50) }));
-  assert.equal(long, `${"x".repeat(39)}… — агенти закінчили`);
+  assert.equal(long, `${"x".repeat(39)}… — agents finished`);
 });
 
 test("bannerFor: one room's subtitle per reason, the title cut at 60, several rooms in one banner", () => {
   const one = (fields: Partial<AttentionItem>) => bannerFor([item(fields)]);
-  assert.deepEqual(one({}), { title: "Parser", subtitle: "Агенти закінчили — чекають на вас", body: "all set", room: "room-a1" });
-  assert.equal(one({ reason: "budget" }).subtitle, "Ліміт ходів вичерпано — чекають на вас");
-  assert.equal(one({ reason: "stopped", by: "Codex" }).subtitle, "Codex зупиняє розмову");
-  assert.equal(one({ reason: "stopped" }).subtitle, "Розмову перервано");
-  assert.equal(one({ reason: "mention", by: "Claude" }).subtitle, "Claude звертається до вас");
-  assert.equal(one({ reason: "error", by: "Codex", text: "Not logged in" }).subtitle, "Codex: хід не вдалося завершити");
+  assert.deepEqual(one({}), { title: "Parser", subtitle: "Agents finished — waiting for you", body: "all set", room: "room-a1" });
+  assert.equal(one({ reason: "budget" }).subtitle, "Turn limit reached — waiting for you");
+  assert.equal(one({ reason: "stopped", by: "Codex" }).subtitle, "Codex stopped the conversation");
+  assert.equal(one({ reason: "stopped" }).subtitle, "The conversation was stopped");
+  assert.equal(one({ reason: "mention", by: "Claude" }).subtitle, "Claude is asking for you");
+  assert.equal(one({ reason: "error", by: "Codex", text: "Not logged in" }).subtitle, "Codex: the turn could not finish");
   assert.equal(one({ name: "y".repeat(80) }).title, `${"y".repeat(59)}…`);
 
   const several = bannerFor([
@@ -104,7 +101,7 @@ test("bannerFor: one room's subtitle per reason, the title cut at 60, several ro
     item({ room: "b", name: "Beta", ts: "2026-09-29T10:00:03.000Z", reason: "mention", by: "Claude" }),
     item({ room: "c", name: "Gamma", ts: "2026-09-29T10:00:02.000Z" }),
   ]);
-  assert.equal(several.title, "3 кімнати чекають на вас");
+  assert.equal(several.title, "3 rooms are waiting for you");
   assert.equal(several.subtitle, undefined);
   assert.equal(several.body, "Alpha, Beta, Gamma");
   assert.equal(several.room, "b", "a click opens the newest");
@@ -402,7 +399,7 @@ test("AttentionFollower: an older answer that lands after a newer one is dropped
   const seed = follower.report({ room: null, looking: false });
   replies[0]!([waiting]);
   await seed;
-  // A view report goes out with A still waiting; «Позначити все переглянутим» goes out after it and answers first.
+  // A view report goes out with A still waiting; “Mark all as seen” goes out after it and answers first.
   const stale = follower.report({ room: null, looking: false });
   const seen = follower.markSeen();
   replies[2]!([]);

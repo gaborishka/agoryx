@@ -73,7 +73,7 @@ function Snippet({ text, words, around = 48 }: { text: string; words: string[]; 
 
 type Hit<T> = { item: T; hay: string };
 
-const TABLE_KIND = { question: "Питання", option: "Варіант", settled: "Висновок", fact: "Факт", step: "Крок", shift: "Поступка", note: "Аргумент" } as const;
+const TABLE_KIND = { question: "Question", option: "Option", settled: "Conclusion", fact: "Fact", step: "Step", shift: "Change of mind", note: "Argument" } as const;
 
 /** What the table holds, each with the text a search looks in: its id and its words. */
 const tableItems = (room: RoomState) => {
@@ -145,56 +145,56 @@ export function Palette() {
     setOpen(false);
     fn();
   };
-  const actions: Action[] = [{ id: "new", label: "Нова кімната", icon: PlusIcon, run: () => s.go({ kind: "new" }) }];
+  const actions: Action[] = [{ id: "new", label: "New room", icon: PlusIcon, run: () => s.go({ kind: "new" }) }];
   if (room) {
     actions.push(
       view === "table"
-        ? { id: "chat", label: "Розмова", icon: MessagesSquareIcon, run: () => s.setView("chat"), keywords: "вигляд", hint: <Keys id="chat" /> }
-        : { id: "table", label: "Стіл", icon: ScaleIcon, run: () => s.setView("table"), keywords: "вигляд", hint: <Keys id="table" /> },
-      { id: "panel", label: panel ? "Сховати панель" : "Показати панель", icon: PanelRightIcon, run: () => s.togglePanel(), hint: <Keys id="panel" /> },
+        ? { id: "chat", label: "Conversation", icon: MessagesSquareIcon, run: () => s.setView("chat"), keywords: "view chat", hint: <Keys id="chat" /> }
+        : { id: "table", label: "Table", icon: ScaleIcon, run: () => s.setView("table"), keywords: "view", hint: <Keys id="table" /> },
+      { id: "panel", label: panel ? "Hide panel" : "Show panel", icon: PanelRightIcon, run: () => s.togglePanel(), hint: <Keys id="panel" /> },
       ...panelTabs().map((tab) => ({
         id: `tab-${tab}`,
         label: TABS[tab].label,
         icon: TABS[tab].icon,
-        keywords: "панель",
+        keywords: "panel",
         run: () => (tab === "session" ? s.openSession() : s.setPanel(tab)),
-        hint: tab === "session" ? <Keys id="session" /> : <CommandShortcut>панель</CommandShortcut>,
+        hint: tab === "session" ? <Keys id="session" /> : <CommandShortcut>panel</CommandShortcut>,
       })),
-      { id: "changes", label: "Усі зміни кімнати", icon: GitCompareArrowsIcon, run: () => s.openChanges({ scope: "room" }), keywords: "diff" },
-      { id: "revert", label: "Повернути теку до контрольної точки", icon: RotateCcwIcon, run: () => s.openDialog({ kind: "revert" }), keywords: "revert checkpoint контрольна точка відкотити" },
-      { id: "usage", label: "Витрати кімнати", icon: ReceiptIcon, run: () => s.openDialog({ kind: "usage" }), keywords: "витрати usage cost пробудження" },
-      { id: "ask", label: "Покласти питання на стіл", icon: ScaleIcon, run: () => s.openDialog({ kind: "table-form", op: "ask" }) },
-      { id: "settings", label: "Налаштування кімнати", icon: SettingsIcon, run: () => s.openDialog({ kind: "settings" }) },
+      { id: "changes", label: "All changes in this room", icon: GitCompareArrowsIcon, run: () => s.openChanges({ scope: "room" }), keywords: "diff" },
+      { id: "revert", label: "Revert folder to a checkpoint", icon: RotateCcwIcon, run: () => s.openDialog({ kind: "revert" }), keywords: "revert checkpoint undo rollback" },
+      { id: "usage", label: "Room usage", icon: ReceiptIcon, run: () => s.openDialog({ kind: "usage" }), keywords: "usage cost spend tokens wakes" },
+      { id: "ask", label: "Add a question to the table", icon: ScaleIcon, run: () => s.openDialog({ kind: "table-form", op: "ask" }) },
+      { id: "settings", label: "Room settings", icon: SettingsIcon, run: () => s.openDialog({ kind: "settings" }) },
     );
     if (driven && room.runs.at(-1)?.status === "active") {
-      actions.push({ id: "stop", label: "Зупинити агентів", icon: SquareIcon, run: () => void s.post("/stop").catch(() => {}), hint: <Keys id="stop" /> });
+      actions.push({ id: "stop", label: "Stop agents", icon: SquareIcon, run: () => void s.post("/stop").catch(() => {}), hint: <Keys id="stop" /> });
     }
   }
   actions.push(
-    { id: "prefs", label: "Налаштування", icon: Settings2Icon, run: () => s.go({ kind: "settings", section: "general" }), keywords: "settings preferences профіль агенти ліміти", hint: <Keys id="settings" /> },
-    { id: "profile", label: "Мій профіль", icon: UserRoundIcon, run: () => s.go({ kind: "settings", section: "profile" }), keywords: "profile про мене" },
-    { id: "roster", label: "Агенти нових кімнат", icon: BotIcon, run: () => s.go({ kind: "settings", section: "agents" }), keywords: "agents roster модель model" },
-    { id: "theme", label: "Змінити тему", icon: PaletteIcon, run: theme.cycle, keywords: "theme dark light темна світла", hint: <CommandShortcut>{THEME_LABEL[theme.pref]}</CommandShortcut> },
-    { id: "phone", label: device ? "Цей пристрій" : "Відкрити на телефоні", icon: SmartphoneIcon, run: () => s.openDialog({ kind: "phone" }), keywords: "телефон phone qr пристрій сповіщення" },
-    { id: "keys", label: "Клавіші", icon: KeyboardIcon, run: () => s.openDialog({ kind: "keys" }), keywords: "скорочення shortcuts", hint: <Keys id="keys" /> },
-    { id: "help", label: "Як це працює", icon: CircleHelpIcon, run: () => s.openDialog({ kind: "help" }), keywords: "довідка help" },
+    { id: "prefs", label: "Settings", icon: Settings2Icon, run: () => s.go({ kind: "settings", section: "general" }), keywords: "settings preferences profile agents limits", hint: <Keys id="settings" /> },
+    { id: "profile", label: "My profile", icon: UserRoundIcon, run: () => s.go({ kind: "settings", section: "profile" }), keywords: "profile about me" },
+    { id: "roster", label: "Agents for new rooms", icon: BotIcon, run: () => s.go({ kind: "settings", section: "agents" }), keywords: "agents roster model" },
+    { id: "theme", label: "Change theme", icon: PaletteIcon, run: theme.cycle, keywords: "theme dark light appearance", hint: <CommandShortcut>{THEME_LABEL[theme.pref]}</CommandShortcut> },
+    { id: "phone", label: device ? "This device" : "Open on phone", icon: SmartphoneIcon, run: () => s.openDialog({ kind: "phone" }), keywords: "phone mobile qr device notifications pairing" },
+    { id: "keys", label: "Keyboard shortcuts", icon: KeyboardIcon, run: () => s.openDialog({ kind: "keys" }), keywords: "shortcuts keys hotkeys", hint: <Keys id="keys" /> },
+    { id: "help", label: "How it works", icon: CircleHelpIcon, run: () => s.openDialog({ kind: "help" }), keywords: "help guide" },
   );
 
   const searching = words.length > 0;
   const shownActions = searching ? actions.filter((a) => matches(`${a.label} ${a.keywords ?? ""}`.toLowerCase(), words)) : actions;
   const shownRooms = searching ? rooms.filter((r) => matches(r.name.toLowerCase(), words)) : rooms;
   const foundMessages: Hit<RoomState["messages"][number]>[] = searching ? messages.filter((h) => matches(h.hay, words)) : [];
-  // An id typed as it is («p2», «Q1») names one item: it and the table come before the messages.
+  // An id typed as it is (“p2”, “Q1”) names one item: it and the table come before the messages.
   const asId = query.trim().toLowerCase();
   const foundTable = searching ? table.filter((h) => matches(h.hay, words)).sort((a, b) => Number(b.item.id.toLowerCase() === asId) - Number(a.item.id.toLowerCase() === asId)) : [];
   const tableFirst = foundTable[0]?.item.id.toLowerCase() === asId;
-  // A name's own letters count first: «calc» finds calc.py before src/calc/…
+  // A name's own letters count first: “calc” finds calc.py before src/calc/…
   const foundFiles = searching && files ? files.filter((f) => matches(f.toLowerCase(), words)).sort((a, b) => Number(!matches(baseName(b).toLowerCase(), words)) - Number(!matches(baseName(a).toLowerCase(), words))) : [];
 
   const groups: ReactNode[] = [];
   if (shownActions.length) {
     groups.push(
-      <CommandGroup key="actions" heading="Дії">
+      <CommandGroup key="actions" heading="Actions">
         {shownActions.map((a) => (
           <CommandItem key={a.id} value={`a:${a.id}`} onSelect={run(a.run)}>
             <a.icon />
@@ -207,12 +207,12 @@ export function Palette() {
   }
   if (shownRooms.length) {
     groups.push(
-      <CommandGroup key="rooms" heading="Кімнати">
+      <CommandGroup key="rooms" heading="Rooms">
         {shownRooms.slice(0, searching ? LIMIT : undefined).map((r) => (
           <CommandItem key={r.id} value={`r:${r.id}`} onSelect={run(() => s.go({ kind: "room", id: r.id }))}>
             <MessagesSquareIcon />
             <span className="truncate">{r.name}</span>
-            <CommandShortcut className="tabular tracking-normal">{r.running ? "працюють" : ago(r.updatedAt)}</CommandShortcut>
+            <CommandShortcut className="tabular tracking-normal">{r.running ? "working" : ago(r.updatedAt)}</CommandShortcut>
           </CommandItem>
         ))}
       </CommandGroup>,
@@ -221,7 +221,7 @@ export function Palette() {
   const found: ReactNode[] = [];
   if (room && foundMessages.length) {
     found.push(
-      <CommandGroup key="messages" heading={`Повідомлення · ${foundMessages.length}`}>
+      <CommandGroup key="messages" heading={`Messages · ${foundMessages.length}`}>
         {foundMessages.slice(0, LIMIT).map(({ item: m }) => {
           const who = participant(room, m.author);
           return (
@@ -244,7 +244,7 @@ export function Palette() {
   }
   if (room && foundTable.length) {
     found[tableFirst ? "unshift" : "push"](
-      <CommandGroup key="table" heading={`Стіл · ${foundTable.length}`}>
+      <CommandGroup key="table" heading={`Table · ${foundTable.length}`}>
         {foundTable.slice(0, LIMIT).map(({ item }) => (
           <CommandItem key={item.id} value={`t:${item.id}`} onSelect={run(() => s.goToRef(item.id))}>
             <span className="inline-flex h-5 min-w-8 shrink-0 items-center justify-center rounded-md bg-secondary px-1.5 font-mono text-micro font-semibold text-secondary-foreground ring-1 ring-primary/15">
@@ -262,7 +262,7 @@ export function Palette() {
   groups.push(...found);
   if (room && foundFiles.length) {
     groups.push(
-      <CommandGroup key="files" heading={`Файли · ${foundFiles.length}`}>
+      <CommandGroup key="files" heading={`Files · ${foundFiles.length}`}>
         {foundFiles.slice(0, LIMIT).map((f) => (
           <CommandItem key={f} value={`f:${f}`} onSelect={run(() => s.openFile(f))}>
             <FileIcon />
@@ -280,14 +280,14 @@ export function Palette() {
     <CommandDialog
       open={open}
       onOpenChange={setOpen}
-      title="Пошук і дії"
-      description="Дії, кімнати, а в кімнаті — її повідомлення, стіл і файли"
+      title="Search and actions"
+      description="Actions, rooms, and in a room its messages, table and files"
       className="rounded-2xl shadow-lift sm:max-w-xl"
       commandProps={{ shouldFilter: false, loop: true }}
     >
-      <CommandInput value={query} onValueChange={setQuery} placeholder={room ? "Дія, кімната, повідомлення, файл…" : "Дія чи кімната…"} />
+      <CommandInput value={query} onValueChange={setQuery} placeholder={room ? "Action, room, message, file…" : "Action or room…"} />
       <CommandList className="scroll-thin max-h-[min(60vh,440px)]">
-        <CommandEmpty>Нічого не знайдено.</CommandEmpty>
+        <CommandEmpty>Nothing found.</CommandEmpty>
         {groups.flatMap((group, i) => (i ? [<CommandSeparator key={`sep-${i}`} />, group] : [group]))}
       </CommandList>
     </CommandDialog>

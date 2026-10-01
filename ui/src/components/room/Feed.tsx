@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { Avatar, Name, Tip } from "./bits";
 import { AgentMessage, CommitLine, DecisionLine, DocLine, Fresh, HumanMessage, PassLine, RevertLine, StandaloneOp, SystemLine, UpdateLine } from "./Messages";
 import { ActivityList } from "./Trace";
+import { QuoteSelection } from "./QuoteSelection";
 
 function Hello() {
   const room = useStore((s) => s.snap?.state);
@@ -57,7 +58,7 @@ function LiveTurn({ turn, ops }: { turn: TurnState; ops?: TableOp[] }) {
         </Shimmer>
         <span className="tabular ml-auto text-xs text-faint">{elapsed}</span>
       </header>
-      {last.length ? <ActivityList items={last} className="mt-3" /> : null}
+      {last.length ? <ActivityList items={last} turn={turn} className="mt-3" /> : null}
       {stream ? (
         <div className="mt-2">
           <Markdown text={stream.length > 2400 ? `…${stream.slice(-2400)}` : stream} streaming />
@@ -198,6 +199,7 @@ export function Feed() {
       {/* Wide enough to compare a round side by side; messages keep a reading width. */}
       <ConversationContent className="mx-auto w-full max-w-[1160px] items-center gap-6 px-3 pt-6 pb-10 sm:px-6">
         <FlashTarget />
+        <QuoteSelection />
         {model.rows.map((row) => {
           if (row.type === "hello") return <Hello key={row.key} />;
           if (row.type === "group") return <Round key={row.key} row={row} model={model} isFresh={isFresh} />;

@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { Palette } from "@/components/Palette";
 import { SidePanel, warmPanels } from "@/components/panel/SidePanel";
 import { Mark } from "@/components/brand/Mark";
+import { NAV, navWidthOf, PANEL_MIN, ResizeHandle, ROOM_MIN, useViewportWidth } from "@/components/common/ResizeHandle";
 import { Composer, StatusBar } from "@/components/room/Composer";
 import { Feed } from "@/components/room/Feed";
 import { RoomHeader } from "@/components/room/RoomHeader";
@@ -146,11 +147,20 @@ function Shell() {
   const desktop = useWideScreen("(min-width: 1024px)");
   const roomy = useWideScreen("(min-width: 1181px)");
   const phone = !useWideScreen("(min-width: 640px)");
+  const nav = navWidthOf(useStore((s) => s.navWidth));
+  const setNavWidth = useStore((s) => s.setNavWidth);
+  const viewport = useViewportWidth();
+  const panelOpen = useStore((s) => s.panel !== null);
+  // Docked only where the room list, the panel and a readable conversation all fit; while it is docked,
+  // the room list is not dragged so wide that it would push the panel over the conversation.
+  const docked = roomy && viewport - nav >= PANEL_MIN + ROOM_MIN;
+  const navMax = docked && panelOpen ? Math.max(nav, Math.min(NAV.max, viewport - PANEL_MIN - ROOM_MIN)) : NAV.max;
   return (
     <div className="flex h-full min-h-0 bg-background">
       {desktop ? (
-        <div className="w-[272px] shrink-0 border-r border-border/70">
+        <div className="relative shrink-0 border-r border-border/70" style={{ width: nav }}>
           <Sidebar />
+          <ResizeHandle label="Room list width" value={nav} min={NAV.min} max={navMax} grows="left" onChange={setNavWidth} onReset={() => setNavWidth(null)} />
         </div>
       ) : navOpen ? (
         <>
@@ -171,7 +181,7 @@ function Shell() {
           </Suspense>
         ) : null}
       </main>
-      {route.kind === "room" ? <SidePanel overlay={!roomy} phone={phone} /> : null}
+      {route.kind === "room" ? <SidePanel overlay={!docked} phone={phone} /> : null}
     </div>
   );
 }

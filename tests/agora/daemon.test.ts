@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
@@ -664,4 +664,39 @@ test("an agent's own session is read from its CLI's file; its model and effort c
   assert.match(frame.data.patch.resume.claude, /--model sonnet/, "and the resume command that goes with it");
   assert.equal((await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "claude", model: "a b" } })).status, 400);
   assert.equal((await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "nobody", model: "opus" } })).status, 400);
+});
+
+test("inline activity reads only this turn's native tools, including after the agent leaves", async () => {
+  const room = await newRoom("Inline activity");
+  assert.equal((await call("GET", `/api/rooms/${room.id}/turn-activity`)).status, 400);
+  assert.equal((await call("GET", `/api/rooms/${room.id}/turn-activity?turn=t999999`)).status, 404);
+  const done = readEvents(`/api/rooms/${room.id}/events?after=0`, (frame) => frame.event === "room" && frame.data.event.type === "run.ended");
+  await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "Hello both" } });
+  await done;
+  const state = (await call("GET", `/api/rooms/${room.id}`)).json<any>().state;
+  for (const kind of ["claude", "codex"]) {
+    const turn = state.turns.find((t: any) => t.agent === kind);
+    const id = turn.activity.find((a: any) => a.kind === "command").id;
+    const session = (await call("GET", `/api/rooms/${room.id}/session?agent=${kind}`)).json<any>();
+    const record = (toolId: string, timestamp: string, output: string) => kind === "claude" ? [
+      { type: "assistant", uuid: `a-${toolId}-${timestamp}`, timestamp, message: { content: [{ type: "tool_use", id: toolId, name: "Bash", input: { command: "printf test" } }] } },
+      { type: "user", uuid: `r-${toolId}-${timestamp}`, timestamp, message: { content: [{ type: "tool_result", tool_use_id: toolId, content: output }] } },
+    ] : [{ type: "event_msg", timestamp, payload: { type: "item_completed", item: { type: "CommandExecution", id: toolId, command: ["printf", "test"], aggregated_output: output, status: "completed", exit_code: 0 } } }];
+    const exact = new Date((Date.parse(turn.startedAt) + Date.parse(turn.endedAt)) / 2).toISOString();
+    const later = new Date(Date.parse(turn.endedAt) + 60000).toISOString();
+    appendFileSync(session.file, [...record(id, exact, "expected output"), ...record("unrelated", exact, "foreign output"), ...record(id, later, "next turn output")].map((line) => JSON.stringify(line)).join("\n") + "\n");
+    const reply = await call("GET", `/api/rooms/${room.id}/turn-activity?turn=${turn.id}`);
+    assert.equal(reply.status, 200, reply.body);
+    const details = reply.json<any>();
+    assert.equal(details.turn, turn.id);
+    assert.equal(details.sessionId, turn.sessionId);
+    assert.deepEqual(details.entries.map((e: any) => [e.id, e.output]), [[id, "expected output"]]);
+    assert.equal(details.entries.some((e: any) => e.kind !== "tool"), false);
+    assert.equal((await call("GET", `/api/rooms/${room.id}/turn-activity?turn=${turn.id}&end=bad`)).status, 400);
+    if (kind === "claude") {
+      assert.equal((await call("POST", `/api/rooms/${room.id}/agent-remove`, { body: { agent: kind } })).status, 200);
+      const historical = (await call("GET", `/api/rooms/${room.id}/turn-activity?turn=${turn.id}`)).json<any>();
+      assert.equal(historical.entries[0].output, "expected output");
+    }
+  }
 });

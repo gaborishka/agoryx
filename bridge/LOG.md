@@ -2220,3 +2220,125 @@
 - Branch is ready to commit; no further findings remained after the second review/fix cycle.
 
 ---
+
+## 2026-10-01 | codex
+### Summary
+- Compared Agoryx UI with another local coding UI and added evidence and a layout proposal to room table Q1.
+
+### Changes
+- Updated bridge/SESSION.md and appended this handover entry; no application code was changed.
+- Supported citations and diff feedback as the first UI work, with draft preservation and routing-safe quoted mentions as explicit requirements.
+- Corrected the proposed assumption of line ownership: the engine records shared file attribution, not a unique author for every diff line.
+- Proposed resizable panels and an optional table beside the conversation (P8).
+
+### Risks
+- Source inspection only; no running-client or end-to-end validation.
+- Source references must retain snapshot identity and old/new line side to remain meaningful after edits or reverts.
+- Approval panels need a runtime/API protocol in Agora; the present Codex runner rejects these requests.
+
+### Next
+- Resolve the UI priorities with Ivan. For implementation, agree the citation and diff-context contract before splitting server and UI work.
+
+---
+
+## 2026-10-01 | codex
+### Summary
+- Completed P1 mention-routing protection and cross-reviewed the UI; Ivan selected the full P10 route.
+
+### Changes
+- Updated internal/agora/prompts.ts so explicitly quoted lines do not add active mentions.
+- Added tests/agora/citations.test.ts and tests/agora/quote-format.test.ts, including actual room routing, serializer boundaries, indentation and sidebar preview coverage.
+- Coordinated UI fixes with Claude and inspected the demo screenshot.
+- Replaced separate sequential proposal cards with the visible P10 route; Decision 1 remains P1, Decision 2 selects P10.
+- Updated bridge/SESSION.md and appended this entry.
+
+### Validation
+- Citation/format tests: 11/11. Core typecheck, core build, UI build and git diff --check passed.
+- Broader targeted run: 69/71; two existing say tests failed in the parallel run, then the isolated say file passed 5/5. Initial pre-final regression run passed 65/65.
+- Claude's UI smoke used isolated demo rooms and intercepted the send request. No production installation or real-agent end-to-end test.
+
+### Risks
+- Handwritten lazy Markdown quote continuations are not excluded from mentions; generated citations explicitly prefix every source line.
+- The parallel regression failures were not silently converted into a clean full-run claim.
+
+### Next
+- Claude implements P2 UI using the immutable turn-diff source. Codex checks source/side/range and routing contracts before moving on to P3/P8/P5 under Decision 2.
+
+---
+
+## 2026-10-01 | codex
+### Summary
+- Reviewed P2 source contracts and added executable regression cases; P2 remains in progress.
+
+### Changes
+- Extracted parseMentions into the pure internal/agora/mentions.ts for shared browser/server addressing, preserving its public export in prompts.ts.
+- Added tests/agora/diff-citations.test.ts against patches parsed by the UI's installed Pierre library.
+- Posted concrete UI review findings to Claude and recorded the outstanding P2 work on the room table.
+
+### Validation
+- P1 citation/format tests remain 11/11; core typecheck passed after extraction.
+- Three existing historical patch/API tests passed.
+- P2 tests: 3/5. Two reproducible failures: mixed old/new ranges lose their side; an old context line is labeled with its new-file number.
+- git diff --check passed.
+
+### Next
+- Claude fixes P2 range labels, uses the shared mention parser and includes path/range in citation identity; Codex reruns focused tests. No P2 completion claim, commit, or installation.
+
+---
+
+## 2026-10-01 | codex
+### Summary
+- Closed P2 review task X1 after rerunning 23 passing citation tests; implemented P3 under Ivan's chosen P10 route.
+
+### Changes
+- Added composer-context.ts and ComposerSuggestions.tsx and integrated them into Composer.tsx: caret-aware participant/file search, persisted file chips, room slash commands and sent-human-message history.
+- Workspace paths serialize as quoted Markdown links with a safe inline-code label; file names cannot address agents. Participant selections insert active handles.
+- Command selection inserts text; a later submit executes an existing UI/API action. Commands with pending context report an error and keep it. Unknown slash text remains a message.
+- Preserved IME and Shift+Enter behavior, punctuation around mentions, and drafts after errors; an older room's completed send does not erase the newly opened room's draft.
+- Updated SESSION.md; P3 review/browser work is X2. Claude is implementing P8 in separate files.
+
+### Validation
+- Seven composer tests and 23 P1/P2 citation tests: 30/30 passed. Core typecheck, UI build and git diff --check passed.
+- The initial new path test used an incorrect regex; replaced it with actual Markdown token parsing and made filename labels inline code to avoid nested links.
+- Independent P3 browser validation is pending with Claude in the isolated demo daemon. No production/native-agent end-to-end claim, commit or installation.
+
+### Next
+- Resolve Claude's P3 review/browser findings, then close X2. Review P8 cleanup/responsive fixes; continue to inline activity details (P5) under Decision 2.
+
+---
+
+## 2026-10-01 | codex
+### Summary
+- Implemented P5 inline action details and resolved P3 peer findings X3-X5. Reviewed and accepted P8 fixes (S3).
+
+### Changes
+- Trace.tsx expands turn actions in chat and reads native command/input/output/diff on demand. Live actions and passes with actions are inspectable too.
+- Added turn-activity helpers and read-only daemon endpoint: historical turn session, exact tool id, timestamp within turn, bounded native pages. Supports former agents; never guesses details from an equal label or repeated id in another turn.
+- Added focused turn-detail tests and a daemon integration test using real Claude/Codex native parsers.
+- Composer clears unchanged persisted data for the sent room after navigation while keeping newer edits, blocks sending an unresolved query while files load, and keeps normal cursor movement in multiline history.
+- Fixed X6: text-only WRAP rows stay plain text; genuine additional native tool content can expand. Added loading/error/older-page states and a Retry action.
+
+### Validation
+- 45 focused composer/citation/transcript/turn-detail tests passed; daemon integration 1/1 passed. Core typecheck/build, UI build and diff whitespace check passed.
+- Claude independently reviewed P3/P5 and tested demo UI using intercepted sends and tool replies. X3-X5 and X7 are closed. Real demo turn-activity replies are empty because no native CLI sessions exist there; API integration supplies actual parser coverage separately.
+- P8 layout/cleanup fixes were checked in source and Claude's demo. Browser sizing was tested without the native browser runtime.
+
+### Next
+- Complete the final Retry demo check and report P10 complete. Changes remain uncommitted; no installation requested.
+
+---
+
+## 2026-10-01 | codex
+### Summary
+- Completed the chosen P10 UI route after Claude's final independent demo checks of Retry and X6.
+
+### Validation
+- Claude reported an injected turn-activity 500, then exactly one successful repeat fetch after Retry; Command/Output appeared and Retry disappeared. Thinking was plain text without an expander.
+- Read Claude's complete report (m74), inspected .playwright-mcp/p5-ok.png and confirmed the final UI build log finished successfully after the interrupted turn. git diff --check passed.
+- Existing focused results remain 45/45 plus daemon integration 1/1; core typecheck/build and UI build passed. Claude's broader report was 1108/1110 with the two failing files passing separately. Do not present it as a clean full suite.
+- Demo tool details used intercepted replies; the integration test reads actual CLI-format logs for both native parsers. No production/native-agent end-to-end claim or real-room test sends.
+
+### Status
+- P1/P2, P3, P8 and P5 implemented and reviewed; X1-X7 closed. No required route work remains. No commit or installation requested; changes stay in this shared worktree.
+
+---

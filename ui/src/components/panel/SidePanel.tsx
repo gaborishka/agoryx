@@ -1,7 +1,9 @@
-import { FileTextIcon, FolderIcon, GitCompareArrowsIcon, GlobeIcon, type LucideIcon, Maximize2Icon, Minimize2Icon, SquareTerminalIcon, XIcon } from "lucide-react";
+import { FileTextIcon, FolderIcon, GitCompareArrowsIcon, GlobeIcon, type LucideIcon, Maximize2Icon, Minimize2Icon, ScaleIcon, SquareTerminalIcon, XIcon } from "lucide-react";
 import { lazy, type KeyboardEvent, type ReactNode, Suspense, useEffect, useRef } from "react";
+import { browserWidth, navWidthOf, PANEL_MIN, ResizeHandle, ROOM_MIN, useViewportWidth } from "@/components/common/ResizeHandle";
 import { EmptyState, Loading } from "@/components/common/states";
 import { Tip } from "@/components/room/bits";
+import { TableBoard } from "@/components/table/TableBoard";
 import { Button } from "@/components/ui/button";
 import { browserBridge, useBrowserState } from "@/lib/desktop";
 import { ink, participant } from "@/lib/room";
@@ -10,8 +12,9 @@ import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
 
 // The room's one side panel: its tabs show an agent's session, the shared document, the room's browser
-// (in the app), what turns changed, and the workspace's files. Diffs and file views (Pierre + Shiki) are
-// the heavy part of the page: each tab loads with its first opening, and all are fetched while idle.
+// (in the app), what turns changed, the workspace's files, and the table beside the conversation. Diffs and
+// file views (Pierre + Shiki) are the heavy part of the page: each tab loads with its first opening, and all
+// are fetched while idle. The table is in the page already, as the room's other view.
 
 const loaders = {
   session: () => import("@/components/session/SessionPanel"),
@@ -28,7 +31,7 @@ const FilesPanel = lazy(() => loaders.files().then((m) => ({ default: m.FilesPan
 
 export const warmPanels = () =>
   Promise.all(
-    (Object.keys(loaders) as PanelTab[]).filter((tab) => tab !== "browser" || browserBridge()).map((tab) => loaders[tab]()),
+    (Object.keys(loaders) as (keyof typeof loaders)[]).filter((tab) => tab !== "browser" || browserBridge()).map((tab) => loaders[tab]()),
   );
 
 export const TABS: Record<PanelTab, { label: string; icon: LucideIcon; tip: string }> = {
@@ -37,10 +40,11 @@ export const TABS: Record<PanelTab, { label: string; icon: LucideIcon; tip: stri
   browser: { label: "Browser", icon: GlobeIcon, tip: "The room’s shared browser: agents open pages in it, and you see every step" },
   diff: { label: "Changes", icon: GitCompareArrowsIcon, tip: "What turns changed in the files" },
   files: { label: "Files", icon: FolderIcon, tip: "Files in the working folder" },
+  table: { label: "Table", icon: ScaleIcon, tip: "The table beside the conversation: questions, options and conclusions while you read and write" },
 };
 
 /** The tabs this page has: the browser only in the Agoryx app. */
-export const panelTabs = (): PanelTab[] => ["session", "doc", ...(browserBridge() ? (["browser"] as const) : []), "diff", "files"];
+export const panelTabs = (): PanelTab[] => ["session", "doc", ...(browserBridge() ? (["browser"] as const) : []), "diff", "files", "table"];
 
 /** The dot on the browser's tab: an agent is driving the page. */
 export function Driver() {
@@ -112,6 +116,7 @@ function Body({ tab }: { tab: PanelTab }) {
     body = browserBridge() ? <BrowserPanel /> : <EmptyState icon={GlobeIcon} title="Only in the app" text="The room’s shared browser is in the Agoryx app for macOS." />;
   } else if (tab === "diff") body = <ChangesPanel />;
   else if (tab === "files") body = <FilesPanel />;
+  else if (tab === "table") body = <TableBoard beside />;
   else {
     body = (
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
@@ -135,6 +140,10 @@ export function SidePanel({ overlay, phone }: { overlay: boolean; phone: boolean
   const wide = useStore((s) => s.wide);
   const setWide = useStore((s) => s.setWide);
   const setPanel = useStore((s) => s.setPanel);
+  const navWidth = useStore((s) => s.navWidth);
+  const panelWidth = useStore((s) => s.panelWidth);
+  const setPanelWidth = useStore((s) => s.setPanelWidth);
+  const viewport = useViewportWidth();
   const aside = useRef<HTMLElement>(null);
   const open = !!panel;
   // Closed, the focus goes back where it came from (or to the header's panel button), not to the page's top.
@@ -159,8 +168,20 @@ export function SidePanel({ overlay, phone }: { overlay: boolean; phone: boolean
     el.focus({ preventScroll: true });
   }, [open, overlay]);
   if (!panel) return null;
-  // The room's page is laid out 1280 px wide and scaled in, so docked it always takes the wide width.
+  // The browser's page is laid out 1280 px wide and scaled in: docked, it takes the wide width the room leaves.
   const browser = panel === "browser";
+  // Docked, its width is dragged by its left edge; the room keeps room for a readable conversation.
+  const min = PANEL_MIN;
+  const max = Math.max(min, viewport - navWidthOf(navWidth) - ROOM_MIN);
+  const width = Math.round(Math.min(max, Math.max(min, wide || browser ? browserWidth(viewport) : (panelWidth ?? (viewport >= 1280 ? 480 : 440)))));
+  const resize = (next: number) => {
+    if (wide) setWide(false);
+    setPanelWidth(next);
+  };
+  const reset = () => {
+    setWide(false);
+    setPanelWidth(null);
+  };
   return (
     <>
       {overlay && !phone ? <button type="button" aria-label="Close panel" className="fixed inset-0 z-30 bg-black/25 backdrop-blur-[1px]" onClick={() => setPanel(null)} /> : null}
@@ -175,9 +196,11 @@ export function SidePanel({ overlay, phone }: { overlay: boolean; phone: boolean
             ? "fixed inset-0 z-40 slide-in-from-bottom-8"
             : overlay
               ? "fixed inset-y-0 right-0 z-40 w-[min(560px,100vw)] shadow-lift slide-in-from-right-8"
-              : cn("slide-in-from-right-8", wide || browser ? "w-[min(760px,52vw)]" : "w-[440px] xl:w-[480px]"),
+              : "relative slide-in-from-right-8 in-data-resizing:transition-none",
         )}
+        style={overlay || phone ? undefined : { width }}
       >
+        {!overlay && !phone && !browser ? <ResizeHandle label="Panel width" value={width} min={min} max={max} grows="right" onChange={resize} onReset={reset} /> : null}
         <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 px-2 sm:px-3">
           <TabStrip current={panel} />
           <div className="ml-auto flex shrink-0 items-center">

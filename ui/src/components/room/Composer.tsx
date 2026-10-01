@@ -16,19 +16,25 @@ import {
   UsersIcon,
   WifiOffIcon,
 } from "lucide-react";
-import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Avatar } from "@/components/room/bits";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { local, Unauthorized } from "@/lib/api";
+import { api, local, roomPath, Unauthorized } from "@/lib/api";
+import { useLoad } from "@/lib/load";
+import { clearSentComposerDraft, composerChoices, composerCommand, composerDraftSnapshot, composerHistory, composerTrigger, historyBoundary, historyStep, replaceComposerToken, savedContextFiles, saveContextFiles, withContextFiles, type ComposerChoice } from "@/lib/composer-context";
 import { useRoomDiff } from "@/lib/changes";
 import { keyLabel } from "@/lib/keys";
 import { baseName, names as nameList, plural } from "@/lib/format";
 import type { AgentModels, LimitSnapshot, RoomAgent, RoomState } from "@/lib/types";
 import { useModels } from "@/lib/models";
 import { ModelMenu } from "@/components/room/ModelMenu";
+import { QuoteList } from "@/components/room/QuoteList";
+import { ComposerSuggestions, ContextFileList } from "@/components/room/ComposerSuggestions";
+import { parseMentions } from "../../../../internal/agora/mentions";
+import { type Quote, quoteKey, savedQuotes, saveQuotes, withQuotes } from "@/lib/quote";
 import { AttachButton, AttachmentList, useAttachments, withFiles } from "@/components/room/Attachments";
 import { LimitFace, LimitsSection } from "@/components/room/Limits";
 import { ink, participant } from "@/lib/room";
@@ -87,11 +93,46 @@ export function Composer() {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const files = useAttachments();
+  const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [contextFiles, setContextFiles] = useState<string[]>([]);
+  const [caret, setCaret] = useState({ start: 0, end: 0 });
+  const [focused, setFocused] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const [selected, setSelected] = useState(0);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const historyDraft = useRef("");
+  const history = useMemo(() => room ? composerHistory(room.messages, room.human) : [], [room?.messages, room?.human]);
+  const trigger = driven && focused && !sending && !composing ? composerTrigger(text, caret.start, caret.end) : null;
+  const token = trigger ? `${trigger.kind}:${trigger.start}:${trigger.end}:${trigger.query}` : null;
+  const suggesting = Boolean(trigger && token !== dismissed);
+  const ended = room?.turns.filter((t) => t.status !== "running").length ?? 0;
+  const tree = useLoad(suggesting && trigger?.kind === "context" && roomId ? `${roomId}:composer-tree:${ended}` : null,
+    () => api<{ files: string[] }>("GET", roomPath(roomId!, "/tree")));
+  const filesLoading = suggesting && trigger?.kind === "context" && !tree.data && !tree.error;
+  const choices = useMemo(() => composerChoices(suggesting ? trigger : null,
+    room ? [...room.agents, { id: room.human, label: room.human }] : [], tree.data?.files ?? []),
+    [suggesting, token, room?.agents, room?.human, tree.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const active = Math.min(selected, choices.length - 1);
+  useEffect(() => setSelected(0), [token]);
+  const keepContextFiles = (next: string[]) => {
+    setContextFiles(next);
+    if (roomId) saveContextFiles(roomId, next);
+  };
+  const keepQuotes = (next: Quote[]) => {
+    setQuotes(next);
+    if (roomId) saveQuotes(roomId, next);
+  };
 
   useEffect(() => {
     if (!roomId) return;
     files.clear();
     setText(local.get(`draft.${roomId}`) ?? "");
+    setQuotes(savedQuotes(roomId));
+    setContextFiles(savedContextFiles(roomId));
+    setHistoryIndex(-1);
+    setDismissed(null);
+    setCaret({ start: 0, end: 0 });
     if (window.matchMedia("(pointer: fine)").matches) setTimeout(() => ta.current?.focus(), 30);
   }, [roomId]);
   useLayoutEffect(() => autosize(ta.current), [text]);
@@ -99,6 +140,7 @@ export function Composer() {
   useEffect(() => {
     if (!compose || !roomId) return;
     setText(compose.text);
+    setHistoryIndex(-1);
     local.set(`draft.${roomId}`, compose.text);
     setTimeout(() => {
       const el = ta.current;
@@ -108,29 +150,151 @@ export function Composer() {
     }, 30);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compose]);
+  const quoting = useStore((s) => s.quoting);
+  const quoted = useRef(quoting?.at);
+  useEffect(() => {
+    // Only a new quote, not one left from another room when this one opens.
+    if (!quoting || !roomId || quoted.current === quoting.at) return;
+    quoted.current = quoting.at;
+    // The same passage twice is one quote; the draft below stays as it is.
+    const q = quoting.quote;
+    setQuotes((prev) => {
+      const next = prev.some((x) => quoteKey(x) === quoteKey(q)) ? prev : [...prev, q];
+      saveQuotes(roomId, next);
+      return next;
+    });
+    // Lines of a turn's diff go to that turn's agent unless the draft already names someone, read as the room reads it; the human can change it.
+    const to = quoting.to;
+    const handles = room ? [...room.agents.map((a) => a.id), room.human] : [];
+    if (to && !parseMentions(text, handles).length) {
+      setText(`@${to} ${text}`);
+      local.set(`draft.${roomId}`, `@${to} ${text}`);
+    }
+    setTimeout(() => ta.current?.focus(), 30);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quoting, roomId]);
 
   if (!room) return null;
   const change = (value: string) => {
     setText(value);
+    setHistoryIndex(-1);
+    setDismissed(null);
     local.set(`draft.${room.id}`, value || null);
+  };
+  const position = (pos: number) => {
+    setCaret({ start: pos, end: pos });
+    requestAnimationFrame(() => {
+      ta.current?.focus();
+      ta.current?.setSelectionRange(pos, pos);
+    });
+  };
+  const pick = (choice: ComposerChoice) => {
+    if (!trigger) return;
+    if (choice.kind === "file") keepContextFiles([...new Set([...contextFiles, choice.value])]);
+    const value = choice.kind === "file" ? "" : `${choice.kind === "command" ? "/" : "@"}${choice.value}`;
+    const next = replaceComposerToken(text, trigger, value);
+    change(next.text);
+    const picked = composerTrigger(next.text, next.caret);
+    setDismissed(picked ? `${picked.kind}:${picked.start}:${picked.end}:${picked.query}` : null);
+    position(next.caret);
+  };
+  const runCommand = async (command: NonNullable<ReturnType<typeof composerCommand>>) => {
+    const s = useStore.getState();
+    const { id, args } = command;
+    if (args && !["doc", "add", "model"].includes(id)) throw new Error(`/${id} takes no arguments`);
+    switch (id) {
+      case "stop": await post("/stop"); break;
+      case "continue": await post("/continue"); break;
+      case "table": s.setView("table"); break;
+      case "chat": s.setView("chat"); break;
+      case "files": s.openFile(null); break;
+      case "changes": s.openChanges({ scope: "room" }); break;
+      case "doc":
+        if (args) await post("/settings", { doc: args });
+        s.setPanel("doc");
+        break;
+      case "add":
+        if (!args) s.openDialog({ kind: "agents" });
+        else {
+          if (args !== "codex" && args !== "claude") throw new Error("Use /add codex or /add claude");
+          await post("/agents", { agent: { kind: args } });
+        }
+        break;
+      case "model": {
+        const agent = args.replace(/^@/, "").toLowerCase();
+        if (agent && !room.agents.some((a) => a.id === agent)) throw new Error(`No agent @${agent} in this room`);
+        s.openDialog({ kind: "agents", ...(agent ? { agent } : {}) });
+        break;
+      }
+    }
   };
   const send = async () => {
     const body = text.trim();
-    if ((!body && !files.items.length) || !driven || sending) return;
+    if ((!body && !files.items.length && !quotes.length && !contextFiles.length) || !driven || sending) return;
+    const sentDraft = composerDraftSnapshot(room.id);
     setSending(true);
     try {
-      await post("/messages", { text: withFiles(body, await files.upload()) });
-      change("");
+      const command = composerCommand(body);
+      if (command) {
+        if (files.items.length || quotes.length || contextFiles.length) throw new Error("Remove context before running a command, or send it as a message with text before the /command");
+        await runCommand(command);
+      } else {
+        await post("/messages", { text: withFiles(withContextFiles(withQuotes(body, quotes), contextFiles), await files.upload()) });
+      }
+      clearSentComposerDraft(sentDraft);
+      if (useStore.getState().snap?.state.id !== room.id) return;
+      setText(local.get(`draft.${room.id}`) ?? "");
+      setQuotes(savedQuotes(room.id));
+      setContextFiles(savedContextFiles(room.id));
+      setHistoryIndex(-1);
       files.clear();
     } catch (error) {
       fail(error);
     } finally {
       setSending(false);
-      ta.current?.focus();
+      if (!useStore.getState().dialog) ta.current?.focus();
     }
   };
   const onKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+    if (event.nativeEvent.isComposing || composing) return;
+    if (suggesting && !event.altKey && !event.metaKey && !event.ctrlKey) {
+      if (event.key === "Enter" && !event.shiftKey && !choices[active] && filesLoading) {
+        event.preventDefault();
+        return;
+      }
+      if ((event.key === "ArrowDown" || event.key === "ArrowUp") && !event.shiftKey && choices.length) {
+        event.preventDefault();
+        setSelected((active + (event.key === "ArrowDown" ? 1 : choices.length - 1)) % choices.length);
+        return;
+      }
+      if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey && choices[active]) {
+        event.preventDefault();
+        pick(choices[active]!);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setDismissed(token);
+        return;
+      }
+    }
+    if (!suggesting && !event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey &&
+      (event.key === "ArrowUp" || event.key === "ArrowDown") && (historyIndex >= 0 || !text) &&
+      historyBoundary(text, event.currentTarget.selectionStart, event.currentTarget.selectionEnd, event.key === "ArrowUp" ? "older" : "newer")) {
+      const next = historyStep(historyIndex, event.key === "ArrowUp" ? "older" : "newer", history.length);
+      if (next !== historyIndex) {
+        event.preventDefault();
+        if (historyIndex === -1) historyDraft.current = text;
+        const value = next === -1 ? historyDraft.current : history[next]!;
+        setText(value);
+        local.set(`draft.${room.id}`, value || null);
+        setHistoryIndex(next);
+        position(value.length);
+      }
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void send();
     }
@@ -144,20 +308,17 @@ export function Composer() {
     const pad = before && !/\s$/.test(before) ? " " : "";
     change(`${before}${pad}${tag}${text.slice(end)}`);
     const pos = before.length + pad.length + tag.length;
-    requestAnimationFrame(() => {
-      el?.focus();
-      el?.setSelectionRange(pos, pos);
-    });
+    position(pos);
   };
   const names = nameList(room.agents.map((a) => a.label));
-  const ready = Boolean(text.trim() || files.items.length);
+  const ready = Boolean(text.trim() || files.items.length || quotes.length || contextFiles.length);
 
   return (
     <div className="flex w-full flex-col gap-2">
       <RoomStrip />
       <form
         className={cn(
-          "rounded-[22px] border border-input bg-card shadow-soft transition focus-within:border-human/45 focus-within:shadow-lift focus-within:ring-4 focus-within:ring-human/10",
+          "relative rounded-[22px] border border-input bg-card shadow-soft transition focus-within:border-human/45 focus-within:shadow-lift focus-within:ring-4 focus-within:ring-human/10",
           !driven && "opacity-60",
           files.over && "border-human/45 ring-4 ring-human/10",
         )}
@@ -167,6 +328,10 @@ export function Composer() {
           void send();
         }}
       >
+        {suggesting ? <ComposerSuggestions choices={choices} active={active} onPick={pick} onActive={setSelected}
+          loading={filesLoading} error={tree.error} /> : null}
+        <QuoteList quotes={quotes} onRemove={(q) => keepQuotes(quotes.filter((x) => x !== q))} />
+        <ContextFileList paths={contextFiles} onRemove={(path) => keepContextFiles(contextFiles.filter((p) => p !== path))} />
         <AttachmentList items={files.items} onRemove={files.remove} className="px-3 pt-3" />
         <div className="flex items-end gap-1 py-1.5 pr-2 pl-2">
           <AttachButton onFiles={files.add} disabled={!driven} className="mb-1" />
@@ -174,13 +339,26 @@ export function Composer() {
             ref={ta}
             rows={1}
             value={text}
-            disabled={!driven}
-            onChange={(event) => change(event.target.value)}
+            disabled={!driven || sending}
+            onChange={(event) => {
+              change(event.target.value);
+              setCaret({ start: event.target.selectionStart, end: event.target.selectionEnd });
+            }}
+            onSelect={(event) => setCaret({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onCompositionStart={() => setComposing(true)}
+            onCompositionEnd={() => setComposing(false)}
             onKeyDown={onKey}
             onPaste={files.onPaste}
             placeholder={driven ? `Message ${names}…` : "Another process runs this room — view only"}
             aria-label="Message"
             aria-describedby="composer-keys"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={suggesting}
+            aria-controls={suggesting ? "composer-suggestions" : undefined}
+            aria-activedescendant={suggesting && active >= 0 ? `composer-choice-${active}` : undefined}
             data-composer
             className="scroll-thin block max-h-[40vh] min-h-[44px] overflow-y-hidden flex-1 pl-1 resize-none bg-transparent py-2.5 text-body leading-relaxed outline-none placeholder:truncate placeholder:text-faint"
           />
@@ -403,6 +581,9 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
         <span aria-hidden className="-mr-2.5 h-5 w-0" />
         <span className="flex h-5 items-center gap-1"><Kbd>{keyLabel("send")}</Kbd> send</span>
         <span className="flex h-5 items-center gap-1"><Kbd>{keyLabel("newline")}</Kbd> new line</span>
+        <span className="flex h-5 items-center gap-1"><Kbd>@</Kbd> people / files</span>
+        <span className="flex h-5 items-center gap-1"><Kbd>/</Kbd> commands</span>
+        <span className="flex h-5 items-center gap-1"><Kbd>↑</Kbd> history</span>
       </span>
       {/* The agents, one pill each, on one line: a long roster scrolls rather than wraps. */}
       <div role="group" aria-label="Agents in the room" className="-my-0.5 ml-auto flex min-w-0 items-center gap-0.5 overflow-x-auto py-0.5 [scrollbar-width:none]">

@@ -1,5 +1,4 @@
 import {
-  ArrowRightIcon,
   ArrowUpIcon,
   ChevronDownIcon,
   InfinityIcon,
@@ -9,12 +8,11 @@ import {
   RepeatIcon,
   ScrollTextIcon,
   SearchCodeIcon,
-  UserIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { FolderBar, useFolderGit } from "@/components/FolderPicker";
-import { Avatar } from "@/components/room/bits";
+import { Agora } from "@/components/brand/Agora";
 import { type ModelChange, ModelMenu } from "@/components/room/ModelMenu";
 import { autosize } from "@/components/room/Composer";
 import { NavButton } from "@/components/room/RoomHeader";
@@ -29,26 +27,30 @@ import { api, local, Unauthorized } from "@/lib/api";
 import { names, plural } from "@/lib/format";
 import { useModels } from "@/lib/models";
 import { rosterEntry } from "@/lib/agents";
-import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
+import { DEFAULT_AGENTS } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+/** Each starter is ruled in one of the square's voices: clay, water, laurel. */
 const EXAMPLES = [
   {
     icon: ScrollTextIcon,
-    title: "Спроєктувати разом",
-    text: "Спроєктуйте разом формат журналу подій і запишіть рішення в README",
+    voice: "var(--claude-0)",
+    title: "Design together",
+    text: "Design the event log format together and write the decision into the README",
   },
   {
     icon: SearchCodeIcon,
-    title: "Рев'ю репозиторію",
-    text: "Перегляньте цей репозиторій і домовтеся, що виправити першим",
+    voice: "var(--codex-0)",
+    title: "Review the repo",
+    text: "Review this repo and agree on what to fix first",
   },
   {
     icon: LayoutTemplateIcon,
-    title: "Живий прототип",
-    text: "Зробіть інтерактивний прототип сторінки тарифів і покажіть його тут",
+    voice: "var(--human)",
+    title: "Live prototype",
+    text: "Build an interactive prototype of the pricing page and show it here",
   },
 ];
 
@@ -96,81 +98,6 @@ const readLeft = (): string[] => {
 const footChip =
   "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-small text-muted-foreground transition hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
-/** You and the agents at one table (Claude and Codex unless agents.json says otherwise): the lines are the conversation between all of you. */
-function Seats({ agents }: { agents: RoomAgent[] }) {
-  /** The line to the seat next to you, in that agent's colour (its own shade when its kind repeats). */
-  const Line = ({ agent, side }: { agent: RoomAgent | undefined; side: "left" | "right" }) => {
-    const who = participant({ agents }, agent?.id ?? "");
-    const tone = who.tone === "codex" ? "codex" : "claude";
-    return (
-      <span
-        style={ink(who)}
-        className={cn(
-          "relative block h-px w-10 sm:w-16 bg-gradient-to-r",
-          side === "left"
-            ? tone === "claude"
-              ? "from-claude/50 to-human/40"
-              : "from-codex/50 to-human/40"
-            : tone === "claude"
-              ? "from-human/40 to-claude/50"
-              : "from-human/40 to-codex/50",
-        )}
-      >
-        <span
-          className={cn(
-            "absolute top-1/2 size-1.5 -translate-y-1/2 rounded-full opacity-0 motion-safe:animate-travel",
-            tone === "claude" ? "bg-claude" : "bg-codex [animation-delay:1.6s]",
-          )}
-        />
-      </span>
-    );
-  };
-  const Seat = ({
-    label,
-    children,
-  }: {
-    label: string;
-    children: React.ReactNode;
-  }) => (
-    <span className="flex flex-col items-center gap-1.5">
-      {children}
-      <span className="text-meta font-medium tracking-wide text-muted-foreground">
-        {label}
-      </span>
-    </span>
-  );
-  const seat = (agent: RoomAgent) => (
-    <Seat key={agent.id} label={agent.label}>
-      <Avatar handle={agent.id} roster={agents} size={44} />
-    </Seat>
-  );
-  // Claudes on your left, Codexes on your right, so the same kind sits together; one kind only: half and half.
-  const claudes = agents.filter((agent) => agent.kind === "claude");
-  const codexes = agents.filter((agent) => agent.kind !== "claude");
-  const [left, right] = claudes.length && codexes.length ? [claudes, codexes] : [agents.slice(0, Math.ceil(agents.length / 2)), agents.slice(Math.ceil(agents.length / 2))];
-  return (
-    <div className="flex items-start">
-      <span className="flex gap-3">{left.map(seat)}</span>
-      <span className="mx-1.5 mt-[22px]">
-        <Line agent={left.at(-1)} side="left" />
-      </span>
-      <Seat label="Ви">
-        <span className="grid size-11 place-items-center rounded-[30%] bg-human-soft text-human ring-1 ring-human/25 ring-inset">
-          <UserIcon className="size-5" />
-        </span>
-      </Seat>
-      {right.length ? (
-        <>
-          <span className="mx-1.5 mt-[22px]">
-            <Line agent={right[0]} side="right" />
-          </span>
-          <span className="flex gap-3">{right.map(seat)}</span>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
 function PopHead({ title, text }: { title: string; text: string }) {
   return (
     <div className="flex flex-col gap-1">
@@ -197,21 +124,21 @@ function BudgetChip({
       <PopoverTrigger className={footChip}>
         {budget === null ? <InfinityIcon className="size-3.5 shrink-0" /> : <RepeatIcon className="size-3.5 shrink-0" />}
         <span className="tabular text-foreground">
-          {budget === null ? "без ліміту ходів" : plural(budget, "хід", "ходи", "ходів")}
+          {budget === null ? "no turn limit" : plural(budget, "turn", "turns")}
         </span>
         <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-80 rounded-xl p-3">
         <PopHead
-          title="Ходів на ваше повідомлення"
-          text="Без ліміту агенти працюють, доки комусь є що додати: кімната стихає сама, коли всі пасують, а зупинити її можна будь-коли. З лімітом — після стількох ходів кімната чекає на вас."
+          title="Turns per message you send"
+          text="With no limit, agents keep working while anyone has something to add: the room goes quiet by itself when everyone passes, and you can stop it any time. With a limit, the room waits for you after that many turns."
         />
         <div className="mt-3 flex items-center gap-2">
           <div className="grid flex-1 grid-cols-5 gap-1 rounded-lg bg-muted p-1">
             <button
               type="button"
-              aria-label="Без ліміту"
-              title="Без ліміту"
+              aria-label="No limit"
+              title="No limit"
               onClick={() => set(null)}
               className={cn(
                 "grid h-7 place-items-center rounded-md transition",
@@ -239,7 +166,7 @@ function BudgetChip({
           <div className="flex items-center rounded-lg border border-input">
             <button
               type="button"
-              aria-label="Менше"
+              aria-label="Fewer turns"
               onClick={() => set(step - 1)}
               className="grid size-8 place-items-center text-muted-foreground hover:text-foreground"
             >
@@ -250,7 +177,7 @@ function BudgetChip({
             </span>
             <button
               type="button"
-              aria-label="Більше"
+              aria-label="More turns"
               onClick={() => set(step + 1)}
               className="grid size-8 place-items-center text-muted-foreground hover:text-foreground"
             >
@@ -260,7 +187,7 @@ function BudgetChip({
         </div>
         {budget !== null && (
           <p className="mt-2.5 text-meta text-faint">
-            Незалежні перші відповіді теж рахуються — це вже 2 ходи.
+            Independent first replies count too — that’s already 2 turns.
           </p>
         )}
       </PopoverContent>
@@ -271,26 +198,26 @@ function BudgetChip({
 function Steps({ budget }: { budget: number | null }) {
   const steps = [
     {
-      title: "Разом",
-      text: "Беруться одночасно з того самого місця й кажуть по ходу, хто що робить.",
+      title: "Together",
+      text: "They start at the same time from the same point and say as they go who is doing what.",
     },
     {
-      title: "По черзі",
+      title: "In turns",
       text:
         budget === null
-          ? "Бачать усе сказане й продовжують, доки комусь є що додати; стихають, коли всі пасують."
-          : `Бачать усе сказане й продовжують — до ${plural(budget, "ходу", "ходів", "ходів")}, потім чекають на вас.`,
+          ? "They see everything said and keep going while anyone has something to add; they go quiet when everyone passes."
+          : `They see everything said and keep going — up to ${plural(budget, "turn", "turns")}, then wait for you.`,
     },
     {
-      title: "Стіл",
-      text: "Пропозиції, підтримка й рішення — окремо від балачок.",
+      title: "Table",
+      text: "Proposals, endorsements and decisions, kept apart from the chatter.",
     },
   ];
   return (
     <ol className="grid gap-x-6 gap-y-3 sm:grid-cols-3">
       {steps.map((step, i) => (
         <li key={step.title} className="flex gap-2.5">
-          <span className="tabular mt-px grid size-5 shrink-0 place-items-center rounded-full border border-border text-micro font-semibold text-muted-foreground">
+          <span className="tabular mt-px grid size-5 shrink-0 place-items-center rounded-full bg-foreground/[0.07] text-micro font-semibold text-muted-foreground">
             {i + 1}
           </span>
           <span className="flex flex-col gap-0.5">
@@ -375,7 +302,7 @@ export function StartScreen() {
       .catch(() => {});
   }, []);
   useEffect(() => {
-    document.title = "Нова кімната · Agoryx";
+    document.title = "New room · Agoryx";
     setTimeout(() => ta.current?.focus(), 30);
     loadRoster();
   }, [loadRoster]);
@@ -419,31 +346,23 @@ export function StartScreen() {
   const first = !rooms.length;
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-[420px] opacity-70 dark:opacity-40"
-        style={{
-          background:
-            "radial-gradient(520px 260px at 38% -40px, color-mix(in oklab, var(--claude) 14%, transparent), transparent 70%), radial-gradient(520px 260px at 62% -40px, color-mix(in oklab, var(--codex) 14%, transparent), transparent 70%)",
-        }}
-      />
       <header className="relative flex h-14 shrink-0 items-center px-3 lg:hidden">
         <NavButton />
       </header>
       <div className="scroll-thin relative flex min-h-0 flex-1 flex-col overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col justify-center gap-8 px-4 py-10 sm:px-6">
-          <div className="flex flex-col items-center gap-5 text-center">
-            <Seats agents={seated} />
-            <div className="flex flex-col items-center gap-2.5">
-              <h1 className="font-serif text-[clamp(28px,4.4vw,40px)] leading-[1.1] font-semibold tracking-tight text-balance">
+        <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col justify-center gap-9 px-4 py-10 sm:px-6">
+          <div className="flex flex-col items-center gap-9 text-center">
+            <Agora agents={seated} label={`You, ${who}`} />
+            <div className="flex flex-col items-center gap-3">
+              <h1 className="font-display text-[clamp(34px,5.6vw,58px)] leading-[1.02] font-[650] text-balance">
                 {first
-                  ? `Спільна кімната для вас, ${who}`
-                  : "Про що поговоримо?"}
+                  ? `A shared room for you, ${who}`
+                  : "What should we work on?"}
               </h1>
-              <p className="max-w-[52ch] text-body leading-relaxed text-pretty text-muted-foreground">
-                Одна розмова на всіх. Кожен агент працює у власній рідній
-                сесії, з усіма своїми інструментами, і бачить усе, що сказано в
-                кімнаті.
+              <p className="max-w-[50ch] text-lead leading-relaxed text-pretty text-muted-foreground">
+                One conversation for everyone. Each agent works in its own native
+                session, with all its tools, and sees everything said in the
+                room.
               </p>
             </div>
           </div>
@@ -451,11 +370,11 @@ export function StartScreen() {
           <div className="flex flex-col gap-2">
             <form
               onSubmit={submit}
-              className="rounded-3xl border border-input bg-card shadow-lift transition focus-within:border-ring/35"
+              className="rounded-[26px] border border-input bg-card shadow-lift transition focus-within:border-human/45 focus-within:ring-4 focus-within:ring-human/10"
             >
-              <div className="flex flex-wrap items-start gap-x-2 gap-y-1 rounded-t-3xl border-b border-border/80 bg-muted/50 px-3 py-2">
+              <div className="flex flex-wrap items-start gap-x-2 gap-y-1 rounded-t-[26px] border-b border-border/80 bg-muted/40 px-3 py-2">
                 <span className="pr-0.5 pl-1 text-meta leading-8 text-faint">
-                  Працюють у
+                  Working in
                 </span>
                 <FolderBar
                   folder={folder}
@@ -482,8 +401,8 @@ export function StartScreen() {
                     void submit();
                   }
                 }}
-                placeholder={`Опишіть задачу чи питання для ${who}…`}
-                aria-label="Перше повідомлення"
+                placeholder={`Describe a task or question for ${who}…`}
+                aria-label="First message"
                 data-composer
                 className="scroll-thin block min-h-[108px] w-full resize-none bg-transparent px-5 pt-4 text-lead leading-relaxed outline-none placeholder:text-faint"
               />
@@ -505,22 +424,22 @@ export function StartScreen() {
                     key={agent.id}
                     type="button"
                     onClick={() => leave(agent.id, false)}
-                    title={`Посадити ${agent.label} в нову кімнату`}
+                    title={`Seat ${agent.label} in the new room`}
                     className="inline-flex h-8 items-center gap-1 rounded-full border border-dashed border-border px-2.5 text-small text-faint transition hover:bg-accent hover:text-foreground"
                   >
                     <PlusIcon className="size-3.5" />
                     {agent.label}
                   </button>
                 ))}
-                <span aria-hidden className="mx-0.5 h-4 w-px bg-border" />
+                <span aria-hidden className="mx-0.5 hidden h-4 w-px bg-border sm:block" />
                 <BudgetChip budget={budget} onBudget={changeBudget} />
                 <Button
                   type="submit"
                   size="icon"
                   className="ml-auto size-9 rounded-full"
                   disabled={busy || !text.trim() || Boolean(rosterError)}
-                  aria-label="Почати"
-                  title="Почати (Enter)"
+                  aria-label="Start"
+                  title="Start (Enter)"
                 >
                   <ArrowUpIcon className="size-4.5" />
                 </Button>
@@ -528,26 +447,26 @@ export function StartScreen() {
             </form>
             {rosterError ? (
               <div role="alert" className="flex flex-col gap-1.5 rounded-2xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-small">
-                <span className="font-semibold text-destructive">Склад агентів не читається — кімнату не почати, доки його не виправлено</span>
+                <span className="font-semibold text-destructive">Can’t read the agent roster — the room can’t start until it’s fixed</span>
                 <span className="font-mono text-meta break-words whitespace-pre-wrap text-muted-foreground">{rosterError}</span>
                 <Button type="button" variant="outline" size="sm" className="self-start" onClick={loadRoster}>
-                  Перевірити знову
+                  Check again
                 </Button>
               </div>
             ) : null}
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 text-meta text-faint">
               <span>
-                Назва кімнати — з першого рядка; змінити можна будь-коли
+                The room is named after the first line; you can rename it any time
               </span>
               <span className="hidden items-center gap-1 sm:inline-flex">
-                <Kbd>Enter</Kbd> почати · <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd>{" "}
-                новий рядок
+                <Kbd>Enter</Kbd> start · <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd>{" "}
+                new line
               </span>
             </div>
           </div>
 
-          <div className="grid gap-2.5 sm:grid-cols-3">
-            {EXAMPLES.map(({ icon: Icon, title, text: example }) => (
+          <div className="grid gap-x-6 gap-y-1 sm:grid-cols-3">
+            {EXAMPLES.map(({ icon: Icon, voice, title, text: example }) => (
               <button
                 key={title}
                 type="button"
@@ -555,25 +474,26 @@ export function StartScreen() {
                   change(example);
                   ta.current?.focus();
                 }}
-                className="group flex flex-col gap-1.5 rounded-2xl border border-border bg-card/60 p-3.5 text-left transition hover:-translate-y-px hover:border-input hover:bg-card hover:shadow-soft"
+                style={{ "--voice": voice } as React.CSSProperties}
+                className="group flex flex-col gap-1 border-t-2 border-(--voice)/35 py-3 text-left transition-colors hover:border-(--voice)"
               >
                 <span className="flex items-center gap-2 text-small font-semibold">
-                  <span className="grid size-6 place-items-center rounded-lg bg-secondary text-primary">
-                    <Icon className="size-3.5" />
-                  </span>
+                  <Icon className="size-3.5 text-(--voice)" />
                   {title}
-                  <ArrowRightIcon className="ml-auto size-3.5 -translate-x-1 text-faint opacity-0 transition group-hover:translate-x-0 group-hover:opacity-100" />
                 </span>
-                <span className="text-small leading-snug text-muted-foreground">
+                <span className="text-small leading-snug text-muted-foreground transition-colors group-hover:text-foreground">
                   {example}
                 </span>
               </button>
             ))}
           </div>
 
-          <div className="border-t border-border/70 pt-5">
-            <Steps budget={budget} />
-          </div>
+          {/* How a room works, for the first one; after that the examples alone. */}
+          {first ? (
+            <div className="pt-1">
+              <Steps budget={budget} />
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

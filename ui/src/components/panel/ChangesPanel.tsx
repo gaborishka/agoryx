@@ -61,10 +61,10 @@ function Scopes({ scope, commits }: { scope: ChangeScope; commits: boolean }) {
     </button>
   );
   return (
-    <div role="group" aria-label="Які зміни" className="flex w-fit max-w-full items-center gap-0.5 overflow-x-auto rounded-lg bg-muted p-0.5">
-      {item("turn", "Цей хід", "Що змінив один хід")}
-      {item("room", "Уся кімната", "Робоча тека зараз проти того, звідки кімната почала")}
-      {commits ? item("commit", "Контрольна точка", t.checkpoint.one) : null}
+    <div role="group" aria-label="Which changes" className="flex w-fit max-w-full items-center gap-0.5 overflow-x-auto rounded-lg bg-muted p-0.5">
+      {item("turn", "This turn", "What one turn changed")}
+      {item("room", "Whole room", "The working folder now against where the room started")}
+      {commits ? item("commit", "Checkpoint", t.checkpoint.one) : null}
     </div>
   );
 }
@@ -81,7 +81,7 @@ function Files({ changes, only, focus }: { changes: FileChange[]; only?: string;
           <button
             type="button"
             className="min-w-0 flex-1 truncate text-left font-mono text-meta hover:underline"
-            title={only === c.path ? "Показати всі файли" : "Показати лише цей файл"}
+            title={only === c.path ? "Show all files" : "Show only this file"}
             aria-pressed={only === c.path}
             onClick={() => openChanges({ ...focus, acts: false, path: only === c.path ? undefined : c.path })}
           >
@@ -91,7 +91,7 @@ function Files({ changes, only, focus }: { changes: FileChange[]; only?: string;
             <Stats added={c.added} removed={c.removed} deleted={c.status === "D"} binary={c.added === null} isNew={c.status === "A"} />
           </span>
           {c.status !== "D" ? (
-            <button type="button" className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" title="Відкрити файл" aria-label={`Відкрити ${c.path}`} onClick={() => openFile(c.path)}>
+            <button type="button" className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" title="Open file" aria-label={`Open ${c.path}`} onClick={() => openFile(c.path)}>
               <FileIcon className="size-3.5" />
             </button>
           ) : null}
@@ -111,14 +111,14 @@ function Shown({ diff, only, focus, note }: { diff: Diff; only?: string; focus: 
       <Files changes={diff.changes} only={narrowed} focus={focus} />
       {narrowed ? (
         <Hint>
-          Лише <span className="font-mono">{narrowed}</span> ·{" "}
+          Only <span className="font-mono">{narrowed}</span> ·{" "}
           <button type="button" className="text-primary hover:underline" onClick={() => openChanges({ ...focus, path: undefined })}>
-            усі файли
+            all files
           </button>
         </Hint>
       ) : null}
-      {diff.truncated ? <Hint>Патч великий — показано початок.{note ? <> {note}</> : null}</Hint> : null}
-      {patch.trim() ? <Patch patch={patch} /> : <Hint>Змін у тексті файлів немає.</Hint>}
+      {diff.truncated ? <Hint>The patch is large — showing the beginning.{note ? <> {note}</> : null}</Hint> : null}
+      {patch.trim() ? <Patch patch={patch} /> : <Hint>No changes to file text.</Hint>}
     </>
   );
 }
@@ -126,7 +126,7 @@ function Shown({ diff, only, focus, note }: { diff: Diff; only?: string; focus: 
 // --- one turn ---------------------------------------------------------------------------------
 
 const turnLabel = (room: Parameters<typeof participant>[0], t: TurnState) =>
-  `${participant(room, t.agent).label} · ${clock(t.endedAt ?? t.startedAt)}${t.changes?.length ? ` · ${plural(t.changes.length, "файл", "файли", "файлів")}` : ""}`;
+  `${participant(room, t.agent).label} · ${clock(t.endedAt ?? t.startedAt)}${t.changes?.length ? ` · ${plural(t.changes.length, "file", "files")}` : ""}`;
 
 function TurnChanges({ focus }: { focus: ChangesFocus }) {
   const room = useStore((s) => s.snap?.state);
@@ -142,17 +142,17 @@ function TurnChanges({ focus }: { focus: ChangesFocus }) {
   if (!room) return null;
   if (!turn) {
     return focus.turn ? (
-      <EmptyState icon={GitCompareArrowsIcon} title="Такого ходу немає" text={`У цій кімнаті немає ходу ${focus.turn}.`} />
+      <EmptyState icon={GitCompareArrowsIcon} title="No such turn" text={`This room has no turn ${focus.turn}.`} />
     ) : (
-      <EmptyState icon={GitCompareArrowsIcon} title="Ходи ще нічого не змінили" text="Коли агент змінить файли у робочій теці, тут буде видно, що саме." />
+      <EmptyState icon={GitCompareArrowsIcon} title="No turn has changed anything yet" text="When an agent changes files in the working folder, you’ll see exactly what here." />
     );
   }
   const acts = turn.activity.length;
   let body: ReactNode = null;
-  if (turn.status === "running") body = <Hint>Хід ще триває — зміни буде видно, коли він закінчиться.</Hint>;
-  else if (!turn.changes?.length) body = <Hint>Цей хід не змінив файлів.</Hint>;
+  if (turn.status === "running") body = <Hint>The turn is still running — changes show up when it ends.</Hint>;
+  else if (!turn.changes?.length) body = <Hint>This turn changed no files.</Hint>;
   else if (diff.error) body = <ErrorNote>{diff.error}</ErrorNote>;
-  else if (diff.data === null) body = <Hint>Знімка цього ходу вже немає — показати зміни неможливо.</Hint>;
+  else if (diff.data === null) body = <Hint>This turn’s snapshot is gone — its changes can’t be shown.</Hint>;
   else if (!diff.data) body = <Loading block />;
   else {
     body = (
@@ -162,7 +162,7 @@ function TurnChanges({ focus }: { focus: ChangesFocus }) {
         focus={{ scope: "turn", turn: turn.id }}
         note={
           <>
-            Повністю: <code className="font-mono">agoryx diff {turn.id}</code>
+            In full: <code className="font-mono">agoryx diff {turn.id}</code>
           </>
         }
       />
@@ -173,7 +173,7 @@ function TurnChanges({ focus }: { focus: ChangesFocus }) {
       <div className="flex items-center gap-2">
         <Avatar handle={turn.agent} size={22} />
         <Select value={turn.id} onValueChange={(id) => openChanges({ scope: "turn", turn: id })}>
-          <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 text-small" aria-label="Хід">
+          <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 text-small" aria-label="Turn">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -195,14 +195,14 @@ function TurnChanges({ focus }: { focus: ChangesFocus }) {
             className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2 text-xs text-muted-foreground transition hover:bg-accent hover:text-foreground"
           >
             <ChevronRightIcon className={cn("size-3.5 transition-transform", focus.acts && "rotate-90")} />
-            {plural(acts, "дія", "дії", "дій")}
+            {plural(acts, "action", "actions")}
           </button>
           {focus.acts ? <ActivityList items={turn.activity} className="mt-2 rounded-xl border border-border bg-muted/40 px-3 pt-2.5 pb-1" /> : null}
         </div>
       ) : null}
       {body}
       {turn.changes?.length && turn.status !== "running" ? (
-        <Hint className="text-meta">Знімок git до і після ходу. Інші агенти бачать ці +/− у своїй дельті.</Hint>
+        <Hint className="text-meta">A git snapshot before and after the turn. Other agents see these +/− in their delta.</Hint>
       ) : null}
     </>
   );
@@ -216,27 +216,27 @@ function RoomChanges({ focus }: { focus: ChangesFocus }) {
   if (!room) return null;
   if (diff.error) return <ErrorNote>{diff.error}</ErrorNote>;
   if (diff.data === null) {
-    return <EmptyState icon={GitCompareArrowsIcon} title="Ще нема з чим порівняти" text="Порівняння з'явиться після першого ходу в кімнаті." />;
+    return <EmptyState icon={GitCompareArrowsIcon} title="Nothing to compare yet" text="The comparison appears after the first turn in the room." />;
   }
   if (!diff.data) return <Loading block />;
   const { base } = diff.data;
   const from =
     base.kind === "worktree" ? (
       <>
-        від гілки <span className="font-mono">{base.ref}</span> <span className="font-mono text-faint">({base.sha.slice(0, 7)})</span>
+        against branch <span className="font-mono">{base.ref}</span> <span className="font-mono text-faint">({base.sha.slice(0, 7)})</span>
       </>
     ) : (
       <>
-        від стану перед першим ходом <span className="font-mono">{base.turnId}</span> · {fullDate(base.ts)}
+        against the state before the first turn <span className="font-mono">{base.turnId}</span> · {fullDate(base.ts)}
       </>
     );
   return (
     <>
-      <Hint className="text-meta">Робоча тека зараз, {from}. Разом із незбереженими й новими файлами.</Hint>
+      <Hint className="text-meta">The working folder now, {from}. Includes uncommitted and new files.</Hint>
       {diff.data.changes.length ? (
         <Shown diff={diff.data} only={focus.path} focus={{ scope: "room" }} />
       ) : (
-        <Hint>Відтоді нічого не змінилося.</Hint>
+        <Hint>Nothing has changed since.</Hint>
       )}
     </>
   );
@@ -264,7 +264,7 @@ function CommitChanges({ focus }: { focus: ChangesFocus }) {
     return { head: at < 0 ? text : text.slice(0, at), patch, changes: filesOf(patch) };
   }, [commit.data]);
   if (!room) return null;
-  if (!sha) return <EmptyState icon={GitCompareArrowsIcon} title="Контрольних точок ще немає" text={t.checkpoint.none} />;
+  if (!sha) return <EmptyState icon={GitCompareArrowsIcon} title="No checkpoints yet" text={t.checkpoint.none} />;
   const known = commits.some((c) => c.sha === sha);
   let body: ReactNode = <Loading block />;
   if (commit.error) body = <ErrorNote>{commit.error}</ErrorNote>;
@@ -281,7 +281,7 @@ function CommitChanges({ focus }: { focus: ChangesFocus }) {
   return (
     <>
       <Select value={sha} onValueChange={(next) => openChanges({ scope: "commit", sha: next })}>
-        <SelectTrigger size="sm" className="h-8 w-full text-small" aria-label="Контрольна точка">
+        <SelectTrigger size="sm" className="h-8 w-full text-small" aria-label="Checkpoint">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

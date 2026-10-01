@@ -1,14 +1,11 @@
-import { CheckIcon, ChevronRightIcon, ChevronsUpDownIcon, DotIcon, GaugeIcon } from "lucide-react";
-import { type KeyboardEvent, useState } from "react";
-import { Avatar } from "@/components/room/bits";
-import { LimitsSection, useLimitState } from "@/components/room/Limits";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, ChevronsUpDownIcon, DotIcon, GaugeIcon } from "lucide-react";
+import { type KeyboardEvent, type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { modelBeyondName, modelName } from "@/lib/agents";
-import type { AgentModels, LimitSnapshot, RoomAgent } from "@/lib/types";
+import type { AgentModels, RoomAgent } from "@/lib/types";
 import { modelSwitch } from "@/lib/effort";
-import type { Seating } from "@/lib/room";
+import { ink, participant, type Seating } from "@/lib/room";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
 
@@ -33,7 +30,8 @@ export function ModelMenu({
   onSession,
   onManage,
   onLeave,
-  limits,
+  face,
+  extra,
 }: {
   agent: RoomAgent;
   seating: Seating;
@@ -44,16 +42,18 @@ export function ModelMenu({
   working?: boolean;
   side?: "top" | "bottom";
   align?: "start" | "end";
-  /** quiet: a line of text in a toolbar; field: an outlined control, as in the session panel. */
-  variant?: "quiet" | "field";
+  /** quiet: a line of text in a toolbar; field: an outlined control, as in the session panel; seat: the agent's pill in a room's footer. */
+  variant?: "quiet" | "field" | "seat";
   /** Opens the agent's session; absent where there is no session yet. */
   onSession?: () => void;
   /** Opens the room's agents: role, name, profile, sending it out. */
   onManage?: () => void;
   /** Leaves this agent out (the start screen: the next room starts without it). */
   onLeave?: () => void;
-  /** The subscription's limits, shown in the menu (and on the agent when they worry); absent where they do not matter. */
-  limits?: LimitSnapshot[];
+  /** seat: the agent's face at the start of the pill. */
+  face?: ReactNode;
+  /** A section under the effort, e.g. the agent's limits. */
+  extra?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -63,9 +63,7 @@ export function ModelMenu({
   const levels = model?.efforts ?? kind?.efforts ?? [];
   const defaultEffort = model?.defaultEffort;
   const effort = agent.effort ?? defaultEffort;
-  const limit = useLimitState(agent.kind, limits);
-  // On the agent: what its name does not say — the model, an effort set by hand — and the limit only when it worries.
-  const extra = [modelBeyondName(agent, models), agent.effort ? t.effort.level(agent.effort) : null].filter(Boolean).join(" · ");
+  const who = participant(seating, agent.id);
   const typed = query.trim();
   const show = (next: boolean) => {
     setOpen(next);
@@ -96,8 +94,8 @@ export function ModelMenu({
         {variant === "field" ? (
           <Button variant="outline" size="sm" disabled={disabled} className={cn("h-8 min-w-0 justify-between gap-2 px-2.5 font-normal", className)} aria-label={t.model.of(agent.label)}>
             <span className="truncate">
-              <span className="text-muted-foreground">Модель: </span>
-              <span className={cn(agent.model ? "font-mono text-meta" : "text-muted-foreground")}>{modelName(agent.kind, agent.model, models) ?? "типова"}</span>
+              <span className="text-muted-foreground">Model: </span>
+              <span className={cn(agent.model ? "font-mono text-meta" : "text-muted-foreground")}>{model?.label ?? agent.model ?? "default"}</span>
             </span>
             {effort ? (
               <span className={cn("inline-flex shrink-0 items-center gap-1", !agent.effort && "text-muted-foreground")}>
@@ -107,40 +105,50 @@ export function ModelMenu({
             ) : null}
             <ChevronsUpDownIcon className="size-3.5 shrink-0 opacity-60" />
           </Button>
+        ) : variant === "seat" ? (
+          <button
+            type="button"
+            disabled={disabled}
+            className={cn(
+              "group/seat flex h-8 shrink-0 items-center gap-1.5 rounded-full py-0.5 pr-2.5 pl-0.5 text-small transition hover:bg-accent disabled:pointer-events-none disabled:opacity-60 data-[state=open]:bg-accent",
+              className,
+            )}
+            title={`${agent.label} · ${model?.label ?? agent.model ?? "default model"}${effort ? ` · ${t.effort.level(effort)}` : ""}`}
+            aria-label={t.model.of(agent.label)}
+          >
+            <span className={cn("contents", working && "[&>*]:animate-breathe")}>{face}</span>
+            <span className="hidden font-medium whitespace-nowrap text-foreground/90 @min-[34rem]:inline">{agent.label}</span>
+            {modelUnnamed(agent, model?.label) ? <span className="hidden max-w-[8rem] truncate text-muted-foreground @min-[40rem]:inline">{model?.label ?? agent.model}</span> : null}
+            {effort ? <span className={cn("hidden whitespace-nowrap @min-[44rem]:inline", agent.effort ? "text-muted-foreground" : "text-faint")}>{t.effort.level(effort)}</span> : null}
+          </button>
         ) : (
           <Button
             type="button"
             variant="ghost"
             size="sm"
             disabled={disabled}
-            className={cn(
-              "h-7 shrink-0 gap-1.5 rounded-full pr-2.5 pl-1 text-small font-normal text-foreground/85 hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground",
-              className,
-            )}
-            title={`${agent.label}${extra ? ` · ${extra}` : ""}: ${t.model.and}`}
+            className={cn("shrink-0 gap-1.5 font-normal data-[state=open]:bg-accent data-[state=open]:text-foreground", className)}
+            title={`${agent.label}: ${t.model.and}`}
           >
-            <Avatar handle={agent.id} roster={seating.agents} size={18} live={working} />
-            <span className="max-w-[10rem] truncate">{agent.label}</span>
-            {extra ? <span className="hidden max-w-[8rem] truncate text-faint @min-[44rem]:inline">{extra}</span> : null}
-            {limit.alarm || limit.warn ? (
-              <span className={cn("tabular-nums text-meta", limit.alarm ? "text-destructive" : "text-amber")}>
-                {limit.headline ? `${Math.round(limit.headline.usedPercent)}%` : "ліміт"}
-              </span>
-            ) : null}
+            <span className={cn("size-1.5 shrink-0 rounded-full", who.tone === "codex" ? "bg-codex" : "bg-claude", working && "animate-breathe")} style={ink(who)} />
+            <span className="text-foreground/85">{agent.label}</span>
+            {model || agent.model ? <span className="max-w-[9rem] truncate">{model?.label ?? agent.model}</span> : null}
+            {effort ? <span className={cn(agent.effort ? "" : "text-faint")}>{t.effort.level(effort)}</span> : null}
+            <ChevronDownIcon className="size-3 opacity-50" />
           </Button>
         )}
       </PopoverTrigger>
       <PopoverContent align={align} side={side} className="w-[300px] p-0">
         <Command onKeyDown={byDigit} loop>
           <div className="flex items-baseline justify-between px-3 pt-2.5 pb-1 text-meta text-muted-foreground">
-            Модель {agent.label}
-            {working ? <span className="text-faint">з наступного ходу</span> : null}
+            {agent.label} model
+            {working ? <span className="text-faint">from the next turn</span> : null}
           </div>
-          <CommandInput placeholder="Модель або її назва…" value={query} onValueChange={setQuery} />
+          <CommandInput placeholder="Model or its name…" value={query} onValueChange={setQuery} />
           <CommandList className="scroll-thin max-h-[40vh]">
             <CommandGroup>
-              <CommandItem value="__default типова з cli" onSelect={() => setModel(null)} title="Та, що в налаштуваннях CLI">
-                Типова <span className="text-faint">з CLI</span>
+              <CommandItem value="__default default from cli" onSelect={() => setModel(null)} title="The one set in the CLI’s settings">
+                Default <span className="text-faint">from CLI</span>
                 <Mark on={!agent.model} n={digits ? 1 : undefined} />
               </CommandItem>
               {choices.map((m, i) => (
@@ -169,13 +177,13 @@ export function ModelMenu({
                   <CommandItem forceMount value={`__typed ${typed}`} onSelect={() => setModel(typed)}>
                     <DotIcon className="size-4" />
                     <span className="truncate">
-                      Узяти <span className="font-mono text-meta">{typed}</span>
+                      Use <span className="font-mono text-meta">{typed}</span>
                     </span>
                   </CommandItem>
                 </CommandGroup>
               </>
             ) : null}
-            {!models ? <div className="px-3 py-1.5 text-meta text-faint">Завантажую моделі…</div> : null}
+            {!models ? <div className="px-3 py-1.5 text-meta text-faint">Loading models…</div> : null}
           </CommandList>
           {levels.length ? (
             <div className="border-t border-border px-3 pt-2 pb-2.5">
@@ -203,7 +211,7 @@ export function ModelMenu({
               </div>
             </div>
           ) : null}
-          {limits ? <LimitsSection kind={agent.kind} limits={limits} /> : null}
+          {extra}
           {onSession ? (
             <button
               type="button"
@@ -213,7 +221,7 @@ export function ModelMenu({
               }}
               className="flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-ui transition hover:bg-accent"
             >
-              Сесія {agent.label}
+              {agent.label} session
               <ChevronRightIcon className="ml-auto size-4 opacity-60" />
             </button>
           ) : null}
@@ -226,7 +234,7 @@ export function ModelMenu({
               }}
               className={cn("flex w-full items-center gap-2 px-3 py-2 text-left text-ui transition hover:bg-accent", !onSession && "border-t border-border")}
             >
-              Роль і налаштування {agent.label}…
+              Role and settings of {agent.label}…
               <ChevronRightIcon className="ml-auto size-4 opacity-60" />
             </button>
           ) : null}
@@ -239,7 +247,7 @@ export function ModelMenu({
               }}
               className="flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-ui text-muted-foreground transition hover:bg-accent hover:text-foreground"
             >
-              Без {agent.label} у новій кімнаті
+              Start without {agent.label}
             </button>
           ) : null}
         </Command>
@@ -247,6 +255,15 @@ export function ModelMenu({
     </Popover>
   );
 }
+
+/** Whether the agent's name leaves its model unsaid: "Claude Opus" already says opus, "Codex" does not say gpt-5.6. */
+const modelUnnamed = (agent: RoomAgent, label: string | undefined) => {
+  const name = label ?? agent.model;
+  if (!name) return false;
+  const words = name.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 2 && w !== agent.kind);
+  const said = agent.label.toLowerCase();
+  return !words.some((w) => said.includes(w));
+};
 
 /** The right edge of a row: a check on the current choice, otherwise the digit that picks it. */
 function Mark({ on, n }: { on: boolean; n?: number }) {

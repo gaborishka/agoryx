@@ -54,24 +54,18 @@ const cut = (text: string, max: number): string => {
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
 };
 
-/** «1 кімната чекає на вас», «3 кімнати чекають на вас», «5 кімнат чекають на вас». */
-export const roomsWord = (n: number): string => {
-  const ones = n % 10;
-  const tens = n % 100;
-  if (ones === 1 && tens !== 11) return `${n} кімната чекає на вас`;
-  if (ones >= 2 && ones <= 4 && (tens < 12 || tens > 14)) return `${n} кімнати чекають на вас`;
-  return `${n} кімнат чекають на вас`;
-};
+/** "1 room is waiting for you", "3 rooms are waiting for you". */
+export const roomsWord = (n: number): string => (n === 1 ? "1 room is waiting for you" : `${n} rooms are waiting for you`);
 
 const SHORT: Record<AttentionReason, (by: string | undefined) => string> = {
-  done: () => "агенти закінчили",
-  budget: () => "ліміт ходів вичерпано",
-  stopped: () => "зупинено",
-  mention: (by) => `${by ?? "агент"} кличе вас`,
-  error: (by) => (by ? `хід ${by} не вдався` : "хід не вдався"),
+  done: () => "agents finished",
+  budget: () => "turn limit reached",
+  stopped: () => "stopped",
+  mention: (by) => `${by ?? "an agent"} is calling you`,
+  error: (by) => (by ? `${by}’s turn failed` : "a turn failed"),
 };
 
-/** The tray's line for a room: «<назва> — <коротко>». */
+/** The tray's line for a room: “<name> — <short reason>”. */
 export const trayLabel = (item: AttentionItem): string => `${cut(item.name, 40)} — ${SHORT[item.reason](item.by && cut(item.by, 40))}`;
 
 export interface Banner {
@@ -86,15 +80,15 @@ const subtitleOf = (item: AttentionItem): string => {
   const by = item.by && cut(item.by, 60);
   switch (item.reason) {
     case "done":
-      return "Агенти закінчили — чекають на вас";
+      return "Agents finished — waiting for you";
     case "budget":
-      return "Ліміт ходів вичерпано — чекають на вас";
+      return "Turn limit reached — waiting for you";
     case "stopped":
-      return by ? `${by} зупиняє розмову` : "Розмову перервано";
+      return by ? `${by} stopped the conversation` : "The conversation was stopped";
     case "mention":
-      return `${by ?? "Агент"} звертається до вас`;
+      return `${by ?? "An agent"} is asking for you`;
     case "error":
-      return `${by ?? "Агент"}: хід не вдалося завершити`;
+      return `${by ?? "An agent"}: the turn could not finish`;
   }
 };
 

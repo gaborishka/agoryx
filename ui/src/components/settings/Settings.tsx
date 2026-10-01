@@ -37,16 +37,16 @@ import { cn } from "@/lib/utils";
 /**
  * Agoryx's own settings, not a room's: how the page looks, what new rooms start with, the human's profile,
  * the agents new rooms seat, this computer's phone, the subscriptions' limits. A room's own settings stay in
- * the room (⋯ → Налаштування кімнати).
+ * the room (⋯ → Room settings).
  */
 
 const SECTIONS: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
-  { id: "general", label: "Загальне", icon: SlidersHorizontalIcon },
-  { id: "profile", label: "Профіль", icon: UserRoundIcon },
-  { id: "agents", label: "Агенти", icon: BotIcon },
-  { id: "phone", label: "Телефон", icon: SmartphoneIcon },
-  { id: "limits", label: "Ліміти", icon: GaugeIcon },
-  { id: "about", label: "Про Agoryx", icon: InfoIcon },
+  { id: "general", label: "General", icon: SlidersHorizontalIcon },
+  { id: "profile", label: "Profile", icon: UserRoundIcon },
+  { id: "agents", label: "Agents", icon: BotIcon },
+  { id: "phone", label: "Phone", icon: SmartphoneIcon },
+  { id: "limits", label: "Limits", icon: GaugeIcon },
+  { id: "about", label: "About Agoryx", icon: InfoIcon },
 ];
 
 const fail = (error: unknown) => {
@@ -57,7 +57,7 @@ function Section({ title, sub, children }: { title: string; sub?: ReactNode; chi
   return (
     <section className="flex flex-col gap-5">
       <header className="flex flex-col gap-1.5">
-        <h2 className="font-serif text-title font-semibold tracking-tight">{title}</h2>
+        <h2 className="font-display text-title font-semibold">{title}</h2>
         {sub ? <p className="max-w-[60ch] text-small leading-relaxed text-muted-foreground">{sub}</p> : null}
       </header>
       {children}
@@ -83,7 +83,7 @@ function Row({ label, hint, children, htmlFor }: { label: string; hint?: ReactNo
 function Group({ title, children }: { title?: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-2">
-      {title ? <h3 className="text-meta font-medium tracking-wide text-faint uppercase">{title}</h3> : null}
+      {title ? <h3 className="text-small font-medium text-muted-foreground">{title}</h3> : null}
       <div className="flex flex-col divide-y divide-border rounded-xl border border-border bg-card px-4">{children}</div>
     </div>
   );
@@ -92,9 +92,9 @@ function Group({ title, children }: { title?: string; children: ReactNode }) {
 // --- general ------------------------------------------------------------------------------------
 
 const THEMES: { id: ThemePref; label: string }[] = [
-  { id: "system", label: "Як у системі" },
-  { id: "light", label: "Світла" },
-  { id: "dark", label: "Темна" },
+  { id: "system", label: "System" },
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
 ];
 
 const BUDGETS = [4, 8, 16, 32];
@@ -111,10 +111,10 @@ function General() {
   const [budget, setBudget] = useState<number | null>(readBudget);
   const [worktree, setWorktree] = useState(() => local.get("worktree") === "1");
   return (
-    <Section title="Загальне" sub="Як виглядає Agoryx і з чим починаються нові кімнати на цьому пристрої.">
-      <Group title="Вигляд">
-        <Row label="Тема">
-          <div role="radiogroup" aria-label="Тема" className="inline-flex rounded-lg bg-muted p-0.5">
+    <Section title="General" sub="How Agoryx looks and what new rooms start with on this device.">
+      <Group title="Appearance">
+        <Row label="Theme">
+          <div role="radiogroup" aria-label="Theme" className="inline-flex rounded-lg bg-muted p-0.5">
             {THEMES.map((theme) => (
               <button
                 key={theme.id}
@@ -133,13 +133,13 @@ function General() {
           </div>
         </Row>
       </Group>
-      <Group title="Нові кімнати">
+      <Group title="New rooms">
         <Row
-          label="Ліміт ходів"
+          label="Turn limit"
           hint={
             budget === null
-              ? "Без ліміту: агенти працюють, доки комусь є що додати, і кімната стихає, коли всі пасують."
-              : `Після вашого повідомлення агенти роблять щонайбільше ${budget} ходів і чекають на вас.`
+              ? "No limit: agents work while anyone has something to add, and the room goes quiet when everyone passes."
+              : `After your message, agents take at most ${budget} turns, then wait for you.`
           }
         >
           <Select
@@ -150,34 +150,34 @@ function General() {
               local.set("budget", next === null ? null : String(next));
             }}
           >
-            <SelectTrigger className="w-40" aria-label="Ліміт ходів">
+            <SelectTrigger className="w-40" aria-label="Turn limit">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">Без ліміту</SelectItem>
+              <SelectItem value="none">No limit</SelectItem>
               {BUDGETS.map((n) => (
                 <SelectItem key={n} value={String(n)}>
-                  {n} ходів
+                  {n} turns
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </Row>
-        <Row label="Окрема гілка для git-теки" hint="Кімната в git-репозиторії працює в новому worktree, а ваша тека лишається як є.">
+        <Row label="Separate branch for a git folder" hint="A room in a git repository works in a new worktree, and your folder stays as it is.">
           <Switch
             checked={worktree}
             onCheckedChange={(on) => {
               setWorktree(on);
               local.set("worktree", on ? "1" : null);
             }}
-            aria-label="Окрема гілка для git-теки"
+            aria-label="Separate branch for a git folder"
           />
         </Row>
       </Group>
-      <Group title="Клавіші">
-        <Row label="Усі клавіші" hint={<>Пошук і всі дії — <Kbd>{withMod("K")}</Kbd>, налаштування — <Kbd>{keyLabel("settings")}</Kbd>.</>}>
+      <Group title="Keyboard">
+        <Row label="All shortcuts" hint={<>Search and all actions: <Kbd>{withMod("K")}</Kbd>. Settings: <Kbd>{keyLabel("settings")}</Kbd>.</>}>
           <Button variant="outline" size="sm" onClick={() => openDialog({ kind: "keys" })}>
-            Показати
+            Show
           </Button>
         </Row>
       </Group>
@@ -214,7 +214,7 @@ function Profile() {
       const got = await api<ProfileFile>("PUT", "/api/profile", { text });
       setFile(got);
       setText(got.text);
-      toast.success("Профіль збережено. Агенти отримають його з наступного ходу.");
+      toast.success("Profile saved. Agents get it from their next turn.");
     } catch (err) {
       fail(err);
     } finally {
@@ -224,8 +224,8 @@ function Profile() {
   const chars = text.trim().length;
   return (
     <Section
-      title="Профіль"
-      sub="Хто ви, як працюєте, що для вас важливо — своїми словами. Його отримують агенти кожної кімнати (крім тих, кому ви його вимкнули в «Агентах»). Agoryx нікуди його не копіює: ні в теку, ні в журнал кімнати, ні в коміти."
+      title="Profile"
+      sub="Who you are, how you work, what matters to you — in your own words. Agents in every room get it (except those you turned it off for in “Agents”). Agoryx never copies it anywhere: not into the folder, the room’s log or commits."
     >
       {error ? (
         <ErrorNote>{error}</ErrorNote>
@@ -248,13 +248,13 @@ function Profile() {
                 void save();
               }
             }}
-            placeholder={"Я пишу бекенд на Go і TypeScript.\nПишіть мені українською, коротко і по суті.\nСпершу дія, потім пояснення."}
-            aria-label="Профіль"
+            placeholder={"I write backends in Go and TypeScript.\nKeep replies short and to the point.\nAction first, then the explanation."}
+            aria-label="Profile"
             className="min-h-[280px] resize-y font-mono text-small leading-relaxed"
           />
           <div className="flex flex-wrap items-center gap-3">
             <span className={cn("text-meta tabular-nums", chars > file.max ? "text-amber-ink" : "text-faint")}>
-              {chars} / {file.max} знаків{chars > file.max ? " — агенти отримають лише початок" : ""}
+              {chars} / {file.max} characters{chars > file.max ? " — agents get only the beginning" : ""}
             </span>
             <span className="truncate font-mono text-meta text-faint" title={file.path}>
               {file.path}
@@ -262,11 +262,11 @@ function Profile() {
             <div className="ml-auto flex gap-2">
               {dirty ? (
                 <Button type="button" variant="ghost" onClick={() => setText(file.text)}>
-                  Скасувати
+                  Cancel
                 </Button>
               ) : null}
               <Button type="submit" disabled={!dirty || busy}>
-                Зберегти
+                Save
               </Button>
             </div>
           </div>
@@ -334,7 +334,7 @@ function Agents() {
   const save = async () => {
     setBusy(true);
     try {
-      done(await api<RosterFile>("PUT", "/api/roster", { agents: agents.map(entry) }), "Збережено. Так сидітимуть нові кімнати.");
+      done(await api<RosterFile>("PUT", "/api/roster", { agents: agents.map(entry) }), "Saved. New rooms will start with these agents.");
     } catch (err) {
       fail(err);
     } finally {
@@ -344,7 +344,7 @@ function Agents() {
   const reset = async () => {
     setBusy(true);
     try {
-      done(await api<RosterFile>("DELETE", "/api/roster"), "Знову Claude і Codex.");
+      done(await api<RosterFile>("DELETE", "/api/roster"), "Back to Claude and Codex.");
     } catch (err) {
       fail(err);
     } finally {
@@ -353,8 +353,8 @@ function Agents() {
   };
   return (
     <Section
-      title="Агенти"
-      sub="Хто сидить у кожній новій кімнаті, з якою моделлю, зусиллям і роллю. Кімнати, що вже є, лишаються як були: там модель змінюється внизу кімнати."
+      title="Agents"
+      sub="Who sits in every new room, with which model, effort and role. Existing rooms stay as they are: change the model there at the bottom of the room."
     >
       {error ? (
         <ErrorNote>{error}</ErrorNote>
@@ -364,7 +364,7 @@ function Agents() {
         <>
           {file.rosterError ? (
             <ErrorNote>
-              Файл агентів не читається: {file.rosterError}. Збережіть список нижче, щоб переписати його, або поверніть Claude і Codex.
+              Can’t read the agents file: {file.rosterError}. Save the list below to rewrite it, or go back to Claude and Codex.
             </ErrorNote>
           ) : null}
           <div className="flex flex-col divide-y divide-border rounded-xl border border-border bg-card">
@@ -389,12 +389,12 @@ function Agents() {
                       variant="field"
                       onSet={(patch) => change(agent.id, pick(patch))}
                     />
-                    <label className="flex items-center gap-2 text-small text-muted-foreground" title="Чи отримує цей агент ваш профіль">
-                      Профіль
+                    <label className="flex items-center gap-2 text-small text-muted-foreground" title="Whether this agent gets your profile">
+                      Profile
                       <Switch
                         checked={agent.profile !== false}
                         onCheckedChange={(on) => change(agent.id, { profile: on ? undefined : false })}
-                        aria-label={`Профіль для ${agent.label}`}
+                        aria-label={`Profile for ${agent.label}`}
                       />
                     </label>
                     <Button
@@ -402,8 +402,8 @@ function Agents() {
                       size="icon"
                       className="size-8 text-muted-foreground"
                       disabled={agents.length < 2}
-                      aria-label={`Прибрати ${agent.label}`}
-                      title={agents.length < 2 ? "У кімнаті має бути хоч один агент" : `Прибрати ${agent.label}`}
+                      aria-label={`Remove ${agent.label}`}
+                      title={agents.length < 2 ? "A room needs at least one agent" : `Remove ${agent.label}`}
                       onClick={() => setAgents((list) => list.filter((a) => a.id !== agent.id))}
                     >
                       <Trash2Icon className="size-4" />
@@ -428,7 +428,7 @@ function Agents() {
                 setModel("");
               }}
             >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Який CLI">
+              <SelectTrigger className="w-full sm:w-40" aria-label="CLI">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -437,11 +437,11 @@ function Agents() {
               </SelectContent>
             </Select>
             <Select value={model || "default"} onValueChange={(value) => setModel(value === "default" ? "" : value)}>
-              <SelectTrigger className="w-full sm:flex-1" aria-label="Модель">
+              <SelectTrigger className="w-full sm:flex-1" aria-label="Model">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="default">Типова модель CLI</SelectItem>
+                <SelectItem value="default">CLI default model</SelectItem>
                 {(models?.[kind]?.models ?? []).map((m) => (
                   <SelectItem key={m.id} value={m.id}>
                     {m.label}
@@ -451,30 +451,30 @@ function Agents() {
             </Select>
             <Button type="submit" variant="outline" className="gap-1.5">
               <PlusIcon className="size-4" />
-              Додати
+              Add
             </Button>
           </form>
           <Hint>
-            Додасться «{name}» (@{handleFor(name)}). Кілька агентів одного CLI можуть сидіти разом — напр. Claude на Opus і Claude на
-            Sonnet: ім'я кожного каже, на якій він моделі.
+            Adds “{name}” (@{handleFor(name)}). Several agents of one CLI can sit together — e.g. Claude on Opus and Claude on Sonnet:
+            each one’s name says which model it runs.
           </Hint>
           <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
             <span className="truncate font-mono text-meta text-faint" title={file.path}>
-              {file.custom ? file.path : "Типово: Claude і Codex"}
+              {file.custom ? file.path : "Default: Claude and Codex"}
             </span>
             <div className="ml-auto flex gap-2">
               {file.custom ? (
                 <Button variant="ghost" onClick={() => void reset()} disabled={busy}>
-                  Повернути Claude і Codex
+                  Reset to Claude and Codex
                 </Button>
               ) : null}
               {dirty ? (
                 <Button variant="ghost" onClick={() => setAgents(file.agents ?? DEFAULT_AGENTS)}>
-                  Скасувати
+                  Cancel
                 </Button>
               ) : null}
               <Button onClick={() => void save()} disabled={!dirty || busy || agents.some((a) => (a.role?.length ?? 0) > MAX_ROLE)}>
-                Зберегти
+                Save
               </Button>
             </div>
           </div>
@@ -498,8 +498,8 @@ function Phone() {
   const device = useStore((s) => s.device);
   return (
     <Section
-      title={device ? "Цей пристрій" : "Телефон"}
-      sub={device ? undefined : "Кімнати на телефоні: через Wi‑Fi чи Tailscale, з кодом або QR. Кожен пристрій має свій ключ, і його можна відкликати."}
+      title={device ? "This device" : "Phone"}
+      sub={device ? undefined : "Rooms on your phone: over Wi‑Fi or Tailscale, with a code or QR. Each device has its own key, and you can revoke it."}
     >
       <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4">
         <PhonePanel />
@@ -517,7 +517,7 @@ function Limits() {
       .catch((err) => !(err instanceof Unauthorized) && setError(errText(err)));
   }, []);
   return (
-    <Section title="Ліміти підписок" sub="Що кожен CLI востаннє сказав про ліміти вашої підписки. Agoryx нічого не обмежує сам — лише показує.">
+    <Section title="Subscription limits" sub="What each CLI last reported about your subscription’s limits. Agoryx limits nothing itself — it only shows them.">
       {error ? (
         <ErrorNote>{error}</ErrorNote>
       ) : !limits ? (
@@ -556,22 +556,22 @@ function About() {
     </div>
   );
   return (
-    <Section title="Про Agoryx" sub="Спільна кімната для людей і агентів: кожен агент — у своїй рідній сесії, з усіма своїми інструментами.">
+    <Section title="About Agoryx" sub="A shared room for people and agents: each agent works in its own native session, with all its tools.">
       {error ? (
         <ErrorNote>{error}</ErrorNote>
       ) : !info ? (
         <Loading lines={4} />
       ) : (
         <div className="flex flex-col divide-y divide-border rounded-xl border border-border bg-card px-4">
-          {line("Версія", info.version ?? "невідома")}
-          {line("Демон", `${info.url} · pid ${info.pid}`, true)}
-          {line("Дані", info.home, true)}
-          {line("Кімнат", info.rooms)}
+          {line("Version", info.version ?? "unknown")}
+          {line("Daemon", `${info.url} · pid ${info.pid}`, true)}
+          {line("Data", info.home, true)}
+          {line("Rooms", info.rooms)}
         </div>
       )}
       <div>
         <Button variant="outline" onClick={() => openDialog({ kind: "help" })}>
-          Як це працює
+          How it works
         </Button>
       </div>
     </Section>
@@ -592,17 +592,17 @@ const BODY: Record<SettingsSection, () => ReactNode> = {
 export function Settings({ section }: { section: SettingsSection }) {
   const go = useStore((s) => s.go);
   useEffect(() => {
-    document.title = "Налаштування · Agoryx";
+    document.title = "Settings · Agoryx";
   }, [section]);
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 px-3 sm:px-5">
         <NavButton />
-        <h1 className="font-serif text-lead font-semibold tracking-tight">Налаштування</h1>
+        <h1 className="font-display text-lead font-semibold">Settings</h1>
       </header>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <nav
-          aria-label="Розділи налаштувань"
+          aria-label="Settings sections"
           className="scroll-thin flex shrink-0 gap-1 overflow-x-auto border-b border-border/70 px-3 py-2 md:w-52 md:flex-col md:overflow-visible md:border-r md:border-b-0 md:px-2 md:py-4"
         >
           {SECTIONS.map(({ id, label, icon: Icon }) => (

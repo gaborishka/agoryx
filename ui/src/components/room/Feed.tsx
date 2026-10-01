@@ -7,7 +7,7 @@ import { Markdown } from "@/components/md/Markdown";
 import { OpCards } from "@/components/table/OpCard";
 import { useNow } from "@/hooks/use-now";
 import { names, secs } from "@/lib/format";
-import { buildFeed, type FeedItem, type FeedModel, type FeedRow, nameOf } from "@/lib/room";
+import { buildFeed, type FeedItem, type FeedModel, type FeedRow, ink, nameOf, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -25,14 +25,16 @@ function Hello() {
           <Avatar key={a.id} handle={a.id} size={44} className="ring-4 ring-background" />
         ))}
       </div>
-      <h2 className="text-xl font-semibold tracking-tight text-balance">Кімната готова</h2>
+      <h2 className="font-display text-[26px] font-[650] text-balance">The room is ready</h2>
       <p className="text-body leading-relaxed text-pretty text-muted-foreground">
-        Напишіть, що треба зробити чи обговорити. {names(room.agents.map((a) => a.label))} спершу візьмуться одночасно — з того самого місця, кажучи по ходу, хто що робить, — а далі говоритимуть по
-        черзі — з усім, що вже сказано в кімнаті.
+        Write what needs doing or discussing. {names(room.agents.map((a) => a.label))} will start at the same time, from the same point, saying as they go who is doing what,
+        and then talk in turns, with everything already said in the room.
       </p>
     </div>
   );
 }
+
+const liveTone = { claude: "bg-claude", codex: "bg-codex", human: "bg-human", sys: "bg-foreground/40" } as const;
 
 function LiveTurn({ turn, ops }: { turn: TurnState; ops?: TableOp[] }) {
   const stream = useStore((s) => s.snap?.streams[turn.id]?.text ?? "");
@@ -41,9 +43,12 @@ function LiveTurn({ turn, ops }: { turn: TurnState; ops?: TableOp[] }) {
   const elapsed = secs(now - new Date(turn.startedAt).getTime());
   const last = turn.activity.slice(-4);
   const current = turn.activity.at(-1);
-  const label = current?.kind === "thinking" ? "міркує" : current?.kind === "command" ? "виконує команду" : current?.kind === "edit" ? "пише файл" : current?.kind === "read" ? "читає" : current?.kind === "web" ? "шукає в мережі" : current?.kind === "browser" ? "працює в браузері" : "працює";
+  const who = participant(room, turn.agent);
+  const label = current?.kind === "thinking" ? "thinking" : current?.kind === "command" ? "running a command" : current?.kind === "edit" ? "writing a file" : current?.kind === "read" ? "reading" : current?.kind === "web" ? "searching the web" : current?.kind === "browser" ? "working in the browser" : "working";
   return (
-    <article className="relative min-w-0 rounded-2xl border border-border bg-card/80 p-4 shadow-soft sm:p-5">
+    <article className="relative min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-4 pt-5 shadow-soft sm:p-5 sm:pt-6">
+      {/* The working voice's band, breathing while the turn runs. */}
+      <span aria-hidden className={cn("live-band absolute inset-x-0 top-0 h-[3px]", liveTone[who.tone])} style={ink(who)} />
       <header className="flex items-center gap-2">
         <Avatar handle={turn.agent} size={28} live />
         <Name handle={turn.agent} className="text-body" />
@@ -59,7 +64,7 @@ function LiveTurn({ turn, ops }: { turn: TurnState; ops?: TableOp[] }) {
         </div>
       ) : !last.length ? (
         <p className="mt-2 text-small text-muted-foreground">
-          Читає нове в кімнаті{room ? ` (${nameOf(room, turn.agent)} бачить усе до цього моменту)` : ""}…
+          Reading what’s new in the room{room ? ` (${nameOf(room, turn.agent)} sees everything up to this point)` : ""}…
         </p>
       ) : null}
       <OpCards ops={ops} />
@@ -102,7 +107,7 @@ function RoundMark({ text, title, handles, action }: { text: string; title?: str
       <Tip tip={title ?? text}>
         <span className="flex min-w-0 items-center gap-1.5">
           <SplitIcon className="size-3.5 shrink-0" />
-          <b className="font-semibold text-foreground">Одночасно</b>
+          <b className="font-semibold text-foreground">At the same time</b>
           <span className="hidden truncate sm:inline">— {text}</span>
         </span>
       </Tip>
@@ -128,11 +133,11 @@ function Round({ row, model, isFresh }: { row: Extract<FeedRow, { type: "group" 
       aria-pressed={side}
       className={cn(
         "hidden h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-meta font-medium transition md:inline-flex",
-        side ? "bg-accent text-foreground" : "text-primary hover:bg-accent",
+        side ? "bg-foreground/[0.07] text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
       )}
     >
       {side ? <RowsIcon className="size-3.5" /> : <ColumnsIcon className="size-3.5" />}
-      {side ? "По черзі" : "Порівняти"}
+      {side ? "One by one" : "Compare"}
     </button>
   ) : null;
   const mark = <RoundMark text={row.text} title={row.title} handles={row.items.map((g) => g.m.author)} action={toggle} />;
@@ -213,7 +218,7 @@ export function Feed() {
           </section>
         ) : null}
       </ConversationContent>
-      <ConversationScrollButton className="bottom-4 shadow-lift" title="Донизу" aria-label="Донизу, до нових повідомлень" />
+      <ConversationScrollButton className="bottom-4 shadow-lift" title="Jump to latest" aria-label="Jump to latest messages" />
     </Conversation>
   );
 }

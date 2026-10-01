@@ -36,12 +36,12 @@ interface Pairing {
 const KIND_LABEL: Record<PairLink["kind"], string> = { https: "Tailscale · HTTPS", lan: "Wi‑Fi" };
 
 /** A device's name; the daemon leaves it empty when the browser was not recognised. */
-const nameOf = (device: { name: string }) => device.name || "Невідомий браузер";
+const nameOf = (device: { name: string }) => device.name || "Unknown browser";
 
-/** "був щойно", "був 5 хв тому", "був 3 жовт." */
+/** "last seen just now", "last seen 5 min ago", "last seen Oct 3" */
 const lastSeen = (iso: string) => {
   const when = ago(iso);
-  return `був ${when}${/(хв|год)$/.test(when) ? " тому" : ""}`;
+  return `last seen ${when}${/(min|h)$/.test(when) ? " ago" : ""}`;
 };
 
 const left = (iso: string, now: number) => {
@@ -111,7 +111,7 @@ function PairPanel() {
   const revoke = async (device: Device) => {
     try {
       await api("DELETE", `/api/devices/${encodeURIComponent(device.id)}`);
-      toast.success(`${nameOf(device)}: доступ відкликано`);
+      toast.success(`${nameOf(device)}: access revoked`);
       void loadDevices();
     } catch (error) {
       fail(error);
@@ -127,17 +127,17 @@ function PairPanel() {
     <>
       {unreachable ? (
         <div className="flex flex-col gap-2 text-ui leading-relaxed">
-          <p>Зараз Agoryx відкривається лише на цьому комп'ютері.</p>
+          <p>Right now Agoryx opens only on this computer.</p>
           <Button size="sm" className="w-fit" onClick={() => void expose(true)}>
-            Відкрити для телефона в цій Wi‑Fi
+            Open to phones on this Wi‑Fi
           </Button>
           <Hint>
-            Демон почне слухати адресу комп'ютера у Wi‑Fi одразу, без перезапуску, і запам'ятає це. Те саме в терміналі: <code className="font-mono">agoryx up --lan</code>.
-            Через Tailscale (HTTPS, зі сповіщеннями): <code className="font-mono">agoryx up --tailscale</code>, потім <code className="font-mono">tailscale serve --bg {port}</code>.
+            The daemon starts listening on the computer’s Wi‑Fi address right away, without a restart, and remembers it. Same in the terminal: <code className="font-mono">agoryx up --lan</code>.
+            Over Tailscale (HTTPS, with notifications): <code className="font-mono">agoryx up --tailscale</code>, then <code className="font-mono">tailscale serve --bg {port}</code>.
           </Hint>
         </div>
       ) : !pairing || !link ? (
-        <div className="grid h-[252px] place-items-center text-small text-muted-foreground">Готуємо код…</div>
+        <div className="grid h-[252px] place-items-center text-small text-muted-foreground">Preparing a code…</div>
       ) : (
         <div className="flex flex-col items-center gap-3 text-center">
           {pairing.links.length > 1 ? (
@@ -155,40 +155,40 @@ function PairPanel() {
             </div>
           ) : null}
           <div className={cn("relative rounded-2xl bg-white p-2 shadow-soft ring-1 ring-border", (expired || joined) && "opacity-15")}>
-            <img src={link.qr} alt="QR-код для телефона" className="size-[208px]" draggable={false} />
+            <img src={link.qr} alt="QR code for the phone" className="size-[208px]" draggable={false} />
           </div>
           {joined ? (
             <p className="text-ui">
-              Під'єднано: <b>{nameOf(joined)}</b>
+              Connected: <b>{nameOf(joined)}</b>
             </p>
           ) : expired ? (
-            <p className="text-ui text-muted-foreground">Код прострочено.</p>
+            <p className="text-ui text-muted-foreground">The code has expired.</p>
           ) : (
             <>
-              <p className="text-ui leading-relaxed">Наведіть камеру телефона на код.</p>
+              <p className="text-ui leading-relaxed">Point the phone’s camera at the code.</p>
               <Hint className="text-center">
-                Або відкрийте <span className="font-mono text-foreground">{link.base}</span> і введіть
+                Or open <span className="font-mono text-foreground">{link.base}</span> and enter
                 <span className="mt-1 block font-mono text-title font-semibold tracking-[0.18em] text-foreground">{pairing.code}</span>
-                Код одноразовий, ще {left(pairing.expiresAt, now)}.
+                One-time code, valid for {left(pairing.expiresAt, now)}.
               </Hint>
             </>
           )}
           {expired || joined ? (
             <Button variant="outline" size="sm" className="gap-2" onClick={() => void makeCode()}>
               <RefreshCwIcon className="size-3.5" />
-              Новий код
+              New code
             </Button>
           ) : null}
-          {link.kind === "lan" && !joined ? <Hint className="text-center">Сповіщення на телефон — лише через HTTPS (Tailscale).</Hint> : null}
+          {link.kind === "lan" && !joined ? <Hint className="text-center">Phone notifications need HTTPS (Tailscale).</Hint> : null}
           <button type="button" onClick={() => void expose(false)} className="text-small text-muted-foreground underline-offset-2 hover:underline">
-            Закрити доступ з інших пристроїв
+            Close access from other devices
           </button>
         </div>
       )}
       <div className="flex flex-col gap-1.5 border-t border-border pt-3.5">
-        <div className="text-meta font-medium tracking-wider text-faint uppercase">Під'єднані пристрої</div>
+        <div className="text-small font-medium text-muted-foreground">Connected devices</div>
         {devices === null ? null : devices.length === 0 ? (
-          <Hint>Ще жодного.</Hint>
+          <Hint>None yet.</Hint>
         ) : (
           devices.map((device) => (
             <div key={device.id} className="flex items-center gap-3 rounded-xl px-1 py-1.5">
@@ -196,14 +196,14 @@ function PairPanel() {
               <div className="flex min-w-0 flex-1 flex-col leading-tight">
                 <span className="flex items-center gap-1.5 truncate text-ui font-medium">
                   {nameOf(device)}
-                  {device.push ? <BellIcon className="size-3.5 text-muted-foreground" aria-label="Сповіщення увімкнено" /> : null}
+                  {device.push ? <BellIcon className="size-3.5 text-muted-foreground" aria-label="Notifications on" /> : null}
                 </span>
                 <span className="truncate text-meta text-muted-foreground">
                   <span className="font-mono">{device.id}</span> · {lastSeen(device.lastSeen)}
                 </span>
               </div>
               <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => void revoke(device)}>
-                Відкликати
+                Revoke
               </Button>
             </div>
           ))
@@ -248,7 +248,7 @@ function DevicePanel({ device }: { device: { id: string; name: string } }) {
       if (on) {
         const permission = await Notification.requestPermission();
         if (permission !== "granted") {
-          toast.error("Сповіщення заборонено в налаштуваннях браузера");
+          toast.error("Notifications are blocked in the browser settings");
           return;
         }
         const existing = await registration.pushManager.getSubscription();
@@ -270,8 +270,8 @@ function DevicePanel({ device }: { device: { id: string; name: string } }) {
   const test = async () => {
     try {
       const sent = await api<{ sent: number; failed: number }>("POST", "/api/push/test", {});
-      if (sent.sent > 0) toast.success("Надіслано");
-      else toast.error("Не вдалося надіслати — увімкніть сповіщення ще раз");
+      if (sent.sent > 0) toast.success("Sent");
+      else toast.error("Couldn’t send — turn notifications on again");
     } catch (error) {
       fail(error);
     }
@@ -279,10 +279,10 @@ function DevicePanel({ device }: { device: { id: string; name: string } }) {
 
   let push;
   if (!window.isSecureContext) {
-    push = <Hint>Сповіщення працюють лише через HTTPS: відкрийте Agoryx через Tailscale serve.</Hint>;
+    push = <Hint>Notifications work only over HTTPS: open Agoryx through Tailscale serve.</Hint>;
   } else if (!pushSupported()) {
     push = (
-      <Hint>{iOS() ? "На iPhone: «Поділитися» → «На початковий екран», і відкрийте Agoryx звідти." : "Цей браузер не приймає сповіщень."}</Hint>
+      <Hint>{iOS() ? "On iPhone: Share → Add to Home Screen, then open Agoryx from there." : "This browser doesn’t support notifications."}</Hint>
     );
   } else if (!state) {
     push = null;
@@ -290,12 +290,12 @@ function DevicePanel({ device }: { device: { id: string; name: string } }) {
     push = (
       <>
         <label className="flex items-center justify-between gap-3 text-sm">
-          Сповіщення, коли кімната чекає на вас
+          Notify me when the room is waiting for you
           <Switch checked={state.subscribed} disabled={busy} onCheckedChange={(on) => void toggle(on)} />
         </label>
         {state.subscribed ? (
           <Button variant="outline" size="sm" className="w-fit" onClick={() => void test()}>
-            Перевірити
+            Send a test
           </Button>
         ) : null}
       </>
@@ -313,7 +313,7 @@ function DevicePanel({ device }: { device: { id: string; name: string } }) {
           <span className="font-mono text-meta text-muted-foreground">{device.id}</span>
         </div>
       </div>
-      <Hint>Цей пристрій під'єднано до Agoryx на комп'ютері. Відкликати доступ можна там: «Відкрити на телефоні» чи agoryx devices.</Hint>
+      <Hint>This device is connected to Agoryx on your computer. You can revoke its access there: “Open on phone” or agoryx devices.</Hint>
       <div className="flex flex-col gap-2.5 border-t border-border pt-3.5">{push}</div>
     </>
   );
@@ -328,7 +328,7 @@ export function PhonePanel() {
 export function PhoneDialog() {
   const device = useStore((s) => s.device);
   return (
-    <Shell title={device ? "Цей пристрій" : "Відкрити на телефоні"} size="sm">
+    <Shell title={device ? "This device" : "Open on phone"} size="sm">
       {device ? <DevicePanel device={device} /> : <PairPanel />}
     </Shell>
   );

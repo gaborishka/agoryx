@@ -185,13 +185,13 @@ test("three agents: a blind round of three in parallel, then one at a time; each
     const lastAgent = room.store.state.agents.find((agent) => agent.id === summary.lastMessage!.author);
     assert.equal(summary.lastMessage.label, lastAgent?.label);
     assert.equal(roomPreview({ author: "sonnet", text: "Use **SQLite**.", label: "Sonnet" }), "Sonnet: Use SQLite.");
-    assert.equal(roomPreview({ author: "Ivan", text: "Hello" }), "Ви: Hello");
+    assert.equal(roomPreview({ author: "Ivan", text: "Hello" }), "You: Hello");
 
     // The web feed groups the three blind answers and names all three.
     const group = buildFeed(room.store.state, []).rows.find((row) => row.type === "group");
     assert.ok(group && group.type === "group");
     assert.equal(group.items.length, 3);
-    assert.match(group.text, /^(Opus|Sonnet|Codex), (Opus|Sonnet|Codex) і (Opus|Sonnet|Codex) почали одночасно з вашого повідомлення$/);
+    assert.match(group.text, /^(Opus|Sonnet|Codex), (Opus|Sonnet|Codex) and (Opus|Sonnet|Codex) started at the same time from your message$/);
   } finally {
     await room.cleanup();
   }
@@ -199,8 +199,8 @@ test("three agents: a blind round of three in parallel, then one at a time; each
 
 test("names reads right for one, two and three agents", () => {
   assert.equal(names(["Claude"]), "Claude");
-  assert.equal(names(["Claude", "Codex"]), "Claude і Codex");
-  assert.equal(names(["Opus", "Sonnet", "Codex"]), "Opus, Sonnet і Codex");
+  assert.equal(names(["Claude", "Codex"]), "Claude and Codex");
+  assert.equal(names(["Opus", "Sonnet", "Codex"]), "Opus, Sonnet and Codex");
 });
 
 test("@sonnet wakes only Sonnet, not the other Claude; the others read its answer in their next turn", async () => {

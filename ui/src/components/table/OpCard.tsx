@@ -25,19 +25,19 @@ import type { TableOp, TableOption, TableState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export const TC_KIND: Record<TableOp["op"], string> = {
-  ask: "Питання",
-  propose: "Пропозиція",
-  object: "Заперечення",
-  support: "Підтримка",
-  evidence: "Доказ",
-  fact: "Факт",
-  settle: "Узгоджено",
-  next: "Наступний крок",
-  done: "Виконано",
-  withdraw: "Відкликано",
-  decide: "Рішення",
-  reopen: "Відкрито знову",
-  concede: "Змінює думку",
+  ask: "Question",
+  propose: "Proposal",
+  object: "Objection",
+  support: "Endorsement",
+  evidence: "Evidence",
+  fact: "Fact",
+  settle: "Settled",
+  next: "Next step",
+  done: "Done",
+  withdraw: "Withdrawn",
+  decide: "Decision",
+  reopen: "Reopened",
+  concede: "Changes their mind",
 };
 
 export const KIND_ICON: Record<TableOp["op"], LucideIcon> = {
@@ -63,11 +63,11 @@ export const KIND_TONE: Record<TableOp["op"], string> = {
   support: "text-add-ink",
   evidence: "text-codex",
   fact: "text-fact",
-  settle: "text-primary",
+  settle: "text-meet",
   next: "text-muted-foreground",
   done: "text-add-ink",
   withdraw: "text-muted-foreground",
-  decide: "text-primary",
+  decide: "text-meet",
   reopen: "text-amber",
   concede: "text-shift",
 };
@@ -75,7 +75,7 @@ export const KIND_TONE: Record<TableOp["op"], string> = {
 export function Kind({ op }: { op: TableOp["op"] }) {
   const Icon = KIND_ICON[op];
   return (
-    <span className={cn("inline-flex items-center gap-1 text-micro font-semibold tracking-wide uppercase", KIND_TONE[op])}>
+    <span className={cn("inline-flex items-center gap-1 text-micro font-semibold", KIND_TONE[op])}>
       <Icon className="size-3.5" />
       {TC_KIND[op]}
     </span>
@@ -88,7 +88,7 @@ export function RefChip({ id, className }: { id: string; className?: string }) {
     <button
       type="button"
       onClick={() => goToRef(id)}
-      title="Показати на столі"
+      title="Show on the table"
       className={cn(
         "inline-flex h-5 items-center rounded-md bg-secondary px-1.5 font-mono text-micro font-semibold text-secondary-foreground ring-1 ring-primary/15 transition hover:bg-primary hover:text-primary-foreground",
         className,
@@ -110,26 +110,26 @@ export const noteCounts = (table: TableState, id: string) => {
 
 export function Standing({ table, o }: { table: TableState; o: TableOption }) {
   const pill = "inline-flex h-5 items-center gap-1 rounded-full px-2 text-micro font-medium";
-  if (o.status === "chosen") return <span className={cn(pill, "bg-primary text-primary-foreground")}>Обрано</span>;
-  if (o.status === "withdrawn") return <span className={cn(pill, "bg-muted text-muted-foreground")}>Відкликано</span>;
+  if (o.status === "chosen") return <span className={cn(pill, "bg-meet text-background")}>Chosen</span>;
+  if (o.status === "withdrawn") return <span className={cn(pill, "bg-muted text-muted-foreground")}>Withdrawn</span>;
   const q = o.q ? table.questions.find((x) => x.id === o.q) : null;
-  if (q && q.status !== "open") return <span className={cn(pill, "bg-muted text-muted-foreground")}>{q.status === "decided" ? "Не обрано" : "Питання закрито"}</span>;
+  if (q && q.status !== "open") return <span className={cn(pill, "bg-muted text-muted-foreground")}>{q.status === "decided" ? "Not chosen" : "Question closed"}</span>;
   const { sup, obj, ev } = noteCounts(table, o.id);
-  if (!sup && !obj && !ev) return <span className="text-micro text-faint">відкрито</span>;
+  if (!sup && !obj && !ev) return <span className="text-micro text-faint">open</span>;
   return (
     <span className="tabular inline-flex items-center gap-2 text-meta font-medium">
       {sup ? (
-        <span className="text-add-ink" title={plural(sup, "підтримка", "підтримки", "підтримок")}>
+        <span className="text-add-ink" title={plural(sup, "endorsement", "endorsements")}>
           ✓ {sup}
         </span>
       ) : null}
       {obj ? (
-        <span className="text-destructive" title={plural(obj, "заперечення", "заперечення", "заперечень")}>
+        <span className="text-destructive" title={plural(obj, "objection", "objections")}>
           ✕ {obj}
         </span>
       ) : null}
       {ev ? (
-        <span className="text-codex" title={plural(ev, "доказ", "докази", "доказів")}>
+        <span className="text-codex" title={plural(ev, "piece of evidence", "pieces of evidence")}>
           ◆ {ev}
         </span>
       ) : null}
@@ -154,7 +154,7 @@ export function FilePreview({ file }: { file: string }) {
       <button type="button" onClick={() => openFile(file)} className="flex w-full items-center gap-2 border-t border-border px-2.5 py-1.5 text-left text-xs first:border-t-0 hover:bg-accent">
         <FileIcon className="size-3.5 text-muted-foreground" />
         <span className="truncate font-mono">{file}</span>
-        <span className="ml-auto text-muted-foreground">переглянути</span>
+        <span className="ml-auto text-muted-foreground">view</span>
       </button>
     </div>
   );
@@ -192,13 +192,13 @@ function OptionActions({ id }: { id: string }) {
   return (
     <div className="mt-2.5 flex flex-wrap gap-1.5">
       <button type="button" className={cn(btn, "text-muted-foreground hover:bg-accent hover:text-foreground")} onClick={() => openDialog({ kind: "table-form", op: "support", target: id })}>
-        Підтримати
+        Endorse
       </button>
       <button type="button" className={cn(btn, "text-muted-foreground hover:bg-accent hover:text-foreground")} onClick={() => openDialog({ kind: "table-form", op: "object", target: id })}>
-        Заперечити
+        Object
       </button>
       <button type="button" className={cn(btn, "bg-secondary text-secondary-foreground hover:bg-primary hover:text-primary-foreground")} onClick={() => openDialog({ kind: "table-form", op: "decide", target: id })}>
-        Обрати
+        Choose
       </button>
     </div>
   );
@@ -206,7 +206,7 @@ function OptionActions({ id }: { id: string }) {
 
 const optionTitle = (table: TableState, id: string) => {
   const o = table.options.find((x) => x.id === id);
-  return o ? `«${o.title}»` : "";
+  return o ? `“${o.title}”` : "";
 };
 
 export function OpCard({ o }: { o: TableOp }) {
@@ -224,7 +224,7 @@ export function OpCard({ o }: { o: TableOp }) {
             <RefChip id={opt.id} />
             {q ? (
               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                до <RefChip id={q.id} />
+                to <RefChip id={q.id} />
               </span>
             ) : null}
             <span className="ml-auto">
@@ -233,7 +233,7 @@ export function OpCard({ o }: { o: TableOp }) {
           </div>
           <div className="mt-1.5 font-semibold text-pretty">{opt.title}</div>
           {opt.body ? (
-            <Clamp max={176} more="Показати повністю" className="mt-1.5">
+            <Clamp max={176} more="Show all" className="mt-1.5">
               <Markdown text={opt.body} source={`o:${opt.id}`} className="text-ui" />
             </Clamp>
           ) : null}
@@ -254,10 +254,10 @@ export function OpCard({ o }: { o: TableOp }) {
             <RefChip id={q.id} />
             <span className="ml-auto text-meta text-muted-foreground">
               {decision ? (
-                <span className="font-medium text-primary">Вирішено: {decision.option}</span>
+                <span className="font-medium text-meet">Decided: {decision.option}</span>
               ) : answer ? (
-                <span className="font-medium text-primary">Є висновок: {answer}</span>
-              ) : options.length ? plural(options.length, "варіант", "варіанти", "варіантів") : "чекає варіантів"}
+                <span className="font-medium text-primary">Answered: {answer}</span>
+              ) : options.length ? plural(options.length, "option", "options") : "waiting for options"}
             </span>
           </div>
           <div className="mt-1.5 font-semibold text-pretty">{q.text}</div>
@@ -280,7 +280,7 @@ export function OpCard({ o }: { o: TableOp }) {
           <div className="flex flex-wrap items-center gap-2">
             <Kind op={o.op} />
             <span className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-              до <RefChip id={o.target} /> <span className="truncate">{optionTitle(table, o.target)}</span>
+              on <RefChip id={o.target} /> <span className="truncate">{optionTitle(table, o.target)}</span>
             </span>
           </div>
           <div className="mt-1.5 text-ui text-pretty">{o.text}</div>
@@ -299,7 +299,7 @@ export function OpCard({ o }: { o: TableOp }) {
             <Kind op="concede" />
             {o.target ? (
               <span className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-                щодо <RefChip id={o.target} /> <span className="truncate">{optionTitle(table, o.target)}</span>
+                on <RefChip id={o.target} /> <span className="truncate">{optionTitle(table, o.target)}</span>
               </span>
             ) : null}
           </div>
@@ -313,7 +313,7 @@ export function OpCard({ o }: { o: TableOp }) {
             <div className="flex flex-wrap items-center gap-2">
               <Kind op="settle" />
               <span className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-                відповідь на <RefChip id={o.q} /> <span className="truncate">{table.questions.find((x) => x.id === o.q)?.text}</span>
+                answer to <RefChip id={o.q} /> <span className="truncate">{table.questions.find((x) => x.id === o.q)?.text}</span>
               </span>
             </div>
             <div className="mt-1.5 text-ui font-medium text-pretty">{o.text}</div>
@@ -359,8 +359,8 @@ function ItemCard({ o, table }: { o: Extract<TableOp, { op: "fact" | "settle" | 
     <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
       <Kind op={o.op} />
       <span className={cn("min-w-0 flex-1 text-ui", (done || withdrawn) && "text-muted-foreground line-through")}>{o.text}</span>
-      {done ? <span className="text-micro font-medium text-add-ink">виконано</span> : null}
-      {withdrawn ? <span className="text-micro font-medium text-muted-foreground">відкликано</span> : null}
+      {done ? <span className="text-micro font-medium text-add-ink">done</span> : null}
+      {withdrawn ? <span className="text-micro font-medium text-muted-foreground">withdrawn</span> : null}
     </div>
   );
 }
@@ -373,7 +373,7 @@ function OptionChip({ o }: { o: TableOption }) {
       onClick={() => goToRef(o.id)}
       className={cn(
         "inline-flex max-w-full items-center gap-1.5 rounded-lg border border-border bg-background px-2 py-1 text-left text-xs hover:bg-accent",
-        o.status === "chosen" && "border-primary/40 bg-secondary text-secondary-foreground",
+        o.status === "chosen" && "border-meet/35 bg-meet-soft text-foreground",
         o.status === "withdrawn" && "opacity-55 line-through",
       )}
     >
@@ -386,20 +386,20 @@ function OptionChip({ o }: { o: TableOption }) {
 // A turn that makes many moves keeps the ones a reader must see and folds the rest into one line.
 const KEY_OPS = new Set<TableOp["op"]>(["ask", "propose", "object", "decide", "concede"]);
 const FOLD_AFTER = 4;
-const TC_MANY: Record<TableOp["op"], [string, string, string]> = {
-  ask: ["питання", "питання", "питань"],
-  propose: ["пропозиція", "пропозиції", "пропозицій"],
-  object: ["заперечення", "заперечення", "заперечень"],
-  decide: ["рішення", "рішення", "рішень"],
-  support: ["підтримка", "підтримки", "підтримок"],
-  evidence: ["доказ", "докази", "доказів"],
-  fact: ["факт", "факти", "фактів"],
-  settle: ["узгоджене", "узгоджені", "узгоджених"],
-  next: ["крок", "кроки", "кроків"],
-  done: ["виконано", "виконано", "виконано"],
-  withdraw: ["відкликано", "відкликано", "відкликано"],
-  reopen: ["відкрито знову", "відкрито знову", "відкрито знову"],
-  concede: ["зміна думки", "зміни думки", "змін думки"],
+const TC_MANY: Record<TableOp["op"], [string, string]> = {
+  ask: ["question", "questions"],
+  propose: ["proposal", "proposals"],
+  object: ["objection", "objections"],
+  decide: ["decision", "decisions"],
+  support: ["endorsement", "endorsements"],
+  evidence: ["piece of evidence", "pieces of evidence"],
+  fact: ["fact", "facts"],
+  settle: ["settled point", "settled points"],
+  next: ["step", "steps"],
+  done: ["done", "done"],
+  withdraw: ["withdrawn", "withdrawn"],
+  reopen: ["reopened", "reopened"],
+  concede: ["change of mind", "changes of mind"],
 };
 
 /** A turn's table moves in one line: what kinds, how many, and a way to open them. */
@@ -409,7 +409,7 @@ function OpSummary({ ops, onOpen }: { ops: TableOp[]; onOpen: () => void }) {
   for (const o of ops) counts.set(o.op, (counts.get(o.op) ?? 0) + 1);
   return (
     <div className="mt-3 flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-muted/50 px-2.5 py-2 text-small">
-      <span className="font-medium text-muted-foreground">На столі:</span>
+      <span className="font-medium text-muted-foreground">On the table:</span>
       {[...counts].map(([op, n]) => {
         const Icon = KIND_ICON[op];
         return (
@@ -421,10 +421,10 @@ function OpSummary({ ops, onOpen }: { ops: TableOp[]; onOpen: () => void }) {
       })}
       <span className="ml-auto flex items-center gap-1">
         <button type="button" onClick={onOpen} className="rounded-md px-1.5 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground">
-          показати
+          show
         </button>
         <button type="button" onClick={() => setView("table")} className="rounded-md px-1.5 py-0.5 font-medium text-primary hover:bg-accent">
-          на Столі →
+          Go to table
         </button>
       </span>
     </div>
@@ -448,11 +448,11 @@ export function OpCards({ ops, compact }: { ops?: TableOp[]; compact?: boolean }
       ))}
       {folded.length ? (
         <button type="button" onClick={() => setAll(true)} className="self-start rounded-lg px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">
-          Ще {summary} · <span className="text-primary">показати</span>
+          Also {summary} · <span className="text-primary">show</span>
         </button>
       ) : foldable && all ? (
         <button type="button" onClick={() => setAll(false)} className="self-start rounded-lg px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">
-          Згорнути дрібні ходи
+          Collapse minor moves
         </button>
       ) : null}
     </div>

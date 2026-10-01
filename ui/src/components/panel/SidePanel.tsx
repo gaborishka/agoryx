@@ -32,11 +32,11 @@ export const warmPanels = () =>
   );
 
 export const TABS: Record<PanelTab, { label: string; icon: LucideIcon; tip: string }> = {
-  session: { label: "Сесія", icon: SquareTerminalIcon, tip: `Сесія агента: усе, що він робив; ${t.model.and}` },
-  doc: { label: "Документ", icon: FileTextIcon, tip: "Спільний документ кімнати і його версії" },
-  browser: { label: "Браузер", icon: GlobeIcon, tip: "Спільний браузер кімнати: агенти відкривають у ньому сторінки, а ви бачите кожен крок" },
-  diff: { label: "Зміни", icon: GitCompareArrowsIcon, tip: "Що ходи змінили у файлах" },
-  files: { label: "Файли", icon: FolderIcon, tip: "Файли робочої теки" },
+  session: { label: "Session", icon: SquareTerminalIcon, tip: `The agent’s session: everything it did; ${t.model.and}` },
+  doc: { label: "Document", icon: FileTextIcon, tip: "The room’s shared document and its versions" },
+  browser: { label: "Browser", icon: GlobeIcon, tip: "The room’s shared browser: agents open pages in it, and you see every step" },
+  diff: { label: "Changes", icon: GitCompareArrowsIcon, tip: "What turns changed in the files" },
+  files: { label: "Files", icon: FolderIcon, tip: "Files in the working folder" },
 };
 
 /** The tabs this page has: the browser only in the Agoryx app. */
@@ -71,7 +71,7 @@ function TabStrip({ current }: { current: PanelTab }) {
     requestAnimationFrame(() => strip.current?.querySelector<HTMLElement>(`[data-tab=${next}]`)?.focus());
   };
   return (
-    <div ref={strip} role="tablist" aria-label="Панель" onKeyDown={keys} className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
+    <div ref={strip} role="tablist" aria-label="Panel" onKeyDown={keys} className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
       {tabs.map((tab) => {
         const { label, icon: Icon, tip } = TABS[tab];
         const on = tab === current;
@@ -109,7 +109,7 @@ function Body({ tab }: { tab: PanelTab }) {
   let body: ReactNode;
   if (tab === "session") body = <SessionPanel />;
   else if (tab === "browser") {
-    body = browserBridge() ? <BrowserPanel /> : <EmptyState icon={GlobeIcon} title="Лише в застосунку" text="Спільний браузер кімнати є в застосунку Agoryx для macOS." />;
+    body = browserBridge() ? <BrowserPanel /> : <EmptyState icon={GlobeIcon} title="Only in the app" text="The room’s shared browser is in the Agoryx app for macOS." />;
   } else if (tab === "diff") body = <ChangesPanel />;
   else if (tab === "files") body = <FilesPanel />;
   else {
@@ -128,7 +128,7 @@ function Body({ tab }: { tab: PanelTab }) {
 
 /**
  * Docked beside the room on a wide screen; below that it slides over the room, and on a phone it is
- * a full-screen sheet with a plain «Закрити».
+ * a full-screen sheet with a plain “Close”.
  */
 export function SidePanel({ overlay, phone }: { overlay: boolean; phone: boolean }) {
   const panel = useStore((s) => s.panel);
@@ -163,7 +163,7 @@ export function SidePanel({ overlay, phone }: { overlay: boolean; phone: boolean
   const browser = panel === "browser";
   return (
     <>
-      {overlay && !phone ? <button type="button" aria-label="Закрити панель" className="fixed inset-0 z-30 bg-black/25 backdrop-blur-[1px]" onClick={() => setPanel(null)} /> : null}
+      {overlay && !phone ? <button type="button" aria-label="Close panel" className="fixed inset-0 z-30 bg-black/25 backdrop-blur-[1px]" onClick={() => setPanel(null)} /> : null}
       <aside
         ref={aside}
         tabIndex={-1}
@@ -182,17 +182,17 @@ export function SidePanel({ overlay, phone }: { overlay: boolean; phone: boolean
           <TabStrip current={panel} />
           <div className="ml-auto flex shrink-0 items-center">
             {!overlay && !browser ? (
-              <Button variant="ghost" size="icon" className="size-8" onClick={() => setWide(!wide)} aria-label={wide ? "Вужче" : "Ширше"} title={wide ? "Вужче" : "Ширше"}>
+              <Button variant="ghost" size="icon" className="size-8" onClick={() => setWide(!wide)} aria-label={wide ? "Narrower" : "Wider"} title={wide ? "Narrower" : "Wider"}>
                 {wide ? <Minimize2Icon className="size-4" /> : <Maximize2Icon className="size-4" />}
               </Button>
             ) : null}
             {phone ? (
               <Button variant="ghost" size="sm" className="h-8 gap-1 px-2 text-small" onClick={() => setPanel(null)}>
                 <XIcon className="size-4" />
-                Закрити
+                Close
               </Button>
             ) : (
-              <Button variant="ghost" size="icon" className="size-8" onClick={() => setPanel(null)} aria-label="Закрити панель" title="Закрити (Esc)">
+              <Button variant="ghost" size="icon" className="size-8" onClick={() => setPanel(null)} aria-label="Close panel" title="Close (Esc)">
                 <XIcon className="size-4" />
               </Button>
             )}

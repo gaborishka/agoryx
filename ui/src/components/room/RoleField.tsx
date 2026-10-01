@@ -14,8 +14,8 @@ export function RoleField({ id, value, onChange, name, className }: { id: string
         id={id}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder={`Роль ${name}: що робити й чого не робити. Порожньо — без ролі, діє як сам.`}
-        aria-label={`Роль ${name}`}
+        placeholder={`${name}'s role: what to do and what not to. Empty — no role, it acts as itself.`}
+        aria-label={`${name}'s role`}
         aria-invalid={over || undefined}
         rows={2}
         className="max-h-48 min-h-14 text-small"

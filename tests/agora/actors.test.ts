@@ -398,24 +398,24 @@ test("a log from before authors were recorded reads as it did", () => {
     assert.equal(reopened.runs[0]?.status, "ended");
     assert.equal(eventPatch(reopened, store.events.at(-1)!).guests, undefined, "no guests in a patch that names none");
     // The UI's lines from those logs are unchanged.
-    assert.equal(sysLine({ text: "Ivan stopped the run." }), "Розмову зупинено.");
-    assert.equal(sysLine({ text: "Ivan asked for another round." }), "Ivan просить ще один раунд.");
+    assert.equal(sysLine({ text: "Ivan stopped the run." }), "The conversation was stopped.");
+    assert.equal(sysLine({ text: "Ivan asked for another round." }), "Ivan asks for another round.");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test("the UI says which agent acted, and names an agent of another room with its room", () => {
-  assert.equal(sysLine({ text: "Codex stopped the run." }, "Codex"), "Codex зупиняє розмову.");
-  assert.equal(sysLine({ text: "Claude changed the settings: budget 5 turns per run, network off." }, "Claude"), "Claude змінює налаштування: ліміт 5 ходів на розмову, мережа вимкнена.");
-  assert.equal(sysLine({ text: 'Codex renamed the room to "Parser".' }, "Codex"), "Codex перейменовує кімнату на «Parser».");
+  assert.equal(sysLine({ text: "Codex stopped the run." }, "Codex"), "Codex stops the conversation.");
+  assert.equal(sysLine({ text: "Claude changed the settings: budget 5 turns per run, network off." }, "Claude"), "Claude changes the settings: a limit of 5 turns per conversation, network off.");
+  assert.equal(sysLine({ text: 'Codex renamed the room to "Parser".' }, "Codex"), "Codex renames the room to “Parser”.");
   const seating = {
     agents: [{ id: "claude", kind: "claude" as const, label: "Claude" }],
     human: "Ivan",
     guests: { "codex@home-1": { room: "home-1", roomName: "Home", agent: "codex", label: "Codex", kind: "codex" as const } },
   };
   const guest = participant(seating, "codex@home-1");
-  assert.equal(guest.label, "Codex (з кімнати «Home»)");
+  assert.equal(guest.label, "Codex (from the room “Home”)");
   assert.equal(guest.agent, false, "not one of this room's agents");
   assert.equal(guest.tone, "codex");
 });

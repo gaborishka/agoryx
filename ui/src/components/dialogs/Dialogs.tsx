@@ -71,15 +71,15 @@ type RevertPlan = { to: string; undoOf?: number; subject: string; tree: string; 
 
 /** The daemon's refusals by code, in the room's words (its own text is for the CLI). */
 const REVERT_ERRORS: Record<string, string> = {
-  bad: "Такої контрольної точки в кімнаті немає.",
-  agent: "Повернути теку може лише людина.",
-  missing: "Цієї контрольної точки вже немає в репозиторії теки.",
-  undone: "Це повернення вже скасовано.",
-  later: "Скасувати можна лише останнє повернення.",
-  busy: "Агенти зараз працюють у теці. Спершу зупиніть їх.",
-  changed: "Тека змінилася, поки ви дивилися. Ось що зміниться тепер.",
-  same: "Тека вже така — змінювати нічого.",
-  failed: "git не зміг прочитати або записати теку, тож нічого не змінено.",
+  bad: "This room has no such checkpoint.",
+  agent: "Only a human can revert the folder.",
+  missing: "This checkpoint is no longer in the folder’s repository.",
+  undone: "This revert has already been undone.",
+  later: "Only the latest revert can be undone.",
+  busy: "Agents are working in the folder. Stop them first.",
+  changed: "The folder changed while you were looking. Here is what will change now.",
+  same: "The folder already looks like this — nothing to change.",
+  failed: "git couldn’t read or write the folder, so nothing was changed.",
 };
 const revertError = (error: unknown) => {
   const code = error instanceof ApiError ? error.body.code : undefined;
@@ -87,8 +87,8 @@ const revertError = (error: unknown) => {
 };
 
 const REVERT_HOW: Record<string, { text: string; className: string }> = {
-  A: { text: "повернеться", className: "text-add-ink" },
-  D: { text: "зникне", className: "text-del-ink" },
+  A: { text: "comes back", className: "text-add-ink" },
+  D: { text: "goes away", className: "text-del-ink" },
 };
 
 function RevertDialog({ sha, undo }: { sha?: string; undo?: number }) {
@@ -122,7 +122,7 @@ function RevertDialog({ sha, undo }: { sha?: string; undo?: number }) {
     setBusy(true);
     try {
       await post("/revert", { ...(undo !== undefined ? { undo } : { sha: plan.data.to }), tree: plan.data.tree });
-      toast.success(undo !== undefined ? "Повернення скасовано" : "Теку повернуто");
+      toast.success(undo !== undefined ? "Revert undone" : "Folder reverted");
       openDialog(null);
     } catch (error) {
       const code = error instanceof ApiError ? error.body.code : undefined;
@@ -140,30 +140,30 @@ function RevertDialog({ sha, undo }: { sha?: string; undo?: number }) {
     body = (
       <>
         {undo !== undefined ? (
-          <Hint>Файли стануть такими, якими були перед цим поверненням.</Hint>
+          <Hint>Files will go back to how they were before this revert.</Hint>
         ) : (
           <Hint>
-            Тека стане такою, як у контрольній точці <span className="font-mono text-foreground">{plan.data.to.slice(0, 7)}</span>: {subject}
+            The folder will match checkpoint <span className="font-mono text-foreground">{plan.data.to.slice(0, 7)}</span>: {subject}
           </Hint>
         )}
         {plan.data.busy ? (
           <div className="flex flex-wrap items-center gap-3 rounded-xl bg-destructive-soft px-3.5 py-3 text-small text-destructive">
-            <span className="flex-1">Агенти зараз працюють у теці. Щоб повернути її, спершу зупиніть їх.</span>
+            <span className="flex-1">Agents are working in the folder. Stop them before you revert it.</span>
             <Button size="sm" variant="outline" disabled={busy} onClick={stop}>
-              Зупинити агентів
+              Stop agents
             </Button>
           </div>
         ) : null}
         {plan.data.since?.length ? (
           <div className="rounded-xl bg-destructive-soft px-3.5 py-3 text-small text-destructive">
-            Після повернення в теці ще змінювалися файли — ці зміни теж зникнуть: <span className="font-mono">{plan.data.since.slice(0, 12).join(", ")}</span>
-            {plan.data.since.length > 12 ? ` і ще ${plan.data.since.length - 12}` : ""}.
+            Files in the folder changed after the revert — those changes will be lost too: <span className="font-mono">{plan.data.since.slice(0, 12).join(", ")}</span>
+            {plan.data.since.length > 12 ? ` and ${plan.data.since.length - 12} more` : ""}.
           </div>
         ) : null}
         {changes.length ? (
           <div className="flex flex-col divide-y divide-border overflow-hidden rounded-xl border border-border">
             {changes.map((c) => {
-              const how = REVERT_HOW[c.status] ?? { text: "зміниться", className: "text-foreground" };
+              const how = REVERT_HOW[c.status] ?? { text: "changes", className: "text-foreground" };
               return (
                 <div key={c.path} className="flex items-center gap-2 px-3 py-1.5 text-meta">
                   <span className="min-w-0 flex-1 truncate font-mono">{c.path}</span>
@@ -174,25 +174,25 @@ function RevertDialog({ sha, undo }: { sha?: string; undo?: number }) {
             })}
           </div>
         ) : (
-          <Hint>Тека вже така — змінювати нічого.</Hint>
+          <Hint>The folder already looks like this — nothing to change.</Hint>
         )}
         <Hint>
-          Спершу Agoryx збереже теку як є, тож це можна буде скасувати. Розмова і стіл лишаються; агенти дізнаються про це в наступному ході. Файли з .gitignore не
-          змінюються.
+          Agoryx saves the folder as it is first, so you can undo this. The conversation and the table stay; agents learn about it on their next turn. Files in
+          .gitignore are not touched.
         </Hint>
       </>
     );
   }
   const count = plan.data?.changes.length ?? 0;
   return (
-    <Shell title={undo !== undefined ? "Скасувати повернення" : "Повернути теку сюди"} sub={room?.workspace} size="md">
+    <Shell title={undo !== undefined ? "Undo revert" : "Revert folder to here"} sub={room?.workspace} size="md">
       {body}
       <DialogFooter>
         <Button type="button" variant="ghost" onClick={() => openDialog(null)}>
-          Скасувати
+          Cancel
         </Button>
         <Button type="button" variant="destructive" disabled={busy || !count || Boolean(plan.data?.busy)} onClick={go}>
-          {undo !== undefined ? "Скасувати повернення" : `Повернути ${count ? plural(count, "файл", "файли", "файлів") : "теку"}`}
+          {undo !== undefined ? "Undo revert" : `Revert ${count ? plural(count, "file", "files") : "folder"}`}
         </Button>
       </DialogFooter>
     </Shell>
@@ -210,7 +210,7 @@ function CheckpointsDialog() {
   const turnOn = async () => {
     try {
       await post("/settings", { autoCommit: true });
-      toast.success("Контрольні точки ввімкнено");
+      toast.success("Checkpoints turned on");
     } catch (error) {
       fail(error);
     }
@@ -224,7 +224,7 @@ function CheckpointsDialog() {
             <span className="font-mono text-muted-foreground">{c.sha.slice(0, 7)}</span>
             <span className="min-w-0 flex-1 truncate">{c.subject}</span>
             <Button variant="ghost" size="xs" onClick={() => openDialog({ kind: "revert", sha: c.sha })}>
-              Повернути сюди
+              Revert to here
             </Button>
           </div>
         ))}
@@ -235,24 +235,24 @@ function CheckpointsDialog() {
   else if (status.data.tracking !== "git") {
     body = (
       <Hint>
-        Контрольна точка — це git commit, а ця тека не git-репозиторій, тож кімната їх не робить. Зробіть у теці <code className="font-mono">git init</code> і ввімкніть
-        контрольні точки в налаштуваннях кімнати.
+        A checkpoint is a git commit, and this folder isn’t a git repository, so the room doesn’t make them. Run <code className="font-mono">git init</code> in the
+        folder and turn checkpoints on in the room settings.
       </Hint>
     );
   } else if (!room?.settings.autoCommit) {
     body = (
       <>
-        <Hint>Контрольних точок немає. Увімкніть їх — і після кожного раунду кімната робитиме git commit, до якого можна повернути теку.</Hint>
+        <Hint>No checkpoints. Turn them on and the room makes a git commit after every round, so you can revert the folder to it.</Hint>
         <Button className="w-fit" size="sm" onClick={turnOn}>
-          Увімкнути контрольні точки
+          Turn on checkpoints
         </Button>
       </>
     );
   } else {
-    body = <Hint>Контрольних точок ще немає. Перша з'явиться, коли агенти закінчать раунд, у якому змінили файли.</Hint>;
+    body = <Hint>No checkpoints yet. The first one appears when agents finish a round in which they changed files.</Hint>;
   }
   return (
-    <Shell title="Повернути теку" sub={room?.workspace} size="md">
+    <Shell title="Revert folder" sub={room?.workspace} size="md">
       {body}
     </Shell>
   );
@@ -275,7 +275,7 @@ function SettingsDialog() {
   const [busy, setBusy] = useState(false);
   if (!room || !s) return null;
   return (
-    <Shell title="Налаштування кімнати" sub={room.name} size="sm">
+    <Shell title="Room settings" sub={room.name} size="sm">
       <form
         className="flex flex-col gap-4"
         onSubmit={async (event) => {
@@ -290,7 +290,7 @@ function SettingsDialog() {
               doc: doc.trim() || null,
             });
             openDialog(null);
-            toast.success("Збережено");
+            toast.success("Saved");
           } catch (error) {
             fail(error);
             setBusy(false);
@@ -299,33 +299,33 @@ function SettingsDialog() {
       >
         <div className="flex flex-col gap-1.5">
           <label className="flex items-center justify-between gap-3 text-sm">
-            Ліміт ходів на ваше повідомлення
+            Turn limit after your message
             <Switch checked={limited} onCheckedChange={setLimited} />
           </label>
           {limited && (
-            <Input id="s-budget" aria-label="Ходів агентів на ваше повідомлення" type="number" min={1} max={100} value={budget} onChange={(e) => setBudget(e.target.value)} className="w-28" />
+            <Input id="s-budget" aria-label="Agent turns after your message" type="number" min={1} max={100} value={budget} onChange={(e) => setBudget(e.target.value)} className="w-28" />
           )}
           <Hint>
             {limited
-              ? "Скільки ходів агенти роблять після вашого повідомлення, перш ніж зупинитися й чекати на вас."
-              : "Без ліміту: агенти працюють, доки комусь є що додати, і кімната стихає, коли всі пасують. Зупинити можна будь-коли."}
+              ? "How many turns agents take after your message before they stop and wait for you."
+              : "No limit: agents work while anyone has something to add, and the room goes quiet when everyone passes. You can stop them at any time."}
           </Hint>
         </div>
         <div className="flex flex-col gap-1.5">
-          <Label>Доступ агентів</Label>
+          <Label>Agent access</Label>
           <Select value={access} onValueChange={setAccess}>
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="workspace">Читання і запис у робочій теці</SelectItem>
-              <SelectItem value="readonly">Лише читання</SelectItem>
+              <SelectItem value="workspace">Read and write in the working folder</SelectItem>
+              <SelectItem value="readonly">Read-only</SelectItem>
             </SelectContent>
           </Select>
-          <Hint>Агенти працюють, як у вашому терміналі: Claude — з вашими налаштуваннями, Codex — у своїй пісочниці. «Лише читання» чи вимкнена мережа обмежують обох.</Hint>
+          <Hint>Agents work as they do in your terminal: Claude with your settings, Codex in its own sandbox. “Read-only” or network off limits both.</Hint>
         </div>
         <label className="flex items-center justify-between gap-3 text-sm">
-          Мережа для команд агентів
+          Network for agent commands
           <Switch checked={network} onCheckedChange={setNetwork} />
         </label>
         <label className="flex items-center justify-between gap-3 text-sm">
@@ -333,16 +333,16 @@ function SettingsDialog() {
           <Switch checked={autoCommit} onCheckedChange={setAutoCommit} />
         </label>
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="s-doc">Спільний документ</Label>
+          <Label htmlFor="s-doc">Shared document</Label>
           <Input id="s-doc" value={doc} onChange={(e) => setDoc(e.target.value)} placeholder="README.md" spellCheck={false} className="font-mono text-small" />
-          <Hint>Файл, який кімната пише разом. Порожньо — без нього.</Hint>
+          <Hint>The file the room writes together. Leave empty for none.</Hint>
         </div>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => openDialog(null)}>
-            Скасувати
+            Cancel
           </Button>
           <Button type="submit" disabled={busy}>
-            Зберегти
+            Save
           </Button>
         </DialogFooter>
       </form>
@@ -370,35 +370,35 @@ function HelpDialog() {
   };
   const li = "relative pl-5 before:absolute before:top-[0.6em] before:left-1 before:size-1.5 before:rounded-full before:bg-primary/50";
   return (
-    <Shell title="Як це працює">
+    <Shell title="How it works">
       <div className="flex flex-col gap-3.5 text-body leading-relaxed">
         <p>
-          <b>Кімната</b> — одна розмова для вас і {names(agents.map((a) => a.label))}. Agoryx задає контекст, а не ролі: агенти працюють у своїх рідних сесіях з усіма своїми
-          інструментами.
+          <b>A room</b> is one conversation for you and {names(agents.map((a) => a.label))}. Agoryx sets the context, not roles: agents work in their own native sessions
+          with all their tools.
         </p>
         <ul className="flex flex-col gap-2">
           <li className={li}>
-            На ваше повідомлення агенти беруться <b>одночасно</b> — з того самого місця, і по ходу кажуть одне одному, хто що робить.
+            Agents take on your message <b>at the same time</b>, from the same starting point, and tell each other along the way who is doing what.
           </li>
           <li className={li}>
-            Далі вони говорять <b>по черзі</b>: кожен бачить усе, що сказано раніше. Коли нема що додати — хід пропускається.
+            Then they talk <b>in turns</b>: each sees everything said before. An agent with nothing to add passes.
           </li>
-          <li className={li}>Після кількох ходів розмова зупиняється й чекає на вас. Кількість — у налаштуваннях кімнати.</li>
+          <li className={li}>With a turn limit set, the conversation stops after that many turns and waits for you. Set it in the room settings.</li>
           <li className={li}>
-            {agents.map((agent, i) => [i ? (i === agents.length - 1 ? " чи " : ", ") : null, at(agent)])} — звернутися лише до одного.
-          </li>
-          <li className={li}>
-            <b>Стіл</b> — питання, варіанти, заперечення й рішення, коли є справжні альтернативи.
+            {agents.map((agent, i) => [i ? (i === agents.length - 1 ? " or " : ", ") : null, at(agent)])} — to address just one.
           </li>
           <li className={li}>
-            <b>Документ</b> — один спільний файл, кожна версія з автором.
+            <b>Table</b> — questions, options, objections and decisions, when there are real alternatives.
+          </li>
+          <li className={li}>
+            <b>Document</b> — one shared file, every version with its author.
           </li>
         </ul>
         <Hint className="text-small">
-          Без браузера: <code className="font-mono">agoryx tail -f</code>, <code className="font-mono">agoryx say "…"</code>, <code className="font-mono">agoryx table</code>.
-          Сесію агента можна відкрити в Claude Code чи Codex — розмова там теж потрапить у кімнату.{" "}
+          Without a browser: <code className="font-mono">agoryx tail -f</code>, <code className="font-mono">agoryx say "…"</code>, <code className="font-mono">agoryx table</code>.
+          You can open an agent’s session in Claude Code or Codex — the conversation there reaches the room too.{" "}
           <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => openDialog({ kind: "keys" })}>
-            Клавіші
+            Shortcuts
           </button>{" "}
           <Kbd>?</Kbd>
 
@@ -413,7 +413,7 @@ function HelpDialog() {
 function KeysDialog() {
   const groups = [...new Set(SHORTCUTS.map((s) => s.group))];
   return (
-    <Shell title="Клавіші" size="sm">
+    <Shell title="Keyboard shortcuts" size="sm">
       <div className="flex flex-col gap-4">
         {groups.map((group) => (
           <section key={group} className="flex flex-col gap-1">
@@ -439,27 +439,27 @@ function KeysDialog() {
 
 type Field = { name: string; label: string; area?: boolean; placeholder?: string; required?: boolean };
 const FORMS: Record<TableFormOp, { title: string; fields: Field[] }> = {
-  ask: { title: "Нове питання", fields: [{ name: "text", label: "Питання", area: true, placeholder: "Що треба вирішити?", required: true }] },
+  ask: { title: "New question", fields: [{ name: "text", label: "Question", area: true, placeholder: "What needs deciding?", required: true }] },
   propose: {
-    title: "Нова пропозиція",
+    title: "New proposal",
     fields: [
-      { name: "title", label: "Коротка назва", placeholder: "напр. SQLite замість JSON", required: true },
-      { name: "body", label: "Що і чому", area: true },
-      { name: "file", label: "Файл у робочій теці (необов'язково)", placeholder: "mockup.html" },
+      { name: "title", label: "Short title", placeholder: "e.g. SQLite instead of JSON", required: true },
+      { name: "body", label: "What and why", area: true },
+      { name: "file", label: "File in the working folder (optional)", placeholder: "mockup.html" },
     ],
   },
-  object: { title: "Заперечення", fields: [{ name: "text", label: "Чому ні", area: true, placeholder: "Що саме не так і що змінило б цю думку?", required: true }] },
-  support: { title: "Підтримка", fields: [{ name: "text", label: "Чому так", area: true, required: true }] },
+  object: { title: "Objection", fields: [{ name: "text", label: "Why not", area: true, placeholder: "What exactly is wrong, and what would change your mind?", required: true }] },
+  support: { title: "Support", fields: [{ name: "text", label: "Why", area: true, required: true }] },
   evidence: {
-    title: "Доказ",
+    title: "Evidence",
     fields: [
-      { name: "text", label: "Що встановлено", area: true, required: true },
-      { name: "source", label: "Джерело (URL або файл)" },
+      { name: "text", label: "What was established", area: true, required: true },
+      { name: "source", label: "Source (URL or file)" },
     ],
   },
-  decide: { title: "Обрати", fields: [{ name: "note", label: "Чому саме цей варіант (необов'язково)", area: true }] },
-  settle: { title: "Висновок", fields: [{ name: "text", label: "Що тепер вважаємо встановленим", area: true, required: true }] },
-  next: { title: "Наступний крок", fields: [{ name: "text", label: "Конкретна дія", area: true, required: true }] },
+  decide: { title: "Choose", fields: [{ name: "note", label: "Why this option (optional)", area: true }] },
+  settle: { title: "Conclusion", fields: [{ name: "text", label: "What we now take as settled", area: true, required: true }] },
+  next: { title: "Next step", fields: [{ name: "text", label: "A concrete action", area: true, required: true }] },
 };
 
 function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; q?: string }) {
@@ -492,7 +492,7 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
   };
   const missing = form.fields.some((f) => f.required && !values[f.name]?.trim());
   return (
-    <Shell title={op === "decide" ? `Обрати ${target}` : form.title} size="sm">
+    <Shell title={op === "decide" ? `Choose ${target}` : form.title} size="sm">
       <form
         className="flex flex-col gap-4"
         onSubmit={(event) => {
@@ -534,13 +534,13 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
         ))}
         {(op === "propose" || op === "settle") && open.length ? (
           <div className="flex flex-col gap-1.5">
-            <Label>{op === "settle" ? "Відповідає на питання (і закриває його)" : "До питання"}</Label>
+            <Label>{op === "settle" ? "Answers a question (and closes it)" : "For question"}</Label>
             <Select value={values.q || "none"} onValueChange={(v) => set("q", v === "none" ? "" : v)}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="none">{op === "settle" ? "— просто узгоджено —" : "— без питання —"}</SelectItem>
+                <SelectItem value="none">{op === "settle" ? "— just agreed —" : "— no question —"}</SelectItem>
                 {open.map((x) => (
                   <SelectItem key={x.id} value={x.id}>
                     {x.id} · {x.text.slice(0, 70)}
@@ -550,13 +550,13 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
             </Select>
           </div>
         ) : null}
-        <Hint>{op === "decide" ? "Рішення з'явиться в розмові, і агенти продовжать із нього." : "Агенти побачать це у своєму наступному ході."}</Hint>
+        <Hint>{op === "decide" ? "The decision appears in the conversation, and agents continue from it." : "Agents see this on their next turn."}</Hint>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => openDialog(null)}>
-            Скасувати
+            Cancel
           </Button>
           <Button type="submit" disabled={busy || missing} title={form.fields.some((f) => f.area) ? withMod("Enter") : undefined}>
-            {op === "decide" ? `Обрати ${target}` : "Покласти на стіл"}
+            {op === "decide" ? `Choose ${target}` : "Add to the table"}
           </Button>
         </DialogFooter>
       </form>
@@ -567,24 +567,24 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
 // --- what the room's wakes took -------------------------------------------------
 
 const ERROR_LABEL: Record<string, string> = {
-  rate_limit: "ліміт",
-  auth: "вхід",
-  context: "контекст",
-  timeout: "час вийшов",
-  spawn: "запуск",
-  session: "сесія",
-  unknown: "інше",
+  rate_limit: "limit",
+  auth: "sign-in",
+  context: "context",
+  timeout: "timed out",
+  spawn: "launch",
+  session: "session",
+  unknown: "other",
 };
 
 /**
- * "12 с · ≈$0.041 · 3.2k/410 ток." — what a set of turns took, with only what the CLIs reported. The $ is Claude
+ * "12s · ≈$0.041 · 3.2k/410 tok." — what a set of turns took, with only what the CLIs reported. The $ is Claude
  * Code's estimate at API prices, not a charge: on a subscription nothing is billed per turn.
  */
 const took = (totals: UsageTotals) => {
   if (!totals.turns) return "—";
   const parts = [secs(totals.ms)];
   if (totals.costTurns) parts.push(`≈${cost(totals.costUsd)}`);
-  if (totals.inputTokens || totals.outputTokens) parts.push(`${tokens(totals.inputTokens)}/${tokens(totals.outputTokens)} ток.`);
+  if (totals.inputTokens || totals.outputTokens) parts.push(`${tokens(totals.inputTokens)}/${tokens(totals.outputTokens)} tok.`);
   return parts.join(" · ");
 };
 const tokens = (n: number) => (n < 1000 ? String(n) : `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`);
@@ -605,13 +605,13 @@ function UsageDialog() {
     body = data.total.turns || data.agents.some((agent) => agent.running) ? (
       <>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <Figure label="ходів" value={String(data.total.turns)} />
-          <Figure label="відповіді" value={String(data.outcomes.replied.turns)} />
-          <Figure label="пропуски" value={String(data.outcomes.passed.turns)} sub={data.outcomes.passed.turns ? took(data.outcomes.passed) : undefined} />
+          <Figure label="turns" value={String(data.total.turns)} />
+          <Figure label="replies" value={String(data.outcomes.replied.turns)} />
+          <Figure label="passes" value={String(data.outcomes.passed.turns)} sub={data.outcomes.passed.turns ? took(data.outcomes.passed) : undefined} />
           <Figure
-            label="збої"
+            label="failures"
             value={String(data.outcomes.failed.turns)}
-            sub={data.outcomes.stopped.turns ? `і ${data.outcomes.stopped.turns} зупинені` : undefined}
+            sub={data.outcomes.stopped.turns ? `and ${data.outcomes.stopped.turns} stopped` : undefined}
           />
         </div>
         <div className="flex flex-col divide-y divide-border rounded-xl border border-border">
@@ -620,14 +620,14 @@ function UsageDialog() {
           ))}
         </div>
         <Hint>
-          Лише те, що вже сталося: з записаних ходів кімнати. Час — від початку до кінця ходу.
-          {priced ? " ≈$ — оцінка Claude Code за цінами API, не рахунок: на підписці за хід не платять." : ""}
-          {priced && codex ? " Codex такої оцінки не дає — лише токени." : ""}
-          {data.from ? ` Від ${fullDate(data.from)}.` : ""}
+          Only what has already happened, from the room’s recorded turns. Time runs from a turn’s start to its end.
+          {priced ? " ≈$ is Claude Code’s estimate at API prices, not a bill: on a subscription you don’t pay per turn." : ""}
+          {priced && codex ? " Codex gives no such estimate, only tokens." : ""}
+          {data.from ? ` Since ${fullDate(data.from)}.` : ""}
         </Hint>
       </>
     ) : (
-      <Hint>Поки що жодного ходу — нічого рахувати.</Hint>
+      <Hint>No turns yet — nothing to count.</Hint>
     );
   }
   return (
@@ -635,7 +635,7 @@ function UsageDialog() {
       title={
         <span className="flex items-center gap-2">
           <ReceiptIcon className="size-4.5 text-primary" />
-          Витрати кімнати
+          Room usage
         </span>
       }
       sub={room?.name}
@@ -667,19 +667,19 @@ function AgentUsageRow({ usage }: { usage: AgentUsage }) {
         <Avatar handle={usage.agent} size={22} />
         <span className="text-ui font-medium">{usage.label}</span>
         <span className="ml-auto text-meta tabular-nums text-muted-foreground">
-          {usage.wakes ? `розбудили ${plural(usage.wakes, "раз", "рази", "разів")}` : "ще не будили"}
-          {usage.running ? ` · ${usage.running} зараз` : ""}
+          {usage.wakes ? `woken ${plural(usage.wakes, "time", "times")}` : "not woken yet"}
+          {usage.running ? ` · ${usage.running} now` : ""}
         </span>
       </div>
       {usage.wakes ? (
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-small">
-          <dt className="text-muted-foreground">відповіді {productive.turns}</dt>
+          <dt className="text-muted-foreground">replies {productive.turns}</dt>
           <dd className="tabular-nums">{took(productive)}</dd>
-          <dt className="text-muted-foreground">пропуски {passed.turns}</dt>
+          <dt className="text-muted-foreground">passes {passed.turns}</dt>
           <dd className="tabular-nums">{took(passed)}</dd>
           {usage.outcomes.failed.turns ? (
             <>
-              <dt className="text-destructive">збої {usage.outcomes.failed.turns}</dt>
+              <dt className="text-destructive">failures {usage.outcomes.failed.turns}</dt>
               <dd className="tabular-nums">
                 {took(usage.outcomes.failed)}
                 {errors.length ? <span className="text-muted-foreground"> · {errors.map(([kind, n]) => `${ERROR_LABEL[kind] ?? kind} ${n}`).join(", ")}</span> : null}
@@ -688,7 +688,7 @@ function AgentUsageRow({ usage }: { usage: AgentUsage }) {
           ) : null}
           {usage.outcomes.stopped.turns ? (
             <>
-              <dt className="text-muted-foreground">зупинені {usage.outcomes.stopped.turns}</dt>
+              <dt className="text-muted-foreground">stopped {usage.outcomes.stopped.turns}</dt>
               <dd className="tabular-nums">{took(usage.outcomes.stopped)}</dd>
             </>
           ) : null}
@@ -696,7 +696,7 @@ function AgentUsageRow({ usage }: { usage: AgentUsage }) {
       ) : null}
       {wokenBy.length ? (
         <div className="text-meta text-muted-foreground">
-          будили: {wokenBy.map(([who, n]) => `${participant(room, who).label} ${n}`).join(", ")}
+          woken by: {wokenBy.map(([who, n]) => `${participant(room, who).label} ${n}`).join(", ")}
         </div>
       ) : null}
     </div>

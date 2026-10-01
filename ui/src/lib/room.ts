@@ -50,11 +50,11 @@ export const participant = (room: Seating | undefined, handle: string): Particip
   if (gone) return { id: gone.id, label: gone.label, tone: gone.kind === "codex" ? "codex" : "claude", agent: true, kind: gone.kind };
   // An agent of another room that acted here with its own key: named with its room, never taken for one of ours.
   const guest = room?.guests?.[handle];
-  if (guest) return { id: handle, label: `${guest.label} (з кімнати «${guest.roomName}»)`, tone: guest.kind, agent: false, kind: guest.kind };
+  if (guest) return { id: handle, label: `${guest.label} (from the room “${guest.roomName}”)`, tone: guest.kind, agent: false, kind: guest.kind };
   // Another room sharing the directory, named in a revision whose author is not known (room "B").
   const other = /^room "(.+)"$/.exec(handle);
-  if (other) return { id: handle, label: `кімната «${other[1]}»`, tone: "sys", agent: false };
-  return { id: handle, label: handle === room?.human ? "Ви" : handle, tone: "human", agent: false };
+  if (other) return { id: handle, label: `room “${other[1]}”`, tone: "sys", agent: false };
+  return { id: handle, label: handle === room?.human ? "You" : handle, tone: "human", agent: false };
 };
 
 /**
@@ -75,7 +75,7 @@ export const inkColor = (who: Pick<Participant, "kind" | "shade" | "mark"> | und
 /**
  * The room list's last line after a live message: the same shape the daemon's summary gives
  * (the author's label and, next to another of its kind, its look), so an agent's line is not
- * put on "Ви" until the next reload.
+ * put on "You" until the next reload.
  */
 export const lastLine = (room: RoomState, m: Pick<MessageEntry, "author" | "text" | "sys">): NonNullable<RoomSummary["lastMessage"]> => {
   const agent = room.agents.find((a) => a.id === m.author);
@@ -94,8 +94,8 @@ export const profileLine = (agent: Pick<RoomAgent, "profile">, profile: { exists
   !profile?.exists
     ? null
     : agent.profile === false
-      ? "Ваш профіль цьому агентові вимкнено (\"profile\": false у ростері): у його промпти з нього не надходить ані слова. Прочитати сам файл своїми інструментами агент усе ж може."
-      : "Бачить ваш профіль (profile.md) — як контекст про вас, не як частину розмови.";
+      ? "Your profile is turned off for this agent (\"profile\": false in the roster): not a word of it goes into its prompts. The agent can still read the file itself with its own tools."
+      : "Sees your profile (profile.md) — as context about you, not as part of the conversation.";
 
 export const nameOf = (room: RoomState | undefined, handle: string) => {
   const p = participant(room, handle);
@@ -199,17 +199,17 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
                 type: "group",
                 items: group,
                 first: true,
-                text: `${names} почали одночасно з вашого повідомлення`,
+                text: `${names} started at the same time from your message`,
                 title:
-                  "Перші відповіді на ваше повідомлення: агенти почали з того самого місця й працювали паралельно. Одне від одного бачили лише те, що з'являлося в кімнаті по ходу (agoryx say, agoryx read new).",
+                  "The first replies to your message: the agents started from the same point and worked in parallel. Of each other’s work they saw only what appeared in the room along the way (agoryx say, agoryx read new).",
               }
             : {
                 key: `g-${item.m.id}`,
                 type: "group",
                 items: group,
                 first: false,
-                text: `${names} писали одночасно`,
-                title: "Ці відповіді писалися паралельно: агенти бачили все, що було раніше, а одне від одного — лише те, що з'являлося в кімнаті по ходу.",
+                text: `${names} wrote at the same time`,
+                title: "These replies were written in parallel: the agents saw everything before them, but of each other’s work only what appeared in the room along the way.",
               },
         );
         i = j - 1;
@@ -222,7 +222,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   let liveDivider: string | null = null;
   if (live.length > 1) {
     const prev = st.messages.filter((m) => m.kind !== "system" && m.kind !== "update").at(-1);
-    if (prev?.kind === "human") liveDivider = `${nameList(live.map((t) => name(t.agent)))} працюють одночасно`;
+    if (prev?.kind === "human") liveDivider = `${nameList(live.map((t) => name(t.agent)))} are working at the same time`;
   }
   return { turns, opsByTurn, docByTurn, rows, live, liveDivider };
 };

@@ -1,6 +1,7 @@
 import { ChevronRightIcon, CircleHelpIcon, Settings2Icon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { AgoraGlyph, Avatar, Tip } from "@/components/room/bits";
+import { MarkMono, Wordmark } from "@/components/brand/Mark";
+import { Avatar, Tip } from "@/components/room/bits";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { local } from "@/lib/api";
@@ -22,9 +23,9 @@ import { cn } from "@/lib/utils";
 
 type Filter = "all" | "waiting" | "working";
 const FILTERS: Array<{ id: Filter; label: string }> = [
-  { id: "all", label: "Усі" },
-  { id: "waiting", label: "Чекають на вас" },
-  { id: "working", label: "Працюють" },
+  { id: "all", label: "All" },
+  { id: "waiting", label: "Waiting for you" },
+  { id: "working", label: "Working" },
 ];
 
 /** Rooms in a folder Agoryx made for them (no folder of the human's) are grouped together. */
@@ -67,8 +68,8 @@ function Elapsed({ since }: { since: string }) {
 function Faces({ agents, working }: { agents: RoomAgent[]; working: Set<string> }) {
   if (!agents.length) {
     return (
-      <span className="grid size-8 place-items-center rounded-[30%] bg-muted text-muted-foreground ring-1 ring-border ring-inset" aria-hidden>
-        <AgoraGlyph className="size-4" />
+      <span className="grid size-8 place-items-center rounded-[30%] bg-muted text-faint ring-1 ring-border ring-inset" aria-hidden>
+        <MarkMono className="size-4" />
       </span>
     );
   }
@@ -95,9 +96,9 @@ function Faces({ agents, working }: { agents: RoomAgent[]; working: Set<string> 
 function LiveLine({ room, on }: { room: RoomSummary; on: boolean }) {
   const working = room.working ?? [];
   if (room.waiting && !on) {
-    // «Чекає на вас» (or «Claude кличе вас») always shows; why, or what was said, follows as far as it fits.
+    // “Waiting for you” (or “Claude is calling you”) always shows; why, or what was said, follows as far as it fits.
     const item = room.waiting;
-    const head = item.reason === "mention" ? waitingReason(item) : "Чекає на вас";
+    const head = item.reason === "mention" ? waitingReason(item) : "Waiting for you";
     const rest = item.reason === "mention" ? item.text : waitingReason(item);
     return (
       <span className="truncate text-meta text-muted-foreground">
@@ -111,9 +112,9 @@ function LiveLine({ room, on }: { room: RoomSummary; on: boolean }) {
     const since = working.reduce((first, w) => (w.since < first ? w.since : first), working[0]!.since);
     return (
       // Names give way first; the timer always shows.
-      <span className="flex min-w-0 overflow-hidden text-meta text-primary">
+      <span className="flex min-w-0 overflow-hidden text-meta text-foreground/80">
         <span className="truncate">
-          {names(who)} {who.length > 1 ? "працюють" : "працює"}
+          {names(who)} {who.length > 1 ? "are working" : "is working"}
         </span>
         <span className="shrink-0 whitespace-pre">
           {" · "}
@@ -154,7 +155,7 @@ function RoomRow({ room, on }: { room: RoomSummary; on: boolean }) {
       onClick={() => go({ kind: "room", id: room.id })}
       className={cn(
         "group grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 rounded-xl px-2.5 py-2 text-left transition",
-        on ? "bg-card shadow-soft ring-1 ring-border" : "hover:bg-foreground/[0.045]",
+        on ? "bg-card shadow-edge ring-1 ring-border" : "hover:bg-foreground/[0.05]",
       )}
     >
       <span className="row-span-2 flex">
@@ -169,7 +170,7 @@ function RoomRow({ room, on }: { room: RoomSummary; on: boolean }) {
             aria-hidden
             className={cn(
               "tabular grid h-4.5 min-w-4.5 place-items-center rounded-full px-1 text-micro leading-none font-semibold",
-              waits ? "bg-amber text-amber-foreground" : "bg-primary/12 text-primary",
+              waits ? "bg-amber text-amber-foreground" : "bg-foreground text-background",
             )}
           >
             {unread > 99 ? "99+" : unread}
@@ -179,9 +180,9 @@ function RoomRow({ room, on }: { room: RoomSummary; on: boolean }) {
         ) : null}
       </span>
       <span className="sr-only">
-        {agents.length ? `. У кімнаті: ${names(agents.map((a) => a.label))}` : ""}
-        {unread ? `. ${plural(unread, "нове повідомлення", "нові повідомлення", "нових повідомлень")}` : ""}
-        {waits && room.running ? ". Агенти працюють" : ""}
+        {agents.length ? `. In the room: ${names(agents.map((a) => a.label))}` : ""}
+        {unread ? `. ${plural(unread, "new message", "new messages")}` : ""}
+        {waits && room.running ? ". Agents are working" : ""}
       </span>
     </button>
   );
@@ -201,7 +202,7 @@ const groupRooms = (rooms: RoomSummary[]): Group[] => {
     const key = room.folder ?? OWN;
     let group = groups.get(key);
     if (!group) {
-      group = { key, rooms: [], ...(key === OWN ? { label: "Нові теки", title: "Теки, які Agoryx створив для кімнат" } : { label: baseName(key), title: key }) };
+      group = { key, rooms: [], ...(key === OWN ? { label: "New folders", title: "Folders Agoryx created for rooms" } : { label: baseName(key), title: key }) };
       groups.set(key, group);
     }
     group.rooms.push(room);
@@ -245,11 +246,11 @@ function GroupHead({ group, open, onToggle, current }: { group: Group; open: boo
       <span className="tabular text-micro text-faint">{group.rooms.length}</span>
       {!open && waiting ? (
         <span className="ml-auto size-2 shrink-0 rounded-full bg-amber">
-          <span className="sr-only">{plural(waiting, "кімната чекає на вас", "кімнати чекають на вас", "кімнат чекають на вас")}</span>
+          <span className="sr-only">{plural(waiting, "room is waiting for you", "rooms are waiting for you")}</span>
         </span>
       ) : !open && working ? (
-        <span className="ml-auto size-2 shrink-0 animate-breathe rounded-full bg-primary">
-          <span className="sr-only">Агенти працюють</span>
+        <span className="ml-auto size-2 shrink-0 animate-breathe rounded-full bg-foreground/60">
+          <span className="sr-only">Agents are working</span>
         </span>
       ) : null}
     </button>
@@ -290,33 +291,30 @@ export function Sidebar() {
   const row = (room: RoomSummary) => <RoomRow key={room.id} room={room} on={room.id === current} />;
 
   return (
-    <nav className="flex h-full w-full flex-col bg-sidebar text-foreground" aria-label="Кімнати">
-      <div className="flex h-14 shrink-0 items-center gap-2.5 px-4">
-        <span className="grid size-8 place-items-center rounded-md bg-primary text-primary-foreground shadow-soft">
-          <AgoraGlyph className="size-4.5" />
-        </span>
-        <span className="flex flex-col leading-none">
-          <span className="font-serif text-lead font-semibold tracking-tight">Agoryx</span>
-          <span className="mt-0.5 text-micro tracking-wide text-faint">агора для людей і агентів</span>
-        </span>
+    <nav className="flex h-full w-full flex-col bg-sidebar text-foreground" aria-label="Rooms">
+      <div className="flex h-14 shrink-0 items-center px-4">
+        <button type="button" className="rounded-md" aria-label="Agoryx — new room" onClick={() => go({ kind: "new" })}>
+          <Wordmark className="text-[21px]" />
+        </button>
       </div>
       <div className="flex gap-1.5 px-3 pb-3">
         <Button
-          variant={route.kind === "new" ? "secondary" : "outline"}
-          className="h-9 flex-1 justify-start gap-2 rounded-xl bg-card text-ui shadow-none"
+          variant="default"
+          aria-current={route.kind === "new" ? "page" : undefined}
+          className="h-9 flex-1 justify-start gap-2 rounded-xl text-ui shadow-soft"
           onClick={() => go({ kind: "new" })}
         >
           <PlusIcon className="size-4" />
-          Нова кімната
+          New room
         </Button>
-        <Tip tip={<span>Пошук і дії <Kbd>{withMod("K")}</Kbd></span>}>
-          <Button variant="outline" size="icon" className="size-9 rounded-xl bg-card shadow-none" aria-label="Пошук і дії" onClick={() => setPaletteOpen(true)}>
+        <Tip tip={<span>Search and actions <Kbd>{withMod("K")}</Kbd></span>}>
+          <Button variant="outline" size="icon" className="size-9 rounded-xl bg-card shadow-none" aria-label="Search and actions" onClick={() => setPaletteOpen(true)}>
             <SearchIcon className="size-4" />
           </Button>
         </Tip>
       </div>
       {rooms.length ? (
-        <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Які кімнати показати">
+        <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Which rooms to show">
           {FILTERS.map(({ id, label }) => {
             const count = counts[id];
             const active = filter === id;
@@ -328,7 +326,7 @@ export function Sidebar() {
                 onClick={() => setFilter(id)}
                 className={cn(
                   "inline-flex h-6.5 items-center gap-1 rounded-full px-2 text-meta font-medium transition",
-                  active ? "bg-card text-foreground shadow-edge ring-1 ring-border" : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground",
+                  active ? "bg-foreground/[0.07] text-foreground" : "text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground",
                 )}
               >
                 {label}
@@ -342,12 +340,12 @@ export function Sidebar() {
       ) : null}
       <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-3">
         {!rooms.length ? (
-          <p className="px-3 py-2 text-small text-muted-foreground">Кімнат ще немає.</p>
+          <p className="px-3 py-2 text-small text-muted-foreground">No rooms yet.</p>
         ) : !shown.length ? (
           <p className="px-3 py-2 text-small text-muted-foreground">
-            {filter === "waiting" ? "Жодна кімната не чекає на вас." : "Зараз ніхто не працює."}{" "}
-            <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => setFilter("all")}>
-              Показати всі
+            {filter === "waiting" ? "No room is waiting for you." : "No one is working right now."}{" "}
+            <button type="button" className="font-medium text-foreground underline underline-offset-2" onClick={() => setFilter("all")}>
+              Show all
             </button>
           </p>
         ) : grouped ? (
@@ -365,7 +363,7 @@ export function Sidebar() {
         )}
       </div>
       <div className="flex items-center gap-1 border-t border-border/70 px-2 py-2">
-        <Tip tip={`Налаштування · ${keyLabel("settings")}`}>
+        <Tip tip={`Settings · ${keyLabel("settings")}`}>
           <Button
             variant="ghost"
             size="sm"
@@ -374,26 +372,26 @@ export function Sidebar() {
             onClick={() => go({ kind: "settings", section: "general" })}
           >
             <Settings2Icon className="size-4" />
-            Налаштування
+            Settings
           </Button>
         </Tip>
-        <Tip tip="Як це працює">
-          <Button variant="ghost" size="icon" className="ml-auto size-8 text-muted-foreground" aria-label="Як це працює" onClick={() => openDialog({ kind: "help" })}>
+        <Tip tip="How it works">
+          <Button variant="ghost" size="icon" className="ml-auto size-8 text-muted-foreground" aria-label="How it works" onClick={() => openDialog({ kind: "help" })}>
             <CircleHelpIcon className="size-4" />
           </Button>
         </Tip>
-        <Tip tip={device ? "Цей пристрій" : "Відкрити на телефоні"}>
+        <Tip tip={device ? "This device" : "Open on phone"}>
           <Button
             variant="ghost"
             size="icon"
             className="size-8 text-muted-foreground"
-            aria-label={device ? "Цей пристрій" : "Відкрити на телефоні"}
+            aria-label={device ? "This device" : "Open on phone"}
             onClick={() => openDialog({ kind: "phone" })}
           >
             <SmartphoneIcon className="size-4" />
           </Button>
         </Tip>
-        <Tip tip={`${THEME_LABEL[pref]} — натисніть, щоб змінити`}>
+        <Tip tip={`${THEME_LABEL[pref]} — click to change`}>
           <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" aria-label={THEME_LABEL[pref]} onClick={cycle}>
             <ThemeIcon className="size-4" />
           </Button>

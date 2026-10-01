@@ -159,7 +159,7 @@ function AgentTabs({ agents, current }: { agents: RoomAgent[]; current: string }
   const presence = useStore((s) => s.snap?.presence);
   const room = useStore((s) => s.snap?.state);
   return (
-    <div role="tablist" aria-label="Чия сесія" className="scroll-thin flex gap-1 overflow-x-auto">
+    <div role="tablist" aria-label="Whose session" className="scroll-thin flex gap-1 overflow-x-auto">
       {agents.map((a) => {
         const on = a.id === current;
         const now = presence?.[a.id] ?? "idle";
@@ -194,7 +194,7 @@ function ResumeLine({ command }: { command: string }) {
       <code ref={code} className="scroll-thin min-w-0 flex-1 overflow-x-auto font-mono text-meta whitespace-nowrap">
         {command}
       </code>
-      <Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Копіювати команду" title="Копіювати" onClick={() => void copyText(command, code.current)}>
+      <Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Copy command" title="Copy" onClick={() => void copyText(command, code.current)}>
         <CopyIcon className="size-3.5" />
       </Button>
     </div>
@@ -254,11 +254,11 @@ function Images({ images }: { images: TranscriptImage[] }) {
       {images.map((img, i) =>
         img.src ? (
           <a key={i} href={img.src} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-lg border border-border">
-            <img src={img.src} alt={img.path ?? "зображення"} className="max-h-40 max-w-full object-contain" />
+            <img src={img.src} alt={img.path ?? "image"} className="max-h-40 max-w-full object-contain" />
           </a>
         ) : (
           <span key={i} className="rounded-md border border-border px-2 py-1 font-mono text-meta text-muted-foreground">
-            {img.path ?? "зображення"}
+            {img.path ?? "image"}
           </span>
         ),
       )}
@@ -285,7 +285,7 @@ function Todos({ todos }: { todos: TranscriptTodo[] }) {
 function Block({ label, text, fail }: { label: string; text: string; fail?: boolean }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-micro font-medium tracking-wide text-faint uppercase">{label}</span>
+      <span className="text-meta font-medium text-faint">{label}</span>
       <pre
         className={cn(
           "scroll-thin max-h-72 overflow-auto rounded-lg border border-border bg-code px-2.5 py-2 font-mono text-meta leading-[1.55] whitespace-pre-wrap break-words",
@@ -355,8 +355,8 @@ function ToolEntry({ e }: { e: TranscriptTool }) {
       ) : null}
       {open ? (
         <div className="flex flex-col gap-2 pl-[26px]">
-          {e.input ? <Block label="Вхід" text={e.input} /> : null}
-          {e.output ? <Block label={fail ? "Помилка" : "Вихід"} text={e.output} fail={fail} /> : null}
+          {e.input ? <Block label="Input" text={e.input} /> : null}
+          {e.output ? <Block label={fail ? "Error" : "Output"} text={e.output} fail={fail} /> : null}
         </div>
       ) : null}
       {e.images?.length ? (
@@ -388,15 +388,15 @@ function Collapsed({ text, label, icon: Icon, italic }: { text: string; label: s
 }
 
 const SYSTEM: Record<Extract<TranscriptEntry, { kind: "system" }>["code"], { label: string; icon: LucideIcon }> = {
-  compacted: { label: "Контекст стиснуто", icon: MinimizeIcon },
-  interrupted: { label: "Перервано", icon: BanIcon },
-  error: { label: "Помилка", icon: AlertTriangleIcon },
+  compacted: { label: "Context compacted", icon: MinimizeIcon },
+  interrupted: { label: "Interrupted", icon: BanIcon },
+  error: { label: "Error", icon: AlertTriangleIcon },
 };
 
 const Entry = memo(function Entry({ e, human }: { e: TranscriptEntry; human: string }) {
   switch (e.kind) {
     case "user":
-      if (e.agoryx) return <Collapsed text={e.text} label="Хід від Agoryx" icon={CircleDashedIcon} />;
+      if (e.agoryx) return <Collapsed text={e.text} label="Turn from Agoryx" icon={CircleDashedIcon} />;
       return (
         <div className="flex flex-col items-end gap-1.5">
           <span className="text-micro text-faint" title={e.at ? fullDate(e.at) : undefined}>
@@ -410,7 +410,7 @@ const Entry = memo(function Entry({ e, human }: { e: TranscriptEntry; human: str
       if (e.pass) {
         return (
           <span className="text-small text-faint">
-            пропускає хід{e.text ? ` — ${e.text}` : " — нема що додати"}
+            passes{e.text ? ` — ${e.text}` : " — nothing to add"}
           </span>
         );
       }
@@ -420,7 +420,7 @@ const Entry = memo(function Entry({ e, human }: { e: TranscriptEntry; human: str
         </div>
       );
     case "thinking":
-      return <Collapsed text={e.text} label="Думає" icon={BrainIcon} italic />;
+      return <Collapsed text={e.text} label="Thinking" icon={BrainIcon} italic />;
     case "tool":
       return <ToolEntry e={e} />;
     case "system": {
@@ -483,20 +483,20 @@ function Transcript({ roomId, agent, sessionId, human }: { roomId: string; agent
   } else if (view.error && !view.entries.length) {
     body = <ErrorNote className="m-4">{view.error}</ErrorNote>;
   } else if (!view.sessionId) {
-    body = <Empty>У {agent.label} ще не було ходу в цій кімнаті — сесія з'явиться після першого.</Empty>;
+    body = <Empty>{agent.label} hasn’t had a turn in this room yet — the session appears after the first one.</Empty>;
   } else if (!view.file) {
-    body = <Empty>Файл сесії не знайдено на цьому комп'ютері: CLI зберігає сесії деінде або вже прибрав її.</Empty>;
+    body = <Empty>The session file isn’t on this computer: the CLI keeps sessions elsewhere or has already removed it.</Empty>;
   } else if (!view.entries.length) {
-    body = <Empty>У сесії поки нічого немає.</Empty>;
+    body = <Empty>Nothing in the session yet.</Empty>;
   } else {
     body = (
       <div className="flex flex-col gap-4 px-4 pt-3 pb-6">
         {view.start > 0 ? (
           <Button variant="ghost" size="sm" className="self-center text-muted-foreground" disabled={view.older} onClick={older}>
-            {view.older ? "Завантажую…" : "Показати раніше"}
+            {view.older ? "Loading…" : "Show earlier"}
           </Button>
         ) : (
-          <span className="self-center text-meta text-faint">Початок сесії</span>
+          <span className="self-center text-meta text-faint">Start of session</span>
         )}
         {view.entries.map((e) => (
           <Entry key={e.id} e={e} human={human} />
@@ -504,7 +504,7 @@ function Transcript({ roomId, agent, sessionId, human }: { roomId: string; agent
         {running === "working" || running === "native" ? (
           <span className="flex items-center gap-2 text-meta text-primary">
             <span className="size-1.5 animate-pulse rounded-full bg-primary" />
-            {running === "native" ? "Розмова напряму в сесії" : "Хід триває"}
+            {running === "native" ? "Talking directly in the session" : "Turn in progress"}
           </span>
         ) : null}
       </div>
@@ -535,7 +535,7 @@ export function SessionPanel() {
   if (!snap) return null;
   const st = snap.state;
   const agent = st.agents.find((a) => a.id === chosen) ?? st.agents[0];
-  if (!agent) return <Empty>У кімнаті немає агентів.</Empty>;
+  if (!agent) return <Empty>The room has no agents.</Empty>;
   const session = st.sessions[agent.id];
   const command = snap.resume?.[agent.id];
   return (
@@ -555,14 +555,14 @@ export function SessionPanel() {
             onSet={(change) => void post("/agent", { agent: agent.id, ...change }).catch((error) => !(error instanceof Unauthorized) && toast.error(errText(error)))}
             onManage={() => useStore.getState().openDialog({ kind: "agents", agent: agent.id })}
           />
-          <Tip tip="Зміна діє з наступного ходу: жива сесія перезапускається з новою моделлю, розмова в ній та сама.">
-            <span className="text-meta text-faint">з наступного ходу</span>
+          <Tip tip="The change applies from the next turn: the live session restarts with the new model, and the conversation in it stays the same.">
+            <span className="text-meta text-faint">from the next turn</span>
           </Tip>
         </div>
         {command ? <ResumeLine command={command} /> : null}
         {session ? (
           <span className="truncate text-meta text-faint" title={session.sessionId}>
-            сесія <span className="font-mono">{session.sessionId}</span>
+            session <span className="font-mono">{session.sessionId}</span>
           </span>
         ) : null}
       </div>

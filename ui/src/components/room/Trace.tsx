@@ -92,10 +92,10 @@ const chip =
   "inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg border border-border bg-card px-2 text-xs text-muted-foreground transition hover:border-input hover:bg-accent hover:text-foreground";
 
 const CARD_KIND: Array<[Set<string>, LucideIcon, string]> = [
-  [TABLE_EXT, Table2Icon, "Таблиця"],
-  [DIAGRAM_EXT, NetworkIcon, "Діаграма"],
+  [TABLE_EXT, Table2Icon, "Table"],
+  [DIAGRAM_EXT, NetworkIcon, "Diagram"],
   [new Set(["pdf"]), FileTextIcon, "PDF"],
-  [new Set(["html", "htm"]), AppWindowIcon, "Сторінка"],
+  [new Set(["html", "htm"]), AppWindowIcon, "Page"],
 ];
 
 /**
@@ -156,7 +156,7 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
             </span>
             <span className="min-w-0">
               <span className="block truncate font-mono text-meta text-foreground">{baseName(f)}</span>
-              <span className="block text-micro text-muted-foreground">{label} · відкрити</span>
+              <span className="block text-micro text-muted-foreground">{label} · open</span>
             </span>
           </button>
         );
@@ -167,7 +167,7 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
           onClick={() => setMore(true)}
           className="flex h-12 items-center rounded-xl border border-dashed border-border px-3 text-meta text-muted-foreground transition hover:border-input hover:bg-accent hover:text-foreground"
         >
-          ще {files.length - shown.length}
+          {files.length - shown.length} more
         </button>
       ) : null}
     </div>
@@ -198,15 +198,15 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
       {turn ? <Made turn={turn} text={text} compact={compact} /> : null}
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5 first:mt-0">
         {acts && turn ? (
-          <Tip tip="Що агент робив цей хід — у панелі «Зміни»">
+          <Tip tip="What the agent did this turn, in the Changes panel">
             <button type="button" className={cn(chip, shown?.acts && "bg-accent text-foreground")} onClick={() => openChanges({ scope: "turn", turn: turn.id, acts: true })}>
               <ListIcon className="size-3.5" />
-              {plural(acts, "дія", "дії", "дій")}
+              {plural(acts, "action", "actions")}
             </button>
           </Tip>
         ) : null}
         {shownDocs.map((r) => (
-          <Tip key={r.seq} tip="Правка спільного документа — показати, що змінилося">
+          <Tip key={r.seq} tip="Edit to the shared document — show what changed">
             <button type="button" className={cn(chip, "border-primary/25")} onClick={() => openDocRevision(r.seq)}>
               <FileTextIcon className="size-3.5 text-primary" />
               <span className="truncate">{baseName(r.path)}</span>
@@ -219,7 +219,7 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
           return (
             <Tip
               key={c.path}
-              tip={`Що саме цей хід змінив у ${c.path}${alongside.length ? ` — тим часом цей файл редагували й інші: ${alongside.join(", ")}, тож зміна не лише цього ходу` : ""}`}
+              tip={`What this turn changed in ${c.path}${alongside.length ? ` — ${alongside.join(", ")} also edited this file meanwhile, so the change isn’t only this turn’s` : ""}`}
             >
               <button
                 type="button"
@@ -242,7 +242,7 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
         ))}
         {hidden > 0 ? (
           <button type="button" className={cn(chip, "text-primary")} onClick={() => setAll(true)}>
-            +{plural(hidden, "файл", "файли", "файлів")}
+            +{plural(hidden, "file", "files")}
           </button>
         ) : null}
       </div>

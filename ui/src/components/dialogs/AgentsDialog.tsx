@@ -30,7 +30,7 @@ export function AgentsDialog({ focus }: { focus?: string }) {
   if (!room) return null;
   return (
     <Shell
-      title="Агенти кімнати"
+      title="The room's agents"
       sub={room.name}
       // Not into the first name field, where a keystroke would rename the agent: to the role of the agent asked for, or nowhere.
       onOpenAutoFocus={(event) => {
@@ -40,7 +40,7 @@ export function AgentsDialog({ focus }: { focus?: string }) {
       }}
     >
       <Hint>
-        Змінене тут діє з наступного ходу агента, і кімната про це дізнається. Роль — ваші слова для агента: що йому робити в цій кімнаті.
+        A change here applies from the agent's next turn, and the room is told about it. A role is your words to the agent: what it should do in this room.
       </Hint>
       <div className="flex flex-col gap-3">
         {room.agents.map((agent) => (
@@ -112,13 +112,13 @@ function AgentCard({
         ...(label.trim() !== agent.label ? { label: label.trim() } : {}),
         ...(role.trim() !== (agent.role ?? "") ? { role: role.trim() || null } : {}),
       },
-      "Збережено",
+      "Saved",
     );
   const remove = async () => {
     setBusy(true);
     try {
       await post("/agent-remove", { agent: agent.id });
-      toast.success(`${agent.label} вийшов з кімнати`);
+      toast.success(`${agent.label} left the room`);
     } catch (error) {
       fail(error);
       setBusy(false);
@@ -133,16 +133,16 @@ function AgentCard({
           <span className="truncate text-ui font-medium">{agent.label}</span>
           <span className="truncate text-meta text-muted-foreground">
             @{agent.id} · {KIND_NAME[agent.kind]}
-            {working ? " · працює" : ""}
+            {working ? " · working" : ""}
           </span>
         </div>
         {leaving ? (
           <div className="flex shrink-0 items-center gap-1">
             <Button variant="ghost" size="sm" onClick={() => setLeaving(false)} disabled={busy}>
-              Ні
+              No
             </Button>
             <Button variant="destructive" size="sm" onClick={() => void remove()} disabled={busy}>
-              {working ? "Зупинити й прибрати" : "Прибрати"}
+              {working ? "Stop and remove" : "Remove"}
             </Button>
           </div>
         ) : (
@@ -151,8 +151,8 @@ function AgentCard({
             size="icon"
             className="size-8 shrink-0 text-muted-foreground"
             disabled={disabled || alone || busy}
-            aria-label={`Прибрати ${agent.label} з кімнати`}
-            title={alone ? "У кімнаті має лишитися хоч один агент" : `Прибрати ${agent.label} з кімнати`}
+            aria-label={`Remove ${agent.label} from the room`}
+            title={alone ? "A room needs at least one agent" : `Remove ${agent.label} from the room`}
             onClick={() => setLeaving(true)}
           >
             <UserMinusIcon className="size-4" />
@@ -161,8 +161,8 @@ function AgentCard({
       </div>
       {leaving ? (
         <Hint>
-          {working ? `${agent.label} зараз працює — його хід буде зупинено. ` : ""}
-          Його повідомлення лишаться в кімнаті. Повернути можна будь-коли з тим самим @{agent.id}: він продовжить свою сесію.
+          {working ? `${agent.label} is working now — its turn will be stopped. ` : ""}
+          Its messages stay in the room. You can bring it back any time as the same @{agent.id}: it continues its own session.
         </Hint>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
@@ -170,7 +170,7 @@ function AgentCard({
           value={label}
           onChange={(event) => setLabel(event.target.value)}
           maxLength={40}
-          aria-label={`Ім'я ${agent.label}`}
+          aria-label={`Name of ${agent.label}`}
           disabled={disabled}
           className="h-8 w-full text-small sm:w-44"
         />
@@ -185,9 +185,9 @@ function AgentCard({
           working={working}
           onSet={(change) => void send(change)}
         />
-        <label className="ml-auto flex items-center gap-2 text-small text-muted-foreground" title="Чи отримує цей агент ваш профіль">
-          Профіль
-          <Switch checked={agent.profile !== false} disabled={disabled || busy} onCheckedChange={(on) => void send({ profile: on })} aria-label={`Профіль для ${agent.label}`} />
+        <label className="ml-auto flex items-center gap-2 text-small text-muted-foreground" title="Whether this agent gets your profile">
+          Profile
+          <Switch checked={agent.profile !== false} disabled={disabled || busy} onCheckedChange={(on) => void send({ profile: on })} aria-label={`Profile for ${agent.label}`} />
         </label>
       </div>
       <RoleField id={`role-${agent.id}`} value={role} onChange={setRole} name={agent.label} />
@@ -201,10 +201,10 @@ function AgentCard({
               setRole(agent.role ?? "");
             }}
           >
-            Скасувати
+            Cancel
           </Button>
           <Button size="sm" onClick={save} disabled={disabled || busy || !label.trim() || role.length > MAX_ROLE}>
-            Зберегти
+            Save
           </Button>
         </div>
       ) : null}
@@ -236,7 +236,7 @@ function AddAgent({ room, models, disabled }: { room: RoomState; models: AgentMo
           ...(role.trim() ? { role: role.trim() } : kept ? { role: kept } : {}),
         },
       });
-      toast.success(`${name} у кімнаті`);
+      toast.success(`${name} is in the room`);
       setModel("");
       setRole("");
     } catch (error) {
@@ -253,7 +253,7 @@ function AddAgent({ room, models, disabled }: { room: RoomState; models: AgentMo
         void add();
       }}
     >
-      <Label>Додати агента</Label>
+      <Label>Add an agent</Label>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <Select
           value={kind}
@@ -262,7 +262,7 @@ function AddAgent({ room, models, disabled }: { room: RoomState; models: AgentMo
             setModel("");
           }}
         >
-          <SelectTrigger className="w-full sm:w-40" aria-label="Який CLI">
+          <SelectTrigger className="w-full sm:w-40" aria-label="Which CLI">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -271,11 +271,11 @@ function AddAgent({ room, models, disabled }: { room: RoomState; models: AgentMo
           </SelectContent>
         </Select>
         <Select value={model || "default"} onValueChange={(value) => setModel(value === "default" ? "" : value)}>
-          <SelectTrigger className="w-full sm:flex-1" aria-label="Модель">
+          <SelectTrigger className="w-full sm:flex-1" aria-label="Model">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="default">Типова модель CLI</SelectItem>
+            <SelectItem value="default">The CLI's default model</SelectItem>
             {(models?.[kind]?.models ?? []).map((m) => (
               <SelectItem key={m.id} value={m.id}>
                 {m.label}
@@ -288,12 +288,12 @@ function AddAgent({ room, models, disabled }: { room: RoomState; models: AgentMo
       <div className="flex items-center gap-3">
         <Hint className="min-w-0 flex-1">
           {back
-            ? `Повернеться ${name} (@${back.id}) і продовжить свою сесію з того місця, де вийшов${kept ? ", з тією самою роллю" : ""}.`
-            : `Сяде «${name}» (@${handleFor(name)}). Прочитає розмову й відповідатиме з наступного повідомлення.`}
+            ? `${name} (@${back.id}) comes back and continues its session where it left off${kept ? ", with the same role" : ""}.`
+            : `“${name}” (@${handleFor(name)}) takes a seat. It reads the conversation and answers from the next message.`}
         </Hint>
         <Button type="submit" variant="outline" className="shrink-0 gap-1.5" disabled={disabled || busy || role.length > MAX_ROLE}>
           <PlusIcon className="size-4" />
-          Додати
+          Add
         </Button>
       </div>
     </form>

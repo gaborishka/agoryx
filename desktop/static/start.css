@@ -1,54 +1,60 @@
 /*
- * The start page wears the room UI's colours (ui/src/index.css): stone ground, olive-sage ink,
- * amber for a warning, fired clay for a failure. System fonts: the UI's own ship inside its bundle.
+ * The start page wears the room UI's colours (ui/src/index.css): ink on porcelain, the mark's voices,
+ * laurel for a pass, amber for a warning, clay for a failure. System fonts: the UI's own ship inside its bundle.
  */
 :root {
   color-scheme: light;
-  --background: #f3f4ef;
-  --foreground: #1b211d;
+  --background: #f6f5f8;
+  --foreground: #1e1a26;
   --card: #ffffff;
-  --primary: #2e5a48;
-  --primary-foreground: #ffffff;
-  --muted-foreground: #5d675f;
-  --faint: #8c948d;
-  --accent: #e3e9e1;
-  --border: #dde1d7;
-  --input: #d3d8cd;
-  --ring: #2e5a48;
-  --code: #f5f6f1;
-  --ok: #2e5a48;
-  --ok-soft: #e2ebe4;
-  --amber: #b9851f;
+  --primary: #241e2f;
+  --primary-foreground: #fbfaff;
+  --muted-foreground: #615b6d;
+  --faint: #928c9e;
+  --accent: #ebe8f0;
+  --border: #e3e0e9;
+  --input: #d7d3df;
+  --ring: #5a4b80;
+  --code: #f4f3f7;
+  --ok: #3d8a4b;
+  --ok-soft: #e7f2e8;
+  --amber: #b97f0e;
   --amber-soft: #fbf3df;
-  --destructive: #b4533a;
-  --destructive-soft: #fbefea;
-  --shadow-soft: 0 1px 2px rgb(30 40 30 / 0.05), 0 8px 24px rgb(30 40 30 / 0.06);
-  --radius: 0.7rem;
-  --font-sans: "Onest Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+  --destructive: #b8452e;
+  --destructive-soft: #fbece7;
+  --clay: #b44f29;
+  --water: #2670a6;
+  --meet: #84306c;
+  --shadow-soft: 0 1px 2px rgb(36 26 50 / 0.05), 0 10px 28px -6px rgb(36 26 50 / 0.08);
+  --radius: 0.75rem;
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --background: #111411;
-    --foreground: #e7ebe5;
-    --card: #181c18;
-    --primary: #86c0a2;
-    --primary-foreground: #0e1a13;
-    --muted-foreground: #a0a9a1;
-    --faint: #6f7870;
-    --accent: #222922;
-    --border: #283028;
-    --input: #323b32;
-    --ring: #86c0a2;
-    --code: #131713;
-    --ok: #86c0a2;
-    --ok-soft: #1b2a21;
+    --background: #15131c;
+    --foreground: #ece9f2;
+    --card: #1c1a25;
+    --primary: #ece9f2;
+    --primary-foreground: #17141f;
+    --muted-foreground: #a7a1b4;
+    --faint: #756f82;
+    --accent: #26232f;
+    --border: #2a2634;
+    --input: #37323f;
+    --ring: #a595d4;
+    --code: #17151e;
+    --ok: #7fcb8a;
+    --ok-soft: #1a2a1f;
     --amber: #e0ae4e;
     --amber-soft: #2a2415;
-    --destructive: #f08f74;
-    --destructive-soft: #2d1d17;
+    --destructive: #f0876b;
+    --destructive-soft: #2e1b18;
+    --clay: #ee8a5e;
+    --water: #5caee0;
+    --meet: #e7a3d1;
     --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
   }
 }
@@ -102,8 +108,11 @@ body {
   width: 30px;
   height: 30px;
   margin-top: 1px;
-  fill: var(--primary);
 }
+.mark .l { fill: var(--clay); }
+.mark .r { fill: var(--water); }
+.mark .m { fill: var(--meet); }
+.mark .d { fill: var(--ok); }
 
 .head-text {
   min-width: 0;

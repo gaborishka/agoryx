@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Palette } from "@/components/Palette";
 import { SidePanel, warmPanels } from "@/components/panel/SidePanel";
-import { AgoraGlyph } from "@/components/room/bits";
+import { Mark } from "@/components/brand/Mark";
 import { Composer, StatusBar } from "@/components/room/Composer";
 import { Feed } from "@/components/room/Feed";
 import { RoomHeader } from "@/components/room/RoomHeader";
@@ -39,10 +39,8 @@ function Notice({ title, children }: { title: string; children: React.ReactNode 
   return (
     <div className="grid min-h-full place-items-center bg-background px-4">
       <div className="flex max-w-md flex-col items-center gap-4 text-center">
-        <span className="grid size-12 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-soft">
-          <AgoraGlyph className="size-6" />
-        </span>
-        <h1 className="font-serif text-2xl font-semibold tracking-tight">{title}</h1>
+        <Mark className="size-14" />
+        <h1 className="font-display text-[28px] leading-tight font-[650]">{title}</h1>
         <div className="flex flex-col gap-3 text-body leading-relaxed text-muted-foreground">{children}</div>
       </div>
     </div>
@@ -68,21 +66,21 @@ function PairForm() {
   return (
     <>
       <p>
-        Цей пристрій ще не під'єднано. На комп'ютері виконайте <code className="font-mono text-foreground">agoryx pair</code> або відкрийте «Відкрити на телефоні», а тоді скануйте QR-код чи введіть код тут.
+        This device isn’t paired yet. On your computer, run <code className="font-mono text-foreground">agoryx pair</code> or choose “Open on phone”, then scan the QR code or enter the code here.
       </p>
       <form onSubmit={submit} className="flex w-full gap-2">
         <Input
           value={code}
           onChange={(e) => setCode(e.target.value)}
           placeholder="ABCD-EFGH"
-          aria-label="Код з комп'ютера"
+          aria-label="Code from your computer"
           autoCapitalize="characters"
           autoComplete="one-time-code"
           spellCheck={false}
           className="h-10 flex-1 text-center font-mono tracking-widest uppercase"
         />
         <Button type="submit" className="h-10" disabled={busy || code.replace(/[^0-9a-z]/gi, "").length < 8}>
-          Увійти
+          Sign in
         </Button>
       </form>
       {pairError ? <p className="text-small text-destructive">{pairError}</p> : null}
@@ -147,7 +145,7 @@ function Shell() {
         </div>
       ) : navOpen ? (
         <>
-          <button type="button" aria-label="Закрити меню" className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px]" onClick={() => setNavOpen(false)} />
+          <button type="button" aria-label="Close menu" className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px]" onClick={() => setNavOpen(false)} />
           <div className="fixed inset-y-0 left-0 z-50 w-[min(300px,86vw)] shadow-lift">
             <Sidebar />
           </div>
@@ -189,10 +187,10 @@ export function App() {
   let body;
   if (gate) {
     body = (
-      <Notice title="Потрібен вхід">
+      <Notice title="Sign-in required">
         {onThisComputer() ? (
           <>
-            <p>Цей браузер ще не має доступу до демона Agoryx. Відкрийте посилання з токеном командою:</p>
+            <p>This browser doesn’t have access to the Agoryx daemon yet. Open the link with a token by running:</p>
             <Cmd>agoryx open</Cmd>
           </>
         ) : (
@@ -202,8 +200,8 @@ export function App() {
     );
   } else if (bootError) {
     body = (
-      <Notice title="Демон не відповідає">
-        <p>Не вдалося отримати список кімнат ({bootError}). Запустіть демон:</p>
+      <Notice title="The daemon isn’t responding">
+        <p>Couldn’t load the list of rooms ({bootError}). Start the daemon:</p>
         <Cmd>agoryx up -d</Cmd>
       </Notice>
     );

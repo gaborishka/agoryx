@@ -8,11 +8,11 @@ export const MAX_ROLE = 2_000;
 
 /** Roles to start from: a click fills the field, the words stay the human's to change. */
 export const ROLE_IDEAS: Array<{ name: string; text: string }> = [
-  { name: "Рецензент", text: "Рецензент: шукай помилки, ризики й пропущені випадки в тому, що роблять інші. Код не пиши — лише вказуй, де і чому." },
-  { name: "Виконавець", text: "Виконавець: пиши й запускай код. Менше обговорень — більше зробленого, і кажи, які файли змінив." },
-  { name: "Тестувальник", text: "Тестувальник: пиши й запускай тести до того, що роблять інші, і кажи, що впало." },
-  { name: "Критик", text: "Опонент: шукай найсильніші аргументи проти запропонованого. Погоджуйся, лише коли заперечень справді не лишилось." },
-  { name: "Дослідник", text: "Дослідник: читай код, документацію й джерела, приноси факти з посиланнями. Рішень не ухвалюй." },
+  { name: "Reviewer", text: "Reviewer: look for bugs, risks and missed cases in what the others do. Do not write code — say where and why." },
+  { name: "Implementer", text: "Implementer: write and run the code. Less talk, more done — and say which files you changed." },
+  { name: "Tester", text: "Tester: write and run tests for what the others do, and say what failed." },
+  { name: "Critic", text: "Critic: find the strongest arguments against what is proposed. Agree only when no objection is really left." },
+  { name: "Researcher", text: "Researcher: read the code, the docs and the sources, and bring facts with links. Do not make the decisions." },
 ];
 
 /**
@@ -51,26 +51,3 @@ export const rosterEntry = ({ id, kind, label, model, effort, profile, role }: R
   ...(profile === false ? { profile } : {}),
   ...(role ? { role } : {}),
 });
-
-/**
- * A model as a person reads it: the catalogue's name, else the id made readable —
- * "claude-opus-5-5" → "Opus 5.5", "gpt-5.6" → "GPT-5.6".
- */
-export const modelName = (kind: AgentKind, model: string | undefined, models: AgentModels | null): string | undefined => {
-  if (!model) return undefined;
-  const known = models?.[kind]?.models.find((m) => m.id === model)?.label;
-  if (known) return known;
-  if (/^gpt-/i.test(model)) return `GPT-${model.slice(4)}`;
-  const parts = model.replace(/^claude-/i, "").split("-");
-  const words = parts.filter((part) => !/^\d+$/.test(part)).map((part) => part.charAt(0).toUpperCase() + part.slice(1));
-  const version = parts.filter((part) => /^\d+$/.test(part) && part.length < 4).join(".");
-  return [...words, version].filter(Boolean).join(" ") || model;
-};
-
-/** What the name does not already say about the model: nothing for "Claude Opus" on Opus 5.5, "Opus 5.5" for plain "Claude". */
-export const modelBeyondName = (agent: RoomAgent, models: AgentModels | null): string | undefined => {
-  const name = modelName(agent.kind, agent.model, models);
-  if (!name) return undefined;
-  const first = name.split(/[\s-]/)[0]!.toLowerCase();
-  return agent.label.toLowerCase().includes(first) ? undefined : name;
-};

@@ -63,11 +63,11 @@ export const KIND_TONE: Record<TableOp["op"], string> = {
   support: "text-add-ink",
   evidence: "text-codex",
   fact: "text-fact",
-  settle: "text-meet",
+  settle: "text-meet-ink",
   next: "text-muted-foreground",
   done: "text-add-ink",
   withdraw: "text-muted-foreground",
-  decide: "text-meet",
+  decide: "text-meet-ink",
   reopen: "text-amber",
   concede: "text-shift",
 };
@@ -254,7 +254,7 @@ export function OpCard({ o }: { o: TableOp }) {
             <RefChip id={q.id} />
             <span className="ml-auto text-meta text-muted-foreground">
               {decision ? (
-                <span className="font-medium text-meet">Decided: {decision.option}</span>
+                <span className="font-medium text-meet-ink">Decided: {decision.option}</span>
               ) : answer ? (
                 <span className="font-medium text-primary">Answered: {answer}</span>
               ) : options.length ? plural(options.length, "option", "options") : "waiting for options"}

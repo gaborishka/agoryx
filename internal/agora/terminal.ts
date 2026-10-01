@@ -280,7 +280,7 @@ export class TerminalHub {
     }
   }
 
-  /** Type a command into a terminal, as if the human did (the session panel's «Продовжити в терміналі»). */
+  /** Type a command into a terminal, as if the human did (the session panel's "Continue in a terminal"). */
   write(room: string, id: string, text: string): void {
     const terminal = this.get(room, id);
     if (!terminal.pty) throw new TerminalError("this terminal's shell has ended", 409);

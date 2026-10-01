@@ -130,7 +130,7 @@ export function FolderBar({
       <div className="flex flex-wrap items-center gap-2">
         <DropdownMenu>
           <Tip
-            tip={folder ? folder : "Agoryx створить нову git-теку в ~/agoryx"}
+            tip={folder ? folder : "Agoryx will create a new git folder in ~/agoryx"}
           >
             <DropdownMenuTrigger className={cn(chip, "max-w-[260px]")}>
               {folder ? (
@@ -143,7 +143,7 @@ export function FolderBar({
                 <FolderPlusIcon className="size-4 shrink-0" />
               )}
               <span className="truncate font-medium text-foreground">
-                {folder ? baseName(folder) : "Нова тека"}
+                {folder ? baseName(folder) : "New folder"}
               </span>
               <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
             </DropdownMenuTrigger>
@@ -155,9 +155,9 @@ export function FolderBar({
             >
               <FolderPlusIcon className="mt-0.5" />
               <span className="flex min-w-0 flex-1 flex-col">
-                Нова тека
+                New folder
                 <small className="text-xs text-muted-foreground">
-                  Порожня git-тека в ~/agoryx
+                  An empty git folder in ~/agoryx
                 </small>
               </span>
               {!folder ? <CheckIcon className="mt-0.5 text-primary" /> : null}
@@ -166,7 +166,7 @@ export function FolderBar({
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                  Нещодавні
+                  Recent
                 </DropdownMenuLabel>
                 {list.map((r) => (
                   <DropdownMenuItem
@@ -194,7 +194,7 @@ export function FolderBar({
               className="gap-2.5"
             >
               <FolderOpenIcon />
-              Відкрити теку…
+              Open folder…
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -229,7 +229,7 @@ export function FolderBar({
                         <span className="truncate">{b}</span>
                         {b === git.branch ? (
                           <span className="ml-auto pl-2 font-sans text-micro text-faint">
-                            поточна
+                            current
                           </span>
                         ) : null}
                       </DropdownMenuRadioItem>
@@ -241,8 +241,8 @@ export function FolderBar({
               <Tip
                 tip={
                   git.branch
-                    ? `Агенти працюють прямо в цій теці, на гілці ${git.branch}`
-                    : "HEAD від'єднаний від гілки"
+                    ? `Agents work right in this folder, on branch ${git.branch}`
+                    : "HEAD is detached from any branch"
                 }
               >
                 <span className="inline-flex h-full min-w-0 items-center gap-1.5 pr-2 pl-2.5">
@@ -349,9 +349,9 @@ export function FolderDialog({
         }}
       >
         <DialogHeader>
-          <DialogTitle>Тека для кімнати</DialogTitle>
+          <DialogTitle>Folder for the room</DialogTitle>
           <DialogDescription>
-            Агенти працюватимуть у ній.
+            Agents will work in it.
           </DialogDescription>
         </DialogHeader>
         <form
@@ -361,7 +361,7 @@ export function FolderDialog({
             void go(input);
           }}
         >
-          <Tip tip="Рівнем вище">
+          <Tip tip="Up one level">
             <Button
               type="button"
               variant="outline"
@@ -369,19 +369,19 @@ export function FolderDialog({
               className="size-9 shrink-0"
               disabled={!data?.parent}
               onClick={() => data?.parent && void go(data.parent)}
-              aria-label="Рівнем вище"
+              aria-label="Up one level"
             >
               <CornerLeftUpIcon className="size-4" />
             </Button>
           </Tip>
-          <Tip tip="Домашня тека">
+          <Tip tip="Home folder">
             <Button
               type="button"
               variant="outline"
               size="icon"
               className="size-9 shrink-0"
               onClick={() => void go("~")}
-              aria-label="Домашня тека"
+              aria-label="Home folder"
             >
               <HomeIcon className="size-4" />
             </Button>
@@ -392,7 +392,7 @@ export function FolderDialog({
             onChange={(e) => setInput(e.target.value)}
             spellCheck={false}
             className="h-9 font-mono text-small"
-            aria-label="Шлях"
+            aria-label="Path"
           />
         </form>
         {error ? <p className="text-small text-destructive">{error}</p> : null}
@@ -400,14 +400,14 @@ export function FolderDialog({
           <div className="flex items-center gap-2 rounded-lg bg-secondary/70 px-3 py-2 text-small text-secondary-foreground">
             <FolderGit2Icon className="size-4 shrink-0" />
             <span className="min-w-0 truncate">
-              git-репозиторій
+              git repository
               {data.git.prefix
-                ? `, тека ${data.git.prefix.replace(/\/$/, "")}`
+                ? `, folder ${data.git.prefix.replace(/\/$/, "")}`
                 : ""}
               {data.git.branch ? (
                 <>
                   {" "}
-                  · гілка{" "}
+                  · branch{" "}
                   <b className="font-mono font-semibold">{data.git.branch}</b>
                 </>
               ) : null}
@@ -417,7 +417,7 @@ export function FolderDialog({
         <div className="scroll-thin -mx-2 min-h-[180px] flex-1 overflow-y-auto">
           {data && !data.dirs.length ? (
             <p className="px-3 py-6 text-center text-small text-muted-foreground">
-              Тут немає вкладених тек
+              No subfolders here
             </p>
           ) : null}
           <ul className="flex flex-col">
@@ -448,7 +448,7 @@ export function FolderDialog({
             variant="ghost"
             onClick={() => onOpenChange(false)}
           >
-            Скасувати
+            Cancel
           </Button>
           <Button
             type="button"
@@ -457,7 +457,7 @@ export function FolderDialog({
             className="max-w-full min-w-0"
           >
             <span className="truncate">
-              Обрати {data ? baseName(data.path) || data.path : ""}
+              Choose {data ? baseName(data.path) || data.path : ""}
             </span>
           </Button>
         </DialogFooter>

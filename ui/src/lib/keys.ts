@@ -1,6 +1,6 @@
 /**
  * Shortcuts as the viewer's keyboard names them: ⌘ on a Mac, Ctrl elsewhere, and the one list of the page's
- * keys (the palette and the «?» overlay show it; hooks/use-shortcuts.ts handles it).
+ * keys (the palette and the “?” overlay show it; hooks/use-shortcuts.ts handles it).
  */
 const platform = typeof navigator === "undefined" ? "" : ((navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.platform ?? "");
 
@@ -66,10 +66,10 @@ type When = "always" | "idle" | "empty" | "field";
 export interface Shortcut {
   id: ShortcutId;
   label: string;
-  group: "Загальне" | "Кімнати" | "Кімната" | "У полі";
+  group: "General" | "Rooms" | "Room" | "In the field";
   when: When;
   chord: Chord;
-  /** Shown instead of the chord (a range like «1–9»). */
+  /** Shown instead of the chord (a range like “1–9”). */
   text?: string;
 }
 
@@ -81,24 +81,24 @@ const view = (digit: "1" | "2"): Chord =>
   inApp ? { mod: true, code: `Digit${digit}`, label: digit } : isMac ? { mod: true, alt: true, code: `Digit${digit}`, label: digit } : { mod: true, shift: true, code: `Digit${digit}`, label: digit };
 
 export const SHORTCUTS: readonly Shortcut[] = [
-  { id: "palette", label: "Пошук і всі дії", group: "Загальне", when: "always", chord: { mod: true, code: "KeyK", label: "K" } },
-  { id: "settings", label: "Налаштування", group: "Загальне", when: "always", chord: { mod: true, code: "Comma", key: ",", label: "," } },
-  { id: "keys", label: "Клавіші", group: "Загальне", when: "idle", chord: { shift: true, code: "Slash", key: "?", label: "?" } },
-  { id: "compose", label: "До поля повідомлення", group: "Загальне", when: "idle", chord: { code: "Slash", key: "/", label: "/" } },
-  { id: "close", label: "Закрити панель чи меню", group: "Загальне", when: "field", chord: { code: "Escape", label: "Esc" } },
-  { id: "prevRoom", label: "Попередня кімната", group: "Кімнати", when: "empty", chord: { alt: true, code: "ArrowUp", label: "↑" } },
-  { id: "nextRoom", label: "Наступна кімната", group: "Кімнати", when: "empty", chord: { alt: true, code: "ArrowDown", label: "↓" } },
-  { id: "chat", label: "Розмова", group: "Кімната", when: "always", chord: view("1") },
-  { id: "table", label: "Стіл", group: "Кімната", when: "always", chord: view("2") },
-  { id: "panel", label: "Показати чи сховати панель", group: "Кімната", when: "always", chord: { mod: true, code: "Backslash", label: "\\" } },
-  { id: "session", label: "Сесія агента", group: "Кімната", when: "always", chord: { mod: true, code: "KeyJ", label: "J" } },
-  { id: "terminal", label: "Термінал", group: "Кімната", when: "always", chord: { ctrl: true, code: "Backquote", label: "`" } },
-  { id: "stop", label: "Зупинити агентів", group: "Кімната", when: "always", chord: { mod: true, code: "Period", label: "." } },
-  { id: "send", label: "Надіслати", group: "У полі", when: "field", chord: { code: "Enter", label: "Enter" } },
-  { id: "newline", label: "Новий рядок", group: "У полі", when: "field", chord: { shift: true, code: "Enter", label: "Enter" } },
-  { id: "formSend", label: "Покласти на стіл з форми", group: "У полі", when: "field", chord: { mod: true, code: "Enter", label: "Enter" } },
-  { id: "docSave", label: "Зберегти документ", group: "У полі", when: "field", chord: { mod: true, code: "KeyS", label: "S" } },
-  { id: "modelDigit", label: "Модель у меню моделей", group: "У полі", when: "field", chord: { code: "Digit1", label: "1" }, text: "1–9" },
+  { id: "palette", label: "Search and actions", group: "General", when: "always", chord: { mod: true, code: "KeyK", label: "K" } },
+  { id: "settings", label: "Settings", group: "General", when: "always", chord: { mod: true, code: "Comma", key: ",", label: "," } },
+  { id: "keys", label: "Keyboard shortcuts", group: "General", when: "idle", chord: { shift: true, code: "Slash", key: "?", label: "?" } },
+  { id: "compose", label: "Go to the message field", group: "General", when: "idle", chord: { code: "Slash", key: "/", label: "/" } },
+  { id: "close", label: "Close the panel or menu", group: "General", when: "field", chord: { code: "Escape", label: "Esc" } },
+  { id: "prevRoom", label: "Previous room", group: "Rooms", when: "empty", chord: { alt: true, code: "ArrowUp", label: "↑" } },
+  { id: "nextRoom", label: "Next room", group: "Rooms", when: "empty", chord: { alt: true, code: "ArrowDown", label: "↓" } },
+  { id: "chat", label: "Conversation", group: "Room", when: "always", chord: view("1") },
+  { id: "table", label: "Table", group: "Room", when: "always", chord: view("2") },
+  { id: "panel", label: "Show or hide the panel", group: "Room", when: "always", chord: { mod: true, code: "Backslash", label: "\\" } },
+  { id: "session", label: "Agent session", group: "Room", when: "always", chord: { mod: true, code: "KeyJ", label: "J" } },
+  { id: "terminal", label: "Terminal", group: "Room", when: "always", chord: { ctrl: true, code: "Backquote", label: "`" } },
+  { id: "stop", label: "Stop the agents", group: "Room", when: "always", chord: { mod: true, code: "Period", label: "." } },
+  { id: "send", label: "Send", group: "In the field", when: "field", chord: { code: "Enter", label: "Enter" } },
+  { id: "newline", label: "New line", group: "In the field", when: "field", chord: { shift: true, code: "Enter", label: "Enter" } },
+  { id: "formSend", label: "Put the form on the table", group: "In the field", when: "field", chord: { mod: true, code: "Enter", label: "Enter" } },
+  { id: "docSave", label: "Save the document", group: "In the field", when: "field", chord: { mod: true, code: "KeyS", label: "S" } },
+  { id: "modelDigit", label: "Pick a model in the model menu", group: "In the field", when: "field", chord: { code: "Digit1", label: "1" }, text: "1–9" },
 ];
 
 export const SHORTCUT = Object.fromEntries(SHORTCUTS.map((s) => [s.id, s])) as Record<ShortcutId, Shortcut>;

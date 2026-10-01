@@ -38,7 +38,7 @@ const stopAgents = () => {
   const s = useStore.getState();
   const active = s.snap?.driven && s.snap.state.runs.at(-1)?.status === "active";
   if (!active) {
-    toast("Агенти зараз не працюють.");
+    toast("The agents aren’t working right now.");
     return;
   }
   s.post("/stop").catch((error) => {

@@ -1,4 +1,4 @@
-// Small formatting helpers shared by the whole UI (Ukrainian copy).
+// Small formatting helpers shared by the whole UI (English copy).
 
 import { decisionOf, sysLine } from "./system";
 import type { SystemNote } from "./types";
@@ -8,22 +8,22 @@ export const clock = (iso: string) => {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 };
 
-export const fullDate = (iso: string) => new Date(iso).toLocaleString("uk-UA", { dateStyle: "medium", timeStyle: "short" });
+export const fullDate = (iso: string) => new Date(iso).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" });
 
 export const secs = (ms?: number | null) => {
   if (ms == null) return "";
   const s = Math.max(0, Math.round(ms / 1000));
-  return s < 60 ? `${s} с` : `${Math.floor(s / 60)} хв ${String(s % 60).padStart(2, "0")} с`;
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 };
 
-export { names, plural } from "./i18n/uk";
+export { names, plural } from "./i18n/en";
 
 export const ago = (iso: string) => {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "щойно";
-  if (diff < 3600) return `${Math.floor(diff / 60)} хв`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} год`;
-  return new Date(iso).toLocaleDateString("uk-UA", { day: "numeric", month: "short" });
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)} min`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} h`;
+  return new Date(iso).toLocaleDateString("en", { day: "numeric", month: "short" });
 };
 
 export const shortPath = (path: string) => {
@@ -51,7 +51,7 @@ export const PROSE_EXT = new Set(["md", "markdown", "txt", ""]);
 
 export const cost = (usd?: number) => (usd == null ? "" : `$${usd < 0.1 ? usd.toFixed(3) : usd.toFixed(2)}`);
 
-export const kb = (bytes: number) => (bytes < 1024 ? `${bytes} Б` : `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} КБ`);
+export const kb = (bytes: number) => (bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`);
 
 /** cyrb53 — must match the daemon's block hash for live html/svg blocks. */
 export const hashBlock = (text: string) => {
@@ -91,10 +91,10 @@ type Last = { author: string; text: string; label?: string; sys?: SystemNote };
 
 /** The last line in a room list, in parts: who said it (by label — any agent, not only Claude and Codex) and a preview. */
 export const roomPreviewParts = (last: Last | undefined): { who: string; text: string } => {
-  if (!last) return { who: "", text: "Ще без повідомлень" };
+  if (!last) return { who: "", text: "No messages yet" };
   // A line Agoryx wrote (a decision) in the UI's words; an older decision by its English.
   const said = last.sys ? sysLine(last) : decisionOf(last) ? sysLine(last) : last.text;
-  return { who: last.label ?? (last.author === "agoryx" ? "" : "Ви"), text: preview(said) };
+  return { who: last.label ?? (last.author === "agoryx" ? "" : "You"), text: preview(said) };
 };
 
 export const roomPreview = (last: Last | undefined) => {

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The page's icons for a phone's home screen (the PWA manifest, iOS) and for notifications: the
-// favicon's mark (three dots) on a sage tile, as the desktop app's icon (desktop/scripts/make-icon.mjs),
-// drawn here so the repo carries no binary. Writes public/icons/*.png; does nothing when they are
+// Agoryx mark (src/components/brand/Mark.tsx — two voices crossing into an A, the human's dot between
+// them) on an ink tile, as the desktop app's icon (desktop/scripts/make-icon.mjs), drawn here so the
+// repo carries no binary. Writes public/icons/*.png; does nothing when they are
 // newer than this script.
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -14,7 +15,7 @@ const out = join(dirname(script), "..", "public", "icons");
 /**
  * - tile: a rounded tile on transparency (the manifest's "any");
  * - bleed: the ground to the edges, the mark inside the maskable safe zone (Android masks it; iOS rounds it);
- * - badge: white dots on transparency (Android's status bar draws it in one colour).
+ * - badge: the mark in white on transparency (Android's status bar draws it in one colour).
  */
 const ICONS = [
   { file: "icon-192.png", size: 192, look: "tile" },
@@ -27,20 +28,53 @@ const ICONS = [
 const newer = (file) => existsSync(file) && statSync(file).mtimeMs > statSync(script).mtimeMs;
 if (ICONS.every((icon) => newer(join(out, icon.file)))) process.exit(0);
 
-// On a 1024 canvas. The tile after Apple's icon grid; the dots from the favicon's 24-unit viewBox.
+// On a 1024 canvas. The tile after Apple's icon grid; the mark from Mark.tsx's 24-unit viewBox.
 const TILE = { x: 100, y: 100, size: 824, radius: 185 };
-const CENTER = { x: 12, y: 11.25 };
-const dotsAt = (unit) =>
-  [
-    [12, 5.5],
-    [5.5, 17],
-    [18.5, 17],
-  ].map(([x, y]) => ({ x: 512 + (x - CENTER.x) * unit, y: 512 + (y - CENTER.y) * unit, r: 3.2 * unit }));
+const CENTER = { x: 12, y: 12 };
+const LEFT = [[3.4, 21], [8, 21], [15.2, 3], [10.6, 3]];
+const RIGHT = [[20.6, 21], [16, 21], [8.8, 3], [13.4, 3]];
+const DOT = { x: 12, y: 16.5, r: 1.5 };
 
-// ui/src/index.css: --primary, a shade lighter at the top, and the stone --background for the dots.
-const TOP = [0x3a, 0x6b, 0x56];
-const BOTTOM = [0x2a, 0x52, 0x41];
-const DOT = [0xf3, 0xf4, 0xef];
+// ui/src/index.css, dark theme: the ink ground (a shade lighter at the top) and the voices on it.
+const TOP = [0x24, 0x20, 0x2e];
+const BOTTOM = [0x15, 0x13, 0x1c];
+const CLAY = [0xee, 0x8a, 0x5e];
+const WATER = [0x5c, 0xae, 0xe0];
+const MEET = [0xe7, 0xa3, 0xd1];
+const LAUREL = [0x7f, 0xcb, 0x8a];
+
+/** Signed distance to a polygon (negative inside), after Inigo Quilez. */
+const polygon = (points) => (px, py) => {
+  let d = Infinity;
+  let sign = 1;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const [ax, ay] = points[i];
+    const [bx, by] = points[j];
+    const ex = bx - ax;
+    const ey = by - ay;
+    const wx = px - ax;
+    const wy = py - ay;
+    const t = Math.min(1, Math.max(0, (wx * ex + wy * ey) / (ex * ex + ey * ey)));
+    d = Math.min(d, Math.hypot(wx - ex * t, wy - ey * t));
+    const c = [py >= ay, py < by, ex * wy > ey * wx];
+    if (c.every(Boolean) || c.every((v) => !v)) sign = -sign;
+  }
+  return sign * d;
+};
+
+/** The mark's shapes at `unit` canvas units per mark unit, as distance functions on the canvas. */
+const markAt = (unit) => {
+  const place = (points) => points.map(([x, y]) => [512 + (x - CENTER.x) * unit, 512 + (y - CENTER.y) * unit]);
+  const left = polygon(place(LEFT));
+  const right = polygon(place(RIGHT));
+  const dot = { x: 512 + (DOT.x - CENTER.x) * unit, y: 512 + (DOT.y - CENTER.y) * unit, r: DOT.r * unit };
+  return {
+    left,
+    right,
+    meet: (px, py) => Math.max(left(px, py), right(px, py)),
+    dot: (px, py) => Math.hypot(px - dot.x, py - dot.y) - dot.r,
+  };
+};
 
 const roundedRect = (px, py) => {
   const half = TILE.size / 2;
@@ -52,11 +86,12 @@ const roundedRect = (px, py) => {
 /** A signed distance (canvas units) → how much of a pixel of this size it covers. */
 const coverage = (distance, scale) => Math.min(1, Math.max(0, 0.5 - distance * scale));
 
+const mix = (under, over, amount) => under.map((c, i) => c + (over[i] - c) * amount);
+
 const draw = (size, look) => {
   const scale = size / 1024;
   // The maskable safe zone is the middle 80%: the mark stays well inside it.
-  const dots = dotsAt(look === "tile" ? 26.5 : look === "bleed" ? 24 : 38);
-  const circles = (px, py) => Math.min(...dots.map((dot) => Math.hypot(px - dot.x, py - dot.y) - dot.r));
+  const mark = markAt(look === "tile" ? 27 : look === "bleed" ? 24 : 38);
   const rows = Buffer.alloc(size * (size * 4 + 1));
   for (let y = 0; y < size; y += 1) {
     const row = y * (size * 4 + 1);
@@ -65,19 +100,23 @@ const draw = (size, look) => {
       const px = (x + 0.5) / scale;
       const py = (y + 0.5) / scale;
       const offset = row + 1 + x * 4;
-      const dot = coverage(circles(px, py), scale);
+      const left = coverage(mark.left(px, py), scale);
+      const right = coverage(mark.right(px, py), scale);
+      const dot = coverage(mark.dot(px, py), scale);
       if (look === "badge") {
         rows.fill(255, offset, offset + 3);
-        rows[offset + 3] = Math.round(dot * 255);
+        rows[offset + 3] = Math.round(Math.max(left, right, dot) * 255);
         continue;
       }
       const ground = look === "tile" ? coverage(roundedRect(px, py), scale) : 1;
       if (ground === 0) continue;
       const t = look === "tile" ? Math.min(1, Math.max(0, (py - TILE.y) / TILE.size)) : py / 1024;
-      for (let c = 0; c < 3; c += 1) {
-        const shade = TOP[c] + (BOTTOM[c] - TOP[c]) * t;
-        rows[offset + c] = Math.round(shade + (DOT[c] - shade) * dot);
-      }
+      let colour = mix(TOP, BOTTOM, t);
+      colour = mix(colour, CLAY, left);
+      colour = mix(colour, WATER, right);
+      colour = mix(colour, MEET, coverage(mark.meet(px, py), scale));
+      colour = mix(colour, LAUREL, dot);
+      for (let c = 0; c < 3; c += 1) rows[offset + c] = Math.round(colour[c]);
       rows[offset + 3] = Math.round(ground * 255);
     }
   }

@@ -58,9 +58,9 @@ function Conflict({ roomId, path, onTake }: { roomId: string; path: string; onTa
     return (
       <div className="flex shrink-0 items-center gap-2 border-b border-border/70 bg-destructive-soft px-3 py-2 text-small">
         <CircleAlertIcon className="size-4 shrink-0 text-destructive" />
-        <span className="min-w-0 flex-1">Не збереглося: {state.error}</span>
+        <span className="min-w-0 flex-1">Not saved: {state.error}</span>
         <Button size="sm" variant="outline" className="h-7" onClick={() => void saver.flush()}>
-          Ще раз
+          Try again
         </Button>
       </div>
     );
@@ -69,12 +69,12 @@ function Conflict({ roomId, path, onTake }: { roomId: string; path: string; onTa
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/70 bg-amber-500/10 px-3 py-2 text-small">
       <CircleAlertIcon className="size-4 shrink-0 text-amber-600" />
-      <span className="min-w-0 flex-1">Файл змінився на диску, поки ви його редагували — ваші зміни ще не записані.</span>
+      <span className="min-w-0 flex-1">The file changed on disk while you were editing it — your changes are not written yet.</span>
       <Button size="sm" variant="outline" className="h-7" onClick={() => onTake(disk)}>
-        Взяти з диска
+        Take the disk's
       </Button>
       <Button size="sm" variant="outline" className="h-7" onClick={() => saver.overwrite()}>
-        Записати моє
+        Keep mine
       </Button>
     </div>
   );
@@ -154,8 +154,8 @@ function FileBody({ path, wrap, source }: { path: string; wrap: boolean; source:
   if (!f) return <Loading block className="px-4 py-3" />;
   const meta = (
     <Hint className="tabular">
-      {kb(f.size)} · змінено {fullDate(f.mtime)}
-      {f.truncated ? " · показано початок" : ""}
+      {kb(f.size)} · modified {fullDate(f.mtime)}
+      {f.truncated ? " · showing the beginning" : ""}
     </Hint>
   );
   if (FRAME_EXT.has(kind) || kind === "svg") {
@@ -181,7 +181,7 @@ function FileBody({ path, wrap, source }: { path: string; wrap: boolean; source:
             <MermaidFile url={url} />
           </div>
         )}
-        {!f.hash ? <Raw label="Сирий текст" path={path} text={f.text} /> : null}
+        {!f.hash ? <Raw label="Raw text" path={path} text={f.text} /> : null}
       </Shown>
     );
   }
@@ -189,7 +189,7 @@ function FileBody({ path, wrap, source }: { path: string; wrap: boolean; source:
     return (
       <Shown>
         {meta}
-        <Hint>Двійковий файл — попередній перегляд недоступний.</Hint>
+        <Hint>Binary file — no preview available.</Hint>
       </Shown>
     );
   }
@@ -226,7 +226,7 @@ const useLastChange = (path: string) =>
 function SaveMark({ roomId, path }: { roomId: string; path: string }) {
   const { status } = useSaveState(roomId, path);
   if (status === "saved") return null;
-  const label = { dirty: "Не збережено", saving: "Зберігаю…", conflict: "Конфлікт із диском", error: "Не збереглося" }[status];
+  const label = { dirty: "Unsaved", saving: "Saving…", conflict: "Conflicts with the disk", error: "Not saved" }[status];
   return <span className={cn("size-2 shrink-0 rounded-full", status === "conflict" || status === "error" ? "bg-destructive" : "bg-foreground/60", status === "saving" && "animate-pulse")} title={label} aria-label={label} />;
 }
 
@@ -267,19 +267,19 @@ function FileArea({ path }: { path: string }) {
         <Crumbs path={path} />
         {hasView(path) ? (
           <Button variant="ghost" size="sm" className="h-7 px-2 text-small text-muted-foreground" onClick={() => setSource(!source)} aria-pressed={source}>
-            {source ? "Перегляд" : "Текст"}
+            {source ? "Preview" : "Text"}
           </Button>
         ) : null}
-        <Button variant="ghost" size="icon" className={cn("size-7", wrap ? "text-foreground" : "text-muted-foreground")} onClick={toggleWrap} aria-pressed={wrap} aria-label="Переносити рядки" title="Переносити рядки">
+        <Button variant="ghost" size="icon" className={cn("size-7", wrap ? "text-foreground" : "text-muted-foreground")} onClick={toggleWrap} aria-pressed={wrap} aria-label="Wrap lines" title="Wrap lines">
           <TextWrapIcon className="size-3.5" />
         </Button>
         {changed ? (
-          <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={() => openChanges({ scope: "turn", turn: changed, path })} aria-label="Остання зміна" title="Остання зміна">
+          <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={() => openChanges({ scope: "turn", turn: changed, path })} aria-label="Last change" title="Last change">
             <GitCompareArrowsIcon className="size-3.5" />
           </Button>
         ) : null}
         <Button asChild variant="ghost" size="icon" className="size-7 text-muted-foreground">
-          <a href={rawUrl(rawBase, path)} target="_blank" rel="noopener noreferrer" aria-label="Відкрити в новій вкладці" title="Відкрити в новій вкладці">
+          <a href={rawUrl(rawBase, path)} target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" title="Open in a new tab">
             <ExternalLinkIcon className="size-3.5" />
           </a>
         </Button>
@@ -294,7 +294,7 @@ function FileTabs({ tabs, current }: { tabs: string[]; current: string | null })
   const openFile = useStore((s) => s.openFile);
   const closeFile = useStore((s) => s.closeFile);
   return (
-    <div role="tablist" aria-label="Відкриті файли" className="scroll-thin flex min-w-0 flex-1 items-stretch overflow-x-auto">
+    <div role="tablist" aria-label="Open files" className="scroll-thin flex min-w-0 flex-1 items-stretch overflow-x-auto">
       {tabs.map((path) => {
         const on = path === current;
         return (
@@ -316,7 +316,7 @@ function FileTabs({ tabs, current }: { tabs: string[]; current: string | null })
             </button>
             <button
               type="button"
-              aria-label={`Закрити ${baseName(path)}`}
+              aria-label={`Close ${baseName(path)}`}
               onClick={() => closeFile(path)}
               className={cn("grid size-5 shrink-0 place-items-center rounded hover:bg-accent", on ? "opacity-80" : "opacity-0 group-hover:opacity-80 focus:opacity-80")}
             >
@@ -453,9 +453,9 @@ function Tree({ current, full }: { current: string | null; full: boolean }) {
   else if (files && root) {
     const found = q.trim() ? search(files, q) : null;
     body = !files.length ? (
-      <EmptyState icon={FolderOpenIcon} title="Поки що порожньо" text="Тут з'являться файли, які створять агенти." />
+      <EmptyState icon={FolderOpenIcon} title="Nothing here yet" text="Files the agents create will appear here." />
     ) : found && !found.length ? (
-      <Hint className="px-2">Нічого не знайдено.</Hint>
+      <Hint className="px-2">Nothing found.</Hint>
     ) : found ? (
       <div className="flex flex-col">
         {found.map((f) => (
@@ -480,7 +480,7 @@ function Tree({ current, full }: { current: string | null; full: boolean }) {
             {room?.workspace}
           </p>
         ) : null}
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Знайти файл…" aria-label="Знайти файл" className="h-7 text-small" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a file…" aria-label="Find a file" className="h-7 text-small" />
       </div>
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-1 py-1.5">{body}</div>
     </div>
@@ -509,8 +509,8 @@ export function FilesPanel() {
             onClick={() => setTreeShown(!tree)}
             disabled={!path}
             aria-pressed={tree}
-            aria-label="Дерево файлів"
-            title="Дерево файлів"
+            aria-label="File tree"
+            title="File tree"
           >
             <PanelLeftIcon className="size-4" />
           </Button>

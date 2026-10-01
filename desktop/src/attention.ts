@@ -202,19 +202,19 @@ export const createAttention = (options: AttentionOptions): Attention => {
       label: helpers.trayLabel(item),
       click: () => safe("open", () => openRoom(item.room)),
     }));
-    if (items.length > MENU_ROOMS) template.push({ label: `…і ще ${items.length - MENU_ROOMS}`, enabled: false });
+    if (items.length > MENU_ROOMS) template.push({ label: `…and ${items.length - MENU_ROOMS} more`, enabled: false });
     template.push(
       {
-        label: "Позначити все переглянутим",
+        label: "Mark all as seen",
         enabled: items.length > 0,
         click: () => void follower?.markSeen().catch((error: unknown) => log(`mark seen failed: ${messageOf(error)}`)),
       },
       { type: "separator" },
-      { label: "Відкрити Agoryx", click: () => safe("focus", options.focusWindow) },
+      { label: "Open Agoryx", click: () => safe("focus", options.focusWindow) },
     );
-    if (!connected) template.push({ label: "Agoryx не відповідає", enabled: false });
-    if (bannersFailed) template.push({ label: "macOS не показує сповіщення", enabled: false });
-    template.push({ type: "separator" }, { label: "Вийти з Agoryx", click: () => app.quit() });
+    if (!connected) template.push({ label: "Agoryx is not responding", enabled: false });
+    if (bannersFailed) template.push({ label: "macOS is not showing notifications", enabled: false });
+    template.push({ type: "separator" }, { label: "Quit Agoryx", click: () => app.quit() });
     return Menu.buildFromTemplate(template);
   };
 

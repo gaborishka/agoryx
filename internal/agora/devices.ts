@@ -6,7 +6,7 @@ import { agoraHome } from "./paths.js";
 /**
  * Paired devices: the human's phone (or any other browser off this computer) with a token of its own.
  *
- * The human makes a pairing code on this computer (`agoryx pair`, or «Відкрити на телефоні» in the UI);
+ * The human makes a pairing code on this computer (`agoryx pair`, or “Open on phone” in the UI);
  * the phone trades it for a device token, which it keeps as an HttpOnly cookie. A pairing is two secrets
  * for one use: a short code to type, and a long one (128 bits) in the QR link. Both live in memory only
  * and expire after five minutes, and either one used spends both. Typed codes are guessable, so wrong

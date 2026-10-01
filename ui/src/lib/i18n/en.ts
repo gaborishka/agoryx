@@ -1,0 +1,148 @@
+import type { RoomSettings, SystemCode, SystemNote, TurnError } from "../types";
+
+/**
+ * The UI's catalogue: every line Agoryx writes (by its code), and the words the UI uses for models, effort
+ * and the room's own worktree. The interface speaks one locale, English; the rest of the UI keeps its copy in place.
+ */
+
+/** "1 turn", "3 turns". */
+export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** "Claude", "Claude and Codex", "Opus, Sonnet and Codex": a room may seat any number of agents. */
+export const names = (list: string[]) => (list.length <= 1 ? (list[0] ?? "") : `${list.slice(0, -1).join(", ")} and ${list.at(-1)}`);
+
+type Note<K extends SystemCode> = Extract<SystemNote, { code: K }>;
+/** `who`: the name the UI gives the agent that did it, when an agent wrote the line; the note's own `by` otherwise. */
+type Say = { [K in SystemCode]: (note: Note<K>, who?: string) => string };
+
+const EFFORT: Record<string, string> = {
+  none: "no thinking",
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "extra high",
+  max: "max",
+};
+
+/** An effort level in words; one the catalogue does not know stays as the CLI names it. */
+const effortLevel = (level: string) => EFFORT[level] ?? level;
+
+const onOff = (on: boolean) => (on ? "on" : "off");
+
+/** A settings change in words, in the order the daemon lists it. */
+const settings = (patch: Partial<RoomSettings>): string =>
+  [
+    patch.budget === undefined ? null : patch.budget === null ? "no turn limit" : `a limit of ${plural(patch.budget, "turn", "turns")} per conversation`,
+    patch.access === undefined ? null : patch.access === "readonly" ? "read-only" : "agents can edit the folder",
+    patch.network === undefined ? null : `network ${onOff(patch.network)}`,
+    patch.autoCommit === undefined ? null : `checkpoints ${onOff(patch.autoCommit)}`,
+    patch.turnTimeoutMs === undefined ? null : `turn time limit ${Math.round(patch.turnTimeoutMs / 60_000)} min`,
+    patch.doc === undefined ? null : patch.doc ? `shared document \`${patch.doc}\`` : "no shared document",
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+const openOnTable = (open: Note<"run.budget">["open"]): string =>
+  [
+    open.questions ? plural(open.questions, "question", "questions") : null,
+    open.options ? plural(open.options, "undecided option", "undecided options") : null,
+    open.steps ? plural(open.steps, "step to do", "steps to do") : null,
+    open.disputes ? plural(open.disputes, "disputed point", "disputed points") : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+/** What went wrong with a turn, and what to do about it; the CLI's own message stays as it said it. */
+const failure = (error: TurnError["kind"], message: string, cli: string): string => {
+  const minutes = error === "timeout" ? /(\d+)\s*min/.exec(message)?.[1] : undefined;
+  if (minutes) return `the turn ran past its time limit (${minutes} min)`;
+  const hint =
+    error === "rate_limit"
+      ? " (rate limit — it will try again with the next message)"
+      : error === "auth"
+        ? ` (not signed in — run \`${cli} login\`)`
+        : error === "spawn"
+          ? ` (is \`${cli}\` installed and on your PATH?)`
+          : "";
+  return `${message}${hint}`;
+};
+
+const shares = (readers: Array<{ label: string; percent: number }>) => readers.map((r) => `${r.label} ${r.percent}%`).join(", ");
+
+const sys: Say = {
+  "run.restarted": () => "Agoryx restarted mid-conversation, so it was stopped. Write something or press “Continue”.",
+  "run.budget": (n) => {
+    const open = openOnTable(n.open);
+    return `The agents took ${plural(n.turns, "turn", "turns")} — the conversation is waiting for you.${open ? ` Still open on the table: ${open}.` : ""}`;
+  },
+  "run.stopped": (_, who) => (who ? `${who} stops the conversation.` : "The conversation was stopped."),
+  "run.continued": (n, who) => `${who ?? n.by} asks for another round.`,
+  "daemon.stopped": (n, who) => `${who ?? n.by} stops Agoryx, so the conversation was stopped.`,
+  "doc.set": (n) => `The room’s shared document is now \`${n.path}\`.`,
+  "doc.cleared": () => "The room no longer has a shared document.",
+  "settings.changed": (n, who) => `${who ?? n.by} changes the settings: ${settings(n.patch)}.`,
+  "room.renamed": (n, who) => `${who ?? n.by} renames the room to “${n.name}”.`,
+  "agent.changed": (n, who) => {
+    const parts = [
+      n.model === undefined ? null : n.model ? `model \`${n.model}\`` : "model — the CLI default",
+      n.effort === undefined ? null : `effort — ${n.effort ? effortLevel(n.effort) : "the CLI default"}`,
+    ].filter(Boolean);
+    return `${who ?? n.by} changes ${n.agent}: ${parts.join(", ")}.`;
+  },
+  "turn.failed": (n) => `${n.agent}: the turn could not finish — ${failure(n.error, n.message, n.cli)}`,
+  "agent.busy": (n) => `${n.agent} is talking in its own session right now — its turn in the room starts after that.`,
+  "jev.second_look": (n) => {
+    const who = names(n.readers.map((r) => r.label));
+    return `Jev: ${n.agent}’s reply is worth a second look (${shares(n.readers)}) — ${who} ${n.readers.length === 1 ? "takes a look" : "take a look"}.`;
+  },
+  "jev.meant_for": (n) => {
+    const who = names(n.readers.map((r) => r.label));
+    return `Jev: ${n.message} from ${n.agent} is meant for ${who} (${shares(n.readers)}), even without an @ — ${who} ${n.readers.length === 1 ? "replies" : "reply"}.`;
+  },
+  decision: (n) => `Decision #${n.n}: ${n.option} “${n.title}”${n.note ? ` — ${n.note}` : ""} (decided by ${n.by})`,
+};
+
+export const en = {
+  plural,
+  names,
+  sys,
+  /** The decision card: its heading, the option chosen, who decided. */
+  decision: {
+    title: (n?: number) => (n ? `Decision #${n}` : "Decision"),
+    body: (n: Note<"decision">) => `${n.option} “${n.title}”${n.note ? ` — ${n.note}` : ""}`,
+    by: (by: string) => `decided by ${by}`,
+  },
+  /** Effort: how hard the model thinks (Claude's --effort, Codex's reasoning effort). */
+  effort: {
+    name: "Effort",
+    hint: "Effort — how carefully the model thinks",
+    level: effortLevel,
+    default: "default",
+    defaultIs: (level?: string) => `Default${level ? `: ${effortLevel(level)}` : ""}`,
+  },
+  model: {
+    and: "model and effort",
+    of: (agent: string) => `${agent} model and effort`,
+  },
+  /** The room's own worktree: its own branch and folder that the agents share. */
+  worktree: {
+    label: "worktree",
+    from: "Branch the room’s worktree starts from",
+    fromMenu: "Start the worktree from a branch",
+    about: "Its own branch and folder for this room. The agents work in it together; your folder and branch stay as they are.",
+    noCommits: "The repository has no commits yet — there is nothing to start a worktree from",
+    dirty: (n: number, folder: string, branch?: string | null) =>
+      `${plural(n, "uncommitted change", "uncommitted changes")} in ${folder} won’t go into the worktree: it starts from the last commit${branch ? ` on ${branch}` : ""}.`,
+    place: (branch: string, base: string, folder: string, agents: string[], source: string) =>
+      `The room’s worktree: branch ${branch} from ${base}, folder ${folder}. ${names(agents)} work in it together; ${source} stays as it is.`,
+  },
+  checkpoint: {
+    one: "One checkpoint (a git commit)",
+    none: "They appear after a round when checkpoints are turned on in settings.",
+    setting: "A checkpoint (a git commit) after every round",
+  },
+  loading: "Loading",
+};
+
+export type Catalogue = typeof en;

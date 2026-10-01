@@ -12,7 +12,7 @@ import type { AgentPresence, LimitSnapshot, OpEntry, RoomEvent, RoomSummary, Run
 export type PanelTab = "session" | "doc" | "browser" | "diff" | "files";
 export const PANEL_TABS: readonly PanelTab[] = ["session", "doc", "browser", "diff", "files"];
 
-/** Which changes the Зміни tab shows: one turn's, the whole room's against where it began, or one checkpoint. */
+/** Which changes the Changes tab shows: one turn's, the whole room's against where it began, or one checkpoint. */
 export type ChangeScope = "turn" | "room" | "commit";
 
 export interface ChangesFocus {
@@ -23,7 +23,7 @@ export interface ChangesFocus {
   sha?: string;
   /** One file of it, shown alone. */
   path?: string;
-  /** Opened from «N дій»: the turn's actions start unfolded. Not kept in the address. */
+  /** Opened from “N actions”: the turn's actions start unfolded. Not kept in the address. */
   acts?: boolean;
 }
 
@@ -76,9 +76,9 @@ interface Store {
   /** Whose session the session panel shows. */
   sessionAgent: string | null;
   changes: ChangesFocus;
-  /** The file the Файли tab shows; null: the list. */
+  /** The file the Files tab shows; null: the list. */
   filePath: string | null;
-  /** The files open as tabs in the Файли tab, in the order they were opened. */
+  /** The files open as tabs in the Files tab, in the order they were opened. */
   fileTabs: string[];
   /** The room's terminals at the bottom of the room: shown or not, and how tall. */
   terminalOpen: boolean;
@@ -108,9 +108,9 @@ interface Store {
   setPanel: (panel: PanelTab | null) => void;
   /** Open or close a tab; with none, the panel itself (on the tab shown last). */
   togglePanel: (tab?: PanelTab) => void;
-  /** Show changes in the Зміни tab: a turn's (and one file of it), the room's, a checkpoint's. */
+  /** Show changes in the Changes tab: a turn's (and one file of it), the room's, a checkpoint's. */
   openChanges: (focus: ChangesFocus) => void;
-  /** Show a workspace file in the Файли tab; null: the list of files. */
+  /** Show a workspace file in the Files tab; null: the list of files. */
   openFile: (path: string | null) => void;
   /** Close a file's tab; the one beside it is shown if it was the shown one. */
   closeFile: (path: string) => void;
@@ -216,7 +216,7 @@ export const useStore = create<Store>((set, get) => ({
     } catch (error) {
       if (error instanceof Unauthorized) return;
       if (error instanceof ApiError && error.status === 404) {
-        toast.error("Такої кімнати немає");
+        toast.error("There is no such room");
         const first = get().rooms.find((r) => r.id !== id);
         get().go(first ? { kind: "room", id: first.id } : { kind: "new" });
         return;
@@ -591,9 +591,9 @@ export const onThisComputer = () => ["127.0.0.1", "localhost", "[::1]"].includes
 
 /** Why a code did not work, in the phone's words (the daemon says `reason`). */
 const PAIR_FAILURES: Record<string, string> = {
-  wrong: "Код неправильний, уже використаний або прострочений. Зробіть новий на комп'ютері.",
-  "slow-down": "Забагато неправильних кодів. Зачекайте хвилину.",
-  "typing-stopped": "Забагато неправильних спроб, тож цей код уже не можна ввести. Скануйте QR-код або зробіть новий код на комп'ютері.",
+  wrong: "The code is wrong, already used or expired. Make a new one on the computer.",
+  "slow-down": "Too many wrong codes. Wait a minute.",
+  "typing-stopped": "Too many wrong attempts, so this code can’t be entered anymore. Scan the QR code or make a new code on the computer.",
 };
 
 /** Trades a pairing code for this device's own token; the daemon keeps it as a cookie. Throws with the reason. */
@@ -602,7 +602,7 @@ export const claimPairing = async (code: string) => {
     await api("POST", "/api/pair/claim", { code });
   } catch (error) {
     const reason = error instanceof ApiError ? String(error.body.reason ?? "") : "";
-    throw new Error(PAIR_FAILURES[reason] ?? "Не вдалося під'єднати цей пристрій. Перевірте, що телефон бачить комп'ютер, і спробуйте ще раз.");
+    throw new Error(PAIR_FAILURES[reason] ?? "Couldn’t connect this device. Check that the phone can reach the computer and try again.");
   }
   useStore.setState({ pairError: null });
 };

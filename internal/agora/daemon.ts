@@ -1849,7 +1849,7 @@ export class AgoraDaemon {
       return;
     }
     if (parts[0] === "test" && parts.length === 1 && method === "POST") {
-      sendJson(res, 200, await this.push.send({ title: "Agoryx", body: "Сповіщення працюють.", tag: "agoryx-test", room: null }, device.id));
+      sendJson(res, 200, await this.push.send({ title: "Agoryx", body: "Notifications work.", tag: "agoryx-test", room: null }, device.id));
       return;
     }
     if (parts[0] === "note" && parts.length === 2 && method === "GET") {

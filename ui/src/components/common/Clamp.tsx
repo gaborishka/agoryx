@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 export function Clamp({
   children,
   max,
-  more = "Читати повністю",
+  more = "Read more",
   className,
   open: forced,
 }: {
@@ -51,7 +51,7 @@ export function Clamp({
           className="mt-1 inline-flex h-8 items-center gap-1 rounded-lg px-2 text-small font-medium text-primary transition hover:bg-accent"
         >
           {open ? <ChevronUpIcon className="size-4" /> : <ChevronDownIcon className="size-4" />}
-          {open ? "Згорнути" : more}
+          {open ? "Collapse" : more}
         </button>
       ) : null}
     </div>

@@ -91,7 +91,7 @@ export function DocDiff({ items }: { items: DiffItem[] }) {
       return (
         <tr key={index} className="bg-muted/60 text-faint">
           <td className="w-10 select-none px-2 text-right" />
-          <td className="px-3 py-1 font-sans text-meta">… {plural(item.skip, "рядок", "рядки", "рядків")} без змін</td>
+          <td className="px-3 py-1 font-sans text-meta">… {plural(item.skip, "unchanged line", "unchanged lines")}</td>
         </tr>
       );
     }

@@ -11,20 +11,20 @@ import { cn } from "@/lib/utils";
 /** Why an address was not opened; `empty` says nothing, the field is just empty. */
 const REASON: Record<UrlError, string | null> = {
   empty: null,
-  "too-long": "адреса задовга",
-  invalid: "це не схоже на адресу",
-  scheme: "можна лише http і https",
-  agoryx: "це адреса самого Agoryx",
+  "too-long": "the address is too long",
+  invalid: "that doesn’t look like an address",
+  scheme: "only http and https are allowed",
+  agoryx: "that’s Agoryx’s own address",
 };
 
 const VERB: Record<BrowserOp, string> = {
-  navigate: "відкриває сторінку",
-  snapshot: "читає сторінку",
-  click: "натискає",
-  type: "вводить текст",
-  press: "натискає клавішу",
-  screenshot: "робить знімок",
-  eval: "виконує скрипт",
+  navigate: "is opening a page",
+  snapshot: "is reading the page",
+  click: "is clicking",
+  type: "is typing",
+  press: "is pressing a key",
+  screenshot: "is taking a screenshot",
+  eval: "is running a script",
 };
 
 /** The app's refusal as it wrote it: Electron prefixes a rejected IPC call with its own English words. */
@@ -125,13 +125,13 @@ function Pane({ room, bridge }: { room: string; bridge: AgoryxBrowser }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 flex-col gap-1.5 border-b border-border/70 px-3 py-2">
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon" className="size-8" aria-label="Назад" title="Назад" disabled={!state?.canGoBack} onClick={() => void go("back")}>
+          <Button variant="ghost" size="icon" className="size-8" aria-label="Back" title="Back" disabled={!state?.canGoBack} onClick={() => void go("back")}>
             <ArrowLeftIcon className="size-4" />
           </Button>
-          <Button variant="ghost" size="icon" className="size-8" aria-label="Вперед" title="Вперед" disabled={!state?.canGoForward} onClick={() => void go("forward")}>
+          <Button variant="ghost" size="icon" className="size-8" aria-label="Forward" title="Forward" disabled={!state?.canGoForward} onClick={() => void go("forward")}>
             <ArrowRightIcon className="size-4" />
           </Button>
-          <Button variant="ghost" size="icon" className="size-8" aria-label="Оновити" title="Оновити" disabled={!state || !networkOn} onClick={() => void go("reload")}>
+          <Button variant="ghost" size="icon" className="size-8" aria-label="Reload" title="Reload" disabled={!state || !networkOn} onClick={() => void go("reload")}>
             <RotateCwIcon className={cn("size-4", state?.loading && "animate-spin")} />
           </Button>
           <form
@@ -158,10 +158,10 @@ function Pane({ room, bridge }: { room: string; bridge: AgoryxBrowser }) {
                 setDraft(null);
                 setRefusal(null);
               }}
-              aria-label="Адреса"
+              aria-label="Address"
               aria-invalid={refusal ? true : undefined}
               disabled={!networkOn}
-              placeholder={networkOn ? "Адреса сторінки" : "Мережу вимкнено"}
+              placeholder={networkOn ? "Page address" : "Network is off"}
               title={state?.title || undefined}
               spellCheck={false}
               autoCapitalize="off"
@@ -173,8 +173,8 @@ function Pane({ room, bridge }: { room: string; bridge: AgoryxBrowser }) {
             variant="ghost"
             size="icon"
             className="size-8"
-            aria-label="Відкрити у своєму браузері"
-            title="Відкрити у своєму браузері"
+            aria-label="Open in your browser"
+            title="Open in your browser"
             disabled={!outside}
             onClick={() => void bridge.outside(room).catch((error: unknown) => toast.error(errText(error)))}
           >
@@ -183,20 +183,20 @@ function Pane({ room, bridge }: { room: string; bridge: AgoryxBrowser }) {
         </div>
         {refusal ? (
           <p role="status" className="px-1 text-small text-destructive">
-            Цю адресу не відкрити: {refusal}.
+            Can’t open this address: {refusal}.
           </p>
         ) : null}
         {state?.crashed ? (
           <p className="flex items-start gap-1.5 px-1 text-small text-amber">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
-            <span>Сторінка аварійно закрилася. Натисніть «Оновити» або дочекайтеся наступної дії агента.</span>
+            <span>The page crashed. Click “Reload” or wait for the agent’s next action.</span>
           </p>
         ) : null}
         {driver && who ? (
           <p className="flex items-center gap-2 px-1 text-small text-muted-foreground">
             <span className={cn("size-2 shrink-0 animate-breathe rounded-full", who.tone === "codex" ? "bg-codex" : "bg-claude")} style={ink(who)} />
             <span className="truncate">
-              {driver.label} {VERB[driver.op] ?? "працює в браузері"}…
+              {driver.label} {VERB[driver.op] ?? "is working in the browser"}…
             </span>
           </p>
         ) : null}
@@ -209,8 +209,8 @@ function Pane({ room, bridge }: { room: string; bridge: AgoryxBrowser }) {
             </span>
             <p className="text-ui leading-relaxed text-pretty text-muted-foreground">
               {networkOn
-                ? "Тут з'явиться сторінка, яку відкриє агент. Можна відкрити й самому: введіть адресу вгорі."
-                : "У цій кімнаті вимкнено мережу, тож браузер теж вимкнено. Увімкнути мережу можна в налаштуваннях кімнати."}
+                ? "The page an agent opens will appear here. You can open one yourself too: type an address above."
+                : "Network is off in this room, so the browser is off too. You can turn the network on in the room’s settings."}
             </p>
           </div>
         )}

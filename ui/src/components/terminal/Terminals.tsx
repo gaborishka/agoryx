@@ -60,23 +60,23 @@ const themeOf = (dark: boolean) => {
     foreground,
     cursor: foreground,
     cursorAccent: background,
-    selectionBackground: dark ? "#3a4a40" : "#cfdccf",
-    black: dark ? "#2a2f2b" : "#1b211d",
+    selectionBackground: dark ? "#3a3448" : "#dcd6e6",
+    black: dark ? v("--input") : v("--foreground"),
     brightBlack: v("--faint"),
-    red: dark ? "#e0785c" : "#b4533a",
-    brightRed: dark ? "#f0907a" : "#c9664b",
-    green: dark ? "#8fbf8a" : "#3f7a4f",
-    brightGreen: dark ? "#a8d6a2" : "#4f9161",
-    yellow: dark ? "#d8b46a" : "#94701f",
-    brightYellow: dark ? "#e8c882" : "#a8842f",
-    blue: dark ? "#7ea6d8" : "#2f5f95",
-    brightBlue: dark ? "#98bbe6" : "#3f72ab",
-    magenta: dark ? "#c49ad8" : "#7f4f98",
-    brightMagenta: dark ? "#d4b0e6" : "#9262ad",
-    cyan: dark ? "#7cc4c0" : "#2d7d78",
-    brightCyan: dark ? "#98d8d4" : "#3a948e",
-    white: dark ? "#d8dcd6" : "#5d675f",
-    brightWhite: dark ? "#f3f5f1" : "#1b211d",
+    red: v("--destructive"),
+    brightRed: dark ? "#f6a28c" : "#cc5a40",
+    green: v("--human"),
+    brightGreen: dark ? "#8fcf96" : "#4c9c59",
+    yellow: v("--amber"),
+    brightYellow: dark ? "#ebc879" : "#c99220",
+    blue: v("--codex-0"),
+    brightBlue: dark ? "#8fc0e6" : "#3a83ba",
+    magenta: v("--meet"),
+    brightMagenta: dark ? "#f0bfe0" : "#9a4580",
+    cyan: v("--codex-1"),
+    brightCyan: dark ? "#8fd6cf" : "#2f8f88",
+    white: v("--muted-foreground"),
+    brightWhite: v("--foreground"),
   };
 };
 
@@ -166,7 +166,7 @@ function TerminalView({ room, info, workspace, focused, onFocus, onGone }: { roo
           terminal.reset();
           terminal.write(message.d ?? "");
         } else if (message.t === "out") terminal.write(message.d ?? "");
-        else if (message.t === "exit") terminal.write(`\r\n\x1b[2m[процес завершився${message.code != null ? `, код ${message.code}` : ""}]\x1b[0m\r\n`);
+        else if (message.t === "exit") terminal.write(`\r\n\x1b[2m[process exited${message.code != null ? `, code ${message.code}` : ""}]\x1b[0m\r\n`);
         else if (message.t === "closed") {
           closed = true;
           gone.current();
@@ -334,10 +334,10 @@ export function TerminalDrawer() {
   const focused = focus && current.includes(focus) ? focus : (current[0] ?? null);
 
   return (
-    <section aria-label="Термінал" className="relative flex shrink-0 flex-col border-t border-border/70 bg-code" style={{ height }}>
-      <div role="separator" aria-orientation="horizontal" aria-label="Висота термінала" onPointerDown={drag} className="absolute inset-x-0 -top-1 z-10 h-2 cursor-row-resize" />
+    <section aria-label="Terminal" className="relative flex shrink-0 flex-col border-t border-border/70 bg-code" style={{ height }}>
+      <div role="separator" aria-orientation="horizontal" aria-label="Terminal height" onPointerDown={drag} className="absolute inset-x-0 -top-1 z-10 h-2 cursor-row-resize" />
       <div className="flex h-8 shrink-0 items-stretch border-b border-border/70 bg-background/60">
-        <div role="tablist" aria-label="Термінали" className="scroll-thin flex min-w-0 flex-1 items-stretch overflow-x-auto">
+        <div role="tablist" aria-label="Terminals" className="scroll-thin flex min-w-0 flex-1 items-stretch overflow-x-auto">
           {groups.map((group, index) => {
             const on = index === active;
             const title = group.map((id) => byId.get(id)?.title ?? id).join(" · ");
@@ -349,7 +349,7 @@ export function TerminalDrawer() {
                 </button>
                 <button
                   type="button"
-                  aria-label="Закрити термінал"
+                  aria-label="Close the terminal"
                   onClick={() => void closeGroup(index)}
                   className={cn("grid size-5 shrink-0 place-items-center rounded hover:bg-accent", on ? "opacity-70" : "opacity-0 group-hover:opacity-70 focus:opacity-70")}
                 >
@@ -360,16 +360,16 @@ export function TerminalDrawer() {
           })}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 px-1">
-          <Button variant="ghost" size="icon" className="size-7" aria-label="Поділити" title="Поділити: ще один термінал поруч" disabled={!current.length || current.length >= MAX_SPLIT} onClick={() => void open(active).catch(fail)}>
+          <Button variant="ghost" size="icon" className="size-7" aria-label="Split" title="Split: another terminal alongside" disabled={!current.length || current.length >= MAX_SPLIT} onClick={() => void open(active).catch(fail)}>
             <Columns2Icon className="size-3.5" />
           </Button>
-          <Button variant="ghost" size="icon" className="size-7" aria-label="Новий термінал" title="Новий термінал" onClick={() => void open(null).catch(fail)}>
+          <Button variant="ghost" size="icon" className="size-7" aria-label="New terminal" title="New terminal" onClick={() => void open(null).catch(fail)}>
             <PlusIcon className="size-3.5" />
           </Button>
-          <Button variant="ghost" size="icon" className="size-7" aria-label="Закрити цей термінал" title="Закрити цей термінал" disabled={!focused} onClick={() => focused && void close(focused)}>
+          <Button variant="ghost" size="icon" className="size-7" aria-label="Close this terminal" title="Close this terminal" disabled={!focused} onClick={() => focused && void close(focused)}>
             <Trash2Icon className="size-3.5" />
           </Button>
-          <Button variant="ghost" size="icon" className="size-7" aria-label="Сховати термінал" title={`Сховати (${keyLabel("terminal")}) — термінали працюють далі`} onClick={() => setOpen(false)}>
+          <Button variant="ghost" size="icon" className="size-7" aria-label="Hide the terminal" title={`Hide (${keyLabel("terminal")}) — the terminals keep running`} onClick={() => setOpen(false)}>
             <ChevronDownIcon className="size-3.5" />
           </Button>
         </div>

@@ -176,8 +176,8 @@ const PAST_DEADLINE = "This command waited in the room's browser past its deadli
 const NETWORK_OFF = "This room's network was turned off, so its browser closed.";
 const WITHDRAWN = "This command was withdrawn (the agent's turn ended or its call was cancelled), so it was not run.";
 /** The human's address bar in a room whose network is off (spec: such a room's browser is off, for everyone). */
-const HUMAN_NETWORK_OFF = "У цій кімнаті вимкнено мережу, тож і браузер вимкнено. Увімкніть мережу в налаштуваннях кімнати.";
-const NO_DAEMON_ANSWER = "Agoryx не відповідає, тож не видно, чи в кімнаті ввімкнено мережу. Сторінку не відкрито.";
+const HUMAN_NETWORK_OFF = "This room’s network is off, so its browser is off too. Turn the network on in the room’s settings.";
+const NO_DAEMON_ANSWER = "Agoryx is not responding, so it can’t tell whether this room’s network is on. The page was not opened.";
 const staleRef = (ref: string) => `ref ${ref} is not on the page anymore (it changed or navigated). Take a new browser_snapshot.`;
 const tookTooLong = (op: BrowserOp, ms: number) =>
   `The ${op} did not finish within ${Math.round(ms / 1000)} s. It may or may not have happened in the page.`;
@@ -391,12 +391,12 @@ export class BrowserPanes {
     });
     ipcMain.handle("agoryx:browser:go", (event, room: unknown, target: unknown) => {
       this.refuseUntrusted(event);
-      if (!isRoom(room) || typeof target !== "string") throw new Error("Невідома кімната або адреса.");
+      if (!isRoom(room) || typeof target !== "string") throw new Error("Unknown room or address.");
       return this.go(room, target);
     });
     ipcMain.handle("agoryx:browser:outside", async (event, room: unknown) => {
       this.refuseUntrusted(event);
-      if (!this.options.userGesture(event.sender)) throw new Error("Сторінку можна відкрити в іншому браузері лише кліком у вікні Agoryx.");
+      if (!this.options.userGesture(event.sender)) throw new Error("A page can be opened in another browser only by a click in the Agoryx window.");
       const pane = isRoom(room) ? this.panes.get(room) : undefined;
       const url = pane && !pane.contents.isDestroyed() ? pane.contents.getURL() : "";
       let parsed: URL | null = null;
@@ -406,7 +406,7 @@ export class BrowserPanes {
         // not an address
       }
       if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) {
-        throw new Error("Цю сторінку не можна відкрити в іншому браузері.");
+        throw new Error("This page can’t be opened in another browser.");
       }
       await shell.openExternal(parsed.href);
     });
@@ -948,7 +948,7 @@ export class BrowserPanes {
       url: contents.getURL() || null,
       title: contents.getTitle(),
       loading: contents.isLoading(),
-      // A crashed page's history is not walked: «Оновити» or an address gives a fresh page.
+      // A crashed page's history is not walked: “Reload” or an address gives a fresh page.
       canGoBack: !pane.crashed && contents.navigationHistory.canGoBack(),
       canGoForward: !pane.crashed && contents.navigationHistory.canGoForward(),
       crashed: pane.crashed !== null,
@@ -986,13 +986,13 @@ export class BrowserPanes {
   }
 
   private refuseUntrusted(event: IpcMainInvokeEvent): void {
-    if (!this.options.trustedUi(event)) throw new Error("Лише вікно Agoryx може керувати браузером кімнати.");
+    if (!this.options.trustedUi(event)) throw new Error("Only the Agoryx window can control the room’s browser.");
   }
 
   /** The human's address bar and buttons: the same URL policy; a crashed pane is replaced by a fresh one. */
   private async go(room: string, target: string): Promise<{ ok: true } | { error: UrlError }> {
     const helpers = await this.load();
-    if (!helpers) throw new Error("Браузер кімнати недоступний: у цій копії Agoryx його немає.");
+    if (!helpers) throw new Error("The room’s browser is not available: this copy of Agoryx does not include it.");
     const history = target === "back" || target === "forward" || target === "reload";
     let address: string | null = null;
     if (!history) {

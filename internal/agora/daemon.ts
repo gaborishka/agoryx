@@ -16,6 +16,7 @@ import { planRevert, RevertError, type RevertRequest } from "./revert.js";
 import { deviceLabel, DeviceRegistry, formatCode, isDeviceToken, PairingError, type DeviceInfo } from "./devices.js";
 import { lanInterfaces, normalizeHosts, writeExposure, type Exposure } from "./exposure.js";
 import { linkedMedia, markdownTexts } from "./media.js";
+import { MAX_UPLOAD, saveUpload, UploadError } from "./uploads.js";
 import { agentModels } from "./models.js";
 import { locateNativeSession } from "./native.js";
 import { readLimits, recordLimits } from "./limits-store.js";
@@ -1130,6 +1131,21 @@ export class AgoraDaemon {
 
     if (parts[0] === "pair" || parts[0] === "devices" || parts[0] === "exposure") return this.devicesApi(req, res, parts, method, caller);
     if (parts[0] === "push") return this.pushApi(req, res, parts.slice(1), method, caller);
+
+    // A file the human attaches to a message (picked or pasted): kept under the agora home, linked by path.
+    if (parts[0] === "uploads" && parts.length === 1 && method === "POST") {
+      if (caller.agent) throw new HttpError(403, "attachments are the human's: an agent links its own files");
+      const body = (await readBody(req, Math.ceil(MAX_UPLOAD / 3) * 4 + 64 * 1024)) as Record<string, unknown>;
+      const name = typeof body.name === "string" ? body.name : "";
+      if (typeof body.data !== "string") throw new HttpError(400, "data (base64) is required");
+      try {
+        sendJson(res, 201, { path: saveUpload(name, Buffer.from(body.data, "base64"), this.env) });
+      } catch (error) {
+        if (error instanceof UploadError) throw new HttpError(400, error.message);
+        throw error;
+      }
+      return;
+    }
 
     if (parts[0] === "models" && parts.length === 1 && method === "GET") {
       sendJson(res, 200, await agentModels(this.env));

@@ -29,6 +29,7 @@ import { baseName, names as nameList, plural } from "@/lib/format";
 import type { AgentModels, LimitSnapshot, RoomAgent, RoomState } from "@/lib/types";
 import { useModels } from "@/lib/models";
 import { ModelMenu } from "@/components/room/ModelMenu";
+import { AttachButton, AttachmentList, useAttachments, withFiles } from "@/components/room/Attachments";
 import { LimitFace, LimitsSection } from "@/components/room/Limits";
 import { ink, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
@@ -85,9 +86,11 @@ export function Composer() {
   const ta = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const files = useAttachments();
 
   useEffect(() => {
     if (!roomId) return;
+    files.clear();
     setText(local.get(`draft.${roomId}`) ?? "");
     if (window.matchMedia("(pointer: fine)").matches) setTimeout(() => ta.current?.focus(), 30);
   }, [roomId]);
@@ -113,11 +116,12 @@ export function Composer() {
   };
   const send = async () => {
     const body = text.trim();
-    if (!body || !driven || sending) return;
+    if ((!body && !files.items.length) || !driven || sending) return;
     setSending(true);
     try {
-      await post("/messages", { text: body });
+      await post("/messages", { text: withFiles(body, await files.upload()) });
       change("");
+      files.clear();
     } catch (error) {
       fail(error);
     } finally {
@@ -146,6 +150,7 @@ export function Composer() {
     });
   };
   const names = nameList(room.agents.map((a) => a.label));
+  const ready = Boolean(text.trim() || files.items.length);
 
   return (
     <div className="flex w-full flex-col gap-2">
@@ -154,13 +159,17 @@ export function Composer() {
         className={cn(
           "rounded-[22px] border border-input bg-card shadow-soft transition focus-within:border-human/45 focus-within:shadow-lift focus-within:ring-4 focus-within:ring-human/10",
           !driven && "opacity-60",
+          files.over && "border-human/45 ring-4 ring-human/10",
         )}
+        {...files.drop}
         onSubmit={(event) => {
           event.preventDefault();
           void send();
         }}
       >
-        <div className="flex items-end gap-2 py-1.5 pr-2 pl-4">
+        <AttachmentList items={files.items} onRemove={files.remove} className="px-3 pt-3" />
+        <div className="flex items-end gap-1 py-1.5 pr-2 pl-2">
+          <AttachButton onFiles={files.add} disabled={!driven} className="mb-1" />
           <textarea
             ref={ta}
             rows={1}
@@ -168,22 +177,23 @@ export function Composer() {
             disabled={!driven}
             onChange={(event) => change(event.target.value)}
             onKeyDown={onKey}
+            onPaste={files.onPaste}
             placeholder={driven ? `Message ${names}…` : "Another process runs this room — view only"}
             aria-label="Message"
             aria-describedby="composer-keys"
             data-composer
-            className="scroll-thin block max-h-[40vh] min-h-[44px] overflow-y-hidden flex-1 resize-none bg-transparent py-2.5 text-body leading-relaxed outline-none placeholder:truncate placeholder:text-faint"
+            className="scroll-thin block max-h-[40vh] min-h-[44px] overflow-y-hidden flex-1 pl-1 resize-none bg-transparent py-2.5 text-body leading-relaxed outline-none placeholder:truncate placeholder:text-faint"
           />
           <Button
             type="submit"
             size="icon"
-            variant={text.trim() ? "default" : "ghost"}
-            className={cn("mb-1 size-8 shrink-0 rounded-full", !text.trim() && "text-faint")}
-            disabled={!driven || sending || !text.trim()}
+            variant={ready ? "default" : "ghost"}
+            className={cn("mb-1 size-8 shrink-0 rounded-full", !ready && "text-faint")}
+            disabled={!driven || sending || !ready}
             aria-label="Send"
             title="Send (Enter)"
           >
-            {text.trim() ? <ArrowUpIcon className="size-4" /> : <CornerDownLeftIcon className="size-4" />}
+            {ready ? <ArrowUpIcon className="size-4" /> : <CornerDownLeftIcon className="size-4" />}
           </Button>
         </div>
       </form>

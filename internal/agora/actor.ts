@@ -82,8 +82,8 @@ export const actorIn = (target: Pick<RoomState, "id">, origin: ActorOrigin): Act
 export const actorFields = (actor: Actor): { by: string; from?: ActorOrigin } => ({ by: actor.by, ...(actor.from ? { from: actor.from } : {}) });
 
 /** How the room names someone in the lines it writes: an agent's label, a guest with its room, the human by name. */
-export const actorLabel = (state: Pick<RoomState, "agents" | "guests">, handle: string): string => {
-  const agent = state.agents.find((entry) => entry.id === handle);
+export const actorLabel = (state: Pick<RoomState, "agents" | "guests"> & { former?: RoomState["former"] }, handle: string): string => {
+  const agent = state.agents.find((entry) => entry.id === handle) ?? state.former?.find((entry) => entry.id === handle);
   if (agent) return agent.label;
   const guest = state.guests?.[handle];
   return guest ? originName(guest) : handle;

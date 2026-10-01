@@ -28,6 +28,8 @@ export function ModelMenu({
   align = "end",
   variant = "quiet",
   onSession,
+  onManage,
+  onLeave,
   face,
   extra,
 }: {
@@ -44,6 +46,10 @@ export function ModelMenu({
   variant?: "quiet" | "field" | "seat";
   /** Opens the agent's session; absent where there is no session yet. */
   onSession?: () => void;
+  /** Opens the room's agents: role, name, profile, sending it out. */
+  onManage?: () => void;
+  /** Leaves this agent out (the start screen: the next room starts without it). */
+  onLeave?: () => void;
   /** seat: the agent's face at the start of the pill. */
   face?: ReactNode;
   /** A section under the effort, e.g. the agent's limits. */
@@ -217,6 +223,31 @@ export function ModelMenu({
             >
               {agent.label} session
               <ChevronRightIcon className="ml-auto size-4 opacity-60" />
+            </button>
+          ) : null}
+          {onManage ? (
+            <button
+              type="button"
+              onClick={() => {
+                show(false);
+                onManage();
+              }}
+              className={cn("flex w-full items-center gap-2 px-3 py-2 text-left text-ui transition hover:bg-accent", !onSession && "border-t border-border")}
+            >
+              Role and settings of {agent.label}…
+              <ChevronRightIcon className="ml-auto size-4 opacity-60" />
+            </button>
+          ) : null}
+          {onLeave ? (
+            <button
+              type="button"
+              onClick={() => {
+                show(false);
+                onLeave();
+              }}
+              className="flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-ui text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            >
+              Start without {agent.label}
             </button>
           ) : null}
         </Command>

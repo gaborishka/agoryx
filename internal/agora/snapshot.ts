@@ -62,6 +62,9 @@ export const eventPatch = (state: RoomState, event: RoomEvent): Record<string, u
       return { ...base, name: state.name };
     case "agent.changed":
       return { ...base, agents: state.agents };
+    case "agent.added":
+    case "agent.removed":
+      return { ...base, agents: state.agents, former: state.former, cursors: state.cursors };
     case "commit.created":
       return { ...base, commits: state.commits };
     case "workspace.reverted":

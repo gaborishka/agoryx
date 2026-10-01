@@ -6,6 +6,8 @@ export const inTurnAt = (state: RoomState, agentId: string, seq: number): boolea
 
 /** Whether an event wakes an agent: the room's one rule, for the engine and for reading a room back. Pure. */
 export const wakesAgent = (state: RoomState, event: RoomEvent, agent: RoomAgent): boolean => {
+  // What was said before the agent was seated is for reading, not answering.
+  if (event.seq <= (state.joined?.[agent.id] ?? 0)) return false;
   if (event.type === "message.posted") {
     const message = event.message;
     if (message.author === agent.id || !message.wakes) return false;

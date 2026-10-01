@@ -10,6 +10,8 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   ...(event.worktree ? { worktree: event.worktree } : {}),
   human: event.human,
   agents: event.agents,
+  former: [],
+  joined: {},
   settings: { ...event.settings },
   createdAt: event.ts,
   seq: event.seq,
@@ -188,9 +190,32 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
           if (event.effort === null) delete next.effort;
           else next.effort = event.effort;
         }
+        if (event.role !== undefined) {
+          if (event.role === null) delete next.role;
+          else next.role = event.role;
+        }
+        if (event.label !== undefined) next.label = event.label;
+        if (event.profile !== undefined) {
+          if (event.profile) delete next.profile;
+          else next.profile = false;
+        }
         return next;
       });
       return;
+    case "agent.added":
+      state.agents = [...state.agents, event.agent];
+      state.former = state.former.filter((agent) => agent.id !== event.agent.id);
+      state.joined[event.agent.id] = event.seq;
+      // Its first turn reads the conversation from the start (or, back again, from where it left off).
+      state.cursors[event.agent.id] ??= 0;
+      return;
+    case "agent.removed": {
+      const gone = state.agents.find((agent) => agent.id === event.agent);
+      if (!gone) return;
+      state.agents = state.agents.filter((agent) => agent.id !== event.agent);
+      state.former = [...state.former.filter((agent) => agent.id !== event.agent), gone];
+      return;
+    }
     case "commit.created":
       state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq, ...(event.folder ? { folder: event.folder } : {}) });
       return;

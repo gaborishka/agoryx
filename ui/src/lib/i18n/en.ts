@@ -90,6 +90,22 @@ const sys: Say = {
     ].filter(Boolean);
     return `${who ?? n.by} changes ${n.agent}: ${parts.join(", ")}.`;
   },
+  "agent.set": (n, who) => {
+    const name = n.label ?? n.agent;
+    const parts = [
+      n.label === undefined ? null : `renames ${n.agent} to ${n.label}`,
+      n.role === undefined ? null : n.role ? `gives ${name} a role: “${n.role}”` : `takes the role away from ${name} — it acts as itself again`,
+      n.profile === undefined ? null : n.profile ? `gives ${name} their profile` : `stops giving ${name} their profile`,
+    ].filter(Boolean);
+    return `${who ?? n.by} ${parts.join("; ")}.`;
+  },
+  "agent.added": (n, who) => {
+    // "Codex (Codex)" says nothing: the CLI only when the name does not say it.
+    const cli = n.cli === "codex" ? "Codex" : "Claude Code";
+    const about = [n.agent.startsWith(n.cli === "codex" ? "Codex" : "Claude") ? null : cli, n.model ? `model \`${n.model}\`` : null].filter(Boolean).join(", ");
+    return `${who ?? n.by} adds ${n.agent} to the room${about ? ` (${about})` : ""}${n.role ? ` with the role: “${n.role}”` : ""}. It reads the conversation and answers from the next message.`;
+  },
+  "agent.removed": (n, who) => `${who ?? n.by} removes ${n.agent} from the room. Its messages stay.`,
   "turn.failed": (n) => `${n.agent}: the turn could not finish — ${failure(n.error, n.message, n.cli)}`,
   "agent.busy": (n) => `${n.agent} is talking in its own session right now — its turn in the room starts after that.`,
   "jev.second_look": (n) => {

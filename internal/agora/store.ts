@@ -226,7 +226,7 @@ export class RoomStore {
   summary(): RoomSummary {
     const last = [...this.state.messages].reverse().find((message) => message.kind !== "pass" && message.kind !== "system");
     const lastEvent = this.events[this.events.length - 1]!;
-    const lastBy = last ? this.state.agents.find((agent) => agent.id === last.author) : undefined;
+    const lastBy = last ? (this.state.agents.find((agent) => agent.id === last.author) ?? this.state.former?.find((agent) => agent.id === last.author)) : undefined;
     const look = lastBy ? agentLook(this.state.agents, lastBy.id) : undefined;
     const lastGuest = last && !lastBy ? this.state.guests?.[last.author] : undefined;
     const lastLabel = lastBy ? lastBy.label : lastGuest ? originName(lastGuest) : undefined;

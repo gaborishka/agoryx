@@ -4,6 +4,7 @@ import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
 import { ErrorNote, Hint, Loading } from "@/components/common/states";
 import { Avatar, Stats } from "@/components/room/bits";
+import { AgentsDialog } from "@/components/dialogs/AgentsDialog";
 import { PhoneDialog } from "@/components/dialogs/PhoneDialog";
 import { RefChip } from "@/components/table/OpCard";
 import { Button } from "@/components/ui/button";
@@ -28,11 +29,25 @@ export const fail = (error: unknown) => {
   if (!(error instanceof Unauthorized)) toast.error(errText(error));
 };
 
-export function Shell({ title, sub, size = "md", children }: { title: ReactNode; sub?: ReactNode; size?: "sm" | "md" | "lg"; children: ReactNode }) {
+export function Shell({
+  title,
+  sub,
+  size = "md",
+  children,
+  onOpenAutoFocus,
+}: {
+  title: ReactNode;
+  sub?: ReactNode;
+  size?: "sm" | "md" | "lg";
+  children: ReactNode;
+  /** Where focus goes on open; the first field by default. */
+  onOpenAutoFocus?: (event: Event) => void;
+}) {
   const openDialog = useStore((s) => s.openDialog);
   return (
     <Dialog open onOpenChange={(open) => !open && openDialog(null)}>
       <DialogContent
+        onOpenAutoFocus={onOpenAutoFocus}
         className={cn(
           "flex max-h-[min(88vh,960px)] flex-col gap-0 overflow-hidden rounded-2xl p-0 shadow-lift",
           size === "sm" && "sm:max-w-md",
@@ -694,6 +709,8 @@ const render = (d: DialogState) => {
       return <RevertDialog sha={d.sha} undo={d.undo} />;
     case "settings":
       return <SettingsDialog />;
+    case "agents":
+      return <AgentsDialog focus={d.agent} />;
     case "help":
       return <HelpDialog />;
     case "keys":

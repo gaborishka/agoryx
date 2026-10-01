@@ -16,6 +16,7 @@ import { PhonePanel } from "@/components/dialogs/PhoneDialog";
 import { Avatar } from "@/components/room/bits";
 import { LimitsCard } from "@/components/room/Limits";
 import { ModelMenu } from "@/components/room/ModelMenu";
+import { RoleField } from "@/components/room/RoleField";
 import { NavButton } from "@/components/room/RoomHeader";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
@@ -25,11 +26,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, local, Unauthorized } from "@/lib/api";
 import { keyLabel, withMod } from "@/lib/keys";
 import { errText } from "@/lib/load";
+import { handleFor, KIND_NAME, KIND_SHORT, MAX_ROLE, nameFor, rosterEntry as entry } from "@/lib/agents";
 import { useModels } from "@/lib/models";
 import { DEFAULT_AGENTS } from "@/lib/room";
 import { type SettingsSection, useStore } from "@/lib/store";
 import { type ThemePref, useTheme } from "@/lib/theme";
-import type { AgentKind, AgentModels, LimitSnapshot, RoomAgent } from "@/lib/types";
+import type { AgentKind, LimitSnapshot, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /**
@@ -283,43 +285,6 @@ interface RosterFile {
   rosterError?: string;
 }
 
-const KIND_NAME: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex" };
-const KIND_SHORT: Record<AgentKind, string> = { claude: "Claude", codex: "Codex" };
-
-/**
- * An agent is its CLI and its model, and so is its name: "Claude Opus", "Codex GPT-5" — never just "Opus",
- * which reads as a third vendor next to Claude. The CLI's default model is plain "Claude"; a repeat gets 2, 3, …
- */
-const nameFor = (kind: AgentKind, model: string | undefined, models: AgentModels | null, others: readonly RoomAgent[]) => {
-  const label = model ? (models?.[kind]?.models.find((m) => m.id === model)?.label ?? model) : "";
-  const base = label ? `${KIND_SHORT[kind]} ${label}` : KIND_SHORT[kind];
-  const free = (name: string) => !others.some((agent) => agent.label.toLowerCase() === name.toLowerCase() || agent.id === handleFor(name));
-  for (let n = 1; ; n += 1) {
-    const name = n === 1 ? base : `${base} ${n}`;
-    if (free(name)) return name;
-  }
-};
-
-/** "Opus 2" → "opus-2": the @handle the daemon takes (a letter, then letters, digits, _ and -). */
-const handleFor = (label: string) =>
-  label
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^[^a-z]+/, "")
-    .replace(/-+$/, "")
-    .slice(0, 32);
-
-/** Only the fields the roster file takes. */
-const entry = ({ id, kind, label, model, effort, profile }: RoomAgent): RoomAgent => ({
-  id,
-  kind,
-  label,
-  ...(model ? { model } : {}),
-  ...(effort ? { effort } : {}),
-  ...(profile === false ? { profile } : {}),
-});
-
 function Agents() {
   const models = useModels();
   const [file, setFile] = useState<RosterFile | null>(null);
@@ -344,7 +309,7 @@ function Agents() {
       list.map((agent) => {
         if (agent.id !== id) return agent;
         const next: RoomAgent = { ...agent, ...patch };
-        for (const key of ["model", "effort"] as const) if (key in patch && !patch[key]) delete next[key];
+        for (const key of ["model", "effort", "role"] as const) if (key in patch && !patch[key]) delete next[key];
         if (next.profile !== false) delete next.profile;
         // A name made from the model follows the model ("Claude Opus" → "Claude Sonnet"); a name of one's own stays.
         const others = list.filter((a) => a.id !== id);
@@ -389,7 +354,7 @@ function Agents() {
   return (
     <Section
       title="Agents"
-      sub="Who sits in every new room, with which model and effort. Existing rooms stay as they are: change the model there at the bottom of the room."
+      sub="Who sits in every new room, with which model, effort and role. Existing rooms stay as they are: change the model there at the bottom of the room."
     >
       {error ? (
         <ErrorNote>{error}</ErrorNote>
@@ -404,45 +369,48 @@ function Agents() {
           ) : null}
           <div className="flex flex-col divide-y divide-border rounded-xl border border-border bg-card">
             {agents.map((agent) => (
-              <div key={agent.id} className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center">
-                <div className="flex min-w-0 flex-1 items-center gap-3">
-                  <Avatar handle={agent.id} roster={agents} size={32} />
-                  <div className="flex min-w-0 flex-col">
-                    <span className="truncate text-ui font-medium">{agent.label}</span>
-                    <span className="truncate text-meta text-muted-foreground">
-                      @{agent.id} · {KIND_NAME[agent.kind]}
-                    </span>
+              <div key={agent.id} className="flex flex-col gap-3 px-4 py-3.5">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    <Avatar handle={agent.id} roster={agents} size={32} />
+                    <div className="flex min-w-0 flex-col">
+                      <span className="truncate text-ui font-medium">{agent.label}</span>
+                      <span className="truncate text-meta text-muted-foreground">
+                        @{agent.id} · {KIND_NAME[agent.kind]}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <ModelMenu
+                      agent={agent}
+                      seating={{ agents }}
+                      models={models}
+                      side="bottom"
+                      variant="field"
+                      onSet={(patch) => change(agent.id, pick(patch))}
+                    />
+                    <label className="flex items-center gap-2 text-small text-muted-foreground" title="Whether this agent gets your profile">
+                      Profile
+                      <Switch
+                        checked={agent.profile !== false}
+                        onCheckedChange={(on) => change(agent.id, { profile: on ? undefined : false })}
+                        aria-label={`Profile for ${agent.label}`}
+                      />
+                    </label>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 text-muted-foreground"
+                      disabled={agents.length < 2}
+                      aria-label={`Remove ${agent.label}`}
+                      title={agents.length < 2 ? "A room needs at least one agent" : `Remove ${agent.label}`}
+                      onClick={() => setAgents((list) => list.filter((a) => a.id !== agent.id))}
+                    >
+                      <Trash2Icon className="size-4" />
+                    </Button>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <ModelMenu
-                    agent={agent}
-                    seating={{ agents }}
-                    models={models}
-                    side="bottom"
-                    variant="field"
-                    onSet={(patch) => change(agent.id, pick(patch))}
-                  />
-                  <label className="flex items-center gap-2 text-small text-muted-foreground" title="Whether this agent gets your profile">
-                    Profile
-                    <Switch
-                      checked={agent.profile !== false}
-                      onCheckedChange={(on) => change(agent.id, { profile: on ? undefined : false })}
-                      aria-label={`Profile for ${agent.label}`}
-                    />
-                  </label>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-8 text-muted-foreground"
-                    disabled={agents.length < 2}
-                    aria-label={`Remove ${agent.label}`}
-                    title={agents.length < 2 ? "A room needs at least one agent" : `Remove ${agent.label}`}
-                    onClick={() => setAgents((list) => list.filter((a) => a.id !== agent.id))}
-                  >
-                    <Trash2Icon className="size-4" />
-                  </Button>
-                </div>
+                <RoleField id={`roster-role-${agent.id}`} value={agent.role ?? ""} onChange={(role) => change(agent.id, { role })} name={agent.label} />
               </div>
             ))}
           </div>
@@ -505,7 +473,7 @@ function Agents() {
                   Cancel
                 </Button>
               ) : null}
-              <Button onClick={() => void save()} disabled={!dirty || busy}>
+              <Button onClick={() => void save()} disabled={!dirty || busy || agents.some((a) => (a.role?.length ?? 0) > MAX_ROLE)}>
                 Save
               </Button>
             </div>

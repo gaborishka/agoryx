@@ -12,6 +12,7 @@ import {
   Settings2Icon,
   ShieldCheckIcon,
   SquareIcon,
+  UserPlusIcon,
   UsersIcon,
   WifiOffIcon,
 } from "lucide-react";
@@ -398,6 +399,17 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
         {room.agents.map((a) => (
           <AgentModel key={a.id} agent={a} models={models} limits={limits} disabled={!driven} working={presence?.[a.id] === "working"} />
         ))}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+          onClick={() => openDialog({ kind: "agents" })}
+          title="The room's agents: add, remove, roles"
+          aria-label="The room's agents"
+        >
+          <UserPlusIcon className="size-3.5" />
+        </Button>
       </div>
       {running ? <LoaderCircleIcon className="ml-1 size-4 shrink-0 animate-spin text-muted-foreground" aria-label="Agents are working" /> : null}
     </div>
@@ -411,6 +423,7 @@ function AgentModel({ agent, models, limits, disabled, working }: { agent: RoomA
   const room = useStore((s) => s.snap?.state);
   const post = useStore((s) => s.post);
   const openSession = useStore((s) => s.openSession);
+  const openDialog = useStore((s) => s.openDialog);
   if (!room) return null;
   return (
     <ModelMenu
@@ -428,6 +441,7 @@ function AgentModel({ agent, models, limits, disabled, working }: { agent: RoomA
       extra={<LimitsSection kind={agent.kind} limits={limits} />}
       onSet={(change) => post("/agent", { agent: agent.id, ...change }).catch(fail)}
       onSession={() => openSession(agent.id)}
+      onManage={() => openDialog({ kind: "agents", agent: agent.id })}
     />
   );
 }

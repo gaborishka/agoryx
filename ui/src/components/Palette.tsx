@@ -18,6 +18,7 @@ import {
   SmartphoneIcon,
   SquareIcon,
   UserRoundIcon,
+  UsersIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { panelTabs, TABS } from "@/components/panel/SidePanel";
@@ -164,6 +165,7 @@ export function Palette() {
       { id: "revert", label: "Revert folder to a checkpoint", icon: RotateCcwIcon, run: () => s.openDialog({ kind: "revert" }), keywords: "revert checkpoint undo rollback" },
       { id: "usage", label: "Room usage", icon: ReceiptIcon, run: () => s.openDialog({ kind: "usage" }), keywords: "usage cost spend tokens wakes" },
       { id: "ask", label: "Add a question to the table", icon: ScaleIcon, run: () => s.openDialog({ kind: "table-form", op: "ask" }) },
+      { id: "agents", label: "The room's agents", icon: UsersIcon, run: () => s.openDialog({ kind: "agents" }), keywords: "agents roster role add remove" },
       { id: "settings", label: "Room settings", icon: SettingsIcon, run: () => s.openDialog({ kind: "settings" }) },
     );
     if (driven && room.runs.at(-1)?.status === "active") {

@@ -26,6 +26,7 @@ import {
 import { api, local, Unauthorized } from "@/lib/api";
 import { names, plural } from "@/lib/format";
 import { useModels } from "@/lib/models";
+import { rosterEntry } from "@/lib/agents";
 import { DEFAULT_AGENTS } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
@@ -84,15 +85,15 @@ const withPick = (agent: RoomAgent, pick: ModelChange | undefined): RoomAgent =>
   return next;
 };
 
-/** An agent as the roster JSON the daemon checks: only the fields it takes. */
-const rosterEntry = ({ id, kind, label, model, effort, profile }: RoomAgent) => ({
-  id,
-  kind,
-  label,
-  ...(model ? { model } : {}),
-  ...(effort ? { effort } : {}),
-  ...(profile === false ? { profile } : {}),
-});
+/** Agents of the roster left out of the next room, by id: the room starts with the others. */
+const readLeft = (): string[] => {
+  try {
+    const value: unknown = JSON.parse(local.get("start.left") ?? "[]");
+    return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+};
 
 const footChip =
   "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-small text-muted-foreground transition hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground";
@@ -267,12 +268,25 @@ export function StartScreen() {
   // A broken roster file (agents.json): said here, and no room is started until it reads again.
   const [rosterError, setRosterError] = useState<string | null>(null);
   // Named as they sit: Claudes first, then Codexes.
-  const who = names([...agents.filter((a) => a.kind === "claude"), ...agents.filter((a) => a.kind !== "claude")].map((a) => a.label));
   const models = useModels();
   const [picks, setPicks] = useState<Picks>(readPicks);
-  const seated = agents.map((agent) => withPick(agent, picks[agent.id]));
-  // The roster goes with the new room only when a model or effort here differs from it.
-  const picked = seated.some((agent, i) => agent.model !== agents[i]!.model || agent.effort !== agents[i]!.effort);
+  const [left, setLeft] = useState<string[]>(readLeft);
+  // One agent at least: if all were left out (the roster changed meanwhile), everyone sits.
+  const out = agents.every((agent) => left.includes(agent.id)) ? [] : left;
+  const seated = agents.filter((agent) => !out.includes(agent.id)).map((agent) => withPick(agent, picks[agent.id]));
+  const absent = agents.filter((agent) => out.includes(agent.id));
+  // The roster goes with the new room only when it differs here: a model or effort picked, or an agent left out.
+  const picked = absent.length > 0 || seated.some((agent) => {
+    const base = agents.find((a) => a.id === agent.id)!;
+    return agent.model !== base.model || agent.effort !== base.effort;
+  });
+  const leave = (id: string, gone: boolean) =>
+    setLeft((prev) => {
+      const next = gone ? [...prev.filter((x) => x !== id), id] : prev.filter((x) => x !== id);
+      local.set("start.left", next.length ? JSON.stringify(next) : null);
+      return next;
+    });
+  const who = names([...seated.filter((a) => a.kind === "claude"), ...seated.filter((a) => a.kind !== "claude")].map((a) => a.label));
   const pick = (id: string, change: ModelChange) =>
     setPicks((prev) => {
       const next = { ...prev, [id]: { ...prev[id], ...change } };
@@ -402,7 +416,20 @@ export function StartScreen() {
                     side="bottom"
                     className="h-8 rounded-full px-2.5 text-small text-muted-foreground hover:text-foreground"
                     onSet={(change) => pick(agent.id, change)}
+                    onLeave={seated.length > 1 ? () => leave(agent.id, true) : undefined}
                   />
+                ))}
+                {absent.map((agent) => (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    onClick={() => leave(agent.id, false)}
+                    title={`Seat ${agent.label} in the new room`}
+                    className="inline-flex h-8 items-center gap-1 rounded-full border border-dashed border-border px-2.5 text-small text-faint transition hover:bg-accent hover:text-foreground"
+                  >
+                    <PlusIcon className="size-3.5" />
+                    {agent.label}
+                  </button>
                 ))}
                 <span aria-hidden className="mx-0.5 hidden h-4 w-px bg-border sm:block" />
                 <BudgetChip budget={budget} onBudget={changeBudget} />

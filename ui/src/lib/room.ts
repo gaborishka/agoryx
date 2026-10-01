@@ -25,7 +25,7 @@ export const DEFAULT_AGENTS: RoomAgent[] = [
 ];
 
 /** What a handle is looked up in: a room, or just a roster (the start screen, before there is a room). */
-export type Seating = { agents: RoomAgent[]; human?: string; guests?: Record<string, ActorOrigin> };
+export type Seating = { agents: RoomAgent[]; human?: string; guests?: Record<string, ActorOrigin>; former?: RoomAgent[] };
 
 /**
  * An agent is whoever the room's roster says it is — never a kind. "claude" or "codex" is an agent
@@ -45,6 +45,9 @@ export const participant = (room: Seating | undefined, handle: string): Particip
     };
   }
   if (handle === "agoryx") return { id: handle, label: "Agoryx", tone: "sys", agent: false };
+  // An agent that left the room: its messages keep its name and colour.
+  const gone = room?.former?.find((a) => a.id === handle);
+  if (gone) return { id: gone.id, label: gone.label, tone: gone.kind === "codex" ? "codex" : "claude", agent: true, kind: gone.kind };
   // An agent of another room that acted here with its own key: named with its room, never taken for one of ours.
   const guest = room?.guests?.[handle];
   if (guest) return { id: handle, label: `${guest.label} (from the room “${guest.roomName}”)`, tone: guest.kind, agent: false, kind: guest.kind };

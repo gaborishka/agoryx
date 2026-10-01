@@ -553,6 +553,7 @@ export function SessionPanel() {
             disabled={!snap.driven}
             className="max-w-[75%]"
             onSet={(change) => void post("/agent", { agent: agent.id, ...change }).catch((error) => !(error instanceof Unauthorized) && toast.error(errText(error)))}
+            onManage={() => useStore.getState().openDialog({ kind: "agents", agent: agent.id })}
           />
           <Tip tip="The change applies from the next turn: the live session restarts with the new model, and the conversation in it stays the same.">
             <span className="text-meta text-faint">from the next turn</span>

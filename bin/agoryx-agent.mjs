@@ -51,7 +51,9 @@ const USAGE = `agoryx — room tools for agents
   agoryx read new          what the others said since your turn began
 
   agoryx table show
-  agoryx table ask "question"
+  agoryx table ask "question" [--many]
+                   --many: the options are not alternatives — any number of them can be chosen
+                   (a list of things to do, not "which one"); without it, choosing one closes the question
   agoryx table propose "short title" [--body "what and why" | --body-file notes.md | --body -] [--file path] [--q Q1]
                    the body is markdown: mermaid/html/svg fences and ![](path) embeds render for everyone
   agoryx table object  P1 "reason"
@@ -67,6 +69,12 @@ const USAGE = `agoryx — room tools for agents
   agoryx table withdraw P1
   agoryx table decide P1 [--note "why"]
   agoryx table reopen Q1|P1
+  agoryx table edit P1 ["new title"] [--body … | --body-file … | --body -] [--file path] [--q Q2]
+  agoryx table edit Q1|S1|F1|X1|N1|C1 ["new text"] [--many | --one] [--source …]
+                   rewrite your own item in place (the room sees that you did)
+  agoryx table delete P1|Q1|S1|F1|X1|N1|C1
+                   take your own item off the table (a mistake, a duplicate, a restructure);
+                   withdraw instead when the room should still see what you took back
 
   agoryx diff              recent turns that changed files: who, when, +/−
   agoryx diff t7           exactly what turn t7 changed (a patch)
@@ -153,6 +161,9 @@ const roomDir = (agoryxDir, flagRoom) => {
   );
 };
 
+/** Flags that take no value (same as TABLE_SWITCHES in internal/agora/table-cli.ts). */
+const SWITCHES = ["many", "one"];
+
 const parseArgs = (argv) => {
   const positional = [];
   const flags = {};
@@ -160,7 +171,8 @@ const parseArgs = (argv) => {
     const arg = argv[i];
     if (arg.startsWith("--")) {
       const eq = arg.indexOf("=");
-      if (eq > 0) flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+      if (eq < 0 && SWITCHES.includes(arg.slice(2))) flags[arg.slice(2)] = "true";
+      else if (eq > 0) flags[arg.slice(2, eq)] = arg.slice(eq + 1);
       else if (i + 1 < argv.length) flags[arg.slice(2)] = argv[++i];
       else flags[arg.slice(2)] = "";
     } else {
@@ -195,7 +207,9 @@ const signer = (flags) => {
 
 /** The flags each verb takes (same as internal/agora/table-cli.ts); anything else is a typo, not something to drop. */
 const TABLE_FLAGS = {
+  ask: ["many"],
   propose: ["body", "file", "q"],
+  edit: ["body", "file", "q", "source", "many", "one"],
   evidence: ["source"],
   object: ["source"],
   support: ["source"],
@@ -207,12 +221,14 @@ const TABLE_FLAGS = {
 const buildOp = (verb, positional, flags) => {
   const allowed = TABLE_FLAGS[verb] ?? [];
   const unknown = Object.keys(flags).filter((flag) => !allowed.includes(flag));
-  if (unknown.length > 0 && ["ask", "fact", "settle", "concede", "next", "propose", "object", "support", "evidence", "done", "withdraw", "reopen", "decide"].includes(verb)) {
+  if (unknown.length > 0 && ["ask", "fact", "settle", "concede", "next", "propose", "object", "support", "evidence", "done", "withdraw", "reopen", "decide", "edit", "delete"].includes(verb)) {
     fail(`'${verb}' does not take ${unknown.map((flag) => `--${flag}`).join(", ")}${allowed.length ? ` (it takes ${allowed.map((flag) => `--${flag}`).join(", ")})` : ""}`);
   }
   const rest = positional.join(" ").trim();
   switch (verb) {
     case "ask":
+      if (!rest) fail("'ask' needs text");
+      return { op: "ask", text: rest, many: flags.many ? true : undefined };
     case "fact":
     case "next":
       if (!rest) fail(`'${verb}' needs text`);
@@ -244,6 +260,24 @@ const buildOp = (verb, positional, flags) => {
     case "reopen":
       if (!positional[0]) fail(`'${verb}' needs an id`);
       return { op: verb, target: positional[0] };
+    case "edit": {
+      const [target, ...text] = positional;
+      if (!target) fail(`'edit' needs an id, e.g. edit P1 "new title" or edit Q1 --many`);
+      if (flags.many && flags.one) fail("'edit' takes --many or --one, not both");
+      return {
+        op: "edit",
+        target,
+        text: text.join(" ").trim() || undefined,
+        body: flags.body,
+        file: flags.file,
+        q: flags.q,
+        source: flags.source,
+        many: flags.many ? true : flags.one ? false : undefined,
+      };
+    }
+    case "delete":
+      if (!positional[0]) fail("'delete' needs an id");
+      return { op: "delete", target: positional[0] };
     case "decide":
       if (!positional[0]) fail("'decide' needs an option id");
       return { op: "decide", target: positional[0], note: flags.note ?? (positional.slice(1).join(" ") || undefined) };

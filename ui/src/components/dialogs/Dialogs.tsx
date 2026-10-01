@@ -467,11 +467,14 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
   const post = useStore((s) => s.post);
   const openDialog = useStore((s) => s.openDialog);
   const [values, setValues] = useState<Record<string, string>>({ q: q ?? "" });
+  const [many, setMany] = useState(false);
   const [busy, setBusy] = useState(false);
   if (!room) return null;
   const form = FORMS[op];
   const option = target ? room.table.options.find((o) => o.id === target) : undefined;
   const open = room.table.questions.filter((x) => x.status === "open");
+  const question = option?.q ? room.table.questions.find((x) => x.id === option.q) : undefined;
+  const others = question ? room.table.options.filter((o) => o.q === question.id && o.id !== option?.id && o.status === "open").length : 0;
   const set = (name: string, value: string) => setValues((v) => ({ ...v, [name]: value }));
   const submit = async () => {
     const v = Object.fromEntries(Object.entries(values).map(([k, x]) => [k, x.trim()]));
@@ -480,6 +483,7 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
     else if (op === "decide") body = { op, target, ...(v.note ? { note: v.note } : {}) };
     else if (op === "object" || op === "support" || op === "evidence") body = { op, target, text: v.text, ...(v.source ? { source: v.source } : {}) };
     else if (op === "settle") body = { op, text: v.text, ...(v.q ? { q: v.q } : {}) };
+    else if (op === "ask") body = { op, text: v.text, ...(many ? { many: true } : {}) };
     else body = { op, text: v.text };
     setBusy(true);
     try {
@@ -532,6 +536,15 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
             )}
           </div>
         ))}
+        {op === "ask" ? (
+          <label className="flex items-center justify-between gap-3 text-sm">
+            <span className="flex flex-col">
+              Any number of answers
+              <span className="text-meta text-muted-foreground">The options are a list to pick from, not alternatives</span>
+            </span>
+            <Switch checked={many} onCheckedChange={setMany} />
+          </label>
+        ) : null}
         {(op === "propose" || op === "settle") && open.length ? (
           <div className="flex flex-col gap-1.5">
             <Label>{op === "settle" ? "Answers a question (and closes it)" : "For question"}</Label>
@@ -550,7 +563,15 @@ function TableFormDialog({ op, target, q }: { op: TableFormOp; target?: string; 
             </Select>
           </div>
         ) : null}
-        <Hint>{op === "decide" ? "The decision appears in the conversation, and agents continue from it." : "Agents see this on their next turn."}</Hint>
+        <Hint>
+          {op === "decide"
+            ? question && others
+              ? question.many
+                ? `${question.id} stays open: the other ${plural(others, "option", "options")} can still be chosen.`
+                : `This closes ${question.id}: the other ${plural(others, "option", "options")} are set aside. If they don't exclude this one, make ${question.id} a question with any number of answers first.`
+              : "The decision appears in the conversation, and agents continue from it."
+            : "Agents see this on their next turn."}
+        </Hint>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => openDialog(null)}>
             Cancel

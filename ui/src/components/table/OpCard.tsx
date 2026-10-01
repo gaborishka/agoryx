@@ -8,11 +8,13 @@ import {
   LightbulbIcon,
   type LucideIcon,
   MicroscopeIcon,
+  PencilIcon,
   RefreshCcwIcon,
   RotateCcwIcon,
   ShieldAlertIcon,
   SignpostIcon,
   ThumbsUpIcon,
+  Trash2Icon,
   UndoIcon,
 } from "lucide-react";
 import { useState } from "react";
@@ -38,6 +40,8 @@ export const TC_KIND: Record<TableOp["op"], string> = {
   decide: "Decision",
   reopen: "Reopened",
   concede: "Changes their mind",
+  edit: "Rewritten",
+  delete: "Deleted",
 };
 
 export const KIND_ICON: Record<TableOp["op"], LucideIcon> = {
@@ -54,6 +58,8 @@ export const KIND_ICON: Record<TableOp["op"], LucideIcon> = {
   decide: GavelIcon,
   reopen: RotateCcwIcon,
   concede: RefreshCcwIcon,
+  edit: PencilIcon,
+  delete: Trash2Icon,
 };
 
 export const KIND_TONE: Record<TableOp["op"], string> = {
@@ -70,6 +76,8 @@ export const KIND_TONE: Record<TableOp["op"], string> = {
   decide: "text-meet-ink",
   reopen: "text-amber",
   concede: "text-shift",
+  edit: "text-muted-foreground",
+  delete: "text-muted-foreground",
 };
 
 export function Kind({ op }: { op: TableOp["op"] }) {
@@ -214,11 +222,14 @@ export function OpCard({ o }: { o: TableOp }) {
   if (!table) return null;
   switch (o.op) {
     case "propose": {
-      const opt: TableOption = table.options.find((x) => x.id === o.id) ?? { id: o.id ?? "?", q: o.q ?? null, title: o.title, body: o.body, file: o.file, by: o.by, seq: 0, status: "open" };
+      const found = table.options.find((x) => x.id === o.id);
+      const opt: TableOption = found ?? { id: o.id ?? "?", q: o.q ?? null, title: o.title, body: o.body, file: o.file, by: o.by, seq: 0, status: "open" };
       const q = opt.q ? table.questions.find((x) => x.id === opt.q) : null;
-      const open = opt.status === "open" && (!q || q.status === "open");
+      // Deleted since: the card keeps what was proposed, struck out, with nothing left to act on.
+      const gone = !found;
+      const open = !gone && opt.status === "open" && (!q || q.status === "open");
       return (
-        <div className={cn(card, "border-l-[3px] border-l-primary/60", opt.status === "withdrawn" && "opacity-60")}>
+        <div className={cn(card, "border-l-[3px] border-l-primary/60", (opt.status === "withdrawn" || gone) && "opacity-60")}>
           <div className="flex flex-wrap items-center gap-2">
             <Kind op="propose" />
             <RefChip id={opt.id} />
@@ -227,11 +238,9 @@ export function OpCard({ o }: { o: TableOp }) {
                 to <RefChip id={q.id} />
               </span>
             ) : null}
-            <span className="ml-auto">
-              <Standing table={table} o={opt} />
-            </span>
+            <span className="ml-auto">{gone ? <span className="text-micro font-medium text-muted-foreground">deleted</span> : <Standing table={table} o={opt} />}</span>
           </div>
-          <div className="mt-1.5 font-semibold text-pretty">{opt.title}</div>
+          <div className={cn("mt-1.5 font-semibold text-pretty", gone && "line-through")}>{opt.title}</div>
           {opt.body ? (
             <Clamp max={176} more="Show all" className="mt-1.5">
               <Markdown text={opt.body} source={`o:${opt.id}`} className="text-ui" />
@@ -243,7 +252,8 @@ export function OpCard({ o }: { o: TableOp }) {
       );
     }
     case "ask": {
-      const q = table.questions.find((x) => x.id === o.id) ?? { id: o.id ?? "?", text: o.text, status: "open" as const };
+      const found = table.questions.find((x) => x.id === o.id);
+      const q = found ?? { id: o.id ?? "?", text: o.text, status: "open" as const };
       const options = table.options.filter((x) => x.q === q.id);
       const decision = q.status === "decided" ? table.decisions.filter((d) => d.q === q.id).pop() : null;
       const answer = q.status === "answered" && "answer" in q ? q.answer : undefined;
@@ -253,15 +263,17 @@ export function OpCard({ o }: { o: TableOp }) {
             <Kind op="ask" />
             <RefChip id={q.id} />
             <span className="ml-auto text-meta text-muted-foreground">
-              {decision ? (
+              {!found ? (
+                "deleted"
+              ) : decision ? (
                 <span className="font-medium text-meet-ink">Decided: {decision.option}</span>
               ) : answer ? (
                 <span className="font-medium text-primary">Answered: {answer}</span>
               ) : options.length ? plural(options.length, "option", "options") : "waiting for options"}
             </span>
           </div>
-          <div className="mt-1.5 font-semibold text-pretty">{q.text}</div>
-          {options.length ? (
+          <div className={cn("mt-1.5 font-semibold text-pretty", !found && "text-muted-foreground line-through")}>{q.text}</div>
+          {found && options.length ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {options.map((x) => (
                 <OptionChip key={x.id} o={x} />
@@ -313,7 +325,7 @@ export function OpCard({ o }: { o: TableOp }) {
             <div className="flex flex-wrap items-center gap-2">
               <Kind op="settle" />
               <span className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-                answer to <RefChip id={o.q} /> <span className="truncate">{table.questions.find((x) => x.id === o.q)?.text}</span>
+                {table.questions.find((x) => x.id === o.q)?.many ? "recommendation for" : "answer to"} <RefChip id={o.q} /> <span className="truncate">{table.questions.find((x) => x.id === o.q)?.text}</span>
               </span>
             </div>
             <div className="mt-1.5 text-ui font-medium text-pretty">{o.text}</div>
@@ -331,6 +343,32 @@ export function OpCard({ o }: { o: TableOp }) {
           <span className="min-w-0 flex-1 text-ui">
             <RefChip id={o.target} /> {optionTitle(table, o.target)}
             {o.note ? <span className="text-muted-foreground"> — {o.note}</span> : null}
+          </span>
+        </div>
+      );
+    case "edit": {
+      const changed = [
+        o.many !== undefined ? (o.many ? "any number of options can be chosen" : "one option is chosen") : "",
+        o.q ? `moved to ${o.q}` : "",
+        o.body !== undefined ? "new description" : "",
+        o.file !== undefined ? (o.file ? `preview ${o.file}` : "no preview") : "",
+      ].filter(Boolean);
+      return (
+        <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
+          <Kind op="edit" />
+          <span className="min-w-0 flex-1 text-ui">
+            <RefChip id={o.target} /> {o.title ?? o.text ?? ""}
+            {changed.length ? <span className="text-muted-foreground"> — {changed.join(", ")}</span> : null}
+          </span>
+        </div>
+      );
+    }
+    case "delete":
+      return (
+        <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
+          <Kind op="delete" />
+          <span className="min-w-0 flex-1 text-ui text-muted-foreground">
+            <span className="font-mono text-micro font-semibold">{o.target}</span> <span className="line-through">{o.was}</span>
           </span>
         </div>
       );
@@ -400,6 +438,8 @@ const TC_MANY: Record<TableOp["op"], [string, string]> = {
   withdraw: ["withdrawn", "withdrawn"],
   reopen: ["reopened", "reopened"],
   concede: ["change of mind", "changes of mind"],
+  edit: ["rewritten", "rewritten"],
+  delete: ["deleted", "deleted"],
 };
 
 /** A turn's table moves in one line: what kinds, how many, and a way to open them. */

@@ -248,7 +248,7 @@ export interface LimitSnapshot extends LimitReport {
 // ---------------------------------------------------------------------------
 
 export type TableOpInput =
-  | { op: "ask"; text: string }
+  | { op: "ask"; text: string; many?: boolean }
   | { op: "propose"; title: string; body?: string; q?: string; file?: string }
   | { op: "object" | "support" | "evidence"; target: string; text: string; source?: string }
   | { op: "fact"; text: string }
@@ -258,7 +258,11 @@ export type TableOpInput =
   | { op: "done"; target: string }
   | { op: "withdraw"; target: string }
   | { op: "decide"; target: string; note?: string }
-  | { op: "reopen"; target: string };
+  | { op: "reopen"; target: string }
+  /** Rewrite one's own item in place (the human can rewrite any): only the fields given change. */
+  | { op: "edit"; target: string; text?: string; title?: string; body?: string; file?: string; q?: string; source?: string; many?: boolean }
+  /** Take one's own item off the table entirely (the human can delete any); its id is not given out again. */
+  | { op: "delete"; target: string; was?: string };
 
 export type TableOpName = TableOpInput["op"];
 
@@ -279,8 +283,13 @@ export interface TableQuestion {
   text: string;
   by: string;
   seq: number;
-  /** decided: an option was chosen; answered: a settled conclusion closed it. */
+  /**
+   * decided: an option was chosen; answered: a settled conclusion closed it. A `many` question stays open
+   * while options are chosen, until none is left open (then it is decided) or it is closed by hand.
+   */
   status: "open" | "decided" | "answered";
+  /** Its options do not exclude each other: any number of them can be chosen. */
+  many?: boolean;
   decision?: string;
   /** The settled item (S3) that answers the question. */
   answer?: string;
@@ -343,6 +352,8 @@ export interface TableState {
   decisions: TableDecision[];
   /** Concessions: what someone no longer holds, and why (C1, C2…). */
   shifts: TableItem[];
+  /** The highest number given out per id letter (Q, P, N…), so a deleted item's id is never reused. */
+  issued?: Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------

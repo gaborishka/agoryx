@@ -8,6 +8,7 @@ import {
   FootprintsIcon,
   GavelIcon,
   LightbulbIcon,
+  ListChecksIcon,
   MessageSquareQuoteIcon,
   MicroscopeIcon,
   PinIcon,
@@ -552,7 +553,7 @@ function Debate({ o, table, room }: { o: TableOption; table: TableState; room: R
 
 // --- questions -------------------------------------------------------------------------------------
 
-function QuestionActions({ q }: { q: string }) {
+function QuestionActions({ q, many }: { q: string; many?: boolean }) {
   const openDialog = useStore((s) => s.openDialog);
   const driven = useStore((s) => s.snap?.driven);
   if (!driven) return null;
@@ -566,7 +567,7 @@ function QuestionActions({ q }: { q: string }) {
       </button>
       <button type="button" onClick={() => openDialog({ kind: "table-form", op: "settle", q })} className={btn}>
         <BadgeCheckIcon className="size-4" />
-        Record an answer
+        {many ? "Record a recommendation" : "Record an answer"}
       </button>
     </div>
   );
@@ -578,8 +579,95 @@ const STATUS: Record<TableQuestion["status"], { label: string; cls: string; Icon
   decided: { label: "Settled", cls: "bg-meet/10 text-meet-ink", Icon: GavelIcon },
 };
 
-/** How a closed question was closed: the chosen option, or the settled answer. */
+/** A question's kind: one answer (its options exclude each other) or any number; the human can switch an open one. */
+function AnswerKind({ q }: { q: TableQuestion }) {
+  const post = useStore((s) => s.post);
+  const driven = useStore((s) => s.snap?.driven);
+  const label = q.many ? "Any number of answers" : "One answer";
+  const cls = "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-micro font-medium";
+  if (!driven || q.status !== "open") {
+    return q.many ? (
+      <span className={cn(cls, "bg-secondary text-secondary-foreground")}>
+        <ListChecksIcon className="size-3" />
+        {label}
+      </span>
+    ) : null;
+  }
+  return (
+    <Tip tip={q.many ? "Make it one answer: choosing an option closes the question" : "Its options don't exclude each other: choosing one keeps the rest open"}>
+      <button
+        type="button"
+        onClick={() => post("/table", { op: "edit", target: q.id, many: !q.many }).catch((e) => toast.error(e instanceof Error ? e.message : String(e)))}
+        className={cn(cls, "transition hover:bg-accent hover:text-foreground", q.many ? "bg-secondary text-secondary-foreground" : "text-muted-foreground ring-1 ring-border")}
+      >
+        <ListChecksIcon className="size-3" />
+        {label}
+      </button>
+    </Tip>
+  );
+}
+
+/** The room's recommendation on a question: a settled point that names it, or names two or more of its options. */
+function Recommendations({ q, table, room }: { q: TableQuestion; table: TableState; room: RoomState }) {
+  const ids = new Set(table.options.filter((o) => o.q === q.id).map((o) => o.id));
+  const points = table.settled.filter((s) => {
+    if (s.withdrawn || s.id === q.answer) return false;
+    if (s.q === q.id) return true;
+    const named = new Set(s.text.match(/\bP\d+\b/g) ?? []);
+    return [...named].filter((id) => ids.has(id)).length >= 2;
+  });
+  if (!points.length) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      {points.map((s) => (
+        <div key={s.id} className="flex gap-3 rounded-2xl bg-secondary/50 p-3.5 ring-1 ring-border">
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-secondary text-secondary-foreground">
+            <FootprintsIcon className="size-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-meta font-semibold text-muted-foreground">The room recommends</div>
+            <Clamp max={120} more="Details">
+              <Markdown text={s.text} className="text-body" />
+            </Clamp>
+            <div className="mt-1 flex items-center gap-1.5 text-meta text-faint">
+              <RefChip id={s.id} />
+              {participant(room, s.by).label}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** How a closed question was closed: the chosen option(s), or the settled answer. */
 function Resolution({ q, table, room }: { q: TableQuestion; table: TableState; room: RoomState }) {
+  if (q.many) {
+    // Every option chosen so far, also while the question is still open.
+    const chosen = table.decisions.filter((d) => d.q === q.id && table.options.find((o) => o.id === d.option)?.status === "chosen");
+    if (!chosen.length) return null;
+    return (
+      <div className="flex flex-col gap-2 rounded-2xl bg-secondary/70 p-3.5 ring-1 ring-meet/20">
+        {chosen.map((decision) => (
+          <div key={decision.id} className="flex gap-3">
+            <span className="grid size-6 shrink-0 place-items-center rounded-lg bg-meet text-background">
+              <CheckIcon className="size-3.5" strokeWidth={3} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-1.5 text-body font-semibold">
+                <RefChip id={decision.option} />
+                {table.options.find((o) => o.id === decision.option)?.title ?? decision.option}
+              </div>
+              <div className="text-meta text-faint">
+                decision #{decision.n} · {participant(room, decision.by).label}
+                {decision.note ? ` — ${decision.note}` : ""}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
   const decision = q.status === "decided" ? table.decisions.filter((d) => d.q === q.id).at(-1) : undefined;
   const answer = q.status === "answered" ? table.settled.find((s) => s.id === q.answer) : undefined;
   if (!decision && !answer) return null;
@@ -648,16 +736,18 @@ function Question({ q, table, room }: { q: TableQuestion; table: TableState; roo
           <span className="inline-flex items-center gap-1">
             asked by <Avatar handle={q.by} size={16} /> <Name handle={q.by} className="font-medium" />
           </span>
+          <AnswerKind q={q} />
           {!closed ? (
             <span className="tabular ml-auto">
-              {live.length ? plural(live.length, "option", "options") : "no options yet"}
+              {live.length ? `${plural(live.length, "option", "options")}${q.many && live.length < options.length ? " still open" : ""}` : "no options yet"}
               {contested ? <span className="text-destructive"> · {contested} challenged</span> : null}
             </span>
           ) : null}
         </div>
         <Markdown text={q.text} className={cn("leading-snug font-semibold tracking-tight text-balance", closed ? "text-lead" : "text-title")} />
       </header>
-      {closed ? <Resolution q={q} table={table} room={room} /> : null}
+      {closed || q.many ? <Resolution q={q} table={table} room={room} /> : null}
+      <Recommendations q={q} table={table} room={room} />
       {shifts.map((c) => (
         <Shift key={c.id} c={c} />
       ))}
@@ -679,7 +769,7 @@ function Question({ q, table, room }: { q: TableQuestion; table: TableState; roo
           ))}
         </div>
       ) : null}
-      {!closed ? <QuestionActions q={q.id} /> : null}
+      {!closed ? <QuestionActions q={q.id} many={q.many} /> : null}
     </section>
   );
 }
@@ -757,7 +847,7 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
                   <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-meta text-faint">
                     {s.q ? (
                       <span className="inline-flex items-center gap-1 text-primary">
-                        answer to <RefChip id={s.q} />
+                        {table.questions.find((x) => x.id === s.q)?.many ? "recommendation for" : "answer to"} <RefChip id={s.q} />
                       </span>
                     ) : null}
                     {s.fact ? (s.withdrawn ? "fact · withdrawn" : "fact") : null}

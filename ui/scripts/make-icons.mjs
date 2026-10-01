@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The page's icons for a phone's home screen (the PWA manifest, iOS) and for notifications: the
-// Agoryx mark (src/components/brand/Mark.tsx — two voices crossing into an A, the human's dot between
-// them) on an ink tile, as the desktop app's icon (desktop/scripts/make-icon.mjs), drawn here so the
+// Agoryx mark (src/components/brand/Mark.tsx — two halves of one square, facing each other) in white
+// on an ink tile, as the desktop app's icon (desktop/scripts/make-icon.mjs), drawn here so the
 // repo carries no binary. Writes public/icons/*.png; does nothing when they are
 // newer than this script.
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
@@ -31,17 +31,12 @@ if (ICONS.every((icon) => newer(join(out, icon.file)))) process.exit(0);
 // On a 1024 canvas. The tile after Apple's icon grid; the mark from Mark.tsx's 24-unit viewBox.
 const TILE = { x: 100, y: 100, size: 824, radius: 185 };
 const CENTER = { x: 12, y: 12 };
-const LEFT = [[3.4, 21], [8, 21], [15.2, 3], [10.6, 3]];
-const RIGHT = [[20.6, 21], [16, 21], [8.8, 3], [13.4, 3]];
-const DOT = { x: 12, y: 16.5, r: 1.5 };
+const HALF_A = [[2.5, 2.5], [6.525, 2.5], [10.525, 6.5], [7, 6.5], [7, 17.5], [11, 17.5], [15, 21.5], [2.5, 21.5]];
+const HALF_B = HALF_A.map(([x, y]) => [24 - x, 24 - y]);
 
-// ui/src/index.css, dark theme: the ink ground (a shade lighter at the top) and the voices on it.
-const TOP = [0x24, 0x20, 0x2e];
-const BOTTOM = [0x15, 0x13, 0x1c];
-const CLAY = [0xee, 0x8a, 0x5e];
-const WATER = [0x5c, 0xae, 0xe0];
-const MEET = [0xe7, 0xa3, 0xd1];
-const LAUREL = [0x7f, 0xcb, 0x8a];
+// One tile for both themes: ink (--meet, light theme) and the mark in white.
+const GROUND = [0x0a, 0x0a, 0x0a];
+const MARK_INK = [0xff, 0xff, 0xff];
 
 /** Signed distance to a polygon (negative inside), after Inigo Quilez. */
 const polygon = (points) => (px, py) => {
@@ -65,15 +60,9 @@ const polygon = (points) => (px, py) => {
 /** The mark's shapes at `unit` canvas units per mark unit, as distance functions on the canvas. */
 const markAt = (unit) => {
   const place = (points) => points.map(([x, y]) => [512 + (x - CENTER.x) * unit, 512 + (y - CENTER.y) * unit]);
-  const left = polygon(place(LEFT));
-  const right = polygon(place(RIGHT));
-  const dot = { x: 512 + (DOT.x - CENTER.x) * unit, y: 512 + (DOT.y - CENTER.y) * unit, r: DOT.r * unit };
-  return {
-    left,
-    right,
-    meet: (px, py) => Math.max(left(px, py), right(px, py)),
-    dot: (px, py) => Math.hypot(px - dot.x, py - dot.y) - dot.r,
-  };
+  const a = polygon(place(HALF_A));
+  const b = polygon(place(HALF_B));
+  return (px, py) => Math.min(a(px, py), b(px, py));
 };
 
 const roundedRect = (px, py) => {
@@ -100,22 +89,15 @@ const draw = (size, look) => {
       const px = (x + 0.5) / scale;
       const py = (y + 0.5) / scale;
       const offset = row + 1 + x * 4;
-      const left = coverage(mark.left(px, py), scale);
-      const right = coverage(mark.right(px, py), scale);
-      const dot = coverage(mark.dot(px, py), scale);
+      const ink = coverage(mark(px, py), scale);
       if (look === "badge") {
         rows.fill(255, offset, offset + 3);
-        rows[offset + 3] = Math.round(Math.max(left, right, dot) * 255);
+        rows[offset + 3] = Math.round(ink * 255);
         continue;
       }
       const ground = look === "tile" ? coverage(roundedRect(px, py), scale) : 1;
       if (ground === 0) continue;
-      const t = look === "tile" ? Math.min(1, Math.max(0, (py - TILE.y) / TILE.size)) : py / 1024;
-      let colour = mix(TOP, BOTTOM, t);
-      colour = mix(colour, CLAY, left);
-      colour = mix(colour, WATER, right);
-      colour = mix(colour, MEET, coverage(mark.meet(px, py), scale));
-      colour = mix(colour, LAUREL, dot);
+      const colour = mix(GROUND, MARK_INK, ink);
       for (let c = 0; c < 3; c += 1) rows[offset + c] = Math.round(colour[c]);
       rows[offset + 3] = Math.round(ground * 255);
     }

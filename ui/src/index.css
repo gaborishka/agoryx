@@ -1,6 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "@fontsource-variable/commissioner/full.css";
+@import "@fontsource-variable/instrument-sans/wght.css";
 @import "@fontsource-variable/literata/wght.css";
 @import "@fontsource-variable/jetbrains-mono/wght.css";
 @import "streamdown/styles.css";
@@ -12,39 +12,43 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * Agoryx: many voices, one square. The chrome is ink on porcelain and stays quiet; colour belongs
- * to the voices alone — Claude's fired clay, Codex's deep water, the human's laurel. Where two voices
- * overlap (the logo's crossing), their mix appears — plum, clay and water together: --meet. It marks
- * only what the room settled: decisions, the chosen option, answered questions.
+ * Agoryx: many voices, one square. The chrome is black and white and stays quiet; colour belongs to
+ * the voices, Claude's clay, Codex's water and the human's laurel, and users may recolour them. The room
+ * itself has no hue: --meet is ink, for the mark and for what the room settled (decisions, the chosen
+ * option, answered questions), and a decision is the one block that stands out (.settled).
  */
 :root {
   --radius: 0.75rem;
-  --background: #f6f5f8;
-  --foreground: #1e1a26;
-  --canvas: #efedf2;
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --canvas: #f6f6f6;
   --card: #ffffff;
-  --card-foreground: #1e1a26;
+  --card-foreground: #0a0a0a;
   --popover: #ffffff;
-  --popover-foreground: #1e1a26;
-  --primary: #241e2f;
-  --primary-foreground: #fbfaff;
-  --secondary: #ebe8f0;
-  --secondary-foreground: #2a2436;
-  --muted: #eeecf2;
-  --muted-foreground: #615b6d;
-  --faint: #76707f;
-  --accent: #ebe8f0;
-  --accent-foreground: #1e1a26;
+  --popover-foreground: #0a0a0a;
+  --primary: #0a0a0a;
+  --primary-foreground: #ffffff;
+  --secondary: #f2f2f2;
+  --secondary-foreground: #1a1a1a;
+  --muted: #f3f3f3;
+  --muted-foreground: #5c5c5c;
+  --faint: #737373;
+  --accent: #f0f0f0;
+  --accent-foreground: #0a0a0a;
   --destructive: #b8452e;
   --destructive-soft: #fbece7;
-  --border: #e3e0e9;
-  --input: #d7d3df;
-  --ring: #6b6478;
-  --sidebar: #efedf2;
+  --border: #e6e6e6;
+  --input: #d4d4d4;
+  --ring: #6b6b6b;
+  --sidebar: #f6f6f6;
   --paper: #ffffff;
-  --code: #f4f3f7;
-  --meet: #84306c;
-  --meet-soft: #f6e8f1;
+  --code: #f5f5f5;
+  --meet: #0a0a0a;
+  --meet-soft: #f3f3f3;
+  --meet-ink: #0a0a0a;
+  --settled: #0a0a0a;
+  --settled-ink: #ffffff;
+  --settled-edge: transparent;
   /*
    * Several agents of one kind: each gets a shade of its kind's family (internal/agora/look.ts),
    * set per element as --claude: var(--claude-N). Shade 0 is the kind's own colour; clay stays warm
@@ -89,7 +93,7 @@
   --human: #3d8a4b;
   --human-soft: #e7f2e8;
   --human-ink: #2c6b39;
-  --fact: #5c5668;
+  --fact: #5a5a5a;
   --amber: #b97f0e;
   --amber-soft: #fbf3df;
   --amber-foreground: #ffffff;
@@ -100,39 +104,43 @@
   --add-ink: #1f5b33;
   --del: #f8e6e1;
   --del-ink: #8a3322;
-  --shadow-edge: 0 1px 0 rgb(36 26 50 / 0.04);
-  --shadow-soft: 0 1px 2px rgb(36 26 50 / 0.05), 0 10px 28px -6px rgb(36 26 50 / 0.08);
-  --shadow-lift: 0 1px 2px rgb(36 26 50 / 0.06), 0 22px 56px -10px rgb(36 26 50 / 0.18);
+  --shadow-edge: 0 1px 0 rgb(0 0 0 / 0.04);
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.05), 0 10px 28px -6px rgb(0 0 0 / 0.08);
+  --shadow-lift: 0 1px 2px rgb(0 0 0 / 0.06), 0 22px 56px -10px rgb(0 0 0 / 0.18);
 }
 
 .dark {
   color-scheme: dark;
-  --background: #15131c;
-  --foreground: #ece9f2;
-  --canvas: #100f16;
-  --card: #1c1a25;
-  --card-foreground: #ece9f2;
-  --popover: #211e2b;
-  --popover-foreground: #ece9f2;
-  --primary: #ece9f2;
-  --primary-foreground: #17141f;
-  --secondary: #25222f;
-  --secondary-foreground: #dcd7e6;
-  --muted: #1f1c28;
-  --muted-foreground: #a7a1b4;
-  --faint: #857f92;
-  --accent: #26232f;
-  --accent-foreground: #ece9f2;
+  --background: #000000;
+  --foreground: #f5f5f5;
+  --canvas: #0a0a0a;
+  --card: #111111;
+  --card-foreground: #f5f5f5;
+  --popover: #161616;
+  --popover-foreground: #f5f5f5;
+  --primary: #f5f5f5;
+  --primary-foreground: #0a0a0a;
+  --secondary: #1a1a1a;
+  --secondary-foreground: #e0e0e0;
+  --muted: #141414;
+  --muted-foreground: #a3a3a3;
+  --faint: #858585;
+  --accent: #1c1c1c;
+  --accent-foreground: #f5f5f5;
   --destructive: #f0876b;
   --destructive-soft: #2e1b18;
-  --border: #2a2634;
-  --input: #37323f;
-  --ring: #8f889c;
-  --sidebar: #100f16;
-  --paper: #1a1823;
-  --code: #17151e;
-  --meet: #e7a3d1;
-  --meet-soft: #2a1a26;
+  --border: #262626;
+  --input: #333333;
+  --ring: #8f8f8f;
+  --sidebar: #0a0a0a;
+  --paper: #0f0f0f;
+  --code: #121212;
+  --meet: #f5f5f5;
+  --meet-soft: #1a1a1a;
+  --meet-ink: #f5f5f5;
+  --settled: #232323;
+  --settled-ink: #f5f5f5;
+  --settled-edge: #343434;
   --claude-0: #ee8a5e;
   --claude-1: oklch(0.78 0.11 78);
   --claude-2: oklch(0.72 0.13 12);
@@ -168,7 +176,7 @@
   --human: #7fcb8a;
   --human-soft: #1a2a1f;
   --human-ink: #a3dcab;
-  --fact: #b9b2c5;
+  --fact: #b5b5b5;
   --amber: #e0ae4e;
   --amber-soft: #2a2415;
   --amber-foreground: #17141f;
@@ -203,7 +211,7 @@
 }
 
 @theme inline {
-  --font-sans: "Commissioner Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: "Instrument Sans Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-serif: "Literata Variable", Georgia, "Times New Roman", serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
   --radius-sm: calc(var(--radius) - 4px);
@@ -243,6 +251,7 @@
   --color-human-ink: var(--human-ink);
   --color-meet: var(--meet);
   --color-meet-soft: var(--meet-soft);
+  --color-meet-ink: var(--meet-ink);
   --color-fact: var(--fact);
   --color-amber: var(--amber);
   --color-amber-soft: var(--amber-soft);
@@ -295,7 +304,6 @@
     font-size: 15px;
     line-height: 1.55;
     overflow: hidden;
-    font-variation-settings: "FLAR" 0, "VOLM" 0;
   }
   button:not(:disabled),
   [role="button"]:not(:disabled) {
@@ -452,52 +460,57 @@ diffs-container,
   }
 }
 
-/*
- * Commissioner's flare axis: at display sizes the stroke ends open like letters cut in stone —
- * the agora's inscriptions. Body text keeps FLAR 0 so it reads as a plain grotesque.
- */
+/* Headings and the wordmark: the same grotesque at normal width, set a little tighter. */
 @utility font-display {
   font-family: var(--font-sans);
-  font-variation-settings: "FLAR" 100, "VOLM" 40;
-  letter-spacing: -0.028em;
+  letter-spacing: -0.022em;
+}
+
+/* What the room settled: an ink block with paper text on light, a graphite one on dark (a white block
+   there would shout). The tokens are turned over on the block, so the mark, chips, links and code inside
+   follow without classes of their own. */
+@utility settled {
+  --foreground: var(--settled-ink);
+  --meet: var(--settled-ink);
+  --meet-ink: var(--settled-ink);
+  --primary: var(--settled-ink);
+  --muted-foreground: color-mix(in oklab, var(--settled-ink) 62%, transparent);
+  --secondary: color-mix(in oklab, var(--settled-ink) 14%, transparent);
+  --secondary-foreground: var(--settled-ink);
+  --code: color-mix(in oklab, var(--settled-ink) 10%, transparent);
+  --border: color-mix(in oklab, var(--settled-ink) 24%, transparent);
+  background: var(--settled);
+  color: var(--settled-ink);
+  box-shadow: inset 0 0 0 1px var(--settled-edge);
 }
 
 /* The start screen's square gathering (components/brand/Agora.tsx): one sequence, once. */
-.agora .agora-row {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: agora-row 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
-}
-.agora .agora-leg,
-.agora .agora-meet,
-.agora .agora-dot {
+.agora .agora-ring,
+.agora .agora-half {
   transform-box: fill-box;
   transform-origin: center;
 }
-.agora .agora-leg-l { animation: agora-leg-l 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-.agora .agora-leg-r { animation: agora-leg-r 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-.agora .agora-meet { animation: agora-fade 0.3s ease-out 0.5s both; }
-.agora .agora-dot { animation: agora-dot 0.45s cubic-bezier(0.3, 1.5, 0.5, 1) 0.62s both; }
+.agora .agora-ring { animation: agora-ring 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) 0.1s both; }
+.agora .agora-half-a { animation: agora-half-a 0.75s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.agora .agora-half-b { animation: agora-half-b 0.75s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.agora .agora-arc { animation: agora-fade 0.5s ease-out both; }
 .agora .agora-seat { animation: agora-seat 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-@keyframes agora-row {
-  from { opacity: 0; transform: scale(0.82); }
+@keyframes agora-ring {
+  from { opacity: 0; transform: scale(0.86); }
   to { opacity: 1; transform: scale(1); }
 }
-@keyframes agora-leg-l {
-  from { opacity: 0; transform: translate(-5px, 3px); }
+/* The two halves start apart along the diagonal and close into one square. */
+@keyframes agora-half-a {
+  from { opacity: 0; transform: translate(-2.5px, 2.5px); }
   to { opacity: 1; transform: none; }
 }
-@keyframes agora-leg-r {
-  from { opacity: 0; transform: translate(5px, 3px); }
+@keyframes agora-half-b {
+  from { opacity: 0; transform: translate(2.5px, -2.5px); }
   to { opacity: 1; transform: none; }
 }
 @keyframes agora-fade {
   from { opacity: 0; }
   to { opacity: 1; }
-}
-@keyframes agora-dot {
-  from { opacity: 0; transform: translateY(-4px) scale(0.3); }
-  to { opacity: 1; transform: none; }
 }
 @keyframes agora-seat {
   from { opacity: 0; scale: 0.7; }

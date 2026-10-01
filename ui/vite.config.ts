@@ -45,7 +45,7 @@ export default defineConfig({
   build: { outDir: "dist", emptyOutDir: true, chunkSizeWarningLimit: 2000 },
   server: {
     proxy: {
-      "/api": { target: "http://127.0.0.1:7717", changeOrigin: false },
+      "/api": { target: "http://127.0.0.1:7717", changeOrigin: false, ws: true },
       "/raw": { target: "http://127.0.0.1:7717", changeOrigin: false },
     },
   },

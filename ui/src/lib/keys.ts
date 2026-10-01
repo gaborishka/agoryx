@@ -27,6 +27,8 @@ export const typingIn = (target: EventTarget | null) => {
  */
 interface Chord {
   mod?: boolean;
+  /** Control itself, on a Mac too (⌃` for the terminal, as in VS Code); off a Mac it is the modifier. */
+  ctrl?: boolean;
   alt?: boolean;
   shift?: boolean;
   code?: string;
@@ -46,6 +48,7 @@ export type ShortcutId =
   | "table"
   | "panel"
   | "session"
+  | "terminal"
   | "stop"
   | "close"
   | "send"
@@ -89,6 +92,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "table", label: "Стіл", group: "Кімната", when: "always", chord: view("2") },
   { id: "panel", label: "Показати чи сховати панель", group: "Кімната", when: "always", chord: { mod: true, code: "Backslash", label: "\\" } },
   { id: "session", label: "Сесія агента", group: "Кімната", when: "always", chord: { mod: true, code: "KeyJ", label: "J" } },
+  { id: "terminal", label: "Термінал", group: "Кімната", when: "always", chord: { ctrl: true, code: "Backquote", label: "`" } },
   { id: "stop", label: "Зупинити агентів", group: "Кімната", when: "always", chord: { mod: true, code: "Period", label: "." } },
   { id: "send", label: "Надіслати", group: "У полі", when: "field", chord: { code: "Enter", label: "Enter" } },
   { id: "newline", label: "Новий рядок", group: "У полі", when: "field", chord: { shift: true, code: "Enter", label: "Enter" } },
@@ -100,22 +104,23 @@ export const SHORTCUTS: readonly Shortcut[] = [
 export const SHORTCUT = Object.fromEntries(SHORTCUTS.map((s) => [s.id, s])) as Record<ShortcutId, Shortcut>;
 
 /** "⌥⌘1" on a Mac, "Ctrl+Shift+1" elsewhere. */
-export const chordLabel = ({ mod, alt, shift, label }: Chord) => {
+export const chordLabel = ({ mod, ctrl, alt, shift, label }: Chord) => {
   // "?" already is Shift+/: its Shift is not written.
   const withShift = shift && label !== "?";
-  if (isMac) return `${alt ? "⌥" : ""}${withShift ? "⇧" : ""}${mod ? "⌘" : ""}${label === "Enter" ? "↵" : label}`;
-  return [mod && "Ctrl", alt && "Alt", withShift && "Shift", label].filter(Boolean).join("+");
+  if (isMac) return `${ctrl ? "⌃" : ""}${alt ? "⌥" : ""}${withShift ? "⇧" : ""}${mod ? "⌘" : ""}${label === "Enter" ? "↵" : label}`;
+  return [(mod || ctrl) && "Ctrl", alt && "Alt", withShift && "Shift", label].filter(Boolean).join("+");
 };
 
 export const keyLabel = (id: ShortcutId) => SHORTCUT[id].text ?? chordLabel(SHORTCUT[id].chord);
 
 /** The same for screen readers (aria-keyshortcuts): "Meta+Alt+1". */
 export const ariaKeys = (id: ShortcutId) => {
-  const { mod, alt, shift, label } = SHORTCUT[id].chord;
-  return [mod && (isMac ? "Meta" : "Control"), alt && "Alt", shift && "Shift", label].filter(Boolean).join("+");
+  const { mod, ctrl, alt, shift, label } = SHORTCUT[id].chord;
+  return [ctrl && "Control", mod && (isMac ? "Meta" : "Control"), alt && "Alt", shift && "Shift", label].filter(Boolean).join("+");
 };
 
 const hits = (event: KeyboardEvent, c: Chord) => {
+  if (c.ctrl) return event.ctrlKey && !event.metaKey && event.altKey === Boolean(c.alt) && event.shiftKey === Boolean(c.shift) && event.code === c.code;
   const mod = isMac ? event.metaKey : event.ctrlKey;
   // The other of ⌘/Ctrl is never part of a chord here.
   const other = isMac ? event.ctrlKey : event.metaKey;

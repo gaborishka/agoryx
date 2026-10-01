@@ -17,6 +17,7 @@ import {
   MinimizeIcon,
   SearchIcon,
   SquareIcon,
+  SquareTerminalIcon,
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
@@ -188,6 +189,7 @@ function AgentTabs({ agents, current }: { agents: RoomAgent[]; current: string }
 
 function ResumeLine({ command }: { command: string }) {
   const code = useRef<HTMLElement>(null);
+  const openTerminal = useStore((s) => s.openTerminal);
   return (
     <div className="flex items-center gap-1 rounded-lg border border-border bg-code py-0.5 pr-0.5 pl-2.5">
       <TerminalIcon className="size-3.5 shrink-0 text-faint" />
@@ -196,6 +198,16 @@ function ResumeLine({ command }: { command: string }) {
       </code>
       <Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Копіювати команду" title="Копіювати" onClick={() => void copyText(command, code.current)}>
         <CopyIcon className="size-3.5" />
+      </Button>
+      <Button
+        size="icon"
+        variant="ghost"
+        className="size-7 shrink-0"
+        aria-label="Продовжити в терміналі"
+        title="Продовжити в терміналі: команда буде набрана в новому терміналі кімнати, Enter — ваш"
+        onClick={() => openTerminal(command)}
+      >
+        <SquareTerminalIcon className="size-3.5" />
       </Button>
     </div>
   );

@@ -78,6 +78,13 @@ interface Store {
   changes: ChangesFocus;
   /** The file the Файли tab shows; null: the list. */
   filePath: string | null;
+  /** The files open as tabs in the Файли tab, in the order they were opened. */
+  fileTabs: string[];
+  /** The room's terminals at the bottom of the room: shown or not, and how tall. */
+  terminalOpen: boolean;
+  terminalHeight: number;
+  /** A new terminal asked for from elsewhere (the session's «continue in the terminal»), with what to type in it. */
+  terminalRequest: { text: string; at: number } | null;
   /** Chat or table, remembered per room. */
   view: RoomView;
   wide: boolean;
@@ -105,6 +112,12 @@ interface Store {
   openChanges: (focus: ChangesFocus) => void;
   /** Show a workspace file in the Файли tab; null: the list of files. */
   openFile: (path: string | null) => void;
+  /** Close a file's tab; the one beside it is shown if it was the shown one. */
+  closeFile: (path: string) => void;
+  setTerminalOpen: (open: boolean) => void;
+  /** A new terminal with `text` typed in (not run: Enter stays the human's). */
+  openTerminal: (text: string) => void;
+  setTerminalHeight: (height: number) => void;
   setDocFocus: (seq: number | null) => void;
   /** Show an agent's session in the side panel (the first agent's when none is named); again for the same agent closes it. */
   openSession: (agent?: string, toggle?: boolean) => void;
@@ -144,6 +157,10 @@ export const useStore = create<Store>((set, get) => ({
   sessionAgent: null,
   changes: { scope: "turn" },
   filePath: null,
+  fileTabs: [],
+  terminalOpen: false,
+  terminalHeight: Number(local.get("terminalHeight")) || 280,
+  terminalRequest: null,
   view: "chat",
   wide: local.get("wide") === "1",
   navOpen: false,
@@ -227,7 +244,28 @@ export const useStore = create<Store>((set, get) => ({
   },
   openFile(path) {
     get().setPanel("files");
-    set({ filePath: path });
+    // The file shown from an address is a tab too, though it was never opened here.
+    const { fileTabs, filePath } = get();
+    const tabs = filePath && !fileTabs.includes(filePath) ? [...fileTabs, filePath] : fileTabs;
+    set({ filePath: path, fileTabs: path && !tabs.includes(path) ? [...tabs, path] : tabs });
+  },
+  closeFile(path) {
+    const { filePath } = get();
+    const fileTabs = filePath && !get().fileTabs.includes(filePath) ? [...get().fileTabs, filePath] : get().fileTabs;
+    const at = fileTabs.indexOf(path);
+    const rest = fileTabs.filter((p) => p !== path);
+    set({ fileTabs: rest, ...(filePath === path ? { filePath: rest[Math.min(at, rest.length - 1)] ?? null } : {}) });
+  },
+  setTerminalOpen(terminalOpen) {
+    set({ terminalOpen });
+  },
+  openTerminal(text) {
+    set({ terminalOpen: true, terminalRequest: { text, at: Date.now() } });
+  },
+  setTerminalHeight(height) {
+    const terminalHeight = Math.round(Math.max(120, Math.min(height, window.innerHeight * 0.75)));
+    local.set("terminalHeight", String(terminalHeight));
+    set({ terminalHeight });
   },
   setDocFocus(docFocus) {
     set({ docFocus });
@@ -456,7 +494,7 @@ const hashFor = (s: Addressed): string => {
 };
 
 /** Nothing of another room's selected: its own turns, files and revisions. */
-const FRESH = { changes: { scope: "turn" } as ChangesFocus, filePath: null, docFocus: null };
+const FRESH = { changes: { scope: "turn" } as ChangesFocus, filePath: null, fileTabs: [] as string[], docFocus: null };
 
 /**
  * What entering a room sets besides the route. From an address (`params`): what it says, the view otherwise
@@ -491,6 +529,7 @@ const routeState = (route: Route, params: URLSearchParams | null): Partial<Store
       ...(path && panel === "diff" ? { path } : {}),
     },
     filePath: panel === "files" ? (path ?? null) : null,
+    fileTabs: same ? s.fileTabs : [],
     sessionAgent: params.get("agent") || s.sessionAgent,
     docFocus: panel === "doc" && Number.isFinite(rev) ? rev : null,
   };

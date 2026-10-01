@@ -1,5 +1,6 @@
 import { parsePatchFiles } from "@pierre/diffs";
-import { File, FileDiff } from "@pierre/diffs/react";
+import { Editor } from "@pierre/diffs/edit";
+import { EditProvider, File, FileDiff } from "@pierre/diffs/react";
 import { useMemo } from "react";
 import { plural } from "@/lib/format";
 import { useTheme } from "@/lib/theme";
@@ -27,6 +28,30 @@ export function CodeFile({ name, text, className }: { name: string; text: string
     <div className={cn("diffs-host overflow-hidden rounded-xl border border-border bg-code", className)}>
       <File file={{ name, contents: text }} options={{ ...base, disableFileHeader: true }} />
     </div>
+  );
+}
+
+const createEditor = (type: "file", options: ConstructorParameters<typeof Editor<"file">>[1], key?: string) => new Editor(type, options, key);
+
+/**
+ * A file the human edits in place (Pierre's editor, as in T3 Code). `stateKey` keeps the draft and its undo
+ * history while the tab is away; `onText` gets the whole text on every change.
+ */
+export function EditableCode({ name, text, stateKey, wrap, onText, className }: { name: string; text: string; stateKey: string; wrap: boolean; onText: (text: string) => void; className?: string }) {
+  const base = useBase();
+  return (
+    <EditProvider createEditor={createEditor as never}>
+      <div className={cn("diffs-host diffs-edit min-h-full bg-code", className)}>
+        <File
+          file={{ name, contents: text, cacheKey: stateKey }}
+          options={{ ...base, overflow: wrap ? "wrap" : "scroll", disableFileHeader: true }}
+          edit
+          editStateKey={stateKey}
+          onEditChange={(event) => onText(event.file.contents)}
+          onEditComplete={() => "accept"}
+        />
+      </div>
+    </EditProvider>
   );
 }
 

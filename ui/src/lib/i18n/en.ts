@@ -123,11 +123,12 @@ export const en = {
   plural,
   names,
   sys,
-  /** The decision card: its heading, the option chosen, who decided. */
+  /** The decision card: its heading, the option chosen, who decided, and the reasons behind a toggle. */
   decision: {
     title: (n?: number) => (n ? `Decision #${n}` : "Decision"),
     body: (n: Note<"decision">) => `${n.option} “${n.title}”${n.note ? ` — ${n.note}` : ""}`,
     by: (by: string) => `decided by ${by}`,
+    why: "Why",
   },
   /** Effort: how hard the model thinks (Claude's --effort, Codex's reasoning effort). */
   effort: {

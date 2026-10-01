@@ -15,7 +15,7 @@
  * Agoryx: many voices, one square. The chrome is black and white and stays quiet; colour belongs to
  * the voices, Claude's clay, Codex's water and the human's laurel, and users may recolour them. The room
  * itself has no hue: --meet is ink, for the mark and for what the room settled (decisions, the chosen
- * option, answered questions), and a decision is the one place the page inverts (.settled).
+ * option, answered questions), and a decision is the one block that stands out (.settled).
  */
 :root {
   --radius: 0.75rem;
@@ -46,6 +46,9 @@
   --meet: #0a0a0a;
   --meet-soft: #f3f3f3;
   --meet-ink: #0a0a0a;
+  --settled: #0a0a0a;
+  --settled-ink: #ffffff;
+  --settled-edge: transparent;
   /*
    * Several agents of one kind: each gets a shade of its kind's family (internal/agora/look.ts),
    * set per element as --claude: var(--claude-N). Shade 0 is the kind's own colour; clay stays warm
@@ -135,6 +138,9 @@
   --meet: #f5f5f5;
   --meet-soft: #1a1a1a;
   --meet-ink: #f5f5f5;
+  --settled: #232323;
+  --settled-ink: #f5f5f5;
+  --settled-edge: #343434;
   --claude-0: #ee8a5e;
   --claude-1: oklch(0.78 0.11 78);
   --claude-2: oklch(0.72 0.13 12);
@@ -460,22 +466,22 @@ diffs-container,
   letter-spacing: -0.022em;
 }
 
-/* What the room settled: the page inverted, ink ground and paper text, in both themes. The tokens
-   are turned over on the children, so the mark, chips, links and code inside follow without classes of their own. */
+/* What the room settled: an ink block with paper text on light, a graphite one on dark (a white block
+   there would shout). The tokens are turned over on the block, so the mark, chips, links and code inside
+   follow without classes of their own. */
 @utility settled {
-  background: var(--meet);
-  color: var(--background);
-  & > * {
-    --foreground: var(--background);
-    --meet: var(--background);
-    --meet-ink: var(--background);
-    --primary: var(--background);
-    --muted-foreground: color-mix(in oklab, var(--background) 66%, transparent);
-    --secondary: color-mix(in oklab, var(--background) 14%, transparent);
-    --secondary-foreground: var(--background);
-    --code: color-mix(in oklab, var(--background) 10%, transparent);
-    --border: color-mix(in oklab, var(--background) 24%, transparent);
-  }
+  --foreground: var(--settled-ink);
+  --meet: var(--settled-ink);
+  --meet-ink: var(--settled-ink);
+  --primary: var(--settled-ink);
+  --muted-foreground: color-mix(in oklab, var(--settled-ink) 62%, transparent);
+  --secondary: color-mix(in oklab, var(--settled-ink) 14%, transparent);
+  --secondary-foreground: var(--settled-ink);
+  --code: color-mix(in oklab, var(--settled-ink) 10%, transparent);
+  --border: color-mix(in oklab, var(--settled-ink) 24%, transparent);
+  background: var(--settled);
+  color: var(--settled-ink);
+  box-shadow: inset 0 0 0 1px var(--settled-edge);
 }
 
 /* The start screen's square gathering (components/brand/Agora.tsx): one sequence, once. */

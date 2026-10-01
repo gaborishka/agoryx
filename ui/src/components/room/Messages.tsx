@@ -1,6 +1,6 @@
-import { FileTextIcon, GitCommitHorizontalIcon, InfoIcon, RotateCcwIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
+import { ChevronRightIcon, FileTextIcon, GitCommitHorizontalIcon, InfoIcon, RotateCcwIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
 import { motion } from "motion/react";
-import { memo, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 import { Mark } from "@/components/brand/Mark";
 import { Markdown } from "@/components/md/Markdown";
 import { OpCard, OpCards } from "@/components/table/OpCard";
@@ -178,14 +178,39 @@ export function SystemLine({ m }: { m: MessageEntry }) {
 export function DecisionLine({ m }: { m: MessageEntry }) {
   // From its code, or read back from an older room's English; a line neither covers shows as written.
   const d = decisionOf(m);
+  const [why, setWhy] = useState(false);
   return (
-    // What the room settled is the one place the page turns over: ink ground, the mark in paper.
-    <div className="settled flex items-start gap-3 rounded-2xl px-4 py-3.5 shadow-edge">
-      <Mark className="mt-1 size-4" />
+    // What the room settled is the one place the page turns over. The card holds the decision itself;
+    // the reasons open on demand, so a run of decisions stays a list of headlines, not a wall.
+    <div className="settled flex w-fit max-w-full items-start gap-3 rounded-2xl px-4 py-3">
+      <Mark className="mt-[3px] size-4" />
       <div className="min-w-0">
-        <div className="font-display text-lead font-[650] text-meet-ink">{t.decision.title(d?.n)}</div>
-        <Markdown text={d ? t.decision.body(d) : m.text} className="text-body" />
-        {d ? <div className="text-meta text-muted-foreground">{t.decision.by(d.by)}</div> : null}
+        <div className="text-meta text-muted-foreground">
+          {t.decision.title(d?.n)}
+          {d ? ` · ${t.decision.by(d.by)}` : null}
+        </div>
+        {d ? (
+          <div className="mt-0.5 flex items-baseline gap-2">
+            <span className="shrink-0 rounded-md bg-secondary px-1.5 font-mono text-meta">{d.option}</span>
+            <span className="font-display text-lead font-[650] text-meet-ink">{d.title}</span>
+          </div>
+        ) : (
+          <Markdown text={m.text} className="text-body" />
+        )}
+        {d?.note ? (
+          <>
+            <button
+              type="button"
+              aria-expanded={why}
+              onClick={() => setWhy((v) => !v)}
+              className="mt-1 -ml-1 inline-flex items-center gap-0.5 rounded-md px-1 text-meta text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-current"
+            >
+              <ChevronRightIcon className={cn("size-3.5 transition-transform", why && "rotate-90")} />
+              {t.decision.why}
+            </button>
+            {why ? <Markdown text={d.note} className="mt-1 max-w-[68ch] text-body" /> : null}
+          </>
+        ) : null}
       </div>
     </div>
   );

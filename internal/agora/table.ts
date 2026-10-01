@@ -32,6 +32,8 @@ const TABLE_OPS: ReadonlySet<TableOpName> = new Set([
   "decide",
   "reopen",
   "concede",
+  "edit",
+  "delete",
 ]);
 
 const MAX_TEXT = 4000;
@@ -68,6 +70,46 @@ const refOnTable = (table: TableState, ref: string): boolean =>
     list.some((entry) => entry.id === ref),
   );
 
+/** The next id with this letter: past every id given out before, so a deleted item's id is never reused. */
+const nextId = (table: TableState, letter: string, list: { id: string }[]): string => {
+  const highest = Math.max(table.issued?.[letter] ?? 0, 0, ...list.map((entry) => Number(entry.id.slice(1)) || 0));
+  return `${letter}${highest + 1}`;
+};
+
+type Editable = { by: string; text?: string; title?: string; withdrawn?: boolean; done?: boolean };
+
+/** The list an id belongs to, by its letter, and the entry in it. */
+const lookup = (table: TableState, ref: string): { list: Editable[] & { id: string }[]; entry: Editable & { id: string } } | null => {
+  const lists: Record<string, Array<Editable & { id: string }>> = {
+    Q: table.questions,
+    P: table.options,
+    N: table.notes,
+    F: table.facts,
+    S: table.settled,
+    X: table.next,
+    C: table.shifts,
+  };
+  const list = lists[ref[0]!];
+  const entry = list?.find((item) => item.id === ref);
+  return list && entry ? { list, entry } : null;
+};
+
+/** What `edit` may change on each kind of item. */
+const EDITABLE: Record<string, string[]> = {
+  Q: ["text", "many"],
+  P: ["title", "body", "file", "q"],
+  N: ["text", "source"],
+  F: ["text"],
+  S: ["text"],
+  X: ["text"],
+  C: ["text"],
+};
+
+const short = (entry: Editable): string => {
+  const flat = (entry.title ?? entry.text ?? "").replace(/\s+/g, " ").trim();
+  return flat.length > 120 ? `${flat.slice(0, 120)}…` : flat;
+};
+
 /**
  * Validate a table op against the current table and assign the id of the
  * entity it creates. Throws TableOpError with a message meant for whoever
@@ -94,7 +136,13 @@ export const prepareTableOp = (
 
   switch (op) {
     case "ask":
-      return { ...base, op, text: cleanText(input.text, "question text")!, id: `Q${table.questions.length + 1}` };
+      return {
+        ...base,
+        op,
+        text: cleanText(input.text, "question text")!,
+        ...(input.many === true ? { many: true } : {}),
+        id: nextId(table, "Q", table.questions),
+      };
     case "propose": {
       // Agents often guess the next id into the title ("P9: …"); the table assigns ids itself.
       const title = cleanText(input.title, "title")!.replace(/^P\d+\s*[:.—–-]\s*/i, "") || cleanText(input.title, "title")!;
@@ -114,7 +162,7 @@ export const prepareTableOp = (
         ...(body ? { body } : {}),
         ...(file ? { file } : {}),
         ...(q ? { q } : {}),
-        id: `P${table.options.length + 1}`,
+        id: nextId(table, "P", table.options),
       };
     }
     case "object":
@@ -144,11 +192,11 @@ export const prepareTableOp = (
         target,
         text: cleanText(input.text, "text")!,
         ...(source ? { source } : {}),
-        id: `N${table.notes.length + 1}`,
+        id: nextId(table, "N", table.notes),
       };
     }
     case "fact":
-      return { ...base, op, text: cleanText(input.text, "fact")!, id: `F${table.facts.length + 1}` };
+      return { ...base, op, text: cleanText(input.text, "fact")!, id: nextId(table, "F", table.facts) };
     case "settle": {
       let q: string | undefined;
       if (input.q !== undefined && input.q !== null && input.q !== "") {
@@ -157,7 +205,7 @@ export const prepareTableOp = (
         if (!question) throw new TableOpError(`no question ${q}`);
         if (question.status !== "open") throw new TableOpError(`${q} is already ${question.status}; reopen it first`);
       }
-      return { ...base, op, text: cleanText(input.text, "text")!, ...(q ? { q } : {}), id: `S${table.settled.length + 1}` };
+      return { ...base, op, text: cleanText(input.text, "text")!, ...(q ? { q } : {}), id: nextId(table, "S", table.settled) };
     }
     case "concede": {
       let target: string | undefined;
@@ -165,10 +213,10 @@ export const prepareTableOp = (
         target = normalizeRef(input.target);
         if (!refOnTable(table, target)) throw new TableOpError(`no ${target} on the table`);
       }
-      return { ...base, op, text: cleanText(input.text, "text")!, ...(target ? { target } : {}), id: `C${table.shifts.length + 1}` };
+      return { ...base, op, text: cleanText(input.text, "text")!, ...(target ? { target } : {}), id: nextId(table, "C", table.shifts) };
     }
     case "next":
-      return { ...base, op, text: cleanText(input.text, "text")!, id: `X${table.next.length + 1}` };
+      return { ...base, op, text: cleanText(input.text, "text")!, id: nextId(table, "X", table.next) };
     case "done": {
       const target = normalizeRef(input.target);
       if (!table.next.some((item) => item.id === target)) {
@@ -203,7 +251,7 @@ export const prepareTableOp = (
         }
       }
       const note = cleanText(input.note, "note", false);
-      return { ...base, op, target, ...(note ? { note } : {}), id: `D${table.decisions.length + 1}` };
+      return { ...base, op, target, ...(note ? { note } : {}), id: nextId(table, "D", table.decisions) };
     }
     case "reopen": {
       const target = normalizeRef(input.target);
@@ -219,15 +267,97 @@ export const prepareTableOp = (
       }
       return { ...base, op, target };
     }
+    case "edit": {
+      const target = normalizeRef(input.target);
+      if (target.startsWith("D")) throw new TableOpError(`${target} is a decision; to undo it, reopen its option`);
+      const found = lookup(table, target);
+      if (!found) throw new TableOpError(`no ${target} on the table`);
+      const { entry } = found;
+      if (!isHuman && entry.by !== by) {
+        throw new TableOpError(`${target} is ${entry.by}'s; only they can rewrite it — object to it, or propose your own`);
+      }
+      const letter = target[0]!;
+      // Option titles come in as the positional text, like `propose "title"`.
+      const fields: Record<string, unknown> = { ...input };
+      if (letter === "P" && fields.text !== undefined && fields.title === undefined) {
+        fields.title = fields.text;
+        delete fields.text;
+      }
+      const given = ["text", "title", "body", "file", "q", "source", "many"].filter((key) => fields[key] !== undefined && fields[key] !== "");
+      if (given.length === 0) throw new TableOpError(`nothing to change on ${target}`);
+      const wrong = given.filter((key) => !EDITABLE[letter]!.includes(key));
+      if (wrong.length) {
+        throw new TableOpError(`${target} has no ${wrong.join(", ")} to change (it takes ${EDITABLE[letter]!.map((key) => (letter === "P" && key === "title" ? "a new title" : key === "many" ? "--many/--one" : key === "text" ? "new text" : `--${key}`)).join(", ")})`);
+      }
+      if (entry.withdrawn) throw new TableOpError(`${target} is withdrawn`);
+      if (entry.done) throw new TableOpError(`${target} is done`);
+      const edit: Record<string, unknown> = {};
+      if (letter === "Q") {
+        const question = table.questions.find((item) => item.id === target)!;
+        if (question.status !== "open") throw new TableOpError(`${target} is already ${question.status}; reopen it first`);
+        if (fields.text !== undefined) edit.text = cleanText(fields.text, "question text");
+        if (fields.many !== undefined) {
+          const many = fields.many === true;
+          if (!many && table.options.some((option) => option.q === target && option.status === "chosen")) {
+            throw new TableOpError(`${target} already has chosen options; reopen them before making it a one-answer question`);
+          }
+          edit.many = many;
+        }
+      } else if (letter === "P") {
+        const option = table.options.find((item) => item.id === target)!;
+        if (option.status !== "open") throw new TableOpError(`${target} is already ${option.status}; reopen it first`);
+        if (fields.title !== undefined) {
+          const title = cleanText(fields.title, "title")!.replace(/^P\d+\s*[:.—–-]\s*/i, "") || cleanText(fields.title, "title")!;
+          edit.title = title.length > 160 ? `${title.slice(0, 160)}…` : title;
+        }
+        if (fields.body !== undefined) edit.body = cleanText(fields.body, "body", false, MAX_BODY) ?? "";
+        if (fields.file !== undefined) edit.file = cleanText(fields.file, "file", false) ?? "";
+        if (fields.q !== undefined) {
+          const q = normalizeRef(fields.q);
+          const question = table.questions.find((item) => item.id === q);
+          if (!question) throw new TableOpError(`no question ${q}`);
+          if (question.status !== "open") throw new TableOpError(`${q} is already ${question.status}; reopen it first`);
+          edit.q = q;
+        }
+      } else {
+        if (fields.text !== undefined) edit.text = cleanText(fields.text, "text");
+        if (fields.source !== undefined) edit.source = cleanText(fields.source, "source", false) ?? "";
+      }
+      return { ...base, op, target, ...edit };
+    }
+    case "delete": {
+      const target = normalizeRef(input.target);
+      if (target.startsWith("D")) throw new TableOpError(`${target} is a decision; to undo it, reopen its option`);
+      const found = lookup(table, target);
+      if (!found) throw new TableOpError(`no ${target} on the table`);
+      const { entry } = found;
+      if (!isHuman && entry.by !== by) {
+        throw new TableOpError(`${target} is ${entry.by}'s; only they can delete it — object to it instead`);
+      }
+      if (target.startsWith("P") && table.options.find((item) => item.id === target)!.status === "chosen") {
+        throw new TableOpError(`${target} is chosen; reopen it first`);
+      }
+      if (target.startsWith("Q")) {
+        const question = table.questions.find((item) => item.id === target)!;
+        if (question.status === "decided" || table.options.some((option) => option.q === target && option.status === "chosen")) {
+          throw new TableOpError(`${target} has a decision; reopen it first`);
+        }
+      }
+      return { ...base, op, target, was: short(entry) };
+    }
   }
 };
 
 /** Pure reducer: applies an already-prepared op. */
 export const applyTableOp = (table: TableState, op: TableOp, seq: number): void => {
   const item = (text: string): TableItem => ({ id: op.id!, text, by: op.by, seq });
+  if (op.id) {
+    const letter = op.id[0]!;
+    table.issued = { ...table.issued, [letter]: Math.max(table.issued?.[letter] ?? 0, Number(op.id.slice(1)) || 0) };
+  }
   switch (op.op) {
     case "ask":
-      table.questions.push({ id: op.id!, text: op.text, by: op.by, seq, status: "open" });
+      table.questions.push({ id: op.id!, text: op.text, by: op.by, seq, status: "open", ...(op.many ? { many: true } : {}) });
       return;
     case "propose":
       table.options.push({
@@ -260,7 +390,9 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
     case "settle": {
       table.settled.push({ ...item(op.text), ...(op.q ? { q: op.q } : {}) });
       const question = op.q ? table.questions.find((entry) => entry.id === op.q) : undefined;
-      if (question && question.status === "open") {
+      // On a question whose options don't exclude each other, a settled point is the room's recommendation:
+      // the options stay open for the human to choose.
+      if (question && question.status === "open" && !question.many) {
         question.status = "answered";
         question.answer = op.id!;
       }
@@ -302,7 +434,9 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
       });
       if (option.q) {
         const question = table.questions.find((entry) => entry.id === option.q);
-        if (question) {
+        // A `many` question stays open while any of its options is still open.
+        const rest = question?.many && table.options.some((entry) => entry.q === question.id && entry.status === "open");
+        if (question && !rest) {
           question.status = "decided";
           question.decision = op.id!;
         }
@@ -328,9 +462,41 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
         // Un-choosing the option that decided its question reopens the question, so it can be decided again.
         const question = wasChosen && option.q ? table.questions.find((entry) => entry.id === option.q) : undefined;
         const decision = question?.decision ? table.decisions.find((entry) => entry.id === question.decision) : undefined;
-        if (question && decision?.option === option.id) {
+        if (question && (question.many ? question.status === "decided" : decision?.option === option.id)) {
           question.status = "open";
           delete question.decision;
+        }
+      }
+      return;
+    }
+    case "edit": {
+      const found = lookup(table, op.target);
+      if (!found) return;
+      const entry = found.entry as Editable & Record<string, unknown>;
+      for (const key of ["text", "title", "body", "file", "q", "source"] as const) {
+        const value = op[key];
+        if (value === undefined) continue;
+        if (value === "") delete entry[key];
+        else entry[key] = value;
+      }
+      if (op.many !== undefined) {
+        if (op.many) entry.many = true;
+        else delete entry.many;
+      }
+      return;
+    }
+    case "delete": {
+      const found = lookup(table, op.target);
+      if (!found) return;
+      found.list.splice(found.list.indexOf(found.entry), 1);
+      // What hangs on it goes with it; options of a deleted question stay, as proposals of their own.
+      table.notes = table.notes.filter((note) => note.target !== op.target);
+      for (const option of table.options) if (option.q === op.target) option.q = null;
+      for (const point of table.settled) if (point.q === op.target) delete point.q;
+      for (const question of table.questions) {
+        if (question.answer === op.target) {
+          question.status = "open";
+          delete question.answer;
         }
       }
       return;
@@ -370,6 +536,7 @@ export const describeTableOp = (op: TableOp, table?: TableState, options: { whol
     case "fact":
       return `noted fact ${op.id}: ${quote(op.text)}`;
     case "settle":
+      if (op.q && table?.questions.find((entry) => entry.id === op.q)?.many) return `recommended for ${op.q} (${op.id}): ${quote(op.text)}`;
       return op.q ? `answered ${op.q} (${op.id}): ${quote(op.text)}` : `marked settled: ${quote(op.text)}`;
     case "concede":
       return `conceded${op.target ? ` on ${op.target}` : ""} (${op.id}): ${dissent(op.text)}`;
@@ -385,6 +552,19 @@ export const describeTableOp = (op: TableOp, table?: TableState, options: { whol
       return `decided ${op.target}${titleOf(op.target)} (${op.id})${op.note ? `: ${quote(op.note)}` : ""}`;
     case "reopen":
       return `reopened ${op.target}`;
+    case "edit": {
+      const what = [
+        op.title !== undefined || op.text !== undefined ? quote(op.title ?? op.text ?? "", 80) : "",
+        op.body !== undefined ? "(new body)" : "",
+        op.file !== undefined ? (op.file ? `(preview: ${op.file})` : "(no preview)") : "",
+        op.q !== undefined ? `(moved to ${op.q})` : "",
+        op.source !== undefined ? `[${op.source}]` : "",
+        op.many !== undefined ? (op.many ? "(any number of options can be chosen)" : "(one option is chosen)") : "",
+      ].filter(Boolean);
+      return `rewrote ${op.target}${what.length ? ` ${what.join(" ")}` : ""}`;
+    }
+    case "delete":
+      return `deleted ${op.target}${op.was ? ` ${quote(op.was, 80)}` : ""}`;
   }
 };
 
@@ -425,7 +605,8 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
         : question.status === "answered"
           ? `answered → ${question.answer}`
           : "open";
-    lines.push(`## ${question.id} · ${question.text}`, `_asked by ${question.by} · ${status}_`, "");
+    const kind = question.many ? " · any number can be chosen" : "";
+    lines.push(`## ${question.id} · ${question.text}`, `_asked by ${question.by}${kind} · ${status}_`, "");
     const options = table.options.filter((entry) => entry.q === question.id);
     if (options.length === 0) lines.push("- (no options yet)");
     for (const option of options) renderOption(option.id);
@@ -449,7 +630,8 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
     if (items.length === 0) return;
     lines.push(`## ${title}`);
     for (const entry of items) {
-      const about = entry.q ? ` [answers ${entry.q}]` : entry.target ? ` [on ${entry.target}]` : "";
+      const many = entry.q ? table.questions.find((question) => question.id === entry.q)?.many : false;
+      const about = entry.q ? ` [${many ? "recommends for" : "answers"} ${entry.q}]` : entry.target ? ` [on ${entry.target}]` : "";
       const struck = entry.done || entry.withdrawn ? "~~" : "";
       const disputed = disputes ? disputeOf(table, entry) : [];
       lines.push(`- ${struck}${entry.id}: ${entry.text}${struck}${about} (${entry.by}${entry.doneBy && entry.doneBy !== entry.by ? `; done by ${entry.doneBy}` : ""}${entry.withdrawn ? "; withdrawn" : ""})${disputed.length ? ` — contested by ${disputed.join(", ")}` : ""}`);
@@ -520,7 +702,10 @@ export const summarizeTable = (table: TableState): string | null => {
   const lines: string[] = [];
   for (const question of openQuestions) {
     const options = liveOptions.filter((option) => option.q === question.id);
-    lines.push(`  ${question.id} open ${quote(question.text, 100)}${options.length ? "" : " — no options yet"}`);
+    const chosen = question.many ? table.options.filter((option) => option.q === question.id && option.status === "chosen").map((option) => option.id) : [];
+    lines.push(
+      `  ${question.id} open${question.many ? " (any number can be chosen)" : ""} ${quote(question.text, 100)}${options.length ? "" : " — no options yet"}${chosen.length ? ` — chosen so far: ${chosen.join(", ")}` : ""}`,
+    );
     for (const option of options) lines.push(`    ${standing(option)}`);
   }
   for (const option of liveOptions.filter((entry) => !entry.q || !openQuestions.some((question) => question.id === entry.q))) {
@@ -543,7 +728,8 @@ export const summarizeTable = (table: TableState): string | null => {
   }
   if (table.settled.length > 0) {
     const settled = recentOrDisputed(table.settled, 4).map(
-      (item) => `${item.id}${item.q ? ` (answers ${item.q})` : ""} ${quote(item.text, 70)}${contested(item)}`,
+      (item) =>
+        `${item.id}${item.q ? ` (${table.questions.find((question) => question.id === item.q)?.many ? "recommends for" : "answers"} ${item.q})` : ""} ${quote(item.text, 70)}${contested(item)}`,
     );
     lines.push(`  settled: ${settled.join("; ")}`);
   }

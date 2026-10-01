@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
  */
 export const TABLE_USAGE = [
   "agoryx table [show]",
-  'agoryx table ask "question"',
+  'agoryx table ask "question" [--many]   (--many: its options don\'t exclude each other; any number can be chosen)',
   'agoryx table propose "short title" [--body "what and why" | --body-file notes.md] [--file path] [--q Q1]',
   'agoryx table object|support P1|S1|F1 "reason"',
   'agoryx table evidence P1|S1|F1 "finding" [--source url-or-path]',
@@ -16,13 +16,18 @@ export const TABLE_USAGE = [
   'agoryx table concede "what I no longer hold, and why" [--on P1]',
   "agoryx table done X1 | withdraw P1|F1 | reopen Q1|P1",
   'agoryx table decide P1 [--note "why"]',
+  'agoryx table edit P1 ["new title"] [--body … | --body-file …] [--file path] [--q Q2]',
+  'agoryx table edit Q1|S1|F1|X1|N1|C1 ["new text"] [--many | --one] [--source …]',
+  "agoryx table delete P1|Q1|S1|F1|X1|N1|C1",
 ];
 
 export class TableCommandError extends Error {}
 
 /** The flags each verb takes; anything else is a typo that would otherwise be dropped silently. */
 export const TABLE_FLAGS: Record<string, string[]> = {
+  ask: ["many"],
   propose: ["body", "body-file", "file", "q"],
+  edit: ["body", "body-file", "file", "q", "source", "many", "one"],
   evidence: ["source"],
   object: ["source"],
   support: ["source"],
@@ -31,6 +36,9 @@ export const TABLE_FLAGS: Record<string, string[]> = {
   concede: ["on"],
 };
 
+/** Flags that take no value: the next argument stays positional. */
+export const TABLE_SWITCHES = ["many", "one"];
+
 export const parseTableCommand = (verb: string, argv: string[]): Record<string, unknown> => {
   const positional: string[] = [];
   const flags: Record<string, string> = {};
@@ -38,7 +46,8 @@ export const parseTableCommand = (verb: string, argv: string[]): Record<string, 
     const arg = argv[index]!;
     if (arg.startsWith("--")) {
       const eq = arg.indexOf("=");
-      if (eq > 0) flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+      if (eq < 0 && TABLE_SWITCHES.includes(arg.slice(2))) flags[arg.slice(2)] = "true";
+      else if (eq > 0) flags[arg.slice(2, eq)] = arg.slice(eq + 1);
       else if (index + 1 < argv.length) flags[arg.slice(2)] = argv[++index]!;
       else flags[arg.slice(2)] = "";
     } else {
@@ -59,6 +68,8 @@ export const parseTableCommand = (verb: string, argv: string[]): Record<string, 
   };
   switch (verb) {
     case "ask":
+      if (!rest) throw new TableCommandError("'ask' needs text");
+      return { op: "ask", text: rest, ...(flags.many ? { many: true } : {}) };
     case "fact":
     case "next":
       if (!rest) throw new TableCommandError(`'${verb}' needs text`);
@@ -90,6 +101,24 @@ export const parseTableCommand = (verb: string, argv: string[]): Record<string, 
     case "reopen":
       if (!positional[0]) throw new TableCommandError(`'${verb}' needs an id`);
       return { op: verb, target: positional[0] };
+    case "edit": {
+      const [target, ...text] = positional;
+      if (!target) throw new TableCommandError("'edit' needs an id, e.g. edit P1 \"new title\" or edit Q1 --many");
+      if (flags.many && flags.one) throw new TableCommandError("'edit' takes --many or --one, not both");
+      return clean({
+        op: "edit",
+        target,
+        text: text.join(" ").trim() || undefined,
+        body: flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : flags.body,
+        file: flags.file,
+        q: flags.q,
+        source: flags.source,
+        many: flags.many ? true : flags.one ? false : undefined,
+      });
+    }
+    case "delete":
+      if (!positional[0]) throw new TableCommandError("'delete' needs an id");
+      return { op: "delete", target: positional[0] };
     case "decide":
       if (!positional[0]) throw new TableCommandError("'decide' needs an option id");
       return clean({ op: "decide", target: positional[0], note: flags.note ?? (positional.slice(1).join(" ") || undefined) });

@@ -184,3 +184,98 @@ test("a fact that turned out wrong is withdrawn by its author: struck out, not g
   applyTableOp(table, prepareTableOp(table, { op: "withdraw", target: "F2" }, "Ivan", true), 4);
   assert.equal(table.facts[1]!.withdrawn, true);
 });
+
+test("a question asked with --many keeps its other options open when one is chosen, and closes when none is left", () => {
+  const table = emptyTable();
+  let seq = 0;
+  const move = (raw: Record<string, unknown>, by: string, isHuman = false) => applyTableOp(table, prepareTableOp(table, raw, by, isHuman), (seq += 1));
+  move({ op: "ask", text: "What to take from T3 next?", many: true }, "claude");
+  move({ op: "propose", title: "Quote chips", q: "Q1" }, "claude");
+  move({ op: "propose", title: "Diff comments", q: "Q1" }, "claude");
+  move({ op: "settle", text: "P1 then P2", q: "Q1" }, "codex");
+  // On a --many question a settled point recommends; it does not close the question.
+  assert.equal(table.questions[0]!.status, "open");
+  move({ op: "decide", target: "P1" }, "ivan", true);
+  assert.equal(table.questions[0]!.status, "open");
+  assert.equal(table.options[1]!.status, "open");
+  assert.match(summarizeTable(table)!, /Q1 open \(any number can be chosen\).*chosen so far: P1/);
+  move({ op: "decide", target: "P2" }, "ivan", true);
+  assert.equal(table.questions[0]!.status, "decided");
+  // Un-choosing one opens the question again.
+  move({ op: "reopen", target: "P1" }, "ivan", true);
+  assert.equal(table.questions[0]!.status, "open");
+});
+
+test("a one-answer question still closes on the first choice; edit --many turns it into a list before anyone chooses", () => {
+  const table = emptyTable();
+  let seq = 0;
+  const move = (raw: Record<string, unknown>, by: string, isHuman = false) => applyTableOp(table, prepareTableOp(table, raw, by, isHuman), (seq += 1));
+  move({ op: "ask", text: "Which storage?" }, "claude");
+  move({ op: "propose", title: "SQLite" }, "claude");
+  move({ op: "propose", title: "JSONL" }, "codex");
+  assert.throws(() => move({ op: "edit", target: "Q1", many: true }, "codex"), /claude's; only they can rewrite it/);
+  move({ op: "edit", target: "Q1", many: true }, "claude");
+  assert.equal(table.questions[0]!.many, true);
+  move({ op: "decide", target: "P1" }, "ivan", true);
+  assert.equal(table.questions[0]!.status, "open");
+  assert.throws(() => move({ op: "edit", target: "Q1", many: false }, "claude"), /already has chosen options/);
+});
+
+test("agents rewrite and delete their own items; deleted ids are never given out again", () => {
+  const table = emptyTable();
+  let seq = 0;
+  const move = (raw: Record<string, unknown>, by: string, isHuman = false) => {
+    const op = prepareTableOp(table, raw, by, isHuman);
+    applyTableOp(table, op, (seq += 1));
+    return op;
+  };
+  move({ op: "ask", text: "What next?" }, "claude");
+  move({ op: "propose", title: "Quote chips", body: "old", q: "Q1" }, "claude");
+  move({ op: "propose", title: "Resize panels", q: "Q1" }, "codex");
+  move({ op: "object", target: "P1", text: "too small" }, "codex");
+
+  move({ op: "edit", target: "P1", text: "P1: Quote and diff chips", body: "one mechanism" }, "claude");
+  assert.equal(table.options[0]!.title, "Quote and diff chips");
+  assert.equal(table.options[0]!.body, "one mechanism");
+  assert.throws(() => move({ op: "edit", target: "P2", text: "mine now" }, "claude"), /codex's/);
+  assert.throws(() => move({ op: "edit", target: "P1", many: true }, "claude"), /P1 has no many to change/);
+  // The human can rewrite anyone's item.
+  move({ op: "edit", target: "P2", text: "Resizable panels" }, "ivan", true);
+  assert.equal(table.options[1]!.title, "Resizable panels");
+
+  assert.throws(() => move({ op: "delete", target: "P2" }, "claude"), /codex's; only they can delete it/);
+  const deleted = move({ op: "delete", target: "P1" }, "claude");
+  assert.equal(deleted.op === "delete" && deleted.was, "Quote and diff chips");
+  assert.deepEqual(table.options.map((o) => o.id), ["P2"]);
+  // Its objection went with it.
+  assert.equal(table.notes.length, 0);
+  // P1 is not given out again, and neither is N1.
+  assert.equal(move({ op: "propose", title: "Slash commands" }, "claude").id, "P3");
+  assert.equal(move({ op: "support", target: "P3", text: "daily use" }, "codex").id, "N2");
+
+  // Deleting a question leaves its options as proposals of their own.
+  move({ op: "delete", target: "Q1" }, "claude");
+  assert.equal(table.questions.length, 0);
+  assert.equal(table.options.find((o) => o.id === "P2")!.q, null);
+  assert.equal(move({ op: "ask", text: "Again" }, "claude").id, "Q2");
+
+  // A chosen option has to be reopened before it can go.
+  move({ op: "decide", target: "P2" }, "ivan", true);
+  assert.throws(() => move({ op: "delete", target: "P2" }, "codex"), /chosen; reopen it first/);
+
+  // Deleting the settled point that answered a question opens the question again.
+  move({ op: "settle", text: "Answer", q: "Q2" }, "codex");
+  assert.equal(table.questions[0]!.status, "answered");
+  move({ op: "delete", target: "S1" }, "codex");
+  assert.equal(table.questions[0]!.status, "open");
+  assert.match(renderTableMarkdown(table, "room"), /## Q2 · Again/);
+});
+
+test("parseTableCommand reads --many and --one as switches, and edit/delete", () => {
+  assert.deepEqual(parseTableCommand("ask", ["--many", "What", "next?"]), { op: "ask", text: "What next?", many: true });
+  assert.deepEqual(parseTableCommand("edit", ["Q1", "--one"]), { op: "edit", target: "Q1", many: false });
+  assert.deepEqual(parseTableCommand("edit", ["P2", "New", "title", "--q", "Q3"]), { op: "edit", target: "P2", text: "New title", q: "Q3" });
+  assert.deepEqual(parseTableCommand("delete", ["S1"]), { op: "delete", target: "S1" });
+  assert.throws(() => parseTableCommand("edit", []), TableCommandError);
+  assert.throws(() => parseTableCommand("edit", ["Q1", "--many", "--one"]), TableCommandError);
+});

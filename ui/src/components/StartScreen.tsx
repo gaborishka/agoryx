@@ -8,6 +8,7 @@ import {
   RepeatIcon,
   ScrollTextIcon,
   SearchCodeIcon,
+  XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -15,6 +16,7 @@ import { FolderBar, useFolderGit } from "@/components/FolderPicker";
 import { Agora } from "@/components/brand/Agora";
 import { type ModelChange, ModelMenu } from "@/components/room/ModelMenu";
 import { autosize } from "@/components/room/Composer";
+import { AttachButton, AttachmentList, useAttachments, withFiles } from "@/components/room/Attachments";
 import { NavButton } from "@/components/room/RoomHeader";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
@@ -26,10 +28,10 @@ import {
 import { api, local, Unauthorized } from "@/lib/api";
 import { names, plural } from "@/lib/format";
 import { useModels } from "@/lib/models";
-import { rosterEntry } from "@/lib/agents";
+import { handleFor, KIND_NAME, nameFor, rosterEntry } from "@/lib/agents";
 import { DEFAULT_AGENTS } from "@/lib/room";
 import { useStore } from "@/lib/store";
-import type { RoomAgent } from "@/lib/types";
+import type { AgentKind, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** Each starter is ruled in one of the square's voices: clay, water, laurel. */
@@ -58,21 +60,31 @@ const EXAMPLES = [
 const DEFAULT_BUDGET: number | null = null;
 const BUDGETS = [4, 8, 16, 32];
 
-/** Model and effort chosen here for each agent, by id; a key that is present overrides the roster (null: the CLI's default). */
-type Picks = Record<string, ModelChange>;
-
-const readPicks = (): Picks => {
+/** Who the next room seats, as last set here; absent until something is changed (then the roster's first pair). */
+const readSeats = (): RoomAgent[] | null => {
   try {
-    const value: unknown = JSON.parse(local.get("start.models") ?? "{}");
-    return value && typeof value === "object" && !Array.isArray(value) ? (value as Picks) : {};
+    const value: unknown = JSON.parse(local.get("start.seats") ?? "null");
+    if (!Array.isArray(value)) return null;
+    const seats = value.filter(
+      (a): a is RoomAgent =>
+        a && typeof a === "object" && typeof a.id === "string" && typeof a.label === "string" && (a.kind === "claude" || a.kind === "codex"),
+    );
+    return seats.length ? seats : null;
   } catch {
-    return {};
+    return null;
   }
 };
 
-/** The roster's agent with what was picked for it here. */
-const withPick = (agent: RoomAgent, pick: ModelChange | undefined): RoomAgent => {
-  if (!pick) return agent;
+/** A new room starts with two: the roster's first Claude and first Codex, or its first two. */
+const firstPair = (roster: RoomAgent[]): RoomAgent[] => {
+  const claude = roster.find((a) => a.kind === "claude");
+  const codex = roster.find((a) => a.kind === "codex");
+  const pair = [claude, codex].filter((a): a is RoomAgent => Boolean(a));
+  return pair.length === 2 ? pair : roster.slice(0, 2);
+};
+
+/** The model or effort picked for a seat. */
+const withPick = (agent: RoomAgent, pick: ModelChange): RoomAgent => {
   const next = { ...agent };
   if ("model" in pick) {
     if (pick.model) next.model = pick.model;
@@ -83,16 +95,6 @@ const withPick = (agent: RoomAgent, pick: ModelChange | undefined): RoomAgent =>
     else delete next.effort;
   }
   return next;
-};
-
-/** Agents of the roster left out of the next room, by id: the room starts with the others. */
-const readLeft = (): string[] => {
-  try {
-    const value: unknown = JSON.parse(local.get("start.left") ?? "[]");
-    return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
-  } catch {
-    return [];
-  }
 };
 
 const footChip =
@@ -195,6 +197,55 @@ function BudgetChip({
   );
 }
 
+/** Seats one more: an agent of the roster, or a new Claude or Codex (its model is picked on its own chip). */
+function AddSeat({ roster, seated, onAdd }: { roster: RoomAgent[]; seated: RoomAgent[]; onAdd: (agent: RoomAgent) => void }) {
+  const models = useModels();
+  const [open, setOpen] = useState(false);
+  const free = roster.filter((a) => !seated.some((s) => s.id === a.id));
+  const fresh = (kind: AgentKind): RoomAgent => {
+    const label = nameFor(kind, undefined, models, [...seated, ...free]);
+    return { id: handleFor(label), kind, label };
+  };
+  const add = (agent: RoomAgent) => {
+    onAdd(agent);
+    setOpen(false);
+  };
+  const item = "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-small transition hover:bg-accent";
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        className="inline-flex h-8 items-center gap-1 rounded-full border border-dashed border-border px-2.5 text-small text-muted-foreground transition hover:bg-accent hover:text-foreground data-[state=open]:bg-accent"
+        title="Add an agent to the new room"
+        aria-label="Add an agent"
+      >
+        <PlusIcon className="size-3.5" />
+        <span className={seated.length > 2 ? "sr-only" : undefined}>Agent</span>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-64 rounded-xl p-1.5">
+        {free.length ? (
+          <>
+            <div className="px-2 pt-1 pb-1 text-meta text-faint">From your agents</div>
+            {free.map((agent) => (
+              <button key={agent.id} type="button" className={item} onClick={() => add(agent)}>
+                <span className="truncate">{agent.label}</span>
+                <span className="ml-auto shrink-0 font-mono text-meta text-faint">@{agent.id}</span>
+              </button>
+            ))}
+            <div className="my-1 h-px bg-border" />
+          </>
+        ) : null}
+        <div className="px-2 pt-1 pb-1 text-meta text-faint">New</div>
+        {(["claude", "codex"] as const).map((kind) => (
+          <button key={kind} type="button" className={item} onClick={() => add(fresh(kind))}>
+            <PlusIcon className="size-3.5 text-muted-foreground" />
+            {KIND_NAME[kind]}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function Steps({ budget }: { budget: number | null }) {
   const steps = [
     {
@@ -269,30 +320,17 @@ export function StartScreen() {
   const [rosterError, setRosterError] = useState<string | null>(null);
   // Named as they sit: Claudes first, then Codexes.
   const models = useModels();
-  const [picks, setPicks] = useState<Picks>(readPicks);
-  const [left, setLeft] = useState<string[]>(readLeft);
-  // One agent at least: if all were left out (the roster changed meanwhile), everyone sits.
-  const out = agents.every((agent) => left.includes(agent.id)) ? [] : left;
-  const seated = agents.filter((agent) => !out.includes(agent.id)).map((agent) => withPick(agent, picks[agent.id]));
-  const absent = agents.filter((agent) => out.includes(agent.id));
-  // The roster goes with the new room only when it differs here: a model or effort picked, or an agent left out.
-  const picked = absent.length > 0 || seated.some((agent) => {
-    const base = agents.find((a) => a.id === agent.id)!;
-    return agent.model !== base.model || agent.effort !== base.effort;
-  });
-  const leave = (id: string, gone: boolean) =>
-    setLeft((prev) => {
-      const next = gone ? [...prev.filter((x) => x !== id), id] : prev.filter((x) => x !== id);
-      local.set("start.left", next.length ? JSON.stringify(next) : null);
-      return next;
-    });
+  // Two by default; added, removed and tuned here, and remembered for the next room.
+  const [chosen, setChosen] = useState<RoomAgent[] | null>(readSeats);
+  const seated = chosen ?? firstPair(agents);
+  const seat = (next: RoomAgent[]) => {
+    setChosen(next);
+    local.set("start.seats", JSON.stringify(next));
+  };
+  const leave = (id: string) => seat(seated.filter((a) => a.id !== id));
+  const pick = (id: string, change: ModelChange) => seat(seated.map((a) => (a.id === id ? withPick(a, change) : a)));
   const who = names([...seated.filter((a) => a.kind === "claude"), ...seated.filter((a) => a.kind !== "claude")].map((a) => a.label));
-  const pick = (id: string, change: ModelChange) =>
-    setPicks((prev) => {
-      const next = { ...prev, [id]: { ...prev[id], ...change } };
-      local.set("start.models", JSON.stringify(next));
-      return next;
-    });
+  const files = useAttachments();
   const loadRoster = useCallback(() => {
     api<{ agents?: RoomAgent[]; rosterError?: string }>("GET", "/api/info")
       .then((info) => {
@@ -320,21 +358,22 @@ export function StartScreen() {
   const submit = async (event?: { preventDefault: () => void }) => {
     event?.preventDefault();
     const body = text.trim();
-    if (!body || busy || rosterError) return;
+    if ((!body && !files.items.length) || busy || rosterError) return;
     setBusy(true);
     try {
       const { room } = await api<{ room: { id: string } }>(
         "POST",
         "/api/rooms",
         {
-          text: body,
+          text: withFiles(body, await files.upload()),
           ...(folder ? { dir: folder } : {}),
           ...(inWorktree ? { worktree: true, ...(base ? { base } : {}) } : {}),
           ...(budget !== DEFAULT_BUDGET ? { budget } : {}),
-          ...(picked ? { agents: seated.map(rosterEntry) } : {}),
+          agents: seated.map(rosterEntry),
         },
       );
       local.set("draft.new", null);
+      files.clear();
       await loadRooms();
       go({ kind: "room", id: room.id });
     } catch (error) {
@@ -370,7 +409,11 @@ export function StartScreen() {
           <div className="flex flex-col gap-2">
             <form
               onSubmit={submit}
-              className="rounded-[26px] border border-input bg-card shadow-lift transition focus-within:border-human/45 focus-within:ring-4 focus-within:ring-human/10"
+              className={cn(
+                "rounded-[26px] border border-input bg-card shadow-lift transition focus-within:border-human/45 focus-within:ring-4 focus-within:ring-human/10",
+                files.over && "border-human/45 ring-4 ring-human/10",
+              )}
+              {...files.drop}
             >
               <div className="flex flex-wrap items-start gap-x-2 gap-y-1 rounded-t-[26px] border-b border-border/80 bg-muted/40 px-3 py-2">
                 <span className="pr-0.5 pl-1 text-meta leading-8 text-faint">
@@ -401,43 +444,47 @@ export function StartScreen() {
                     void submit();
                   }
                 }}
+                onPaste={files.onPaste}
                 placeholder={`Describe a task or question for ${who}…`}
                 aria-label="First message"
                 data-composer
                 className="scroll-thin block min-h-[108px] w-full resize-none bg-transparent px-5 pt-4 text-lead leading-relaxed outline-none placeholder:text-faint"
               />
+              <AttachmentList items={files.items} onRemove={files.remove} className="px-5 pb-2" />
               <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2.5">
+                <AttachButton onFiles={files.add} />
                 {seated.map((agent) => (
-                  <ModelMenu
-                    key={agent.id}
-                    agent={agent}
-                    seating={{ agents: seated }}
-                    models={models}
-                    side="bottom"
-                    className="h-8 rounded-full px-2.5 text-small text-muted-foreground hover:text-foreground"
-                    onSet={(change) => pick(agent.id, change)}
-                    onLeave={seated.length > 1 ? () => leave(agent.id, true) : undefined}
-                  />
+                  <span key={agent.id} className="group/seat relative inline-flex items-center">
+                    <ModelMenu
+                      agent={agent}
+                      seating={{ agents: seated }}
+                      models={models}
+                      side="bottom"
+                      className="h-8 rounded-full px-2.5 text-small text-muted-foreground hover:text-foreground"
+                      onSet={(change) => pick(agent.id, change)}
+                      onLeave={seated.length > 1 ? () => leave(agent.id) : undefined}
+                    />
+                    {seated.length > 1 ? (
+                      <button
+                        type="button"
+                        onClick={() => leave(agent.id)}
+                        aria-label={`Start without ${agent.label}`}
+                        title={`Start without ${agent.label}`}
+                        className="-ml-1 grid size-6 place-items-center rounded-full text-faint opacity-0 transition group-hover/seat:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100 pointer-coarse:opacity-100"
+                      >
+                        <XIcon className="size-3" />
+                      </button>
+                    ) : null}
+                  </span>
                 ))}
-                {absent.map((agent) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    onClick={() => leave(agent.id, false)}
-                    title={`Seat ${agent.label} in the new room`}
-                    className="inline-flex h-8 items-center gap-1 rounded-full border border-dashed border-border px-2.5 text-small text-faint transition hover:bg-accent hover:text-foreground"
-                  >
-                    <PlusIcon className="size-3.5" />
-                    {agent.label}
-                  </button>
-                ))}
+                <AddSeat roster={agents} seated={seated} onAdd={(agent) => seat([...seated, agent])} />
                 <span aria-hidden className="mx-0.5 hidden h-4 w-px bg-border sm:block" />
                 <BudgetChip budget={budget} onBudget={changeBudget} />
                 <Button
                   type="submit"
                   size="icon"
                   className="ml-auto size-9 rounded-full"
-                  disabled={busy || !text.trim() || Boolean(rosterError)}
+                  disabled={busy || (!text.trim() && !files.items.length) || Boolean(rosterError)}
                   aria-label="Start"
                   title="Start (Enter)"
                 >

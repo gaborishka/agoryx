@@ -12,6 +12,7 @@ import {
   Settings2Icon,
   ShieldCheckIcon,
   SquareIcon,
+  UserPlusIcon,
   UsersIcon,
   WifiOffIcon,
 } from "lucide-react";
@@ -25,7 +26,7 @@ import { local, Unauthorized } from "@/lib/api";
 import { useRoomDiff } from "@/lib/changes";
 import { keyLabel } from "@/lib/keys";
 import { baseName, names as nameList, plural } from "@/lib/format";
-import type { AgentModels, RoomAgent, RoomState } from "@/lib/types";
+import type { AgentModels, LimitSnapshot, RoomAgent, RoomState } from "@/lib/types";
 import { useModels } from "@/lib/models";
 import { ModelMenu } from "@/components/room/ModelMenu";
 import { LimitsChip } from "@/components/room/Limits";
@@ -377,14 +378,22 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
         <Kbd>{keyLabel("send")}</Kbd> надіслати
         <Kbd className="ml-1.5">{keyLabel("newline")}</Kbd> новий рядок
       </span>
-      <div className="flex min-w-0 flex-wrap items-center justify-end gap-0.5">
-        {room.agents.map((a, index) => (
-          <span key={a.id} className="flex items-center">
-            <AgentModel agent={a} models={models} disabled={!driven} working={presence?.[a.id] === "working"} />
-            {/* Limits are the subscription's: shown once per kind of agent. */}
-            {room.agents.findIndex((other) => other.kind === a.kind) === index ? <LimitsChip kind={a.kind} limits={limits} className={quietButton} /> : null}
-          </span>
+      {/* The room's agents in one line, never wrapping: each its model and limits on click, then seat or send out. */}
+      <div className="scroll-none ml-auto flex min-w-0 items-center gap-0.5 overflow-x-auto">
+        {room.agents.map((a) => (
+          <AgentModel key={a.id} agent={a} models={models} limits={limits} disabled={!driven} working={presence?.[a.id] === "working"} />
         ))}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+          onClick={() => openDialog({ kind: "agents" })}
+          title="Агенти кімнати: додати, прибрати, ролі"
+          aria-label="Агенти кімнати"
+        >
+          <UserPlusIcon className="size-3.5" />
+        </Button>
       </div>
       {running ? <LoaderCircleIcon className="ml-1 size-4 shrink-0 animate-spin text-primary" aria-label="Агенти працюють" /> : null}
     </div>
@@ -394,10 +403,23 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
 const quietButton = "h-7 gap-1.5 rounded-lg px-2 text-small font-normal text-muted-foreground hover:text-foreground";
 
 /** One agent in the footer: its model and effort, changed right here in one menu (for its next turn). */
-function AgentModel({ agent, models, disabled, working }: { agent: RoomAgent; models: AgentModels | null; disabled: boolean; working: boolean }) {
+function AgentModel({
+  agent,
+  models,
+  limits,
+  disabled,
+  working,
+}: {
+  agent: RoomAgent;
+  models: AgentModels | null;
+  limits: LimitSnapshot[] | undefined;
+  disabled: boolean;
+  working: boolean;
+}) {
   const room = useStore((s) => s.snap?.state);
   const post = useStore((s) => s.post);
   const openSession = useStore((s) => s.openSession);
+  const openDialog = useStore((s) => s.openDialog);
   if (!room) return null;
   return (
     <ModelMenu
@@ -406,9 +428,10 @@ function AgentModel({ agent, models, disabled, working }: { agent: RoomAgent; mo
       models={models}
       disabled={disabled}
       working={working}
-      className={quietButton}
+      limits={limits}
       onSet={(change) => post("/agent", { agent: agent.id, ...change }).catch(fail)}
       onSession={() => openSession(agent.id)}
+      onManage={() => openDialog({ kind: "agents", agent: agent.id })}
     />
   );
 }

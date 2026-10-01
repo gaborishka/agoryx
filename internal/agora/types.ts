@@ -21,6 +21,11 @@ export interface RoomAgent {
   effort?: string;
   /** false: this agent is not given the human's profile (<AGORYX_HOME>/profile.md). On when absent. */
   profile?: false;
+  /**
+   * What the human asked this agent to be in the room ("reviewer: look for bugs, don't write code"), in their words.
+   * Agoryx never assigns one: absent, the agent acts as itself. Told to the agent and to the others.
+   */
+  role?: string;
 }
 
 export type SandboxAccess = "workspace" | "readonly";
@@ -112,6 +117,10 @@ export type SystemNote =
   | { code: "settings.changed"; by: string; patch: Partial<RoomSettings> }
   | { code: "room.renamed"; by: string; name: string }
   | { code: "agent.changed"; by: string; agent: string; model?: string | null; effort?: string | null }
+  /** `role`: the new role (null: none any more); `label`: the agent's new name (`agent` is the old one); `profile`: given it or not. */
+  | { code: "agent.set"; by: string; agent: string; role?: string | null; label?: string; profile?: boolean }
+  | { code: "agent.added"; by: string; agent: string; handle: string; cli: AgentKind; model?: string; role?: string }
+  | { code: "agent.removed"; by: string; agent: string }
   | { code: "turn.failed"; agent: string; cli: AgentKind; error: TurnError["kind"]; message: string }
   | { code: "agent.busy"; agent: string }
   | { code: "jev.second_look"; agent: string; readers: JevShare[] }
@@ -425,8 +434,25 @@ export type RoomEventBody =
   /** `by`: who changed them (absent in logs from before authors were recorded). */
   | { type: "settings.changed"; patch: Partial<RoomSettings>; by?: string; from?: ActorOrigin }
   | { type: "room.renamed"; name: string; by?: string; from?: ActorOrigin }
-  /** An agent's model or effort changed; null: back to the CLI's own default. Its next turn uses them. */
-  | { type: "agent.changed"; agent: string; model?: string | null; effort?: string | null; by?: string; from?: ActorOrigin }
+  /**
+   * An agent's model or effort changed; null: back to the CLI's own default. Its next turn uses them. Also its
+   * role (null: none), its name, and whether it is given the human's profile.
+   */
+  | {
+      type: "agent.changed";
+      agent: string;
+      model?: string | null;
+      effort?: string | null;
+      role?: string | null;
+      label?: string;
+      profile?: boolean;
+      by?: string;
+      from?: ActorOrigin;
+    }
+  /** The human seated another agent. It reads the conversation so far on its first turn; what was said before it came wakes it not. */
+  | { type: "agent.added"; agent: RoomAgent; by?: string; from?: ActorOrigin }
+  /** The human sent an agent out of the room. Its messages stay, under its name (`RoomState.former`). */
+  | { type: "agent.removed"; agent: string; by?: string; from?: ActorOrigin }
   /** `folder`: the whole folder at this checkpoint, when the commit holds only the room's own files (a shared folder). */
   | { type: "commit.created"; sha: string; subject: string; files: number; folder?: string }
   /**
@@ -590,6 +616,10 @@ export interface RoomState {
   worktree?: RoomWorktree;
   human: string;
   agents: RoomAgent[];
+  /** Agents that left the room, as they were when they left: their messages are still theirs. */
+  former: RoomAgent[];
+  /** The seq each agent was seated at, for agents added after the room was made: nothing before it wakes them. */
+  joined: Record<string, number>;
   settings: RoomSettings;
   createdAt: string;
   seq: number;

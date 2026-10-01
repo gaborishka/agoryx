@@ -11,7 +11,7 @@ import { limitAccount } from "./limits-store.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
 import { buildTurnPrompt, paragraphs, parseMentions, passNote } from "./prompts.js";
 import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
-import { validEffort, validModel } from "./roster.js";
+import { cleanRole, MAX_ROLE_CHARS, parseAgents, validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { MAX_REVERT_CHANGES, REVERT_FAILURE, RevertError, revertTarget, type RevertRequest } from "./revert.js";
 import { RoomStore } from "./store.js";
@@ -162,6 +162,15 @@ export class DocTooLargeError extends Error {
 /** A native exchange still being written this recently means the agent is busy there. */
 const NATIVE_BUSY_MS = 5 * 60 * 1000;
 const NATIVE_RELOCATE_MS = 30_000;
+
+/** What can change about an agent in a room (see updateAgent). */
+export interface AgentPatch {
+  model?: string | null;
+  effort?: string | null;
+  role?: string | null;
+  label?: string;
+  profile?: boolean;
+}
 
 interface RunningTurn {
   turnId: string;
@@ -330,6 +339,8 @@ export class RoomEngine {
   private readonly running = new Map<string, RunningTurn>();
   /** Agents that failed hard (spawn/auth) sit out until the next human message. */
   private readonly benched = new Set<string>();
+  /** Agents being sent out of the room: no new turn starts for them while theirs stops. */
+  private readonly leaving = new Set<string>();
   private idleWaiters: Array<() => void> = [];
   private opsTimer: NodeJS.Timeout | undefined;
   private scheduleQueued = false;
@@ -683,8 +694,9 @@ export class RoomEngine {
   /**
    * Another model or effort for an agent, from its next turn on (a live process restarts for it). Empty
    * or null: back to the CLI's own default. Said in the transcript by whoever changed it; wakes nobody.
+   * Its role, name and profile are the human's to set: the room reads the change in its next turn.
    */
-  updateAgent(agentId: string, patch: { model?: string | null; effort?: string | null }, by?: string | Actor): RoomAgent {
+  updateAgent(agentId: string, patch: AgentPatch, by?: string | Actor): RoomAgent {
     const actor = this.actor(by);
     const agent = this.state.agents.find((entry) => entry.id === agentId);
     if (!agent) throw new Error(`no agent @${agentId} in this room`);
@@ -701,15 +713,133 @@ export class RoomEngine {
       if (effort && !validEffort(effort)) throw new Error(`"${effort}" is not an effort level (like "high" or "xhigh")`);
       if ((effort || null) !== (agent.effort ?? null)) change.effort = effort || null;
     }
-    if (Object.keys(change).length === 0) return agent;
-    this.store.append({ type: "agent.changed", agent: agent.id, ...change, ...actorFields(actor) });
-    const parts = [
-      ...(change.model !== undefined ? [change.model ? `model ${change.model}` : "the CLI's default model"] : []),
-      ...(change.effort !== undefined ? [change.effort ? `effort ${change.effort}` : "the CLI's default effort"] : []),
-    ];
+    const set = this.agentSettings(agent, patch, actor);
     const who = actorLabel(this.state, actor.by);
-    this.postNote(actor, `${who} set ${agent.label} to ${parts.join(", ")}.`, { code: "agent.changed", by: who, agent: agent.label, ...change });
+    if (Object.keys(change).length) {
+      this.store.append({ type: "agent.changed", agent: agent.id, ...change, ...actorFields(actor) });
+      const parts = [
+        ...(change.model !== undefined ? [change.model ? `model ${change.model}` : "the CLI's default model"] : []),
+        ...(change.effort !== undefined ? [change.effort ? `effort ${change.effort}` : "the CLI's default effort"] : []),
+      ];
+      this.postNote(actor, `${who} set ${agent.label} to ${parts.join(", ")}.`, { code: "agent.changed", by: who, agent: agent.label, ...change });
+    }
+    if (Object.keys(set).length) {
+      this.store.append({ type: "agent.changed", agent: agent.id, ...set, ...actorFields(actor) });
+      const handle = `${agent.label} (@${agent.id})`;
+      const parts = [
+        ...(set.label !== undefined ? [`renamed ${handle} to ${set.label}`] : []),
+        ...(set.role !== undefined
+          ? [set.role ? `gave ${set.label ?? agent.label} this role: "${set.role}"` : `took ${set.label ?? agent.label}'s role away — it acts as itself now`]
+          : []),
+        ...(set.profile !== undefined ? [set.profile ? `gave ${set.label ?? agent.label} their profile` : `stopped giving ${set.label ?? agent.label} their profile`] : []),
+      ];
+      this.postNote(actor, `${who} ${parts.join("; ")}.`, { code: "agent.set", by: who, agent: agent.label, ...set });
+    }
+    if (set.profile !== undefined || set.role !== undefined) this.notePresence();
     return this.state.agents.find((entry) => entry.id === agentId)!;
+  }
+
+  /** The part of a patch only the human sets (role, name, profile), checked; what differs from now. */
+  private agentSettings(agent: RoomAgent, patch: AgentPatch, actor: Actor): { role?: string | null; label?: string; profile?: boolean } {
+    const set: { role?: string | null; label?: string; profile?: boolean } = {};
+    if (patch.role === undefined && patch.label === undefined && patch.profile === undefined) return set;
+    if (!this.byHuman(actor)) throw new Error("only the human sets an agent's role, name or profile");
+    if (patch.role !== undefined) {
+      if (patch.role !== null && typeof patch.role !== "string") throw new Error("role must be text or null");
+      const role = patch.role === null ? "" : cleanRole(patch.role);
+      if (role.length > MAX_ROLE_CHARS) throw new Error(`a role is at most ${MAX_ROLE_CHARS} characters`);
+      if ((role || null) !== (agent.role ?? null)) set.role = role || null;
+    }
+    if (patch.label !== undefined) {
+      if (typeof patch.label !== "string") throw new Error("label must be text");
+      const label = patch.label.replace(/\s+/g, " ").trim();
+      if (!label || label.length > 40) throw new Error("an agent's name is 1–40 characters");
+      if (this.state.agents.some((entry) => entry.id !== agent.id && entry.label.toLowerCase() === label.toLowerCase())) {
+        throw new Error(`another agent is already called ${label}`);
+      }
+      if (label !== agent.label) set.label = label;
+    }
+    if (patch.profile !== undefined) {
+      if (typeof patch.profile !== "boolean") throw new Error("profile must be true or false");
+      if (patch.profile !== (agent.profile !== false)) set.profile = patch.profile;
+    }
+    return set;
+  }
+
+  /**
+   * The human seats another agent. It wakes on what is said from now on; on its first turn it reads the
+   * conversation so far (an agent that was here before resumes its own session, from where it left).
+   */
+  addAgent(raw: unknown, by?: string | Actor): RoomAgent {
+    const actor = this.actor(by);
+    if (!this.byHuman(actor)) throw new Error("only the human seats agents");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error('expected an agent like { "kind": "claude", "model": "opus" }');
+    const fields = { ...(raw as Record<string, unknown>) };
+    const kind = typeof fields.kind === "string" ? fields.kind : "";
+    // No handle given: the kind's, or the kind's with a number when it is taken.
+    if (fields.id === undefined && kind) {
+      const taken = (id: string) => this.state.agents.some((entry) => entry.id === id) || this.state.former.some((entry) => entry.id === id && entry.kind !== kind);
+      let n = 1;
+      while (taken(n === 1 ? kind : `${kind}-${n}`)) n += 1;
+      fields.id = n === 1 ? kind : `${kind}-${n}`;
+      if (fields.label === undefined && n > 1) fields.label = `${kind[0]!.toUpperCase()}${kind.slice(1)} ${n}`;
+    }
+    const seated = this.state.agents.map(({ id, kind, label }) => ({ id, kind, label }));
+    let agent: RoomAgent;
+    try {
+      agent = parseAgents([...seated, fields], "agent").at(-1)!;
+    } catch (error) {
+      throw new Error((error instanceof Error ? error.message : String(error)).replace(/^agent\[\d+\]: /, ""));
+    }
+    if (agent.id === this.state.human.toLowerCase()) throw new Error(`@${agent.id} is ${this.state.human}'s handle`);
+    const before = this.state.former.find((entry) => entry.id === agent.id);
+    if (before && before.kind !== agent.kind) throw new Error(`@${agent.id} was a ${before.kind} agent here: give this one another handle`);
+    this.store.append({ type: "agent.added", agent, ...actorFields(actor) });
+    const who = actorLabel(this.state, actor.by);
+    const model = agent.model ? ` on ${agent.model}` : "";
+    const role = agent.role ? `, with this role: "${agent.role}"` : "";
+    this.postNote(actor, `${who} seated ${agent.label} (@${agent.id}, ${agent.kind} CLI${model}) in the room${role}.`, {
+      code: "agent.added",
+      by: who,
+      agent: agent.label,
+      handle: agent.id,
+      cli: agent.kind,
+      ...(agent.model ? { model: agent.model } : {}),
+      ...(agent.role ? { role: agent.role } : {}),
+    });
+    this.notePresence();
+    return agent;
+  }
+
+  /**
+   * The human sends an agent out of the room: a turn it is in is stopped first. Its messages stay; it
+   * can be seated again later and goes on with its own session. The last agent cannot leave.
+   */
+  async removeAgent(agentId: string, by?: string | Actor): Promise<void> {
+    const actor = this.actor(by);
+    if (!this.byHuman(actor)) throw new Error("only the human sends agents out of the room");
+    const agent = this.state.agents.find((entry) => entry.id === agentId);
+    if (!agent) throw new Error(`no agent @${agentId} in this room`);
+    if (this.state.agents.length < 2) throw new Error("a room needs at least one agent");
+    const turn = this.running.get(agent.id);
+    this.leaving.add(agent.id);
+    try {
+      if (turn) {
+        turn.controller.abort();
+        await turn.done;
+      }
+    } finally {
+      this.leaving.delete(agent.id);
+    }
+    // It may have been removed while its turn was stopping.
+    if (!this.state.agents.some((entry) => entry.id === agent.id)) return;
+    this.store.append({ type: "agent.removed", agent: agent.id, ...actorFields(actor) });
+    this.closeLive(agent.id, "left the room");
+    this.benched.delete(agent.id);
+    const who = actorLabel(this.state, actor.by);
+    this.postNote(actor, `${who} sent ${agent.label} (@${agent.id}) out of the room.`, { code: "agent.removed", by: who, agent: agent.label });
+    this.notePresence();
+    this.requestSchedule();
   }
 
   /** A new name for the room; it wakes nobody. */
@@ -1068,7 +1198,7 @@ export class RoomEngine {
     // (in parallel, from the same point); after that the agents take the floor one
     // at a time, and each sees what the other just said. Whoever has waited longest goes first.
     const candidates = this.state.agents
-      .filter((agent) => !this.running.has(agent.id) && !this.beingRead.has(agent.id) && !this.benched.has(agent.id) && this.runners[agent.kind])
+      .filter((agent) => !this.running.has(agent.id) && !this.beingRead.has(agent.id) && !this.benched.has(agent.id) && !this.leaving.has(agent.id) && this.runners[agent.kind])
       .map((agent) => ({ agent, wake: this.firstWake(agent) }))
       .filter((entry): entry is { agent: RoomAgent; wake: RoomEvent } => entry.wake !== null)
       .sort((a, b) => a.wake.seq - b.wake.seq);

@@ -15,7 +15,8 @@ import type { AgentKind, RoomAgent } from "./types.js";
  * `kind` picks the CLI (claude or codex); `id` is the @handle and defaults to the kind;
  * `label` is the display name and defaults to the id, capitalised; `model` is passed to the CLI;
  * `effort` too ("high", "xhigh", … — Claude's --effort, Codex's model_reasoning_effort);
- * `"profile": false` keeps the human's profile (<AGORYX_HOME>/profile.md) from this agent — it is on otherwise.
+ * `"profile": false` keeps the human's profile (<AGORYX_HOME>/profile.md) from this agent — it is on otherwise;
+ * `role` is what the human asks this agent to be in the room ("reviewer: find bugs, don't write code") — none otherwise.
  * The list may also come wrapped as { "agents": [...] }. A room keeps the roster it was
  * created with (it is in its event log): changing the file later changes only new rooms.
  */
@@ -34,13 +35,17 @@ export const rosterPath = (env: NodeJS.ProcessEnv = process.env): string => join
 const ID = /^[a-z][a-z0-9_-]{1,31}$/;
 /** Handles that already mean something in a room. */
 const RESERVED = new Set(["all", "agoryx"]);
-const KEYS = new Set(["id", "kind", "label", "model", "effort", "profile"]);
+const KEYS = new Set(["id", "kind", "label", "model", "effort", "profile", "role"]);
+/** A role is a few lines of instructions, not a prompt of its own. */
+export const MAX_ROLE_CHARS = 2_000;
 /** A level name for the CLI, never a flag or anything with quotes: it ends up inside -c key="…". */
 const EFFORT = /^[a-z][a-z0-9-]{0,19}$/;
 
 /** A model name a CLI can be given (never a flag). */
 export const validModel = (model: string): boolean => Boolean(model) && !model.startsWith("-") && model.length <= 100 && !/[\s"'`$\\]/.test(model);
 export const validEffort = (effort: string): boolean => EFFORT.test(effort);
+/** A role as it is kept: trimmed, runs of blank lines folded; "" is no role. */
+export const cleanRole = (role: string): string => role.replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 
 export class RosterError extends Error {}
 
@@ -56,7 +61,7 @@ export const parseAgents = (raw: unknown, source = "agents"): RoomAgent[] => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new RosterError(`${at}: expected an object like { "id": "opus", "kind": "claude" }`);
     const fields = entry as Record<string, unknown>;
     const unknown = Object.keys(fields).filter((key) => !KEYS.has(key));
-    if (unknown.length) throw new RosterError(`${at}: unknown field ${unknown.map((key) => `"${key}"`).join(", ")} (allowed: id, kind, label, model, effort, profile)`);
+    if (unknown.length) throw new RosterError(`${at}: unknown field ${unknown.map((key) => `"${key}"`).join(", ")} (allowed: id, kind, label, model, effort, profile, role)`);
     const kind = fields.kind;
     if (typeof kind !== "string" || !AGENT_KINDS.includes(kind as AgentKind)) {
       throw new RosterError(`${at}: "kind" must be one of ${AGENT_KINDS.join(", ")}`);
@@ -80,13 +85,17 @@ export const parseAgents = (raw: unknown, source = "agents"): RoomAgent[] => {
     if (profile !== undefined && typeof profile !== "boolean") {
       throw new RosterError(`${at}: "profile" must be true or false (false: this agent is not given your profile)`);
     }
+    const role = fields.role;
+    if (role !== undefined && (typeof role !== "string" || cleanRole(role).length > MAX_ROLE_CHARS)) {
+      throw new RosterError(`${at}: "role" must be text of at most ${MAX_ROLE_CHARS} characters`);
+    }
     if (agents.some((agent) => agent.id === id)) {
       throw new RosterError(`${at}: two agents are called "${id}" — give each its own "id" (messages and @mentions tell agents apart by it)`);
     }
     if (agents.some((agent) => agent.label.toLowerCase() === label.trim().toLowerCase())) {
       throw new RosterError(`${at}: two agents are labelled "${label.trim()}" — the others could not tell whose message is whose`);
     }
-    agents.push({ id, kind: kind as AgentKind, label: label.trim(), ...(model !== undefined ? { model: (model as string).trim() } : {}), ...(effort !== undefined ? { effort: (effort as string).trim() } : {}), ...(profile === false ? { profile: false as const } : {}) });
+    agents.push({ id, kind: kind as AgentKind, label: label.trim(), ...(model !== undefined ? { model: (model as string).trim() } : {}), ...(effort !== undefined ? { effort: (effort as string).trim() } : {}), ...(profile === false ? { profile: false as const } : {}), ...(typeof role === "string" && cleanRole(role) ? { role: cleanRole(role) } : {}) });
   });
   return agents;
 };

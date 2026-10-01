@@ -1,11 +1,14 @@
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, ChevronsUpDownIcon, DotIcon, GaugeIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon, ChevronsUpDownIcon, DotIcon, GaugeIcon } from "lucide-react";
 import { type KeyboardEvent, useState } from "react";
+import { Avatar } from "@/components/room/bits";
+import { LimitsSection, useLimitState } from "@/components/room/Limits";
 import { Button } from "@/components/ui/button";
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import type { AgentModels, RoomAgent } from "@/lib/types";
+import { modelBeyondName, modelName } from "@/lib/agents";
+import type { AgentModels, LimitSnapshot, RoomAgent } from "@/lib/types";
 import { modelSwitch } from "@/lib/effort";
-import { ink, participant, type Seating } from "@/lib/room";
+import type { Seating } from "@/lib/room";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
 
@@ -28,6 +31,9 @@ export function ModelMenu({
   align = "end",
   variant = "quiet",
   onSession,
+  onManage,
+  onLeave,
+  limits,
 }: {
   agent: RoomAgent;
   seating: Seating;
@@ -42,6 +48,12 @@ export function ModelMenu({
   variant?: "quiet" | "field";
   /** Opens the agent's session; absent where there is no session yet. */
   onSession?: () => void;
+  /** Opens the room's agents: role, name, profile, sending it out. */
+  onManage?: () => void;
+  /** Leaves this agent out (the start screen: the next room starts without it). */
+  onLeave?: () => void;
+  /** The subscription's limits, shown in the menu (and on the agent when they worry); absent where they do not matter. */
+  limits?: LimitSnapshot[];
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -51,7 +63,9 @@ export function ModelMenu({
   const levels = model?.efforts ?? kind?.efforts ?? [];
   const defaultEffort = model?.defaultEffort;
   const effort = agent.effort ?? defaultEffort;
-  const who = participant(seating, agent.id);
+  const limit = useLimitState(agent.kind, limits);
+  // On the agent: what its name does not say — the model, an effort set by hand — and the limit only when it worries.
+  const extra = [modelBeyondName(agent, models), agent.effort ? t.effort.level(agent.effort) : null].filter(Boolean).join(" · ");
   const typed = query.trim();
   const show = (next: boolean) => {
     setOpen(next);
@@ -83,7 +97,7 @@ export function ModelMenu({
           <Button variant="outline" size="sm" disabled={disabled} className={cn("h-8 min-w-0 justify-between gap-2 px-2.5 font-normal", className)} aria-label={t.model.of(agent.label)}>
             <span className="truncate">
               <span className="text-muted-foreground">Модель: </span>
-              <span className={cn(agent.model ? "font-mono text-meta" : "text-muted-foreground")}>{model?.label ?? agent.model ?? "типова"}</span>
+              <span className={cn(agent.model ? "font-mono text-meta" : "text-muted-foreground")}>{modelName(agent.kind, agent.model, models) ?? "типова"}</span>
             </span>
             {effort ? (
               <span className={cn("inline-flex shrink-0 items-center gap-1", !agent.effort && "text-muted-foreground")}>
@@ -99,14 +113,20 @@ export function ModelMenu({
             variant="ghost"
             size="sm"
             disabled={disabled}
-            className={cn("shrink-0 gap-1.5 font-normal data-[state=open]:bg-accent data-[state=open]:text-foreground", className)}
-            title={`${agent.label}: ${t.model.and}`}
+            className={cn(
+              "h-7 shrink-0 gap-1.5 rounded-full pr-2.5 pl-1 text-small font-normal text-foreground/85 hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground",
+              className,
+            )}
+            title={`${agent.label}${extra ? ` · ${extra}` : ""}: ${t.model.and}`}
           >
-            <span className={cn("size-1.5 shrink-0 rounded-full", who.tone === "codex" ? "bg-codex" : "bg-claude", working && "animate-breathe")} style={ink(who)} />
-            <span className="text-foreground/85">{agent.label}</span>
-            {model || agent.model ? <span className="max-w-[9rem] truncate">{model?.label ?? agent.model}</span> : null}
-            {effort ? <span className={cn(agent.effort ? "" : "text-faint")}>{t.effort.level(effort)}</span> : null}
-            <ChevronDownIcon className="size-3 opacity-50" />
+            <Avatar handle={agent.id} roster={seating.agents} size={18} live={working} />
+            <span className="max-w-[10rem] truncate">{agent.label}</span>
+            {extra ? <span className="hidden max-w-[8rem] truncate text-faint @min-[44rem]:inline">{extra}</span> : null}
+            {limit.alarm || limit.warn ? (
+              <span className={cn("tabular-nums text-meta", limit.alarm ? "text-destructive" : "text-amber")}>
+                {limit.headline ? `${Math.round(limit.headline.usedPercent)}%` : "ліміт"}
+              </span>
+            ) : null}
           </Button>
         )}
       </PopoverTrigger>
@@ -183,6 +203,7 @@ export function ModelMenu({
               </div>
             </div>
           ) : null}
+          {limits ? <LimitsSection kind={agent.kind} limits={limits} /> : null}
           {onSession ? (
             <button
               type="button"
@@ -194,6 +215,31 @@ export function ModelMenu({
             >
               Сесія {agent.label}
               <ChevronRightIcon className="ml-auto size-4 opacity-60" />
+            </button>
+          ) : null}
+          {onManage ? (
+            <button
+              type="button"
+              onClick={() => {
+                show(false);
+                onManage();
+              }}
+              className={cn("flex w-full items-center gap-2 px-3 py-2 text-left text-ui transition hover:bg-accent", !onSession && "border-t border-border")}
+            >
+              Роль і налаштування {agent.label}…
+              <ChevronRightIcon className="ml-auto size-4 opacity-60" />
+            </button>
+          ) : null}
+          {onLeave ? (
+            <button
+              type="button"
+              onClick={() => {
+                show(false);
+                onLeave();
+              }}
+              className="flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-ui text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            >
+              Без {agent.label} у новій кімнаті
             </button>
           ) : null}
         </Command>

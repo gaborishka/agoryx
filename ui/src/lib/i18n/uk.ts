@@ -97,6 +97,22 @@ const sys: Say = {
     ].filter(Boolean);
     return `${who ?? n.by} змінює ${n.agent}: ${parts.join(", ")}.`;
   },
+  "agent.set": (n, who) => {
+    const name = n.label ?? n.agent;
+    const parts = [
+      n.label === undefined ? null : `перейменовує ${n.agent} на ${n.label}`,
+      n.role === undefined ? null : n.role ? `дає ${name} роль: «${n.role}»` : `знімає з ${name} роль — тепер діє як сам`,
+      n.profile === undefined ? null : n.profile ? `дає ${name} свій профіль` : `більше не дає ${name} свій профіль`,
+    ].filter(Boolean);
+    return `${who ?? n.by} ${parts.join("; ")}.`;
+  },
+  "agent.added": (n, who) => {
+    // "Codex (Codex)" says nothing: the CLI only when the name does not say it.
+    const cli = n.cli === "codex" ? "Codex" : "Claude Code";
+    const about = [n.agent.startsWith(n.cli === "codex" ? "Codex" : "Claude") ? null : cli, n.model ? `модель \`${n.model}\`` : null].filter(Boolean).join(", ");
+    return `${who ?? n.by} додає до кімнати ${n.agent}${about ? ` (${about})` : ""}${n.role ? ` з роллю: «${n.role}»` : ""}. Він прочитає розмову й відповідатиме з наступного повідомлення.`;
+  },
+  "agent.removed": (n, who) => `${who ?? n.by} прибирає ${n.agent} з кімнати. Його повідомлення лишаються.`,
   "turn.failed": (n) => `${n.agent}: хід не вдалося завершити — ${failure(n.error, n.message, n.cli)}`,
   "agent.busy": (n) => `${n.agent} зараз говорить у своїй сесії — хід у кімнаті почнеться після цього.`,
   "jev.second_look": (n) => {

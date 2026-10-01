@@ -62,6 +62,42 @@ const paceText = (pace: Pace, now: number): string => {
 const latestFor = (limits: LimitSnapshot[] | undefined, kind: AgentKind) =>
   (limits ?? []).filter((entry) => entry.kind === kind).sort((a, b) => b.at.localeCompare(a.at))[0];
 
+/** Where one kind's subscription stands: the window closest to running out, and whether it worries. */
+export const useLimitState = (kind: AgentKind, limits: LimitSnapshot[] | undefined) => {
+  const now = useNow(true, 30_000);
+  const snapshot = latestFor(limits, kind);
+  const headline = snapshot ? headlineWindow(snapshot.windows, now) : undefined;
+  const pace = headline ? limitPace(headline, now) : null;
+  const alarm = Boolean(snapshot?.limited) || pace?.state === "out";
+  return { now, snapshot, headline, alarm, warn: !alarm && pace?.state === "ahead" };
+};
+
+/** The subscription's limits inside an agent's menu: one line, the windows under it. */
+export function LimitsSection({ kind, limits }: { kind: AgentKind; limits: LimitSnapshot[] | undefined }) {
+  const { now, snapshot, headline, alarm, warn } = useLimitState(kind, limits);
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border-t border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-ui transition hover:bg-accent"
+      >
+        Ліміт {KIND_LABEL[kind]}
+        <span className={cn("ml-auto tabular-nums text-meta text-muted-foreground", warn && "text-amber", alarm && "text-destructive")}>
+          {headline ? `${windowLabel(headline)}: ${Math.round(headline.usedPercent)}%` : "невідомо"}
+        </span>
+      </button>
+      {open ? (
+        <div className="px-3 pb-3">
+          <LimitsBody snapshot={snapshot} now={now} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * An agent's subscription limits in the footer: the window closest to running out ("5 год: 42%"), and on click
  * every window with its reset and pace. Only what the CLI reported — nothing here limits anything.

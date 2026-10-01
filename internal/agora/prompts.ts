@@ -28,6 +28,8 @@ const clock = (iso: string): string => {
 const displayName = (state: RoomState, handle: string): string => {
   const agent = state.agents.find((entry) => entry.id === handle);
   if (agent) return agent.label;
+  const gone = state.former?.find((entry) => entry.id === handle);
+  if (gone) return `${gone.label} (has left the room)`;
   if (handle === state.human) return `${state.human} (human)`;
   const guest = state.guests?.[handle];
   return guest ? originName(guest) : handle;
@@ -227,8 +229,25 @@ export interface BriefingInput {
   tracking?: "git" | "shadow" | "none";
 }
 
+/** Roles are the human's, in their words: Agoryx adds none. Nobody has one — each agent acts as itself. */
+const roleLines = (state: RoomState, agent: RoomAgent, others: RoomAgent[]): string[] => {
+  const theirs = others.filter((entry) => entry.role);
+  if (!agent.role && theirs.length === 0) {
+    return ["Nobody here has an assigned role. Act as yourself, with everything you can do: read and write code, run things, research, draw, write, argue."];
+  }
+  return [
+    ...(agent.role
+      ? [`${state.human} gave you a role in this room:`, indent(agent.role), "Within it, act as yourself, with everything you can do."]
+      : ["You have no assigned role. Act as yourself, with everything you can do: read and write code, run things, research, draw, write, argue."]),
+    ...(theirs.length ? [`${state.human} gave the others roles too:`, ...theirs.map((entry) => `- ${entry.label} (@${entry.id}):\n${indent(entry.role!, "    ")}`)] : []),
+    "If a role changes, or someone joins or leaves, Agoryx says so in the conversation.",
+  ];
+};
+
+const indent = (text: string, pad = "  "): string => text.split("\n").map((line) => `${pad}${line}`).join("\n");
+
 /**
- * First-turn context. Deliberately no role: who is here, where the work lives,
+ * First-turn context. No role of Agoryx's own (only one the human gave): who is here, where the work lives,
  * how turns and passing work, and how to use the table.
  */
 export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, tracking = "git" }: BriefingInput): string => {
@@ -242,7 +261,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
       : "You can read, create and run anything inside the workspace.";
   return [
     `You are ${agent.label} (@${agent.id}), in an Agoryx room — one shared conversation between ${state.human} (human, @${state.human.toLowerCase()}) and ${peers || "no other agents yet"}.`,
-    "Nobody here has an assigned role. Act as yourself, with everything you can do: read and write code, run things, research, draw, write, argue.",
+    ...roleLines(state, agent, others),
     "",
     `Room: "${state.name}"`,
     `Workspace: ${state.workspace}`,

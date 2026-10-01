@@ -121,7 +121,7 @@ export const roomUsage = (state: RoomState, events: readonly RoomEvent[]): RoomU
   for (const turn of state.turns) {
     const usage = entry(turn.agent);
     usage.wakes += 1;
-    const agent: RoomAgent = state.agents.find((candidate) => candidate.id === turn.agent) ?? { id: turn.agent, kind: "claude", label: turn.agent };
+    const agent: RoomAgent = state.agents.find((candidate) => candidate.id === turn.agent) ?? state.former?.find((candidate) => candidate.id === turn.agent) ?? { id: turn.agent, kind: "claude", label: turn.agent };
     const wokeBy = new Set<string>();
     for (let index = firstAfter(turn.cursorBefore); index < events.length && events[index]!.seq <= turn.cursor; index += 1) {
       const event = events[index]!;

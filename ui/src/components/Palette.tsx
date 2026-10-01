@@ -18,6 +18,7 @@ import {
   SmartphoneIcon,
   SquareIcon,
   UserRoundIcon,
+  UsersIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { panelTabs, TABS } from "@/components/panel/SidePanel";
@@ -164,6 +165,7 @@ export function Palette() {
       { id: "revert", label: "Повернути теку до контрольної точки", icon: RotateCcwIcon, run: () => s.openDialog({ kind: "revert" }), keywords: "revert checkpoint контрольна точка відкотити" },
       { id: "usage", label: "Витрати кімнати", icon: ReceiptIcon, run: () => s.openDialog({ kind: "usage" }), keywords: "витрати usage cost пробудження" },
       { id: "ask", label: "Покласти питання на стіл", icon: ScaleIcon, run: () => s.openDialog({ kind: "table-form", op: "ask" }) },
+      { id: "agents", label: "Агенти кімнати", icon: UsersIcon, run: () => s.openDialog({ kind: "agents" }), keywords: "agents roster role роль додати прибрати" },
       { id: "settings", label: "Налаштування кімнати", icon: SettingsIcon, run: () => s.openDialog({ kind: "settings" }) },
     );
     if (driven && room.runs.at(-1)?.status === "active") {

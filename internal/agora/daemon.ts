@@ -9,7 +9,7 @@ import { AttentionBoard, parseView } from "./attention.js";
 import { BrowserFailure, BrowserRelay, sseHost } from "./browser.js";
 import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, originName, originOf, readAgentKey } from "./actor.js";
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
-import { DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch, roomWorkspaceDiff } from "./engine.js";
+import { type AgentPatch, DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch, roomWorkspaceDiff } from "./engine.js";
 import { planRevert, RevertError, type RevertRequest } from "./revert.js";
 import { deviceLabel, DeviceRegistry, formatCode, isDeviceToken, PairingError, type DeviceInfo } from "./devices.js";
 import { lanInterfaces, normalizeHosts, writeExposure, type Exposure } from "./exposure.js";
@@ -1303,15 +1303,44 @@ export class AgoraDaemon {
       }
       case "agent": {
         const agentId = typeof body.agent === "string" ? body.agent : "";
-        const patch: { model?: string | null; effort?: string | null } = {};
-        for (const key of ["model", "effort"] as const) {
+        const patch: AgentPatch = {};
+        for (const key of ["model", "effort", "role"] as const) {
           const value = body[key];
           if (value === null || typeof value === "string") patch[key] = value;
           else if (value !== undefined) throw new HttpError(400, `${key} must be a string or null`);
         }
+        if (body.label !== undefined) {
+          if (typeof body.label !== "string") throw new HttpError(400, "label must be a string");
+          patch.label = body.label;
+        }
+        if (body.profile !== undefined) {
+          if (typeof body.profile !== "boolean") throw new HttpError(400, "profile must be true or false");
+          patch.profile = body.profile;
+        }
         try {
           const agent = engine.updateAgent(agentId, patch, actor);
           sendJson(res, 200, { agent });
+        } catch (error) {
+          throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      case "agents": {
+        // Seat another agent: { agent: { kind, id?, label?, model?, effort?, role?, profile? } }. The human's alone.
+        if (caller.agent) throw new HttpError(403, "only the human seats agents");
+        try {
+          const agent = engine.addAgent(body.agent, actor);
+          sendJson(res, 201, { agent, agents: engine.state.agents });
+        } catch (error) {
+          throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      case "agent-remove": {
+        if (caller.agent) throw new HttpError(403, "only the human sends agents out of the room");
+        try {
+          await engine.removeAgent(typeof body.agent === "string" ? body.agent : "", actor);
+          sendJson(res, 200, { agents: engine.state.agents });
         } catch (error) {
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
         }
@@ -1506,7 +1535,7 @@ export class AgoraDaemon {
         ...eventPatch(state, event),
         presence: this.presence(handle),
         // The command to open a session names its model: it changes with either.
-        ...(event.type === "agent.changed" || event.type === "session.bound" ? { resume: resumeCommands(handle.store, this.runners) } : {}),
+        ...(event.type === "agent.changed" || event.type === "agent.added" || event.type === "agent.removed" || event.type === "session.bound" ? { resume: resumeCommands(handle.store, this.runners) } : {}),
       };
       res.write(`id: ${event.seq}\nevent: room\ndata: ${JSON.stringify({ event, patch })}\n\n`);
     };

@@ -553,6 +553,7 @@ export function SessionPanel() {
             disabled={!snap.driven}
             className="max-w-[75%]"
             onSet={(change) => void post("/agent", { agent: agent.id, ...change }).catch((error) => !(error instanceof Unauthorized) && toast.error(errText(error)))}
+            onManage={() => useStore.getState().openDialog({ kind: "agents", agent: agent.id })}
           />
           <Tip tip="Зміна діє з наступного ходу: жива сесія перезапускається з новою моделлю, розмова в ній та сама.">
             <span className="text-meta text-faint">з наступного ходу</span>

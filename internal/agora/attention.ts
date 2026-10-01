@@ -51,7 +51,7 @@ const oneLine = (text: string): string => {
 
 /** Who did it, as the human reads it: an agent's label, or a guest's "<agent>@<room>" handle as recorded. */
 const whoLabel = (state: RoomState, handle: string, guest: boolean): string =>
-  guest ? handle : (state.agents.find((agent) => agent.id === handle)?.label ?? handle);
+  guest ? handle : ((state.agents.find((agent) => agent.id === handle) ?? state.former?.find((agent) => agent.id === handle))?.label ?? handle);
 
 /** Whether an event needs the human, and why. Pure. */
 export const attentionOf = (state: RoomState, event: RoomEvent): Omit<AttentionItem, "room" | "name"> | null => {

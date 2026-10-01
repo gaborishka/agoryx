@@ -34,6 +34,8 @@ export type DialogState =
   /** Return the folder: to checkpoint `sha`, undo return `undo` (its seq), or neither: pick a checkpoint. */
   | { kind: "revert"; sha?: string; undo?: number }
   | { kind: "settings" }
+  /** Who sits in the room: seat, send out, roles; `agent`: the one to show first. */
+  | { kind: "agents"; agent?: string }
   | { kind: "help" }
   | { kind: "keys" }
   | { kind: "usage" }
@@ -303,6 +305,7 @@ type Patch = {
   docRevisions?: Snapshot["state"]["docRevisions"];
   guests?: Snapshot["state"]["guests"];
   agents?: Snapshot["state"]["agents"];
+  former?: Snapshot["state"]["former"];
   resume?: Snapshot["resume"];
   activity?: { turnId: string; activity: TurnState["activity"][number] };
 };
@@ -326,6 +329,7 @@ const applyPatch = (event: RoomEvent, patch: Patch) => {
   if (patch.docRevisions) st.docRevisions = patch.docRevisions;
   if (patch.guests) st.guests = patch.guests;
   if (patch.agents) st.agents = patch.agents;
+  if (patch.former) st.former = patch.former;
   if (patch.resume) next.resume = patch.resume;
   if (patch.name) {
     st.name = patch.name;

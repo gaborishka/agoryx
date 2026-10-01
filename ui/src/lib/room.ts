@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import { type AgentLook, agentLook } from "../../../internal/agora/look";
+import { unquoted } from "../../../internal/agora/quote";
 import { names as nameList } from "./format";
 import type { ActorOrigin, DocRevision, MessageEntry, RoomAgent, RoomState, RoomSummary, TableOp, TurnState } from "./types";
 import type { OpEntry } from "./types";
@@ -82,7 +83,7 @@ export const lastLine = (room: RoomState, m: Pick<MessageEntry, "author" | "text
   const look = agent ? agentLook(room.agents, agent.id) : undefined;
   return {
     author: m.author,
-    text: m.text.slice(0, 200),
+    text: unquoted(m.text).slice(0, 200),
     ...(agent ? { label: agent.label } : {}),
     ...(look?.mark ? { look } : {}),
     ...(m.sys ? { sys: m.sys } : {}),

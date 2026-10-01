@@ -15,6 +15,7 @@ import { join, resolve, sep } from "node:path";
 import { originName } from "./actor.js";
 import { type AgentLook, agentLook } from "./look.js";
 import { applyEvent, initialState } from "./projection.js";
+import { unquoted } from "./quote.js";
 import type {
   ActorOrigin,
   EphemeralEvent,
@@ -238,7 +239,7 @@ export class RoomStore {
       createdAt: this.state.createdAt,
       updatedAt: lastEvent.ts,
       messages: this.state.messages.filter((message) => message.kind !== "pass").length,
-      ...(last ? { lastMessage: { author: last.author, text: last.text.slice(0, 200), ...(lastLabel ? { label: lastLabel } : {}), ...(look?.mark ? { look } : {}), ...(last.sys ? { sys: last.sys } : {}) } } : {}),
+      ...(last ? { lastMessage: { author: last.author, text: unquoted(last.text).slice(0, 200), ...(lastLabel ? { label: lastLabel } : {}), ...(look?.mark ? { look } : {}), ...(last.sys ? { sys: last.sys } : {}) } } : {}),
       running: working.length > 0,
       agents: this.state.agents.map(({ id, kind, label }) => ({ id, kind, label })),
       ...(working.length > 0 ? { working } : {}),

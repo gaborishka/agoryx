@@ -71,7 +71,11 @@ export const AgentMessage = memo(function AgentMessage({
 }) {
   const room = useStore((s) => s.snap?.state);
   const p = participant(room, m.author);
-  const text = <Markdown text={m.text} source={`m:${m.id}`} />;
+  const text = (
+    <div data-quote={m.id} data-author={m.author}>
+      <Markdown text={m.text} source={`m:${m.id}`} />
+    </div>
+  );
   return (
     <article
       className={cn(
@@ -101,7 +105,7 @@ export const AgentMessage = memo(function AgentMessage({
 export const HumanMessage = memo(function HumanMessage({ m }: { m: MessageEntry }) {
   return (
     <div className="flex flex-col items-end gap-1 pl-[12%]">
-      <div className="max-w-full rounded-[20px] rounded-br-[6px] bg-human-soft px-4 py-2.5 text-foreground ring-1 ring-human/20">
+      <div data-quote={m.id} data-author={m.author} className="max-w-full rounded-[20px] rounded-br-[6px] bg-human-soft px-4 py-2.5 text-foreground ring-1 ring-human/20">
         <Markdown text={m.text} source={`m:${m.id}`} />
       </div>
       <div className="flex items-center gap-2 pr-1">
@@ -127,7 +131,7 @@ export function PassLine({ m, turn, ops, docs }: { m: MessageEntry; turn?: TurnS
           <Name handle={m.author} /> {silent}
         </span>
       </div>
-      {docs?.length || turn?.files?.length || ops?.length ? (
+      {docs?.length || turn?.files?.length || turn?.activity.length || ops?.length ? (
         <div className="pl-7">
           <OpCards ops={ops} />
           <TurnBar turn={turn} docs={docs} text={m.text} />
@@ -150,7 +154,9 @@ export function UpdateLine({ m }: { m: MessageEntry }) {
           </Tip>
           <Time iso={m.ts} />
         </div>
-        <Markdown text={m.text} className="text-ui leading-relaxed text-muted-foreground" />
+        <div data-quote={m.id} data-author={m.author}>
+          <Markdown text={m.text} className="text-ui leading-relaxed text-muted-foreground" />
+        </div>
       </div>
     </div>
   );

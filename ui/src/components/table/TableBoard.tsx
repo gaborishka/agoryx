@@ -11,6 +11,7 @@ import {
   ListChecksIcon,
   MessageSquareQuoteIcon,
   MicroscopeIcon,
+  PanelRightIcon,
   PinIcon,
   PlusIcon,
   RefreshCcwIcon,
@@ -1052,8 +1053,10 @@ function Empty() {
   );
 }
 
-export function TableBoard() {
+/** The room's table: as the room's view, or `beside` the conversation in the side panel, where its tab names it. */
+export function TableBoard({ beside = false }: { beside?: boolean }) {
   const room = useStore((s) => s.snap?.state);
+  const setPanel = useStore((s) => s.setPanel);
   const flash = useStore((s) => s.flash);
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1089,13 +1092,23 @@ export function TableBoard() {
       {empty ? (
         <Empty />
       ) : (
-        <div className="@container mx-auto flex w-full max-w-[1320px] flex-col gap-5 px-3 pt-5 pb-10 sm:px-6">
+        <div className={cn("@container mx-auto flex w-full max-w-[1320px] flex-col gap-5 px-3 pb-10", beside ? "pt-3" : "pt-5 sm:px-6")}>
           <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <h1 className="flex items-center gap-2 font-display text-display leading-none font-semibold">
-              <ScaleIcon className="size-5 text-primary" />
-              Table
-            </h1>
+            {beside ? null : (
+              <h1 className="flex items-center gap-2 font-display text-display leading-none font-semibold">
+                <ScaleIcon className="size-5 text-primary" />
+                Table
+              </h1>
+            )}
             <Help />
+            {beside ? null : (
+              <Tip tip="Keep the table open beside the conversation while you read and write" side="bottom">
+                <Button variant="ghost" size="sm" className="h-8 gap-1.5 rounded-lg px-2 text-small text-muted-foreground" onClick={() => setPanel("table")}>
+                  <PanelRightIcon className="size-3.5" />
+                  Beside the conversation
+                </Button>
+              </Tip>
+            )}
             <span className="flex-1" />
             <Toolbar />
           </header>

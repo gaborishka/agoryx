@@ -2,6 +2,7 @@ import { parsePatchFiles } from "@pierre/diffs";
 import { Editor } from "@pierre/diffs/edit";
 import { EditProvider, File, FileDiff } from "@pierre/diffs/react";
 import { useMemo } from "react";
+import { pickedLines } from "@/lib/diff-quote";
 import { plural } from "@/lib/format";
 import { useTheme } from "@/lib/theme";
 import type { DiffItem } from "@/lib/types";
@@ -55,8 +56,14 @@ export function EditableCode({ name, text, stateKey, wrap, onText, className }: 
   );
 }
 
-/** A git patch (one or many files), each file with its own header. */
-export function Patch({ patch, focus, className }: { patch: string; focus?: string; className?: string }) {
+/** Lines picked in a patch: the file, the lines with their +/−/space marks, and their name (+42–48). */
+export type PickLines = (path: string, picked: { text: string; lines: string }) => void;
+
+/**
+ * A git patch (one or many files), each file with its own header. With `onPick`, the reader selects lines
+ * (the + by a line, or a drag over line numbers and then the +) and they are handed over.
+ */
+export function Patch({ patch, focus, onPick, className }: { patch: string; focus?: string; onPick?: PickLines; className?: string }) {
   const base = useBase();
   const files = useMemo(() => {
     try {
@@ -73,7 +80,25 @@ export function Patch({ patch, focus, className }: { patch: string; focus?: stri
     <div className={cn("flex flex-col gap-3", className)}>
       {ordered.map((f) => (
         <div key={`${f.prevName ?? ""}>${f.name}`} className="diffs-host overflow-hidden rounded-xl border border-border bg-code">
-          <FileDiff fileDiff={f} options={{ ...base, diffStyle: "unified", hunkSeparators: "line-info", lineDiffType: "word" }} />
+          <FileDiff
+            fileDiff={f}
+            options={{
+              ...base,
+              diffStyle: "unified",
+              hunkSeparators: "line-info",
+              lineDiffType: "word",
+              ...(onPick
+                ? {
+                    enableLineSelection: true,
+                    enableGutterUtility: true,
+                    onGutterUtilityClick: (range) => {
+                      const picked = pickedLines(f, range);
+                      if (picked) onPick(f.name, picked);
+                    },
+                  }
+                : {}),
+            }}
+          />
         </div>
       ))}
     </div>

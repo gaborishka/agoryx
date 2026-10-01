@@ -2,15 +2,17 @@ import { toast } from "sonner";
 import { create } from "zustand";
 import { api, ApiError, local, roomPath, setUnauthorizedHandler, Unauthorized } from "./api";
 import { startAttention } from "./attention";
+import type { Quote } from "./quote";
 import { lastLine } from "./room";
 import type { AgentPresence, LimitSnapshot, OpEntry, RoomEvent, RoomSummary, RunState, Snapshot, TurnState } from "./types";
 
 /**
  * The right-hand panel's tabs: an agent's own session, the shared document, the room's browser (in the app),
- * what turns changed, and the workspace's files. The table is a view of its own.
+ * what turns changed, the workspace's files, and the table beside the conversation (it is also a view of its own,
+ * but never both at once).
  */
-export type PanelTab = "session" | "doc" | "browser" | "diff" | "files";
-export const PANEL_TABS: readonly PanelTab[] = ["session", "doc", "browser", "diff", "files"];
+export type PanelTab = "session" | "doc" | "browser" | "diff" | "files" | "table";
+export const PANEL_TABS: readonly PanelTab[] = ["session", "doc", "browser", "diff", "files", "table"];
 
 /** Which changes the Changes tab shows: one turn's, the whole room's against where it began, or one checkpoint. */
 export type ChangeScope = "turn" | "room" | "commit";
@@ -90,6 +92,9 @@ interface Store {
   /** Chat or table, remembered per room. */
   view: RoomView;
   wide: boolean;
+  /** Widths dragged by hand, kept between visits: the room list's and the docked panel's (null: as designed). */
+  navWidth: number | null;
+  panelWidth: number | null;
   navOpen: boolean;
   dialog: DialogState | null;
   /** Doc panel: bumped when the canonical file changed, so the panel refetches. */
@@ -102,6 +107,8 @@ interface Store {
   flash: { ref: string; at: number } | null;
   /** Text put into the composer from elsewhere (a nudge on the table); `at` makes a repeat count. */
   compose: { text: string; at: number } | null;
+  /** A passage quoted from a message or a diff, on its way to the composer; `at` makes a repeat count; `to`: whom it is for by default. */
+  quoting: { quote: Quote; at: number; to?: string } | null;
   paletteOpen: boolean;
 
   loadRooms: () => Promise<void>;
@@ -125,11 +132,15 @@ interface Store {
   openSession: (agent?: string, toggle?: boolean) => void;
   setView: (view: RoomView) => void;
   setWide: (wide: boolean) => void;
+  setNavWidth: (width: number | null) => void;
+  setPanelWidth: (width: number | null) => void;
   setNavOpen: (open: boolean) => void;
   openDialog: (dialog: DialogState | null) => void;
   goToRef: (ref: string) => void;
   /** Put a draft into the composer for the human to edit and send; nothing is sent. */
   composeDraft: (text: string) => void;
+  /** Add a quoted passage above the composer's draft (the draft stays); nothing is sent. `to` is @-addressed when the draft names no one yet. */
+  quote: (quote: Quote, to?: string) => void;
   openDocRevision: (seq: number) => void;
   setPaletteOpen: (open: boolean) => void;
   post: (suffix: string, body?: unknown) => Promise<Record<string, unknown>>;
@@ -165,6 +176,8 @@ export const useStore = create<Store>((set, get) => ({
   terminalRequest: null,
   view: "chat",
   wide: local.get("wide") === "1",
+  navWidth: Number(local.get("navWidth")) || null,
+  panelWidth: Number(local.get("panelWidth")) || null,
   navOpen: false,
   dialog: null,
   docTick: 0,
@@ -173,6 +186,7 @@ export const useStore = create<Store>((set, get) => ({
   docFocus: null,
   flash: null,
   compose: null,
+  quoting: null,
   paletteOpen: false,
 
   async loadRooms() {
@@ -233,6 +247,8 @@ export const useStore = create<Store>((set, get) => ({
 
   setPanel(panel) {
     if (panel) local.set("panelTab", panel);
+    // The table beside the conversation: the room's column goes back to the conversation.
+    if (panel === "table" && get().view === "table") get().setView("chat");
     set(panel ? { panel, lastTab: panel } : { panel });
   },
   togglePanel(tab) {
@@ -285,11 +301,20 @@ export const useStore = create<Store>((set, get) => ({
   setView(view) {
     const route = get().route;
     if (route.kind === "room") local.set(`view.${route.id}`, view === "table" ? "table" : null);
-    set({ view });
+    // The table as the room's view takes it back from the panel.
+    set(view === "table" && get().panel === "table" ? { view, panel: null } : { view });
   },
   setWide(wide) {
     local.set("wide", wide ? "1" : null);
     set({ wide });
+  },
+  setNavWidth(navWidth) {
+    local.set("navWidth", navWidth ? String(navWidth) : null);
+    set({ navWidth });
+  },
+  setPanelWidth(panelWidth) {
+    local.set("panelWidth", panelWidth ? String(panelWidth) : null);
+    set({ panelWidth });
   },
   setNavOpen(navOpen) {
     set({ navOpen });
@@ -298,11 +323,16 @@ export const useStore = create<Store>((set, get) => ({
     set({ dialog });
   },
   goToRef(ref) {
-    get().setView(/^m-/.test(ref) ? "chat" : "table");
+    // A table item opens where the table already is: beside the conversation, or as the view.
+    if (/^m-/.test(ref)) get().setView("chat");
+    else if (get().panel !== "table") get().setView("table");
     set({ flash: { ref, at: Date.now() } });
   },
   composeDraft(text) {
     set({ compose: { text, at: Date.now() } });
+  },
+  quote(quote, to) {
+    set({ quoting: { quote, at: Date.now(), ...(to ? { to } : {}) } });
   },
   openDocRevision(seq) {
     get().setPanel("doc");
@@ -522,8 +552,9 @@ const routeState = (route: Route, params: URLSearchParams | null): Partial<Store
   const scope = params.get("scope");
   const path = params.get("path") || undefined;
   const rev = Number.parseInt(params.get("rev") ?? "", 10);
+  const shown: RoomView = view === "table" || view === "chat" ? view : remembered;
   return {
-    view: view === "table" || view === "chat" ? view : remembered,
+    view: panel === "table" ? "chat" : shown,
     panel,
     ...(panel ? { lastTab: panel } : {}),
     changes: {
@@ -547,12 +578,12 @@ function applyRoute(route: Route, extra: Partial<Store> = {}) {
   if (route.kind === "room") {
     if (prev.kind !== "room" || prev.id !== route.id || !useStore.getState().snap) {
       closeStream();
-      useStore.setState({ snap: null, compose: null });
+      useStore.setState({ snap: null, compose: null, quoting: null });
       void useStore.getState().openRoom(route.id);
     }
   } else {
     closeStream();
-    useStore.setState({ snap: null, compose: null });
+    useStore.setState({ snap: null, compose: null, quoting: null });
     document.title = "Agoryx";
   }
 }

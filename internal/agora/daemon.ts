@@ -22,6 +22,7 @@ import { locateNativeSession } from "./native.js";
 import { readLimits, recordLimits } from "./limits-store.js";
 import { roomUsage } from "./usage.js";
 import { readTranscript } from "./transcript.js";
+import { turnActivityEntries, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
@@ -1299,6 +1300,11 @@ export class AgoraDaemon {
       return;
     }
 
+    if (action === "turn-activity" && method === "GET") {
+      sendJson(res, 200, this.turnActivity(handle, url.searchParams));
+      return;
+    }
+
     if (action === "tree" && method === "GET") {
       sendJson(res, 200, { files: listWorkspaceFiles(handle.store.state.workspace) });
       return;
@@ -1554,6 +1560,30 @@ export class AgoraDaemon {
       if (size === known) return { agent: agent.id, sessionId: session.sessionId, file, unchanged: true, size };
     }
     return { agent: agent.id, sessionId: session.sessionId, file, ...readTranscript(agent.kind, file, end === undefined ? {} : { end }) };
+  }
+
+  /** Native tool details for exactly this room turn; older pages never return the surrounding conversation. */
+  private turnActivity(handle: RoomHandle, params: URLSearchParams) {
+    const state = handle.store.state;
+    const turnId = params.get("turn") ?? "";
+    if (!/^t\d{1,9}$/.test(turnId)) throw new HttpError(400, "turn is required");
+    const turn = state.turns.find((t) => t.id === turnId);
+    if (!turn) throw new HttpError(404, "no such turn in this room");
+    const agent = [...state.agents, ...state.former].find((a) => a.id === turn.agent);
+    const sessionId = turnSession(state, turn);
+    const empty = { turn: turn.id, sessionId, entries: [], start: 0, size: 0 };
+    if (!agent || !sessionId) return empty;
+    const key = `${state.id}\0${agent.id}\0${sessionId}`;
+    let file = this.sessionFiles.get(key) ?? null;
+    if (!file || !existsSync(file)) {
+      file = locateNativeSession(agent.kind, sessionId, state.workspace, this.env);
+      if (file) this.sessionFiles.set(key, file);
+    }
+    if (!file) return empty;
+    const endParam = params.get("end");
+    if (endParam !== null && !/^\d{1,15}$/.test(endParam)) throw new HttpError(400, "invalid session page");
+    const page = readTranscript(agent.kind, file, endParam === null ? {} : { end: Number(endParam) });
+    return { turn: turn.id, sessionId, entries: turnActivityEntries(turn, page.entries), start: page.start, size: page.size };
   }
 
   /** The canonical file as it is on disk now. */

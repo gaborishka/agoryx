@@ -171,6 +171,46 @@ function Ref({ id }: { id: string }) {
   );
 }
 
+/** A quote's source line: the message it came from, one click away. */
+function MessageRef({ id, children }: { id: string; children: ReactNode }) {
+  const exists = useStore((s) => s.snap?.state.messages.some((m) => m.id === id) ?? false);
+  const goToRef = useStore((s) => s.goToRef);
+  if (!exists) return <span className="font-medium">{children}</span>;
+  return (
+    <button
+      type="button"
+      onClick={() => goToRef(`m-${id}`)}
+      title="Show the message"
+      className="inline text-left font-medium text-foreground/80 underline decoration-border underline-offset-[3px] hover:text-foreground hover:decoration-current"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** A quote's source line for lines of a diff: that turn's changes, at that file. */
+function TurnRef({ turn, path, children }: { turn: string; path: string; children: ReactNode }) {
+  const exists = useStore((s) => s.snap?.state.turns.some((t) => t.id === turn) ?? false);
+  const openChanges = useStore((s) => s.openChanges);
+  if (!exists) return <span className="font-medium">{children}</span>;
+  let file = path;
+  try {
+    file = decodeURIComponent(path);
+  } catch {
+    // a hand-written link with a stray %: take it as written
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => openChanges({ scope: "turn", turn, path: file })}
+      title="Show the turn's changes"
+      className="inline text-left font-medium text-foreground/80 underline decoration-border underline-offset-[3px] hover:text-foreground hover:decoration-current"
+    >
+      {children}
+    </button>
+  );
+}
+
 function FileLink({ path, children }: { path: string; children: ReactNode }) {
   const openFile = useStore((s) => s.openFile);
   return (
@@ -190,6 +230,9 @@ function Link({ href, children }: ComponentProps<"a">) {
   const rawBase = useStore((s) => s.snap?.rawBase);
   if (href?.startsWith("#@")) return <Mention handle={href.slice(2)}>{children}</Mention>;
   if (href?.startsWith("#~")) return <Ref id={href.slice(2)} />;
+  if (href && /^#m[0-9a-z]+$/.test(href)) return <MessageRef id={href.slice(1)}>{children}</MessageRef>;
+  const turnRef = href?.match(/^#(t[0-9a-z]+)\/(.+)$/);
+  if (turnRef) return <TurnRef turn={turnRef[1]!} path={turnRef[2]!}>{children}</TurnRef>;
   const local = localPath(href);
   const rel = workspaceRel(local ?? href, workspace);
   if (rel) return <FileLink path={rel}>{children}</FileLink>;

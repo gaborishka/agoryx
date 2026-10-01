@@ -3,6 +3,7 @@ import {
   AppWindowIcon,
   BanIcon,
   BrainIcon,
+  ChevronRightIcon,
   DotIcon,
   FileTextIcon,
   FilePenLineIcon,
@@ -17,13 +18,14 @@ import {
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { rawUrl } from "@/components/md/Markdown";
 import { Player } from "@/components/md/Media";
 import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, IMAGE_EXT, plural, TABLE_EXT, VIDEO_EXT, VISUAL_EXT } from "@/lib/format";
 import { nameOf } from "@/lib/room";
 import { useStore } from "@/lib/store";
-import type { Activity, DocRevision, TurnState } from "@/lib/types";
+import { useTurnActivity } from "@/lib/turn-activity";
+import type { Activity, DocRevision, TranscriptTool, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Stats, Tip } from "./bits";
 
@@ -43,10 +45,17 @@ const ICON: Record<Activity["kind"], LucideIcon> = {
 
 const WRAP = new Set<Activity["kind"]>(["thinking", "note", "error", "denied"]);
 
-export function ActivityRow({ a }: { a: Activity }) {
+function DetailBlock({ label, text, fail }: { label: string; text: string; fail?: boolean }) {
+  return <div className="mt-2 min-w-0"><span className="text-meta font-medium text-faint">{label}</span><pre className={cn("scroll-thin mt-1 max-h-72 overflow-auto rounded-lg border border-border bg-code px-2.5 py-2 font-mono text-meta leading-relaxed whitespace-pre-wrap break-words", fail && "border-destructive/30 text-destructive")}>{text}</pre></div>;
+}
+
+export function ActivityRow({ a, tool, loading, error, inspect }: { a: Activity; tool?: TranscriptTool; loading?: boolean; error?: string; inspect?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
   const Icon = ICON[a.kind] ?? DotIcon;
   const fail = a.status === "fail" || a.kind === "error";
   const wrap = WRAP.has(a.kind);
+  const expandable = !wrap || Boolean(tool && (tool.input || tool.output || tool.diffs?.length || tool.todos?.length));
   const label = wrap && a.label.length > 600 ? `${a.label.slice(0, 600)}…` : a.label;
   return (
     <li className="group/act relative flex gap-2.5 pl-0.5">
@@ -61,29 +70,55 @@ export function ActivityRow({ a }: { a: Activity }) {
         <Icon className={cn("size-3", a.status === "running" && "animate-pulse")} />
       </span>
       <span className="min-w-0 flex-1 pb-1.5">
-        <span
+        {expandable ? <button
+          type="button"
+          onClick={() => { setOpen(!open); if (!open) inspect?.(); }}
+          aria-expanded={open}
+          aria-controls={id}
           className={cn(
-            "block text-small leading-6 text-muted-foreground",
+            "flex w-full min-w-0 items-start gap-1.5 text-left text-small leading-6 text-muted-foreground hover:text-foreground",
             wrap ? "whitespace-pre-wrap break-words" : "truncate font-mono text-meta",
             a.kind === "thinking" && "italic",
             fail && "text-destructive",
           )}
           title={a.label}
         >
-          {label}
-        </span>
+          <span className={cn("min-w-0 flex-1", !wrap && "truncate")}>{label}</span>
+          <ChevronRightIcon className={cn("mt-1.5 size-3 shrink-0 text-faint transition", open && "rotate-90")} />
+        </button> : <span className={cn("block text-small leading-6 whitespace-pre-wrap break-words text-muted-foreground", a.kind === "thinking" && "italic", fail && "text-destructive")} title={a.label}>{label}</span>}
         {a.detail && fail ? <span className="mt-0.5 block whitespace-pre-wrap break-words font-mono text-meta text-destructive/80">{a.detail.slice(0, 500)}</span> : null}
+        {open && expandable ? <div id={id} className="pb-2">
+          {tool ? <>
+            {tool.category === "command" ? <DetailBlock label="Command" text={tool.input || tool.title} /> : tool.input ? <DetailBlock label="Input" text={tool.input} /> : null}
+            {tool.output !== undefined ? <DetailBlock label={tool.status === "fail" ? "Error" : "Output"} text={tool.output} fail={tool.status === "fail"} /> : <p className="mt-2 text-meta text-faint">{tool.status === "running" ? "Running — output is not available yet." : "Completed with no text output."}</p>}
+            {tool.diffs?.length ? <DetailBlock label="Changes" text={tool.diffs.map((d) => d.patch).join("\n")} /> : null}
+            {tool.todos?.length ? <DetailBlock label="Plan" text={tool.todos.map((t) => `${t.status}: ${t.text}`).join("\n")} /> : null}
+          </> : <>
+            <DetailBlock label="Action" text={a.label} />
+            {inspect && !WRAP.has(a.kind) ? <p role="status" className={cn("mt-2 text-meta text-faint", error && "text-destructive")}>{loading ? "Loading input and output…" : error ?? "Input and output for this action are not available in this session page."}</p> : null}
+          </>}
+        </div> : null}
       </span>
     </li>
   );
 }
 
-export function ActivityList({ items, className }: { items: Activity[]; className?: string }) {
+export function ActivityList({ items, turn, className, id }: { items: Activity[]; turn?: TurnState; className?: string; id?: string }) {
+  const roomId = useStore((s) => s.snap?.state.id);
+  const openSession = useStore((s) => s.openSession);
+  const [requested, setRequested] = useState(false);
+  const { view, older, retry } = useTurnActivity(roomId, turn, requested);
+  const tools = useMemo(() => new Map(view.entries.map((e) => [e.id, e])), [view.entries]);
   return (
-    <ol className={cn("relative before:absolute before:top-2 before:bottom-3 before:left-[9.5px] before:w-px before:bg-border", className)}>
+    <ol id={id} className={cn("relative before:absolute before:top-2 before:bottom-3 before:left-[9.5px] before:w-px before:bg-border", className)}>
       {items.map((a) => (
-        <ActivityRow key={a.id} a={a} />
+        <ActivityRow key={a.id} a={a} tool={tools.get(a.id)} loading={view.loading} error={view.error} inspect={turn ? () => setRequested(true) : undefined} />
       ))}
+      {requested && turn ? <li className="flex flex-wrap items-center gap-3 py-1 pl-[28px] text-meta text-muted-foreground">
+        {view.error ? <button type="button" onClick={retry} className="hover:text-foreground">Retry loading details</button> : null}
+        {view.start > 0 && items.some((a) => !tools.has(a.id) && !WRAP.has(a.kind)) ? <button type="button" disabled={view.loading} onClick={() => void older()} className="hover:text-foreground disabled:opacity-50">{view.loading ? "Loading…" : "Load older session entries"}</button> : null}
+        <button type="button" onClick={() => openSession(turn.agent, false)} className="hover:text-foreground">Open agent's session</button>
+      </li> : null}
     </ol>
   );
 }
@@ -176,6 +211,8 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
 
 export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?: DocRevision[]; compact?: boolean; text?: string }) {
   const [all, setAll] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsId = useId();
   const openChanges = useStore((s) => s.openChanges);
   const openFile = useStore((s) => s.openFile);
   // The chip whose turn and file the panel shows now.
@@ -198,10 +235,11 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
       {turn ? <Made turn={turn} text={text} compact={compact} /> : null}
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5 first:mt-0">
         {acts && turn ? (
-          <Tip tip="What the agent did this turn, in the Changes panel">
-            <button type="button" className={cn(chip, shown?.acts && "bg-accent text-foreground")} onClick={() => openChanges({ scope: "turn", turn: turn.id, acts: true })}>
+          <Tip tip="Expand what the agent did here; each action opens its input and output">
+            <button type="button" className={cn(chip, actionsOpen && "bg-accent text-foreground")} aria-expanded={actionsOpen} aria-controls={actionsId} onClick={() => setActionsOpen(!actionsOpen)}>
               <ListIcon className="size-3.5" />
               {plural(acts, "action", "actions")}
+              <ChevronRightIcon className={cn("size-3 transition", actionsOpen && "rotate-90")} />
             </button>
           </Tip>
         ) : null}
@@ -246,6 +284,7 @@ export function TurnBar({ turn, docs, compact, text }: { turn?: TurnState; docs?
           </button>
         ) : null}
       </div>
+      {actionsOpen && turn ? <ActivityList id={actionsId} items={turn.activity} turn={turn} className="mt-3" /> : null}
     </div>
   );
 }

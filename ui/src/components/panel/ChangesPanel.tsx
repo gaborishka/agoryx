@@ -1,6 +1,6 @@
 import { ChevronRightIcon, FileIcon, GitCompareArrowsIcon } from "lucide-react";
 import { type ReactNode, useMemo } from "react";
-import { Patch } from "@/components/code/Code";
+import { Patch, type PickLines } from "@/components/code/Code";
 import { EmptyState, ErrorNote, Hint, Loading } from "@/components/common/states";
 import { Avatar, Stats } from "@/components/room/bits";
 import { ActivityList } from "@/components/room/Trace";
@@ -102,7 +102,7 @@ function Files({ changes, only, focus }: { changes: FileChange[]; only?: string;
 }
 
 /** The patch, or one file of it. */
-function Shown({ diff, only, focus, note }: { diff: Diff; only?: string; focus: ChangesFocus; note?: ReactNode }) {
+function Shown({ diff, only, focus, note, onPick }: { diff: Diff; only?: string; focus: ChangesFocus; note?: ReactNode; onPick?: PickLines }) {
   const openChanges = useStore((s) => s.openChanges);
   const narrowed = only && diff.changes.length > 1 ? only : undefined;
   const patch = narrowed ? (partOf(diff.patch, narrowed) ?? diff.patch) : diff.patch;
@@ -118,7 +118,7 @@ function Shown({ diff, only, focus, note }: { diff: Diff; only?: string; focus: 
         </Hint>
       ) : null}
       {diff.truncated ? <Hint>The patch is large — showing the beginning.{note ? <> {note}</> : null}</Hint> : null}
-      {patch.trim() ? <Patch patch={patch} /> : <Hint>No changes to file text.</Hint>}
+      {patch.trim() ? <Patch patch={patch} onPick={onPick} /> : <Hint>No changes to file text.</Hint>}
     </>
   );
 }
@@ -131,6 +131,8 @@ const turnLabel = (room: Parameters<typeof participant>[0], t: TurnState) =>
 function TurnChanges({ focus }: { focus: ChangesFocus }) {
   const room = useStore((s) => s.snap?.state);
   const openChanges = useStore((s) => s.openChanges);
+  const quote = useStore((s) => s.quote);
+  const driven = useStore((s) => s.snap?.driven ?? false);
   const roomId = room?.id ?? "";
   // Turns that changed files, newest first; the one asked for stays listed even if it changed none.
   const changed = useMemo(() => (room?.turns ?? []).filter((t) => t.changes?.length).reverse(), [room?.turns]);
@@ -155,8 +157,15 @@ function TurnChanges({ focus }: { focus: ChangesFocus }) {
   else if (diff.data === null) body = <Hint>This turn’s snapshot is gone — its changes can’t be shown.</Hint>;
   else if (!diff.data) body = <Loading block />;
   else {
+    const by = participant(room, turn.agent);
+    // The lines go to the turn's agent, unless other agents' parallel turns also edited the file: then we don't know whose lines they are.
+    const pick: PickLines = (path, picked) => {
+      const shared = turn.changes?.find((c) => c.path === path)?.with?.length;
+      quote({ id: turn.id, author: turn.agent, label: by.label, text: picked.text, file: { path, lines: picked.lines } }, shared ? undefined : turn.agent);
+    };
     body = (
       <Shown
+        onPick={driven ? pick : undefined}
         diff={{ ...diff.data, changes: turn.changes }}
         only={focus.path}
         focus={{ scope: "turn", turn: turn.id }}
@@ -202,7 +211,7 @@ function TurnChanges({ focus }: { focus: ChangesFocus }) {
       ) : null}
       {body}
       {turn.changes?.length && turn.status !== "running" ? (
-        <Hint className="text-meta">A git snapshot before and after the turn. Other agents see these +/− in their delta.</Hint>
+        <Hint className="text-meta">A git snapshot before and after the turn. Other agents see these +/− in their delta. To answer about some lines, press the + by a line, or drag over line numbers first to take several: they go into your message.</Hint>
       ) : null}
     </>
   );

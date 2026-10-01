@@ -1,4 +1,5 @@
 import { originName } from "./actor.js";
+import { parseMentions } from "./mentions.js";
 import { PASS_RESPONSE_TOKEN } from "../events/pass-token.js";
 import { describeTableOp, summarizeTable } from "./table.js";
 import type { FileChange, RoomAgent, RoomEvent, RoomMessage, RoomState, TableOp } from "./types.js";
@@ -603,14 +604,4 @@ export const buildTurnPrompt = (
   return `${buildBriefing(input)}\n\n${intro}\n\n${delta}`;
 };
 
-const MENTION = /(^|[^\w@])@([a-z][\w-]{1,31})/gi;
-
-export const parseMentions = (text: string, handles: string[]): string[] => {
-  const known = new Set(handles.map((handle) => handle.toLowerCase()));
-  const found = new Set<string>();
-  for (const match of text.matchAll(MENTION)) {
-    const handle = match[2]!.toLowerCase();
-    if (known.has(handle) || handle === "all") found.add(handle);
-  }
-  return [...found];
-};
+export { parseMentions } from "./mentions.js";

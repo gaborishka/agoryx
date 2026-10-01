@@ -4,7 +4,7 @@ import { withMod } from "@/lib/keys";
 export const copyText = async (text: string, select?: HTMLElement | null) => {
   try {
     await navigator.clipboard.writeText(text);
-    toast.success("Скопійовано");
+    toast.success("Copied");
   } catch {
     if (select) {
       const range = document.createRange();
@@ -12,7 +12,7 @@ export const copyText = async (text: string, select?: HTMLElement | null) => {
       const sel = window.getSelection();
       sel?.removeAllRanges();
       sel?.addRange(range);
-      toast(`Виділено — натисніть ${withMod("C")}`);
-    } else toast.error("Не вдалося скопіювати");
+      toast(`Selected — press ${withMod("C")}`);
+    } else toast.error("Couldn’t copy");
   }
 };

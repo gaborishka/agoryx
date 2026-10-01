@@ -37,13 +37,13 @@ test("the lines a run writes carry codes: budget reached, a turn that failed", a
     assert.doesNotMatch(message, /rate limit —/, "the code's message is the CLI's own, without the English hint");
     assert.match(failed.text, /^Codex could not finish its turn: .*429.* \(rate limit — it will retry on the next message\)$/s, "the English stays for the terminal");
     assert.ok(sysError(failed));
-    assert.match(sysLine(failed), /^Codex: хід не вдалося завершити — .*429.* \(ліміт запитів — спробує знову з наступним повідомленням\)$/s);
+    assert.match(sysLine(failed), /^Codex: the turn could not finish — .*429.* \(rate limit — it will try again with the next message\)$/s);
     sameInOldRooms(failed);
 
     const budget = lines.find((message) => message.sys?.code === "run.budget")!;
     assert.deepEqual(budget.sys, { code: "run.budget", turns: 3, open: { questions: 1, options: 0, steps: 0, disputes: 0 } });
     assert.equal(sysError(budget), false);
-    assert.equal(sysLine(budget), "Агенти зробили 3 ходи — розмова чекає на вас. На столі ще відкрито: 1 питання.");
+    assert.equal(sysLine(budget), "The agents took 3 turns — the conversation is waiting for you. Still open on the table: 1 question.");
     sameInOldRooms(budget);
   } finally {
     await room.cleanup();
@@ -92,22 +92,22 @@ test("what the human and agents do is said with a code: settings, rename, model,
 
     // The UI's words, by code; an agent's own line is said by the name the UI gives it.
     const say = (code: string, who?: string) => sysLine(messages.find((message) => message.sys?.code === code && (!who || message.author !== "agoryx"))!, who);
-    assert.equal(say("doc.set"), "Спільний документ кімнати тепер — `notes.md`.");
-    assert.equal(say("settings.changed", "Claude"), "Claude змінює налаштування: ліміт 5 ходів на розмову, мережа вимкнена.");
-    assert.equal(say("room.renamed", "Codex"), "Codex перейменовує кімнату на «Parser work».");
-    assert.equal(say("agent.changed"), "Ivan змінює Claude: модель `opus`, глибина — висока.");
-    assert.equal(say("decision"), "Рішення №1: P1 «Agora» — short and Greek (вирішує Ivan)");
-    assert.equal(say("daemon.stopped", "Codex"), "Codex зупиняє Agoryx, тож розмову зупинено.");
+    assert.equal(say("doc.set"), "The room’s shared document is now `notes.md`.");
+    assert.equal(say("settings.changed", "Claude"), "Claude changes the settings: a limit of 5 turns per conversation, network off.");
+    assert.equal(say("room.renamed", "Codex"), "Codex renames the room to “Parser work”.");
+    assert.equal(say("agent.changed"), "Ivan changes Claude: model `opus`, effort — high.");
+    assert.equal(say("decision"), "Decision #1: P1 “Agora” — short and Greek (decided by Ivan)");
+    assert.equal(say("daemon.stopped", "Codex"), "Codex stops Agoryx, so the conversation was stopped.");
     const [humanStop, agentStop] = messages.filter((message) => message.sys?.code === "run.stopped");
-    assert.equal(sysLine(humanStop!), "Розмову зупинено.");
-    assert.equal(sysLine(agentStop!, "Codex"), "Codex зупиняє розмову.");
+    assert.equal(sysLine(humanStop!), "The conversation was stopped.");
+    assert.equal(sysLine(agentStop!, "Codex"), "Codex stops the conversation.");
     assert.ok(messages.filter((message) => message.sys).every((message) => !sysError(message)), "none of them is an error");
 
     // An older room, English only, reads the same.
     for (const message of messages.filter((entry) => entry.sys)) sameInOldRooms(message, message.author === "agoryx" || message.author === "Ivan" ? undefined : message.author === "claude" ? "Claude" : "Codex");
     // A decision is a room's last line in the list, said in the UI's words.
     const decision = messages.find((message) => message.kind === "decision")!;
-    assert.equal(roomPreview({ author: decision.author, text: decision.text, sys: decision.sys }), "Ви: Рішення №1: P1 «Agora» — short and Greek (вирішує Ivan)");
+    assert.equal(roomPreview({ author: decision.author, text: decision.text, sys: decision.sys }), "You: Decision #1: P1 “Agora” — short and Greek (decided by Ivan)");
   } finally {
     await room.cleanup();
   }
@@ -138,13 +138,13 @@ test("older rooms: lines no code covers are shown as written, and errors are sti
   // "X set Y to Z." is an agent change only when every part is a model or an effort.
   assert.equal(legacyNote("I set the timeout to 5."), null);
   assert.deepEqual(legacyNote("Ivan set Claude to the CLI's default model, effort xhigh."), { code: "agent.changed", by: "Ivan", agent: "Claude", model: null, effort: "xhigh" });
-  assert.equal(sysLine({ text: "Codex could not finish its turn: turn exceeded 20 min" }), "Codex: хід не вдалося завершити — хід довший за ліміт (20 хв)");
+  assert.equal(sysLine({ text: "Codex could not finish its turn: turn exceeded 20 min" }), "Codex: the turn could not finish — the turn ran past its time limit (20 min)");
   assert.equal(
     sysLine({ text: "Codex could not finish its turn: spawn ENOENT (is `codex` installed and on PATH?)" }),
-    "Codex: хід не вдалося завершити — spawn ENOENT (чи встановлено `codex` і чи є він у PATH?)",
+    "Codex: the turn could not finish — spawn ENOENT (is `codex` installed and on your PATH?)",
   );
   assert.equal(
     sysLine({ text: "Turn budget reached (4 agent turns). Still open on the table: 2 open questions, 1 contested point — write anything, or ask for another round, to continue." }),
-    "Агенти зробили 4 ходи — розмова чекає на вас. На столі ще відкрито: 2 питання, 1 спірний пункт.",
+    "The agents took 4 turns — the conversation is waiting for you. Still open on the table: 2 questions, 1 disputed point.",
   );
 });

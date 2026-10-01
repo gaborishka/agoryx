@@ -7,15 +7,15 @@
   const byId = (id) => document.getElementById(id);
 
   const ACTIONS = {
-    retry: { label: "Спробувати знову", call: () => api.retry() },
-    open: { label: "Відкрити Agoryx", call: () => api.openAnyway() },
-    log: { label: "Відкрити журнал", call: () => api.openLog() },
-    doctor: { label: "Перевірити ще раз", call: () => api.runDoctor(false) },
-    probe: { label: "Перевірити агентів", hint: "Надсилає кожному агентові, у якого виконано вхід, один короткий запит", call: () => api.runDoctor(true) },
+    retry: { label: "Try again", call: () => api.retry() },
+    open: { label: "Open Agoryx", call: () => api.openAnyway() },
+    log: { label: "Open log", call: () => api.openLog() },
+    doctor: { label: "Check again", call: () => api.runDoctor(false) },
+    probe: { label: "Check agents", hint: "Sends one short request to each agent that is signed in", call: () => api.runDoctor(true) },
   };
   const STEP_ICONS = { done: "✓", fail: "✕" };
   const CHECK_MARKS = { ok: "✓", warn: "!", fail: "✕" };
-  const CHECK_NAMES = { ok: "гаразд", warn: "попередження", fail: "помилка" };
+  const CHECK_NAMES = { ok: "ok", warn: "warning", fail: "error" };
 
   const el = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -49,13 +49,13 @@
   const copy = async (text, button, code) => {
     try {
       await navigator.clipboard.writeText(text);
-      button.textContent = "Скопійовано";
+      button.textContent = "Copied";
     } catch {
       getSelection()?.selectAllChildren(code);
-      button.textContent = "Натисніть ⌘C";
+      button.textContent = "Press ⌘C";
     }
     setTimeout(() => {
-      button.textContent = "Копіювати";
+      button.textContent = "Copy";
     }, 1600);
   };
 
@@ -75,7 +75,7 @@
         if (check.fix && check.status !== "ok") {
           const fix = el("div", "fix");
           const code = el("code", "", check.fix);
-          const button = el("button", "copy", "Копіювати");
+          const button = el("button", "copy", "Copy");
           button.type = "button";
           button.addEventListener("click", () => void copy(check.fix, button, code));
           fix.append(code, button);
@@ -135,7 +135,7 @@
 
   if (!api) {
     byId("title").textContent = "Agoryx";
-    setText(byId("note"), "Ця сторінка працює всередині застосунку Agoryx.");
+    setText(byId("note"), "This page works inside the Agoryx app.");
     return;
   }
   api.onState(render);

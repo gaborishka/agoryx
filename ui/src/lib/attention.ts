@@ -57,15 +57,15 @@ export const startAttention = (currentRoom: () => string | null, subscribe: (lis
 };
 
 const SHORT: Record<AttentionReason, (by: string | undefined) => string> = {
-  done: () => "агенти закінчили",
-  budget: () => "ліміт ходів вичерпано",
-  stopped: () => "зупинено",
-  mention: (by) => `${by ?? "агент"} кличе вас`,
-  error: (by) => (by ? `хід ${by} не вдався` : "хід не вдався"),
+  done: () => "agents finished",
+  budget: () => "turn limit reached",
+  stopped: () => "stopped",
+  mention: (by) => `${by ?? "an agent"} is calling you`,
+  error: (by) => (by ? `${by}’s turn failed` : "a turn failed"),
 };
 
 /**
- * Why a room waits, in a few words: «агенти закінчили», «Claude кличе вас» (the sidebar puts «Чекає на вас» before
+ * Why a room waits, in a few words: “agents finished”, “Claude is calling you” (the sidebar puts “Waiting for you” before
  * all but a mention, which already says who calls). The tray's copy is internal/desktop/attention.ts.
  */
 export const waitingReason = (item: AttentionItem): string => SHORT[item.reason](item.by);

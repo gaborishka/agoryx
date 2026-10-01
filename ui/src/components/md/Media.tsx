@@ -14,7 +14,7 @@ export function useRawText(url: string | null) {
     setState({ url });
     fetch(url)
       .then(async (res) => {
-        if (!res.ok) throw new Error(res.status === 413 ? "файл завеликий для перегляду" : res.status === 404 ? "файлу вже немає" : `не вдалося відкрити (${res.status})`);
+        if (!res.ok) throw new Error(res.status === 413 ? "file is too large to preview" : res.status === 404 ? "the file is gone" : `couldn’t open (${res.status})`);
         const text = await res.text();
         const cut = text.length > MAX_TEXT;
         if (live) setState({ url, text: cut ? text.slice(0, text.lastIndexOf("\n", MAX_TEXT)) : text, cut });
@@ -75,7 +75,7 @@ export function DataTable({ text, sep, cut, limit = 200, className }: { text: st
       }),
     [body, width],
   );
-  if (!rows.length) return <p className="text-small text-muted-foreground">Порожня таблиця.</p>;
+  if (!rows.length) return <p className="text-small text-muted-foreground">Empty table.</p>;
   const shown = body.slice(0, limit);
   return (
     <div className={cn("overflow-hidden rounded-xl border border-border bg-card", className)}>
@@ -104,9 +104,9 @@ export function DataTable({ text, sep, cut, limit = 200, className }: { text: st
         </table>
       </div>
       <div className="border-t border-border px-2.5 py-1.5 text-meta text-muted-foreground tabular">
-        {plural(body.length, "рядок", "рядки", "рядків")}
-        {cut ? "+" : ""} · {plural(width, "стовпець", "стовпці", "стовпців")}
-        {body.length > limit || cut ? ` · показано перші ${limit}` : ""}
+        {plural(body.length, "row", "rows")}
+        {cut ? "+" : ""} · {plural(width, "column", "columns")}
+        {body.length > limit || cut ? ` · showing the first ${limit}` : ""}
       </div>
     </div>
   );

@@ -40,36 +40,36 @@ const lazyMermaid = (base: MermaidConfig): DiagramPlugin => {
     },
   };
 };
-const mermaidLight = lazyMermaid({ theme: "neutral", fontFamily: "Onest Variable, system-ui, sans-serif" });
-const mermaidDark = lazyMermaid({ theme: "dark", fontFamily: "Onest Variable, system-ui, sans-serif", darkMode: true });
+const mermaidLight = lazyMermaid({ theme: "neutral", fontFamily: "Commissioner Variable, system-ui, sans-serif" });
+const mermaidDark = lazyMermaid({ theme: "dark", fontFamily: "Commissioner Variable, system-ui, sans-serif", darkMode: true });
 
 const translations: Partial<StreamdownTranslations> = {
-  close: "Закрити",
-  copied: "Скопійовано",
-  copyCode: "Копіювати код",
-  copyLink: "Копіювати посилання",
-  copyTable: "Копіювати таблицю",
-  copyTableAsCsv: "Як CSV",
-  copyTableAsMarkdown: "Як Markdown",
-  copyTableAsTsv: "Як TSV",
-  downloadDiagram: "Завантажити діаграму",
-  downloadDiagramAsMmd: "Як MMD",
-  downloadDiagramAsPng: "Як PNG",
-  downloadDiagramAsSvg: "Як SVG",
-  downloadFile: "Завантажити файл",
-  downloadImage: "Завантажити зображення",
-  downloadTable: "Завантажити таблицю",
-  downloadTableAsCsv: "Як CSV",
-  downloadTableAsMarkdown: "Як Markdown",
-  exitFullscreen: "Вийти з повного екрана",
-  externalLinkWarning: "Посилання веде на зовнішній сайт",
-  imageNotAvailable: "Зображення недоступне",
-  openExternalLink: "Відкрити зовнішнє посилання",
-  openLink: "Відкрити посилання",
-  resetView: "Скинути вигляд",
-  viewFullscreen: "На весь екран",
-  zoomIn: "Збільшити",
-  zoomOut: "Зменшити",
+  close: "Close",
+  copied: "Copied",
+  copyCode: "Copy code",
+  copyLink: "Copy link",
+  copyTable: "Copy table",
+  copyTableAsCsv: "As CSV",
+  copyTableAsMarkdown: "As Markdown",
+  copyTableAsTsv: "As TSV",
+  downloadDiagram: "Download diagram",
+  downloadDiagramAsMmd: "As MMD",
+  downloadDiagramAsPng: "As PNG",
+  downloadDiagramAsSvg: "As SVG",
+  downloadFile: "Download file",
+  downloadImage: "Download image",
+  downloadTable: "Download table",
+  downloadTableAsCsv: "As CSV",
+  downloadTableAsMarkdown: "As Markdown",
+  exitFullscreen: "Exit full screen",
+  externalLinkWarning: "This link leads to an external site",
+  imageNotAvailable: "Image not available",
+  openExternalLink: "Open external link",
+  openLink: "Open link",
+  resetView: "Reset view",
+  viewFullscreen: "Full screen",
+  zoomIn: "Zoom in",
+  zoomOut: "Zoom out",
 };
 
 const defaultRemark = Object.values(defaultRemarkPlugins);
@@ -85,7 +85,7 @@ function Gone({ path }: { path: string }) {
   return (
     <span title={path} className="my-1 inline-flex max-w-full items-center gap-2 rounded-lg border border-dashed border-border px-2.5 py-1.5 align-top text-small text-muted-foreground">
       <FileXIcon className="size-4 shrink-0" />
-      <span className="shrink-0">файлу вже немає</span>
+      <span className="shrink-0">the file is gone</span>
       <span className="truncate font-mono text-meta">{path}</span>
     </span>
   );
@@ -98,7 +98,7 @@ function Source({ code: text, lang }: { code: string; lang: string }) {
   return (
     <details className="group border-t border-border">
       <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">
-        <Code2Icon className="size-3.5" /> Код {lang.toUpperCase()}
+        <Code2Icon className="size-3.5" /> <span className="font-mono">{lang}</span> code
       </summary>
       <pre className="scroll-thin max-h-80 overflow-auto border-t border-border bg-code px-3 py-2.5 font-mono text-small leading-relaxed">{text}</pre>
     </details>
@@ -113,7 +113,7 @@ const makeLiveRenderer = (source: Source, text: string) =>
     if (isIncomplete || !source || !rawBase || !block) {
       return (
         <div className="my-3 overflow-hidden rounded-xl border border-border bg-code">
-          <div className="border-b border-border px-3 py-1.5 text-micro font-semibold tracking-wider text-muted-foreground">{lang.toUpperCase()}</div>
+          <div className="border-b border-border px-3 py-1.5 font-mono text-meta text-muted-foreground">{lang}</div>
           <pre className="scroll-thin max-h-96 overflow-auto px-3 py-2.5 font-mono text-small leading-relaxed">{fence}</pre>
         </div>
       );
@@ -131,10 +131,10 @@ const makeLiveRenderer = (source: Source, text: string) =>
       <figure className="my-3 overflow-hidden rounded-xl border border-border bg-paper shadow-soft">
         <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
           <span className="size-2 rounded-full bg-add-ink/70" />
-          <span className="font-semibold tracking-wider">HTML</span>
-          <span className="text-faint">жива сторінка</span>
+          <span className="font-mono">html</span>
+          <span className="text-faint">live page</span>
           <a href={url} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-foreground">
-            <Maximize2Icon className="size-3.5" /> На весь екран
+            <Maximize2Icon className="size-3.5" /> Full screen
           </a>
         </div>
         <LiveFrame src={url} title="HTML" />
@@ -163,7 +163,7 @@ function Ref({ id }: { id: string }) {
     <button
       type="button"
       onClick={() => goToRef(id)}
-      title="Показати на столі"
+      title="Show on the table"
       className="mx-px inline-flex items-center rounded bg-secondary px-1 font-mono text-[0.84em] font-semibold text-secondary-foreground ring-1 ring-primary/15 transition hover:bg-primary hover:text-primary-foreground"
     >
       {id}
@@ -177,7 +177,7 @@ function FileLink({ path, children }: { path: string; children: ReactNode }) {
     <button
       type="button"
       onClick={() => openFile(path)}
-      title={`Відкрити ${path}`}
+      title={`Open ${path}`}
       className="inline text-left text-primary underline decoration-primary/35 underline-offset-[3px] hover:decoration-current"
     >
       {children}
@@ -238,10 +238,10 @@ function Embed({ src, alt }: ComponentProps<"img">) {
     return (
       <span className="my-3 block overflow-hidden rounded-xl border border-border bg-paper shadow-soft">
         <span className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
-          <span className="font-semibold tracking-wider">{e.toUpperCase()}</span>
+          <span className="font-mono">{e}</span>
           <span className="truncate font-mono" title={path}>{rel ?? caption}</span>
           <a href={file} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-foreground">
-            <ExternalLinkIcon className="size-3.5" /> Відкрити
+            <ExternalLinkIcon className="size-3.5" /> Open
           </a>
         </span>
         <LiveFrame src={file} title={path} initial={e === "pdf" ? 560 : 360} />
@@ -260,7 +260,7 @@ function Embed({ src, alt }: ComponentProps<"img">) {
     return (
       <span className="my-3 block">
         <button type="button" onClick={open} className="mb-1.5 inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground" title={path}>
-          <span className="font-semibold tracking-wider">{e.toUpperCase()}</span>
+          <span className="font-mono">{e}</span>
           <span className="truncate font-mono">{alt || rel || caption}</span>
         </button>
         {TABLE_EXT.has(e) ? <CsvFile url={file} name={path} /> : <MermaidFile url={file} />}
@@ -271,7 +271,7 @@ function Embed({ src, alt }: ComponentProps<"img">) {
     <button type="button" onClick={open} className="my-1 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-sm hover:bg-accent">
       <FileIcon className="size-4 text-muted-foreground" />
       <span className="font-mono text-small">{baseName(path)}</span>
-      <span className="text-xs text-muted-foreground">відкрити</span>
+      <span className="text-xs text-muted-foreground">open</span>
     </button>
   );
 }

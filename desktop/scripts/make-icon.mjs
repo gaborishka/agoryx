@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// The app icon: the UI's favicon mark (three dots) on a sage tile, drawn here so the repo
+// The app icon: the Agoryx mark (ui/src/components/brand/Mark.tsx) on an ink tile, as the UI's
+// icons (ui/scripts/make-icons.mjs), drawn here so the repo
 // carries no binary. Writes build/icon.png (1024², the Dock icon in dev) and build/icon.icns (the
 // packaged app's, with macOS's iconutil). Does nothing when both are newer than this script.
 import { spawnSync } from "node:child_process";
@@ -18,19 +19,53 @@ if (newer(png) && (newer(icns) || process.platform !== "darwin")) process.exit(0
 
 // Geometry on a 1024 canvas, after Apple's icon grid: an 824² tile with a 185 corner radius.
 const TILE = { x: 100, y: 100, size: 824, radius: 185 };
-// The favicon's circles (a 24-unit viewBox), scaled and centred on the tile.
-const UNIT = 26.5;
-const CENTER = { x: 12, y: 11.25 };
-const DOTS = [
-  [12, 5.5],
-  [5.5, 17],
-  [18.5, 17],
-].map(([x, y]) => ({ x: 512 + (x - CENTER.x) * UNIT, y: 512 + (y - CENTER.y) * UNIT, r: 3.2 * UNIT }));
+// The mark (a 24-unit viewBox), scaled and centred on the tile.
+const UNIT = 27;
+const CENTER = { x: 12, y: 12 };
+const LEFT = [[3.4, 21], [8, 21], [15.2, 3], [10.6, 3]];
+const RIGHT = [[20.6, 21], [16, 21], [8.8, 3], [13.4, 3]];
+const DOT = { x: 12, y: 16.5, r: 1.5 };
 
-// ui/src/index.css: --primary, a shade lighter at the top, and the stone --background for the dots.
-const TOP = [0x3a, 0x6b, 0x56];
-const BOTTOM = [0x2a, 0x52, 0x41];
-const DOT = [0xf3, 0xf4, 0xef];
+// ui/src/index.css, dark theme: the ink ground (a shade lighter at the top) and the voices on it.
+const TOP = [0x24, 0x20, 0x2e];
+const BOTTOM = [0x15, 0x13, 0x1c];
+const CLAY = [0xee, 0x8a, 0x5e];
+const WATER = [0x5c, 0xae, 0xe0];
+const MEET = [0xe7, 0xa3, 0xd1];
+const LAUREL = [0x7f, 0xcb, 0x8a];
+
+/** Signed distance to a polygon (negative inside), after Inigo Quilez. */
+const polygon = (points) => (px, py) => {
+  let d = Infinity;
+  let sign = 1;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const [ax, ay] = points[i];
+    const [bx, by] = points[j];
+    const ex = bx - ax;
+    const ey = by - ay;
+    const wx = px - ax;
+    const wy = py - ay;
+    const t = Math.min(1, Math.max(0, (wx * ex + wy * ey) / (ex * ex + ey * ey)));
+    d = Math.min(d, Math.hypot(wx - ex * t, wy - ey * t));
+    const c = [py >= ay, py < by, ex * wy > ey * wx];
+    if (c.every(Boolean) || c.every((v) => !v)) sign = -sign;
+  }
+  return sign * d;
+};
+
+/** The mark's shapes at `unit` canvas units per mark unit, as distance functions on the canvas. */
+const markAt = (unit) => {
+  const place = (points) => points.map(([x, y]) => [512 + (x - CENTER.x) * unit, 512 + (y - CENTER.y) * unit]);
+  const left = polygon(place(LEFT));
+  const right = polygon(place(RIGHT));
+  const dot = { x: 512 + (DOT.x - CENTER.x) * unit, y: 512 + (DOT.y - CENTER.y) * unit, r: DOT.r * unit };
+  return {
+    left,
+    right,
+    meet: (px, py) => Math.max(left(px, py), right(px, py)),
+    dot: (px, py) => Math.hypot(px - dot.x, py - dot.y) - dot.r,
+  };
+};
 
 const roundedRect = (px, py) => {
   const half = TILE.size / 2;
@@ -39,10 +74,11 @@ const roundedRect = (px, py) => {
   return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - TILE.radius;
 };
 
-const circles = (px, py) => Math.min(...DOTS.map((dot) => Math.hypot(px - dot.x, py - dot.y) - dot.r));
-
 /** A signed distance (canvas units) → how much of a pixel of this size it covers. */
 const coverage = (distance, scale) => Math.min(1, Math.max(0, 0.5 - distance * scale));
+
+const mix = (under, over, amount) => under.map((c, i) => c + (over[i] - c) * amount);
+const mark = markAt(UNIT);
 
 const draw = (size) => {
   const scale = size / 1024;
@@ -55,13 +91,14 @@ const draw = (size) => {
       const py = (y + 0.5) / scale;
       const tile = coverage(roundedRect(px, py), scale);
       if (tile === 0) continue;
-      const dot = coverage(circles(px, py), scale);
       const t = Math.min(1, Math.max(0, (py - TILE.y) / TILE.size));
+      let colour = mix(TOP, BOTTOM, t);
+      colour = mix(colour, CLAY, coverage(mark.left(px, py), scale));
+      colour = mix(colour, WATER, coverage(mark.right(px, py), scale));
+      colour = mix(colour, MEET, coverage(mark.meet(px, py), scale));
+      colour = mix(colour, LAUREL, coverage(mark.dot(px, py), scale));
       const offset = row + 1 + x * 4;
-      for (let c = 0; c < 3; c += 1) {
-        const ground = TOP[c] + (BOTTOM[c] - TOP[c]) * t;
-        rows[offset + c] = Math.round(ground + (DOT[c] - ground) * dot);
-      }
+      for (let c = 0; c < 3; c += 1) rows[offset + c] = Math.round(colour[c]);
       rows[offset + 3] = Math.round(tile * 255);
     }
   }

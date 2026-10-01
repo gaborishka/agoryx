@@ -68,7 +68,7 @@ export const roomNameFrom = (text: string): string => {
       .split("\n")
       .map((entry) => entry.replace(/[#>*_`~[\]]/g, "").replace(/(^|\s)@[\w-]+/g, " ").replace(/\s+/g, " ").trim())
       .find(Boolean) ?? "";
-  if (line.length <= 60) return line || "Нова кімната";
+  if (line.length <= 60) return line || "New room";
   const cut = line.slice(0, 60);
   const space = cut.lastIndexOf(" ");
   return `${(space > 30 ? cut.slice(0, space) : cut).replace(/[\s,.;:!?—–-]+$/, "")}…`;

@@ -1,5 +1,5 @@
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon, ChevronsUpDownIcon, DotIcon, GaugeIcon } from "lucide-react";
-import { type KeyboardEvent, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -28,6 +28,8 @@ export function ModelMenu({
   align = "end",
   variant = "quiet",
   onSession,
+  face,
+  extra,
 }: {
   agent: RoomAgent;
   seating: Seating;
@@ -38,10 +40,14 @@ export function ModelMenu({
   working?: boolean;
   side?: "top" | "bottom";
   align?: "start" | "end";
-  /** quiet: a line of text in a toolbar; field: an outlined control, as in the session panel. */
-  variant?: "quiet" | "field";
+  /** quiet: a line of text in a toolbar; field: an outlined control, as in the session panel; seat: the agent's pill in a room's footer. */
+  variant?: "quiet" | "field" | "seat";
   /** Opens the agent's session; absent where there is no session yet. */
   onSession?: () => void;
+  /** seat: the agent's face at the start of the pill. */
+  face?: ReactNode;
+  /** A section under the effort, e.g. the agent's limits. */
+  extra?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -82,8 +88,8 @@ export function ModelMenu({
         {variant === "field" ? (
           <Button variant="outline" size="sm" disabled={disabled} className={cn("h-8 min-w-0 justify-between gap-2 px-2.5 font-normal", className)} aria-label={t.model.of(agent.label)}>
             <span className="truncate">
-              <span className="text-muted-foreground">Модель: </span>
-              <span className={cn(agent.model ? "font-mono text-meta" : "text-muted-foreground")}>{model?.label ?? agent.model ?? "типова"}</span>
+              <span className="text-muted-foreground">Model: </span>
+              <span className={cn(agent.model ? "font-mono text-meta" : "text-muted-foreground")}>{model?.label ?? agent.model ?? "default"}</span>
             </span>
             {effort ? (
               <span className={cn("inline-flex shrink-0 items-center gap-1", !agent.effort && "text-muted-foreground")}>
@@ -93,6 +99,22 @@ export function ModelMenu({
             ) : null}
             <ChevronsUpDownIcon className="size-3.5 shrink-0 opacity-60" />
           </Button>
+        ) : variant === "seat" ? (
+          <button
+            type="button"
+            disabled={disabled}
+            className={cn(
+              "group/seat flex h-8 shrink-0 items-center gap-1.5 rounded-full py-0.5 pr-2.5 pl-0.5 text-small transition hover:bg-accent disabled:pointer-events-none disabled:opacity-60 data-[state=open]:bg-accent",
+              className,
+            )}
+            title={`${agent.label} · ${model?.label ?? agent.model ?? "default model"}${effort ? ` · ${t.effort.level(effort)}` : ""}`}
+            aria-label={t.model.of(agent.label)}
+          >
+            <span className={cn("contents", working && "[&>*]:animate-breathe")}>{face}</span>
+            <span className="hidden font-medium whitespace-nowrap text-foreground/90 @min-[34rem]:inline">{agent.label}</span>
+            {modelUnnamed(agent, model?.label) ? <span className="hidden max-w-[8rem] truncate text-muted-foreground @min-[40rem]:inline">{model?.label ?? agent.model}</span> : null}
+            {effort ? <span className={cn("hidden whitespace-nowrap @min-[44rem]:inline", agent.effort ? "text-muted-foreground" : "text-faint")}>{t.effort.level(effort)}</span> : null}
+          </button>
         ) : (
           <Button
             type="button"
@@ -113,14 +135,14 @@ export function ModelMenu({
       <PopoverContent align={align} side={side} className="w-[300px] p-0">
         <Command onKeyDown={byDigit} loop>
           <div className="flex items-baseline justify-between px-3 pt-2.5 pb-1 text-meta text-muted-foreground">
-            Модель {agent.label}
-            {working ? <span className="text-faint">з наступного ходу</span> : null}
+            {agent.label} model
+            {working ? <span className="text-faint">from the next turn</span> : null}
           </div>
-          <CommandInput placeholder="Модель або її назва…" value={query} onValueChange={setQuery} />
+          <CommandInput placeholder="Model or its name…" value={query} onValueChange={setQuery} />
           <CommandList className="scroll-thin max-h-[40vh]">
             <CommandGroup>
-              <CommandItem value="__default типова з cli" onSelect={() => setModel(null)} title="Та, що в налаштуваннях CLI">
-                Типова <span className="text-faint">з CLI</span>
+              <CommandItem value="__default default from cli" onSelect={() => setModel(null)} title="The one set in the CLI’s settings">
+                Default <span className="text-faint">from CLI</span>
                 <Mark on={!agent.model} n={digits ? 1 : undefined} />
               </CommandItem>
               {choices.map((m, i) => (
@@ -149,13 +171,13 @@ export function ModelMenu({
                   <CommandItem forceMount value={`__typed ${typed}`} onSelect={() => setModel(typed)}>
                     <DotIcon className="size-4" />
                     <span className="truncate">
-                      Узяти <span className="font-mono text-meta">{typed}</span>
+                      Use <span className="font-mono text-meta">{typed}</span>
                     </span>
                   </CommandItem>
                 </CommandGroup>
               </>
             ) : null}
-            {!models ? <div className="px-3 py-1.5 text-meta text-faint">Завантажую моделі…</div> : null}
+            {!models ? <div className="px-3 py-1.5 text-meta text-faint">Loading models…</div> : null}
           </CommandList>
           {levels.length ? (
             <div className="border-t border-border px-3 pt-2 pb-2.5">
@@ -183,6 +205,7 @@ export function ModelMenu({
               </div>
             </div>
           ) : null}
+          {extra}
           {onSession ? (
             <button
               type="button"
@@ -192,7 +215,7 @@ export function ModelMenu({
               }}
               className="flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-ui transition hover:bg-accent"
             >
-              Сесія {agent.label}
+              {agent.label} session
               <ChevronRightIcon className="ml-auto size-4 opacity-60" />
             </button>
           ) : null}
@@ -201,6 +224,15 @@ export function ModelMenu({
     </Popover>
   );
 }
+
+/** Whether the agent's name leaves its model unsaid: "Claude Opus" already says opus, "Codex" does not say gpt-5.6. */
+const modelUnnamed = (agent: RoomAgent, label: string | undefined) => {
+  const name = label ?? agent.model;
+  if (!name) return false;
+  const words = name.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 2 && w !== agent.kind);
+  const said = agent.label.toLowerCase();
+  return !words.some((w) => said.includes(w));
+};
 
 /** The right edge of a row: a check on the current choice, otherwise the digit that picks it. */
 function Mark({ on, n }: { on: boolean; n?: number }) {

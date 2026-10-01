@@ -37,7 +37,7 @@ media.addEventListener("change", () => {
 paint();
 
 export const THEME_LABEL: Record<ThemePref, string> = {
-  system: "Тема як у системі",
-  light: "Світла тема",
-  dark: "Темна тема",
+  system: "System theme",
+  light: "Light theme",
+  dark: "Dark theme",
 };

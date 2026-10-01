@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { MarkMono } from "@/components/brand/Mark";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { clock, fullDate } from "@/lib/format";
 import { ink, nameOf, participant, type Tone, toneText } from "@/lib/room";
@@ -34,38 +35,34 @@ const CodexGlyph = () => (
   </svg>
 );
 
-/** Agoryx: the square's colonnade. */
-export const AgoraGlyph = ({ className }: { className?: string }) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-    <path d="M3 9.5 12 4l9 5.5M5 10v8M9.7 10v8M14.3 10v8M19 10v8M3 20.5h18" />
-  </svg>
-);
-
-/** Below this size a glyph and a corner badge do not both read: the mark takes the glyph's place (the colour still says which CLI). */
+/** Below this size a glyph and a corner badge do not both read: the glyph stays, the badge goes (the shade still tells one agent from another). */
 const MARK_INSIDE = 26;
 
 /**
  * `roster`: who to look the handle up in when there is no room yet (the start screen).
  * An agent that shares its kind with another gets its own shade of the kind's colour and its mark
- * (a corner badge, or in place of the glyph on a small avatar); one alone of its kind looks as it always has.
+ * (a corner badge, left off on a small avatar unless `badge` asks for it); one alone of its kind looks as it always has.
  */
 export function Avatar({
   handle,
   roster,
   size = 28,
   live = false,
+  badge = false,
   className,
 }: {
   handle: string;
   roster?: RoomAgent[];
   size?: number;
   live?: boolean;
+  /** Keep the mark's badge on a small avatar, where it is the only thing telling two of a kind apart. */
+  badge?: boolean;
   className?: string;
 }) {
   const room = useStore((s) => s.snap?.state);
   const p = participant(roster ? { agents: roster } : room, handle);
-  const inside = Boolean(p.mark) && size < MARK_INSIDE;
-  const badge = Math.max(12, Math.round(size * 0.46));
+  const inside = Boolean(p.mark) && size < MARK_INSIDE && !badge;
+  const corner = Math.max(12, Math.round(size * 0.46));
   return (
     <span
       className={cn(
@@ -78,16 +75,12 @@ export function Avatar({
       style={{ width: size, height: size, ...ink(p) }}
       aria-hidden
     >
-      {inside ? (
-        <span className="font-bold leading-none" style={{ fontSize: size * 0.5 }}>
-          {p.mark}
-        </span>
-      ) : p.kind === "claude" ? (
+      {p.kind === "claude" ? (
         <ClaudeGlyph />
       ) : p.kind === "codex" ? (
         <CodexGlyph />
       ) : p.tone === "sys" ? (
-        <AgoraGlyph className="size-[58%]" />
+        <MarkMono className="size-[62%]" />
       ) : (
         <span className="font-semibold" style={{ fontSize: size * 0.44 }}>
           {(handle[0] ?? "?").toUpperCase()}
@@ -99,7 +92,7 @@ export function Avatar({
             "absolute -right-1 -bottom-1 grid place-items-center rounded-full font-bold leading-none text-background ring-2 ring-background",
             p.kind === "codex" ? "bg-codex" : "bg-claude",
           )}
-          style={{ width: badge, height: badge, fontSize: Math.round(badge * 0.66) }}
+          style={{ width: corner, height: corner, fontSize: Math.round(corner * 0.66) }}
         >
           {p.mark}
         </span>
@@ -166,20 +159,20 @@ export function NativeTag({ m }: { m: MessageEntry }) {
   return (
     <NativeBadge
       agent={m.native.agent}
-      label={m.author === m.native.agent ? "у своїй сесії" : `напряму в сесії ${who}`}
-      tip={`Це було в рідній сесії ${who}, поза кімнатою. Agoryx підтягнув репліку сюди, щоб її бачили всі.`}
+      label={m.author === m.native.agent ? "in own session" : `directly in ${who}’s session`}
+      tip={`This happened in ${who}’s own session, outside the room. Agoryx brought it here so everyone can see it.`}
     />
   );
 }
 
 export function Stats({ added, removed, deleted, binary, isNew }: { added?: number | null; removed?: number | null; deleted?: boolean; binary?: boolean; isNew?: boolean }) {
-  if (binary) return <span className="text-faint">двійковий</span>;
-  if (deleted) return <span className="tabular text-del-ink">видалено{removed ? ` −${removed}` : ""}</span>;
+  if (binary) return <span className="text-faint">binary</span>;
+  if (deleted) return <span className="tabular text-del-ink">deleted{removed ? ` −${removed}` : ""}</span>;
   return (
     <span className="tabular inline-flex gap-1">
       <span className="text-add-ink">+{added ?? 0}</span>
       <span className="text-del-ink">−{removed ?? 0}</span>
-      {isNew ? <span className="text-faint">новий</span> : null}
+      {isNew ? <span className="text-faint">new</span> : null}
     </span>
   );
 }

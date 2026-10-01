@@ -373,7 +373,7 @@ test("Web Push: a device subscribes (https endpoints only), gets a test and a pu
   const tested = await phone("POST", "/api/push/test", cookie, {});
   assert.deepEqual(tested.json(), { sent: 1, failed: 0 });
   assert.equal(pushed[0]?.endpoint, subscription.endpoint);
-  assert.equal((await open(pushed[0]!)).body, "Сповіщення працюють.");
+  assert.equal((await open(pushed[0]!)).body, "Notifications work.");
   // A push the daemon did not send (anyone holding vapid.json and devices.json can push) has no note.
   assert.equal((await phone("GET", "/api/push/note/forged-id-1234", cookie)).status, 404);
   const other = await pairPhone();

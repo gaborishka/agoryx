@@ -58,8 +58,8 @@ function FileBody({ path }: { path: string }) {
   const f = file.data;
   const meta = (
     <Hint className="tabular">
-      {kb(f.size)} · змінено {fullDate(f.mtime)}
-      {f.truncated ? " · показано початок" : ""}
+      {kb(f.size)} · modified {fullDate(f.mtime)}
+      {f.truncated ? " · showing the beginning" : ""}
     </Hint>
   );
   if (FRAME_EXT.has(kind) || kind === "svg") {
@@ -69,7 +69,7 @@ function FileBody({ path }: { path: string }) {
         <div className="overflow-hidden rounded-xl border border-border bg-white">
           <LiveFrame src={url} title={path} initial={520} max={1600} />
         </div>
-        {!f.binary ? <Raw label="Код" path={path} text={f.text} /> : null}
+        {!f.binary ? <Raw label="Code" path={path} text={f.text} /> : null}
       </>
     );
   }
@@ -84,7 +84,7 @@ function FileBody({ path }: { path: string }) {
             <MermaidFile url={url} />
           </div>
         )}
-        <Raw label="Сирий текст" path={path} text={f.text} />
+        <Raw label="Raw text" path={path} text={f.text} />
       </>
     );
   }
@@ -92,7 +92,7 @@ function FileBody({ path }: { path: string }) {
     return (
       <>
         {meta}
-        <Hint>Двійковий файл — попередній перегляд недоступний.</Hint>
+        <Hint>Binary file — no preview available.</Hint>
       </>
     );
   }
@@ -103,7 +103,7 @@ function FileBody({ path }: { path: string }) {
         <article className="rounded-xl border border-border bg-paper px-5 py-4">
           <Markdown text={f.text} variant="doc" />
         </article>
-        <Raw label="Сирий текст" path={path} text={f.text} />
+        <Raw label="Raw text" path={path} text={f.text} />
       </>
     );
   }
@@ -133,7 +133,7 @@ function OneFile({ path }: { path: string }) {
       <div className="flex shrink-0 items-center gap-1 border-b border-border/70 px-2 py-1.5">
         <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-small text-muted-foreground" onClick={() => openFile(null)}>
           <ArrowLeftIcon className="size-3.5" />
-          Усі файли
+          All files
         </Button>
         <span className="min-w-0 flex-1 truncate text-right font-mono text-meta text-muted-foreground" title={path}>
           {path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : ""}
@@ -146,13 +146,13 @@ function OneFile({ path }: { path: string }) {
           <Button asChild variant="outline" size="sm" className="w-fit">
             <a href={rawUrl(rawBase, path)} target="_blank" rel="noopener noreferrer">
               <ExternalLinkIcon className="size-3.5" />
-              Відкрити в новій вкладці
+              Open in new tab
             </a>
           </Button>
           {changed ? (
             <Button variant="outline" size="sm" className="w-fit" onClick={() => openChanges({ scope: "turn", turn: changed, path })}>
               <GitCompareArrowsIcon className="size-3.5" />
-              Остання зміна
+              Last change
             </Button>
           ) : null}
         </div>
@@ -174,9 +174,9 @@ function FileList() {
     const needle = q.trim().toLowerCase();
     const files = tree.data.files.filter((f) => !needle || f.toLowerCase().includes(needle));
     body = !tree.data.files.length ? (
-      <EmptyState icon={FolderOpenIcon} title="Поки що порожньо" text="Тут з'являться файли, які створять агенти." />
+      <EmptyState icon={FolderOpenIcon} title="Empty for now" text="Files the agents create will appear here." />
     ) : !files.length ? (
-      <Hint className="px-2">Нічого не знайдено.</Hint>
+      <Hint className="px-2">Nothing found.</Hint>
     ) : (
       <div className="flex flex-col">
         {files.map((f) => (
@@ -197,7 +197,7 @@ function FileList() {
         <p className="truncate font-mono text-meta text-muted-foreground" title={room?.workspace}>
           {room?.workspace}
         </p>
-        {(tree.data?.files.length ?? 0) > 8 ? <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Знайти файл…" aria-label="Знайти файл" className="h-8" /> : null}
+        {(tree.data?.files.length ?? 0) > 8 ? <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a file…" aria-label="Find a file" className="h-8" /> : null}
       </div>
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 py-2">{body}</div>
     </div>

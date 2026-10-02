@@ -208,8 +208,11 @@ class ClaudeTurn {
       for (const block of content) {
         if (block.type === "tool_use") {
           const id = str(block.id) ?? randomUUID();
-          const described = describeClaudeTool(str(block.name) ?? "tool", asObject(block.input));
-          const activity: Activity = { id, ...described, status: "running" };
+          const input = asObject(block.input);
+          const described = describeClaudeTool(str(block.name) ?? "tool", input);
+          // A subagent's command and one run in the background don't move Claude Code's shell.
+          const detached = described.kind === "command" && (Boolean(str(event.parent_tool_use_id)) || input?.run_in_background === true);
+          const activity: Activity = { id, ...described, status: "running", ...(detached ? { detached } : {}) };
           this.pendingTools.set(id, activity);
           callbacks.onActivity(activity);
         } else if (block.type === "text") {
@@ -222,6 +225,8 @@ class ClaudeTurn {
     if (type === "user") {
       const message = asObject(event.message);
       const content = Array.isArray(message?.content) ? (message!.content as Json[]) : [];
+      // What the tool returned, beside its text: for one result, its own.
+      const returned = content.filter((block) => block.type === "tool_result").length === 1 ? asObject(event.tool_use_result) : undefined;
       for (const block of content) {
         if (block.type !== "tool_result") continue;
         const id = str(block.tool_use_id);
@@ -229,8 +234,11 @@ class ClaudeTurn {
         if (!pending) continue;
         const failed = block.is_error === true;
         const output = toolResultText(block.content);
+        // Done but not exited 0 (grep found nothing), or still running in the background after its timeout: the shell stayed.
+        const stayed = pending.kind === "command" && Boolean(str(returned?.returnCodeInterpretation) || str(returned?.backgroundTaskId));
         callbacks.onActivity({
           ...pending,
+          ...(stayed ? { detached: true } : {}),
           status: failed ? "fail" : "ok",
           // A browser error can quote a URL's query or a script's exception: its step stays value-free.
           ...(failed && output && pending.kind !== "browser" ? { detail: truncate(output, 240) } : {}),
@@ -310,10 +318,18 @@ const buildClaudeLiveArgs = (request: TurnRequest, sessionId: string, fresh: boo
   "--replay-user-messages",
 ];
 
+/** An assistant message with a command of Claude's own shell (not a subagent's, not one sent to the background): it may move the shell. */
+const movesShell = (event: Json): boolean => {
+  if (event.type !== "assistant" || str(event.parent_tool_use_id)) return false;
+  const content = asObject(event.message)?.content;
+  return Array.isArray(content) && (content as Json[]).some((block) => block.type === "tool_use" && block.name === "Bash" && asObject(block.input)?.run_in_background !== true);
+};
+
 /**
  * One `claude -p --input-format stream-json` process that lives across the turns of one agent: each turn is
  * a user message on its stdin, and the `result` that follows the CLI's echo of that message ends it. Events
- * outside a turn (a background task waking the model) are ignored.
+ * outside a turn (a background task waking the model) are ignored, except that a command among them may have
+ * moved the shell.
  */
 class ClaudeLiveProcess implements LiveProcess {
   sessionId: string | null;
@@ -331,6 +347,8 @@ class ClaudeLiveProcess implements LiveProcess {
   private totalCost = 0;
   private readonly denials = new Set<string>();
   private closed = false;
+  /** Claude ran a command between turns: the next turn is told its shell is somewhere not known. */
+  private shellLost = false;
 
   constructor(
     bin: string,
@@ -356,7 +374,10 @@ class ClaudeLiveProcess implements LiveProcess {
 
   private onEvent(event: Json): void {
     const cur = this.current;
-    if (!cur) return;
+    if (!cur) {
+      if (movesShell(event)) this.shellLost = true;
+      return;
+    }
     // Limits are the subscription's, not the turn's: whenever they come.
     if (event.type === "rate_limit_event") {
       cur.turn.handle(event);
@@ -370,6 +391,8 @@ class ClaudeLiveProcess implements LiveProcess {
         cur.callbacks.onSession(sid);
       }
       if (event.type === "user" && event.uuid === cur.uuid) cur.echoed = true;
+      // Still the time before this turn: a command there is not the turn's, but it may have moved the shell.
+      else if (movesShell(event)) cur.callbacks.onShellLost?.();
       return;
     }
     cur.turn.handle(event);
@@ -450,6 +473,10 @@ class ClaudeLiveProcess implements LiveProcess {
         },
       };
       this.current = cur;
+      if (this.shellLost) {
+        this.shellLost = false;
+        callbacks.onShellLost?.();
+      }
       if (request.settings.turnTimeoutMs > 0) {
         timer = setTimeout(() => {
           cur.timedOut = true;

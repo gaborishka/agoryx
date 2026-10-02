@@ -6,7 +6,13 @@
 // the prompt, optional) fit is used:
 //   { agent, id, match, reply, table: [[...argv]], run: [[command, ...argv]] (outputs logged as runOutputs),
 //     write: {path, content, via?: "shell"} (or a list), earlyWrite: {path, content} (with the edit tool, before sleepMs),
-//     command: "shown as the tool call; {cwd} and {cli} expand", sleepMs, afterTableMs (a pause after the table ops),
+//     command: "shown as the tool call; {cwd} and {cli} expand" (commands: [...], several in order; one may be
+//     {command, fail, background, parent, together, result, hang}: it exits 1 / claude runs it in the background /
+//     in a subagent / asks for it in the same message as the command before it / its tool_use_result has these fields /
+//     it never ends, and the turn waits on it until it is stopped),
+//     between: ["command", ...] (live claude: commands the model runs after the turn ended, as when a background task wakes it),
+//     workdir (codex: the folder its commands name; {cwd} expands),
+//     sleepMs, afterTableMs (a pause after the table ops),
 //     streamSleepMs (claude: pause after streaming the reply, before finishing),
 //     error: "text", exitCode, once: true }
 // Without a matching rule: first turn replies "<agent id> here", later turns pass.
@@ -290,10 +296,30 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
 
   writeNativeTurn(sessionId, prompt, reply, resumed);
 
-  const command = (rule?.command ?? "ls -a").replaceAll("{cwd}", process.cwd()).replaceAll("{cli}", process.env.AGORYX_CLI ?? "agoryx");
+  const commands = (rule?.commands ?? [rule?.command ?? "ls -a"])
+    .map((command) => (typeof command === "string" ? { command } : command))
+    .map((step) => ({ ...step, command: step.command.replaceAll("{cwd}", process.cwd()).replaceAll("{cli}", process.env.AGORYX_CLI ?? "agoryx") }));
   if (kind === "claude") {
-    out({ type: "assistant", session_id: sessionId, message: { content: [{ type: "tool_use", id: `tu${turn}`, name: "Bash", input: { command } }] } });
-    out({ type: "user", session_id: sessionId, message: { content: [{ type: "tool_result", tool_use_id: `tu${turn}`, content: "ok", is_error: false }] } });
+    // Commands asked for in one message: their calls come together, then each one's result.
+    const messages = [];
+    commands.forEach((step, i) => {
+      const call = { ...step, id: i ? `tu${turn}-${i}` : `tu${turn}` };
+      if (step.together && messages.length) messages.at(-1).push(call);
+      else messages.push([call]);
+    });
+    for (const calls of messages) {
+      const parent = calls[0].parent ?? null;
+      const content = calls.map(({ id, command, background }) => ({ type: "tool_use", id, name: "Bash", input: { command, ...(background ? { run_in_background: true } : {}) } }));
+      out({ type: "assistant", session_id: sessionId, parent_tool_use_id: parent, message: { content } });
+      for (const { id, fail, result, hang } of calls) {
+        // It never ends: the calls after it in its message never start.
+        if (hang) {
+          setInterval(() => {}, 60_000);
+          await new Promise(() => {});
+        }
+        out({ type: "user", session_id: sessionId, parent_tool_use_id: parent, message: { content: [{ type: "tool_result", tool_use_id: id, content: fail ? "Exit code 1" : "ok", is_error: Boolean(fail) }] }, ...(result ? { tool_use_result: { stdout: "", stderr: "", interrupted: false, ...result } } : {}) });
+      }
+    }
     if (process.env.FAKE_RATE_LIMITS) out(claudeRateLimitEvent(sessionId));
     out({ type: "stream_event", session_id: sessionId, event: { type: "message_start" } });
     for (const piece of reply.match(/.{1,8}/gs) ?? []) {
@@ -302,10 +328,22 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
     if (rule?.streamSleepMs) await sleep(rule.streamSleepMs);
     out({ type: "assistant", session_id: sessionId, message: { content: [{ type: "text", text: reply }] } });
     out({ type: "result", subtype: "success", is_error: false, result: reply, session_id: sessionId, usage: { input_tokens: 10, output_tokens: 5 }, total_cost_usd: 0.001 * (live ? liveTurns : 1) });
+    if (live && rule?.between) {
+      await sleep(50);
+      rule.between.forEach((command, i) => {
+        const id = `between${turn}-${i}`;
+        out({ type: "assistant", session_id: sessionId, parent_tool_use_id: null, message: { content: [{ type: "tool_use", id, name: "Bash", input: { command } }] } });
+        out({ type: "user", session_id: sessionId, parent_tool_use_id: null, message: { content: [{ type: "tool_result", tool_use_id: id, content: "ok", is_error: false }] } });
+      });
+    }
   } else {
-    const wrapped = `/bin/zsh -lc '${command.replace(/'/g, "'\\''")}'`;
-    out({ type: "item.started", item: { id: "item_1", type: "command_execution", command: wrapped, status: "in_progress" } });
-    out({ type: "item.completed", item: { id: "item_1", type: "command_execution", command: wrapped, aggregated_output: ".\n", exit_code: 0, status: "completed" } });
+    const workdir = rule?.workdir ? { cwd: rule.workdir.replaceAll("{cwd}", process.cwd()) } : {};
+    commands.forEach(({ command, fail }, i) => {
+      const id = i ? `item_1_${i}` : "item_1";
+      const wrapped = `/bin/zsh -lc '${command.replace(/'/g, "'\\''")}'`;
+      out({ type: "item.started", item: { id, type: "command_execution", command: wrapped, ...workdir, status: "in_progress" } });
+      out({ type: "item.completed", item: { id, type: "command_execution", command: wrapped, ...workdir, aggregated_output: ".\n", exit_code: fail ? 1 : 0, status: fail ? "failed" : "completed" } });
+    });
     out({ type: "item.completed", item: { id: "item_2", type: "agent_message", text: reply } });
     out({ type: "turn.completed", usage: { input_tokens: 12, cached_input_tokens: 2, output_tokens: 6 } });
   }
@@ -432,7 +470,7 @@ const runLiveCodex = async () => {
             method,
             params: {
               ...base,
-              item: { type: "commandExecution", id: item.id, command: item.command, status: item.status === "in_progress" ? "inProgress" : "completed", aggregatedOutput: item.aggregated_output ?? "", exitCode: item.exit_code ?? null },
+              item: { type: "commandExecution", id: item.id, command: item.command, ...(item.cwd ? { cwd: item.cwd } : {}), status: item.status === "in_progress" ? "inProgress" : item.status === "failed" ? "failed" : "completed", aggregatedOutput: item.aggregated_output ?? "", exitCode: item.exit_code ?? null },
             },
           });
         }

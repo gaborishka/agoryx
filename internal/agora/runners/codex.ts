@@ -72,6 +72,7 @@ export const describeCodexItem = (item: Json): Omit<Activity, "id"> | null => {
         kind: "command",
         label: truncate(command, 800),
         command,
+        ...(typeof item.cwd === "string" && item.cwd ? { cwd: item.cwd } : {}),
         status: status === "in_progress" ? "running" : failed ? "fail" : "ok",
         ...(failed && output ? { detail: truncate(output, 240) } : {}),
       };
@@ -173,6 +174,7 @@ export const execShapedItem = (item: Json): Json | null => {
       return {
         type: "command_execution",
         command: item.command,
+        ...(typeof item.cwd === "string" ? { cwd: item.cwd } : {}),
         status: status(item.status),
         aggregated_output: item.aggregatedOutput,
         exit_code: item.exitCode,

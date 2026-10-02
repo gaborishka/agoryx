@@ -185,6 +185,13 @@ export interface Activity {
   status?: "running" | "ok" | "fail";
   /** A shell command in full, while the label may be clipped: read for the files it names as written, never stored. */
   command?: string;
+  /** The folder a shell command ran in, when the runner names one (Codex's workdir): read with it, never stored. */
+  cwd?: string;
+  /**
+   * A shell command that leaves the agent's shell where it was, never stored: Claude's subagents' and background
+   * commands, and one Claude Code reports done without exit 0 (grep found nothing, sent to the background at its timeout).
+   */
+  detached?: boolean;
 }
 
 export type TurnStatus = "running" | "ok" | "pass" | "error" | "interrupted";

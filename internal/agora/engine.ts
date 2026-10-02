@@ -15,7 +15,7 @@ import { cleanRole, MAX_ROLE_CHARS, parseAgents, validEffort, validModel } from 
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { MAX_REVERT_CHANGES, REVERT_FAILURE, RevertError, revertTarget, type RevertRequest } from "./revert.js";
 import { RoomStore } from "./store.js";
-import { namesFile, shellWriteTargets, shellWrites, type ShellCwd } from "./shell-writes.js";
+import { fromWorkspace, namesFile, shellWriteTargets, shellWrites, type ShellCwd } from "./shell-writes.js";
 import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
 import type {
   Activity,
@@ -120,9 +120,20 @@ interface LiveEntry {
   idleTimer?: NodeJS.Timeout;
   /** Turns it has taken: one that has taken none is new, and its failure to start says something about live mode itself. */
   turns: number;
+  /** Where its shell was when its last turn ended: Claude Code keeps a `cd` into the next turn of the same process. */
+  cwd?: ShellCwd;
 }
 
 export const DEFAULT_LIVE_IDLE_MS = 5 * 60 * 1000;
+
+/** The files a command's label names as written, or none when it cannot be read. */
+const labelWrites = (label: string): string[] => {
+  try {
+    return shellWriteTargets(label);
+  } catch {
+    return [];
+  }
+};
 
 /** Where the engine is in an agent's native session file. */
 interface NativeTracker {
@@ -1369,16 +1380,19 @@ export class RoomEngine {
     });
     const reused = entry.turns > 0;
     entry.turns += 1;
+    if (reused && entry.cwd !== undefined && agent.kind === "claude") this.shellCwds.set(turnId, entry.cwd);
     let result: TurnResult;
     try {
       result = await proc.runTurn(request, callbacks);
     } finally {
       // The turn is over: what names it (and the agent's key) goes with it.
       clearTurnContext(file);
+      entry.cwd = this.shellAt(turnId);
     }
     if (result.liveUnavailable && reused && !request.signal.aborted && !this.closed) {
       // A process that had served turns died between them: that says nothing about live mode. Start another.
       this.closeLive(agent.id, "process died between turns");
+      this.freshShell(turnId);
       return this.runLive(agent, runner, request, turnId, callbacks);
     }
     if (this.live.get(agent.id) !== entry) {
@@ -1402,16 +1416,103 @@ export class RoomEngine {
 
   /** What each running turn's shell commands named as written, read from the whole command before its label is clipped. */
   private shellWrites = new Map<string, Set<string>>();
-  /** Where a Claude turn's shell is after its last command: Claude Code keeps a `cd` for the commands after it; Codex starts each at the workspace. */
+  /** Where a Claude turn's shell is after its last command ended: Claude Code keeps a `cd` for the commands after it; Codex starts each at the workspace. */
   private shellCwds = new Map<string, ShellCwd>();
+  /** The commands already seen: a runner reports each when it starts and again when it ends. */
+  private shellNoted = new Set<string>();
+  /**
+   * A Claude turn's commands that have been asked for and not ended, in the order they were. Each is read when it ends,
+   * from where the shell is then: commands asked for in one message are reported together but run one after another,
+   * and a `cd` holds only from a command that exited 0 in the shell, which is known only at its end.
+   */
+  private shellPending = new Map<string, { turnId: string; command: string; detached?: boolean }>();
+  /** The workspace as a command may spell it: its path and its real path. */
+  private roots?: string[];
 
-  private noteShellWrites(turnId: string, command: string, carriesCwd: boolean): void {
-    const { targets, cwd } = shellWrites(this.tidyText(command), carriesCwd ? (this.shellCwds.get(turnId) ?? "") : "");
-    if (carriesCwd) this.shellCwds.set(turnId, cwd);
+  /** A turn's next try is a new process: its shell starts at the workspace, and its commands' ids may repeat the last one's. */
+  private freshShell(turnId: string): void {
+    this.shellCwds.delete(turnId);
+    for (const key of [...this.shellNoted]) if (key.startsWith(`${turnId} `)) this.shellNoted.delete(key);
+    for (const [key, entry] of [...this.shellPending]) if (entry.turnId === turnId) this.shellPending.delete(key);
+  }
+
+  /** Where a Claude turn's shell is now ("" its workspace, null not known). */
+  private shellAt(turnId: string): ShellCwd {
+    return this.shellCwds.has(turnId) ? this.shellCwds.get(turnId)! : "";
+  }
+
+  private workspaceRoots(): string[] {
+    if (!this.roots) {
+      let real = this.state.workspace;
+      try { real = realpathSync(real); } catch { /* keep as given */ }
+      this.roots = [...new Set([this.state.workspace, real])];
+    }
+    return this.roots;
+  }
+
+  /** A command read from `from`: the files it names as written, and where it leaves the shell (null: not known). */
+  private readShell(turnId: string, command: string, from: ShellCwd, quiet = false): { targets: string[]; cwd: ShellCwd } {
+    try {
+      // Read as written: `cd <workspace>/ui` goes to ui from wherever the shell was, not from there into ./ui.
+      const { targets, cwd } = shellWrites(command, from, this.workspaceRoots());
+      // Claude Code takes its shell back to the workspace after a command that left it.
+      return { targets, cwd: cwd !== null && (cwd.startsWith("/") || cwd === ".." || cwd.startsWith("../")) ? "" : cwd };
+    } catch (error) {
+      if (!quiet) this.log(`${turnId}: command not read for written files: ${error instanceof Error ? error.message : String(error)}`);
+      // Not read: where the shell is from here is not known either.
+      return { targets: [], cwd: null };
+    }
+  }
+
+  /**
+   * What a Claude turn's commands that have not ended may have written so far, each read from where its shell is: none of
+   * them has moved it. Of its own commands only the first asked for has started (the others in its message wait for it);
+   * a subagent's or one in the background runs beside them.
+   */
+  private pendingWrites(turnId: string): string[] {
+    const found: string[] = [];
+    const at = this.shellAt(turnId);
+    let waiting = false;
+    for (const entry of this.shellPending.values()) {
+      if (entry.turnId !== turnId || (waiting && !entry.detached)) continue;
+      if (!entry.detached) waiting = true;
+      found.push(...this.readShell(turnId, entry.command, at, true).targets);
+    }
+    return found;
+  }
+
+  private addShellWrites(turnId: string, targets: readonly string[]): void {
     if (targets.length === 0) return;
     const known = this.shellWrites.get(turnId) ?? new Set<string>();
     for (const target of targets) known.add(target);
     this.shellWrites.set(turnId, known);
+  }
+
+  private noteShellWrites(turnId: string, activity: Activity, carriesCwd: boolean): void {
+    const key = `${turnId} ${activity.id}`;
+    const pending = this.shellPending.get(key);
+    if (this.shellNoted.has(key) && (!pending || activity.status === "running")) return;
+    this.shellNoted.add(key);
+    const command = activity.command ?? pending?.command ?? activity.label;
+    if (carriesCwd && activity.status === "running") {
+      // Claude's: read when it ends, from where the commands before it left the shell.
+      this.shellPending.set(key, { turnId, command, ...(activity.detached ? { detached: true } : {}) });
+      return;
+    }
+    this.shellPending.delete(key);
+    // Claude's shell is where its last command left it; Codex's at the workspace, or in the folder it named for the command.
+    const from = carriesCwd ? this.shellAt(turnId) : activity.cwd ? fromWorkspace(activity.cwd, this.workspaceRoots()) : "";
+    const { targets, cwd } = this.readShell(turnId, command, from);
+    // Its `cd` holds only if it exited 0 in the shell (Claude Code reads the shell's folder after `<command> &&`): not
+    // if it failed, exited 1 to a grep, went on in the background, or was a subagent's.
+    if (carriesCwd && activity.status !== "fail" && !activity.detached) this.shellCwds.set(turnId, cwd);
+    this.addShellWrites(turnId, targets);
+  }
+
+  /** A turn is over: its commands that had started and never said they ended are read as they stand, and move its shell nowhere. */
+  private flushShell(turnId: string): void {
+    this.addShellWrites(turnId, this.pendingWrites(turnId));
+    for (const [key, entry] of [...this.shellPending]) if (entry.turnId === turnId) this.shellPending.delete(key);
   }
 
   private tidyText(text: string): string {
@@ -1433,7 +1534,7 @@ export class RoomEngine {
     return this.tidyRules!.reduce((acc, [from, to]) => acc.split(from).join(to), text);
   }
 
-  private tidyActivity({ command: _command, ...activity }: Activity): Activity {
+  private tidyActivity({ command: _command, cwd: _cwd, detached: _detached, ...activity }: Activity): Activity {
     // Runners keep labels long enough for this to see whole paths; clip afterwards.
     const tidy = (text: string, max: number) => truncate(this.tidyText(text), max);
     return {
@@ -1504,8 +1605,9 @@ export class RoomEngine {
       onText: (text: string, reset?: boolean) => {
         this.store.emit({ type: "turn.stream", turnId, agent: agent.id, text, ...(reset ? { reset } : {}) });
       },
+      onShellLost: () => this.shellCwds.set(turnId, null),
       onActivity: (activity: Activity) => {
-        if (activity.kind === "command") this.noteShellWrites(turnId, activity.command ?? activity.label, agent.kind === "claude");
+        if (activity.kind === "command") this.noteShellWrites(turnId, activity, agent.kind === "claude");
         this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity: this.tidyActivity(activity) });
       },
       onLimits: (report: LimitReport, source: LimitSnapshot["source"]) => {
@@ -1533,6 +1635,7 @@ export class RoomEngine {
       const canLive = this.liveOn && !this.liveOff.has(agent.id) && Boolean(runner.openLive && runner.liveFingerprint);
       const liveEnv = canLive ? this.agentEnv(agent, turnId, true) : env;
       const runOnce = async (req: TurnRequest): Promise<TurnResult> => {
+        this.freshShell(turnId);
         if (canLive && !this.liveOff.has(agent.id) && !this.closed) {
           const result = await this.runLive(agent, runner, { ...req, env: liveEnv }, turnId, callbacks);
           if (!result.liveUnavailable) return result;
@@ -1540,6 +1643,7 @@ export class RoomEngine {
           this.liveOff.add(agent.id);
           this.closeLive(agent.id);
           this.log(`${agent.id} live mode unavailable (${result.error?.message ?? "unknown"}); using one process per turn`);
+          this.freshShell(turnId);
         }
         return runner.run(req, callbacks);
       };
@@ -1577,6 +1681,7 @@ export class RoomEngine {
   ): void {
     // Sweep the inbox while this turn still counts as running, so its ops are attributed to it.
     this.ingestOps();
+    this.flushShell(turnId);
     const { outsideDoc, handoff } = this.running.get(agent.id) ?? {};
     this.running.delete(agent.id);
     this.notePresence();
@@ -1614,6 +1719,8 @@ export class RoomEngine {
     if (this.running.size === 0) {
       this.shellWrites.clear();
       this.shellCwds.clear();
+      this.shellNoted.clear();
+      this.shellPending.clear();
     }
     // A file only touched (same content) is not a change.
     if (changed) files = files.filter((file) => changed.changes.some((change) => change.path === file));
@@ -1765,9 +1872,10 @@ export class RoomEngine {
       entry.activity.some(
         (activity) =>
           (activity.kind === "edit" && activity.label.includes(file)) ||
-          (activity.kind === "command" && shellWriteTargets(activity.label).some((target) => namesFile(target, file))),
+          // One read as it ran (whole, and from where its shell was) is in shellWrites; only one that was not is read from its label.
+          (activity.kind === "command" && !this.shellNoted.has(`${entry.id} ${activity.id}`) && labelWrites(activity.label).some((target) => namesFile(target, file))),
       ) ||
-      [...(this.shellWrites.get(entry.id) ?? [])].some((target) => namesFile(target, file)) ||
+      [...(this.shellWrites.get(entry.id) ?? []), ...this.pendingWrites(entry.id)].some((target) => namesFile(target, file)) ||
       this.state.docRevisions.some((revision) => revision.turnId === entry.id && revision.path === file)
     );
   }

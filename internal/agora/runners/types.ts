@@ -22,6 +22,8 @@ export interface TurnCallbacks {
   onActivity: (activity: Activity) => void;
   /** The CLI said where its subscription's limits stand (see limits.ts). */
   onLimits?: (report: LimitReport, source: LimitSnapshot["source"]) => void;
+  /** A live Claude ran a command of its own outside this turn (a background task woke it): where its shell is, is not known. */
+  onShellLost?: () => void;
 }
 
 export interface TurnResult {

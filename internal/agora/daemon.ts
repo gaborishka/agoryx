@@ -24,6 +24,7 @@ import { agentModels } from "./models.js";
 import { locateNativeSession } from "./native.js";
 import { readLimits, recordLimits } from "./limits-store.js";
 import { roomUsage } from "./usage.js";
+import { cacheControl, pickEncoding, staticBody } from "./static.js";
 import { readTranscript } from "./transcript.js";
 import { readTurnActivity, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
@@ -923,7 +924,7 @@ export class AgoraDaemon {
       res.end();
       return;
     }
-    this.serveStatic(res, path);
+    this.serveStatic(req, res, path);
   }
 
   /**
@@ -1081,7 +1082,7 @@ export class AgoraDaemon {
     res.end(req.method === "HEAD" ? undefined : body);
   }
 
-  private serveStatic(res: ServerResponse, path: string): void {
+  private serveStatic(req: IncomingMessage, res: ServerResponse, path: string): void {
     if (!this.webDir) {
       res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
       res.end("agoryx daemon is running. The web UI was not found next to this build.\n");
@@ -1089,14 +1090,17 @@ export class AgoraDaemon {
     }
     const relative = path === "/" || !extname(path) ? "index.html" : decodeURIComponent(path).replace(/^\/+/, "");
     const full = resolve(this.webDir, relative);
-    if (!full.startsWith(`${this.webDir}${sep}`) || !existsSync(full) || !statSync(full).isFile()) {
-      throw new HttpError(404, "not found");
-    }
-    const body = readFileSync(full);
+    const stat = full.startsWith(`${this.webDir}${sep}`) && existsSync(full) ? statSync(full) : null;
+    if (!stat?.isFile()) throw new HttpError(404, "not found");
+    const encoding = pickEncoding(full, stat.size, req.headers["accept-encoding"] as string | undefined);
+    const body = staticBody(full, encoding);
     const type = MIME[extname(full).toLowerCase()] ?? "application/octet-stream";
     res.writeHead(200, {
       "content-type": type,
-      "cache-control": relative === "index.html" ? "no-store" : "no-cache",
+      "content-length": body.length,
+      "cache-control": cacheControl(relative),
+      ...(encoding ? { "content-encoding": encoding } : {}),
+      vary: "accept-encoding",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       ...(relative === "index.html"
@@ -1106,7 +1110,7 @@ export class AgoraDaemon {
           }
         : {}),
     });
-    res.end(body);
+    res.end(req.method === "HEAD" ? undefined : body);
   }
 
   /** Who a new room seats unless told otherwise, for the start screen; a broken roster file is reported, not hidden. */

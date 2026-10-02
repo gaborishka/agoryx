@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { foldMemoryEvent, memoryBriefing, memoryUpdateLine, type MemoryEntry, type MemoryEventBody } from "./memory.js";
 import { agoraHome } from "./paths.js";
 import type { ActorOrigin, RoomState } from "./types.js";
@@ -13,6 +13,10 @@ import type { ActorOrigin, RoomState } from "./types.js";
  * its project. Membership is derived, never stored on a room. Chat rooms have no project. Nothing is written
  * until someone writes something: a folder without data is a project with nothing in it.
  *
+ * Context folders: other folders the project's agents work with besides its own (another repository, a folder of
+ * material). Agents of its Work rooms get access to them and are told where they are. Added and removed by
+ * someone, like everything else here.
+ *
  * Kept in <AGORYX_HOME>/projects/<hash>/: `events.jsonl` (append-only, every write with who made it) is the
  * truth; `project.json` is what it adds up to, for reading by hand.
  */
@@ -23,7 +27,11 @@ export const PROJECT_FIELDS: readonly ProjectField[] = ["name", "goal", "instruc
 /** A goal or instructions are a paragraph, not a document: agents get them with every fresh session. */
 export const MAX_PROJECT_TEXT = 4_000;
 
-export type ProjectEventBody = { type: "project.changed"; field: ProjectField; value: string | null } | MemoryEventBody;
+export type ProjectEventBody =
+  | { type: "project.changed"; field: ProjectField; value: string | null }
+  | { type: "context.added"; path: string }
+  | { type: "context.removed"; path: string }
+  | MemoryEventBody;
 
 export type ProjectEvent = ProjectEventBody & {
   seq: number;
@@ -40,6 +48,8 @@ export interface Project {
   name?: string;
   goal?: string;
   instructions?: string;
+  /** Context folders, absolute, in the order they were added. */
+  context: string[];
   /** What its rooms keep (memory.ts), in the order it was written. */
   memory: MemoryEntry[];
   /** The last event's seq; 0: nothing written yet. */
@@ -85,13 +95,17 @@ const readEvents = (file: string): ProjectEvent[] => {
 
 /** The project as its events add up to. */
 export const foldProject = (key: string, events: ProjectEvent[]): Project => {
-  const project: Project = { key, hash: projectHash(key), memory: [], seq: 0, fieldsSeq: 0, events };
+  const project: Project = { key, hash: projectHash(key), context: [], memory: [], seq: 0, fieldsSeq: 0, events };
   for (const event of events) {
     project.seq = Math.max(project.seq, event.seq);
     if (event.type === "project.changed") {
       project.fieldsSeq = event.seq;
       if (event.value) project[event.field] = event.value;
       else delete project[event.field];
+    } else if (event.type === "context.added") {
+      if (!project.context.includes(event.path)) project.context = [...project.context, event.path];
+    } else if (event.type === "context.removed") {
+      project.context = project.context.filter((path) => path !== event.path);
     } else project.memory = foldMemoryEvent(project.memory, event);
   }
   return project;
@@ -107,6 +121,7 @@ const summaryOf = (project: Project) => ({
   ...(project.name ? { name: project.name } : {}),
   ...(project.goal ? { goal: project.goal } : {}),
   ...(project.instructions ? { instructions: project.instructions } : {}),
+  ...(project.context.length ? { context: project.context } : {}),
   memory: project.memory.length,
   seq: project.seq,
 });
@@ -139,6 +154,52 @@ export const setProjectField = (key: string, field: ProjectField, text: string, 
   if ((project[field] ?? "") === value) return project;
   return appendProjectEvent(key, { type: "project.changed", field, value: value || null }, writer, env);
 };
+
+/** A context folder as written: absolute, `~` expanded, no trailing separator. */
+const contextPath = (path: string, env: NodeJS.ProcessEnv): string => {
+  const home = env.HOME ?? process.env.HOME ?? "";
+  const raw = path.trim().replace(/^~(?=$|[\\/])/, home);
+  if (!raw || !isAbsolute(raw)) throw new ProjectError(`a context folder is an absolute path (or ~/…); not "${path}"`);
+  return resolve(raw).replace(/[\\/]+$/, "") || sep;
+};
+
+/**
+ * Add a context folder: an existing folder outside the project's own (inside it the agents have it already).
+ * `path` is absolute or `~/…`; returns the project after it. Nothing is appended for a folder already there.
+ */
+export const addProjectContext = (key: string, path: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
+  const folder = contextPath(path, env);
+  let isDir = false;
+  try {
+    isDir = statSync(folder).isDirectory();
+  } catch {
+    // not there
+  }
+  if (!isDir) throw new ProjectError(`no folder at ${folder}`);
+  if (folder === key || folder.startsWith(`${key}${sep}`)) throw new ProjectError(`${folder} is inside the project's own folder: its agents work there already`);
+  if (key.startsWith(`${folder}${sep}`)) throw new ProjectError(`${folder} holds the project's own folder: name a folder beside it, not above it`);
+  const project = readProject(key, env);
+  if (project.context.includes(folder)) return project;
+  return appendProjectEvent(key, { type: "context.added", path: folder }, writer, env);
+};
+
+export const removeProjectContext = (key: string, path: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
+  const project = readProject(key, env);
+  const asked = contextPath(path, env);
+  const folder = project.context.find((entry) => entry === asked);
+  if (!folder) throw new ProjectError(`${path} is not a context folder of this project`);
+  return appendProjectEvent(key, { type: "context.removed", path: folder }, writer, env);
+};
+
+/** The context folders the project's agents are given: those still there. */
+export const contextFolders = (project: Pick<Project, "context">): string[] =>
+  project.context.filter((folder) => {
+    try {
+      return statSync(folder).isDirectory();
+    } catch {
+      return false;
+    }
+  });
 
 /** Every folder someone has written something for. */
 export const listProjects = (env: NodeJS.ProcessEnv = process.env): Project[] => {
@@ -183,6 +244,10 @@ export const describeProject = (project: Project, rooms: Array<{ id: string; nam
     lines.push("", `${field}${event ? ` (by ${event.from ? `${event.by} in "${event.from.roomName}"` : event.by}, ${event.ts.slice(0, 10)})` : ""}:`);
     for (const line of value.split("\n")) lines.push(`  ${line}`);
   }
+  if (project.context.length) {
+    lines.push("", "context folders (its agents work with them too):");
+    for (const folder of project.context) lines.push(`  ${folder}${existsSync(folder) ? "" : "  (not there now)"}`);
+  }
   if (project.memory.length) lines.push("", `memory: ${project.memory.length} entr${project.memory.length === 1 ? "y" : "ies"} — \`agoryx memory\``);
   lines.push("", rooms.length ? `Work rooms in it: ${rooms.map((room) => `"${room.name}" (${room.id})`).join(", ")}` : "No Work room works in it yet.");
   return lines;
@@ -213,6 +278,11 @@ export const projectBriefing = (project: Project, cli: string, env: NodeJS.Proce
     const event = lastChange(project.events, field);
     lines.push(`  ${field === "goal" ? "Goal" : "Instructions"}${event ? ` — by ${writerOf(event)}` : ""}:`, block(project[field]!));
   }
+  const context = contextFolders(project);
+  if (context.length) {
+    lines.push("  Context folders — you can read and write them as you do this folder:");
+    for (const folder of context) lines.push(`    ${folder}`);
+  }
   lines.push(`  \`${cli} project\` shows it; \`${cli} project set goal|instructions|name "…"\` changes it for every Work room in this folder.`);
   lines.push(...memoryBriefing(project, cli, env));
   return lines.join("\n");
@@ -233,6 +303,10 @@ export const projectUpdate = (project: Project, seen: number, reader: { room: st
     if (!now) lines.push(`  ${writerOf(event)} cleared the ${field}.`);
     else if (field === "name") lines.push(`  ${writerOf(event)} named it "${now}".`);
     else lines.push(`  ${writerOf(event)} wrote the ${field}:`, block(now));
+  }
+  for (const event of fresh) {
+    if (event.type === "context.added") lines.push(`  ${writerOf(event)} added the context folder ${event.path} — you can read and write it from this turn on.`);
+    if (event.type === "context.removed") lines.push(`  ${writerOf(event)} removed the context folder ${event.path}.`);
   }
   const memory = memoryUpdateLine(fresh, cli);
   if (memory) lines.push(memory);

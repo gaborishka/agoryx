@@ -69,8 +69,9 @@ export const buildClaudeArgs = (request: TurnRequest, sessionId: string, fresh: 
     "--verbose",
     "--include-partial-messages",
     ...(restrictedRoom(request.settings) ? ["--permission-mode", request.settings.access === "readonly" ? "default" : "acceptEdits"] : []),
-    // --mcp-config takes several values: --settings right after it ends the list.
+    // --mcp-config and --add-dir take several values: the flag right after each ends its list.
     ...(mcp ? ["--mcp-config", mcp] : []),
+    ...(request.addDirs?.length ? ["--add-dir", ...request.addDirs] : []),
     "--settings",
     JSON.stringify(buildClaudeSettings(request)),
     "--allowedTools",

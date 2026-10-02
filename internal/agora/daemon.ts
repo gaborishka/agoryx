@@ -30,7 +30,7 @@ import { readTurnActivity, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
-import { listProjects, PROJECT_FIELDS, ProjectError, projectHash, projectKey, readProject, setProjectField, type Project, type ProjectWriter } from "./projects.js";
+import { addProjectContext, listProjects, PROJECT_FIELDS, ProjectError, projectHash, projectKey, readProject, removeProjectContext, setProjectField, type Project, type ProjectWriter } from "./projects.js";
 import { memoryPath, noteMemory, promoteToMemory, removeMemory, reviseMemory } from "./memory.js";
 import { parseSubscription, PushNotes, PushSender } from "./push.js";
 import { qrSvg } from "./qr.js";
@@ -1147,6 +1147,7 @@ export class AgoraDaemon {
       ...(project.name ? { name: project.name } : {}),
       ...(project.goal ? { goal: project.goal } : {}),
       ...(project.instructions ? { instructions: project.instructions } : {}),
+      context: project.context,
       seq: project.seq,
       fieldsSeq: project.fieldsSeq,
       memory: project.memory,
@@ -1160,7 +1161,8 @@ export class AgoraDaemon {
     }
     const memory = parts[1] === "memory";
     const overview = parts[1] === "overview" && parts.length === 2;
-    if (parts.length !== 1 && !(memory && parts.length <= 3) && !overview) throw new HttpError(404, "unknown endpoint");
+    const context = parts[1] === "context" && parts.length === 2;
+    if (parts.length !== 1 && !(memory && parts.length <= 3) && !overview && !context) throw new HttpError(404, "unknown endpoint");
     const hash = parts[0]!;
     const body = method === "GET" || method === "DELETE" ? {} : (((await readBody(req)) ?? {}) as Record<string, unknown>);
     const asked = typeof body.key === "string" ? body.key : url.searchParams.get("key");
@@ -1217,7 +1219,17 @@ export class AgoraDaemon {
       });
       return;
     }
-    if (memory && parts.length === 2) {
+    if (context) {
+      const path = method === "DELETE" ? url.searchParams.get("path") : text(body.path, "path");
+      if (!path) throw new HttpError(400, "path: the context folder");
+      try {
+        if (method === "POST") addProjectContext(key, path, writer, this.env);
+        else if (method === "DELETE") removeProjectContext(key, path, writer, this.env);
+        else throw new HttpError(405, "POST or DELETE");
+      } catch (error) {
+        fail(error);
+      }
+    } else if (memory && parts.length === 2) {
       if (method !== "POST") throw new HttpError(405, "POST");
       const note = body.note as Record<string, unknown> | undefined;
       const promote = body.promote as Record<string, unknown> | undefined;

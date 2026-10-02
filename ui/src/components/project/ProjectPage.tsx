@@ -12,6 +12,7 @@ import { errText } from "@/lib/load";
 import { useStore } from "@/lib/store";
 import type { ProjectEvent, ProjectView, RoomSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { ContextSection } from "./ContextSection";
 import { MemorySection } from "./MemorySection";
 import { OverviewSections } from "./OverviewSections";
 
@@ -46,6 +47,10 @@ const changeText = (event: ProjectEvent): string => {
       return `revised ${event.id}`;
     case "memory.removed":
       return `removed ${event.id}`;
+    case "context.added":
+      return `added the context folder ${event.path}`;
+    case "context.removed":
+      return `removed the context folder ${event.path}`;
   }
 };
 
@@ -212,6 +217,8 @@ export function ProjectPage({ hash }: { hash: string }) {
                   </div>
                 </div>
               </form>
+
+              <ContextSection project={project} onChange={setProject} />
 
               <MemorySection project={project} onChange={setProject} />
 

@@ -17,7 +17,7 @@ import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../interna
 import { type AgentLook, agentLook } from "../../internal/agora/look.js";
 import { activeRun } from "../../internal/agora/projection.js";
 import { describeProfile, profilePath, readProfile } from "../../internal/agora/profile.js";
-import { describeProject, PROJECT_FIELDS, projectHash, projectKey, projectKeyOfFolder, readProject, setProjectField, type ProjectField } from "../../internal/agora/projects.js";
+import { addProjectContext, describeProject, PROJECT_FIELDS, projectHash, projectKey, projectKeyOfFolder, readProject, removeProjectContext, setProjectField, type ProjectField } from "../../internal/agora/projects.js";
 import { resolveFolder } from "../../internal/agora/folders.js";
 import { MEMORY_KINDS, noteMemory, promoteToMemory, removeMemory, renderMemoryMarkdown, reviseMemory } from "../../internal/agora/memory.js";
 import { readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
@@ -94,6 +94,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx usage [room] [--json]      Your agents' subscription limits, as their CLIs last reported them, and what the room's wakes cost",
       "  agoryx profile [-r room]           Your profile (who you are, for the agents): where it is, and who in the room sees it",
       '  agoryx project [-r room | --dir D] [set name|goal|instructions "text"]   The project of a Work room (its folder): show it, or write to it',
+      "  agoryx project [-r room | --dir D] add-dir|remove-dir PATH   A context folder: its Work rooms' agents may read and write it too",
       '  agoryx memory [-r room | --dir D] [note "text" [--kind K] [--why "…"] | promote S3|F2|D1|Q1 | revise M2 "text" [--why "…"] | remove M2]',
       "                                     The project's memory: show it, note something, keep a table item as the table holds it, or take one out",
       "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--access workspace|readonly] [--doc PATH|none]",
@@ -1427,7 +1428,24 @@ const runProject = async (argv: string[]): Promise<number> => {
   }
   const [verb, field, ...rest] = parsed.positionals;
   const setting = verb === "set";
-  const key = projectKeyFor(parsed.options, setting ? undefined : verb);
+  const context = verb === "add-dir" || verb === "remove-dir";
+  const key = projectKeyFor(parsed.options, setting || context ? undefined : verb);
+  if (context) {
+    if (!field) throw new CliUsageError(`agoryx project ${verb} PATH`);
+    // A relative path is the caller's: from where it runs.
+    const path = field.startsWith("~") ? field : resolve(field);
+    const info = await findDaemon();
+    if (info) {
+      const client = daemonClient(info);
+      if (verb === "add-dir") await client.request("POST", `/api/projects/${projectHash(key)}/context`, { key, path });
+      else await client.request("DELETE", `/api/projects/${projectHash(key)}/context?key=${encodeURIComponent(key)}&path=${encodeURIComponent(path)}`);
+    } else {
+      const agent = localAgent();
+      const writer = agent ? { by: agent.agent, from: agent } : { by: defaultHumanName() };
+      if (verb === "add-dir") addProjectContext(key, path, writer);
+      else removeProjectContext(key, path, writer);
+    }
+  }
   if (setting) {
     if (!field || !PROJECT_FIELDS.includes(field as ProjectField)) throw new CliUsageError(`agoryx project set ${PROJECT_FIELDS.join("|")} "text" (an empty text clears it)`);
     const text = rest.join(" ");

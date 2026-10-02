@@ -40,6 +40,8 @@ export const buildCodexArgs = (request: TurnRequest): string[] => {
   const common = ["--json", "--skip-git-repo-check"];
   if (request.model) common.push("-m", request.model);
   if (request.effort) common.push("-c", `model_reasoning_effort="${request.effort}"`);
+  // The project's context folders are writable beside the workspace (Codex reads anywhere already).
+  if (request.addDirs?.length) common.push("-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(request.addDirs)}`);
   if (request.settings.network && sandbox === "workspace-write") {
     common.push("-c", "sandbox_workspace_write.network_access=true");
     common.push("-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"');
@@ -157,7 +159,11 @@ export const buildCodexThreadParams = (request: TurnRequest): Json => {
   const sandbox = request.settings.access === "readonly" ? "read-only" : "workspace-write";
   const config: Json = {};
   if (request.effort) config.model_reasoning_effort = request.effort;
-  if (request.settings.network && sandbox === "workspace-write") config.sandbox_workspace_write = { network_access: true };
+  const writable: Json = {
+    ...(request.addDirs?.length ? { writable_roots: request.addDirs } : {}),
+    ...(request.settings.network && sandbox === "workspace-write" ? { network_access: true } : {}),
+  };
+  if (Object.keys(writable).length) config.sandbox_workspace_write = writable;
   // As `codex exec` (buildCodexArgs): in an unrestricted room a request to leave the sandbox goes to Codex's
   // own automatic review; with the network off or read-only access, what the sandbox refuses stays refused.
   const unrestricted = request.settings.network && sandbox === "workspace-write";

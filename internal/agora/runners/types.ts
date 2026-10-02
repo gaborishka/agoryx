@@ -4,6 +4,8 @@ import type { Activity, AgentKind, LimitReport, LimitSnapshot, RoomSettings, Tur
 export interface TurnRequest {
   prompt: string;
   cwd: string;
+  /** Folders besides cwd the agent may read and write: its project's context folders (absolute). */
+  addDirs?: string[];
   /** Native session to resume; null starts a fresh session. */
   sessionId: string | null;
   roomName: string;

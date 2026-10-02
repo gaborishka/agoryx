@@ -11,7 +11,7 @@ import { activeRun } from "./projection.js";
 import { inTurnAt, wakesAgent } from "./wakes.js";
 import { limitAccount } from "./limits-store.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
-import { projectBriefing, projectKey, projectUpdate, readProject } from "./projects.js";
+import { contextFolders, projectBriefing, projectKey, projectUpdate, readProject } from "./projects.js";
 import { BRIEFING_VERSION, buildTurnPrompt, forHumanOnly, paragraphs, parseMentions, passNote } from "./prompts.js";
 import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
 import { cleanRole, MAX_ROLE_CHARS, parseAgents, validEffort, validModel } from "./roster.js";
@@ -1688,6 +1688,8 @@ export class RoomEngine {
     // The project (Work only), likewise read once: the seq given is the seq recorded.
     const key = projectKey(this.state);
     const project = key ? readProject(key, this.env) : null;
+    // Its context folders, for the CLI to open to the agent beside the workspace.
+    const addDirs = project ? contextFolders(project) : [];
     const cli = this.agentCliHint().command;
     const promptFor = (fresh: boolean, rejoin: boolean) =>
       buildTurnPrompt({
@@ -1763,6 +1765,7 @@ export class RoomEngine {
       const request = {
         prompt,
         cwd: this.state.workspace,
+        ...(addDirs.length ? { addDirs } : {}),
         sessionId,
         roomName: this.state.name,
         ...(agent.model ? { model: agent.model } : {}),

@@ -75,6 +75,7 @@ export type ProjectEvent = ProjectWriteMeta &
     | { type: "memory.noted"; id: string; entry: Pick<MemoryEntry, "kind" | "text"> }
     | { type: "memory.revised"; id: string }
     | { type: "memory.removed"; id: string }
+    | { type: "context.added" | "context.removed"; path: string }
   );
 
 export interface ProjectView {
@@ -84,6 +85,8 @@ export interface ProjectView {
   name?: string;
   goal?: string;
   instructions?: string;
+  /** Folders besides its own that its Work rooms' agents may read and write (absolute). */
+  context: string[];
   /** The last event's seq. */
   seq: number;
   /** The last name/goal/instructions change: an edit of them made from an older one is refused (409). */

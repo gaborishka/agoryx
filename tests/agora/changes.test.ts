@@ -135,7 +135,7 @@ test("every turn's exact change is kept; the others see +/− and pull the patch
     assert.match(room.engine.turnPatch(codexTurn.id)!.patch, /-export const zero = 0;\n\+export const ZERO = 0;/);
 
     // What an agent runs inside its sandbox.
-    const shim = (...args: string[]) => spawnSync(process.execPath, [SHIM, "diff", ...args], { cwd: join(ws, "src"), encoding: "utf8" });
+    const shim = (...args: string[]) => spawnSync(process.execPath, [SHIM, "diff", ...args], { cwd: join(ws, "src"), encoding: "utf8", env: { PATH: process.env.PATH! } });
     const listed = shim();
     assert.equal(listed.status, 0, listed.stderr);
     assert.match(listed.stdout, new RegExp(`^${codexTurn.id} · Codex · [^\\n]+\\n {2}src/clock\\.ts {2}\\+1 −1\\n`));

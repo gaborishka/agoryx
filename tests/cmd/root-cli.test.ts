@@ -3,8 +3,8 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { cliArgv, makeCliSandbox } from "../helpers/cli-sandbox.js";
 
 interface CliRunResult {
   code: number | null;
@@ -13,22 +13,21 @@ interface CliRunResult {
   stderr: string;
 }
 
-const CLI_ENTRY = join(process.cwd(), "cmd/agoryx/main.ts");
-const TSX_LOADER = pathToFileURL(join(process.cwd(), "node_modules/tsx/dist/loader.mjs")).href;
+const sandbox = makeCliSandbox();
 
 const runCli = (
   args: string[],
   stdinInput = "",
   timeoutMs = 20_000,
-  cwd = process.cwd(),
+  cwd = sandbox.repo,
 ): Promise<CliRunResult> =>
   new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      ["--import", TSX_LOADER, CLI_ENTRY, ...args],
+      cliArgv(args),
       {
         cwd,
-        env: process.env,
+        env: sandbox.env,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );

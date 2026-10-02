@@ -4,7 +4,10 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { cliArgv, makeCliSandbox } from "../helpers/cli-sandbox.js";
 import { resolveDefaultWorktreeDir } from "../../internal/config/paths.js";
+
+const sandbox = makeCliSandbox();
 
 interface ChatRunResult {
   code: number | null;
@@ -21,10 +24,10 @@ const runChat = (
   new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      ["--import", "tsx", "cmd/agoryx/main.ts", "chat", ...args],
+      cliArgv(["chat", ...args]),
       {
-        cwd: process.cwd(),
-        env: process.env,
+        cwd: sandbox.repo,
+        env: sandbox.env,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
@@ -74,14 +77,14 @@ const baseArgs = (dbPath: string): string[] => [
 const uniqueAgent = (prefix: string): string =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-const defaultWorktreeDir = resolveDefaultWorktreeDir(process.cwd());
+const defaultWorktreeDir = resolveDefaultWorktreeDir(sandbox.repo, sandbox.env);
 
 const cleanupWorktreeAgent = (agent: string): void => {
   const worktreePath = join(defaultWorktreeDir, agent);
   try {
     if (existsSync(worktreePath)) {
       execFileSync("git", ["worktree", "remove", "--force", worktreePath], {
-        cwd: process.cwd(),
+        cwd: sandbox.repo,
         stdio: "ignore",
       });
     }
@@ -91,7 +94,7 @@ const cleanupWorktreeAgent = (agent: string): void => {
 
   try {
     const branches = execFileSync("git", ["branch", "--list", `agoryx/${agent}-*`], {
-      cwd: process.cwd(),
+      cwd: sandbox.repo,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
     })
@@ -102,7 +105,7 @@ const cleanupWorktreeAgent = (agent: string): void => {
     for (const branch of branches) {
       try {
         execFileSync("git", ["branch", "-D", branch], {
-          cwd: process.cwd(),
+          cwd: sandbox.repo,
           stdio: "ignore",
         });
       } catch {

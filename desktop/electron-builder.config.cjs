@@ -4,6 +4,8 @@
 const { join } = require("node:path");
 
 const root = join(__dirname, "..");
+// electron-builder takes a Developer ID by name alone ("Ivan Habor (TEAMID)") and refuses the prefix.
+const signIdentity = (process.env.AGORYX_SIGN_IDENTITY || "").replace(/^Developer ID Application:\s*/, "") || null;
 
 /** @type {import("electron-builder").Configuration} */
 module.exports = {
@@ -33,9 +35,16 @@ module.exports = {
     icon: "build/icon.icns",
     // A local build: no signing identity (macOS asks once on first open: right-click → Open), unless
     // AGORYX_SIGN_IDENTITY names one from the keychain; only a signed app shows notification banners.
-    identity: process.env.AGORYX_SIGN_IDENTITY || null,
+    // A Developer ID identity also gets the hardened runtime that notarization requires; notarizing is a
+    // separate `xcrun notarytool` step (docs/DESKTOP.md).
+    identity: signIdentity,
+    hardenedRuntime: Boolean(signIdentity),
+    entitlements: signIdentity ? "build/entitlements.mac.plist" : undefined,
+    entitlementsInherit: signIdentity ? "build/entitlements.mac.plist" : undefined,
+    notarize: false,
   },
   dmg: {
     title: "Agoryx",
+    sign: Boolean(signIdentity),
   },
 };

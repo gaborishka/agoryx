@@ -40,6 +40,26 @@ The build is arm64 only, and unsigned unless `AGORYX_SIGN_IDENTITY` names a sign
 keychain (see banners below). On the first open, macOS refuses an unsigned build: right-click the app → Open.
 Or open it once and allow it in System Settings → Privacy & Security.
 
+For a build others can open without that step, sign with a Developer ID Application identity and notarize.
+A Developer ID identity turns on the hardened runtime (`desktop/build/entitlements.mac.plist`) and signs the
+DMG. Notarize the app first, then rebuild the DMG around the stapled app and notarize that too:
+
+```bash
+xcrun notarytool store-credentials agoryx --apple-id <apple id> --team-id <team id>
+AGORYX_SIGN_IDENTITY="Developer ID Application: … (<team id>)" npm --prefix desktop run dist
+cd desktop
+ditto -c -k --keepParent release/mac-arm64/Agoryx.app /tmp/Agoryx-app.zip
+xcrun notarytool submit /tmp/Agoryx-app.zip --keychain-profile agoryx --wait
+xcrun stapler staple release/mac-arm64/Agoryx.app
+AGORYX_SIGN_IDENTITY="Developer ID Application: … (<team id>)" npx electron-builder \
+  --config electron-builder.config.cjs --mac dmg --arm64 --prepackaged release/mac-arm64/Agoryx.app
+xcrun notarytool submit release/Agoryx-<version>-arm64.dmg --keychain-profile agoryx --wait
+xcrun stapler staple release/Agoryx-<version>-arm64.dmg
+```
+
+electron-builder's own notarization is off: it looks for the profile in `login.keychain`, where
+`notarytool store-credentials` does not put it.
+
 The app does not bring its own Node. The Mac it runs on needs `node` >= 22, and at least one logged-in
 `claude` or `codex` CLI, both on the login shell's PATH. The first screen checks them.
 
@@ -380,4 +400,4 @@ The app keeps two files in `~/Library/Application Support/Agoryx`:
 - `agoryx open .` bringing up the app, through a control socket.
 - `agoryx://` links.
 - For the room's browser: tabs, browser data that survives a restart, a browser without the app.
-- Signing for distribution and notarization, and x64 or universal builds.
+- x64 or universal builds.

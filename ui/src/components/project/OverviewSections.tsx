@@ -244,11 +244,12 @@ function Usage({ usage }: { usage: ProjectOverview["usage"] }) {
 }
 
 export function OverviewSections({ hash }: { hash: string }) {
-  // Read again when one of the project's rooms changes.
+  // Read again when what it shows can have changed: a room's messages (reports, files linked), a run starting or
+  // ending (its usage) — not with every step of a run. The room list is not read while the tab is hidden, so neither is this.
   const tick = useStore((s) =>
     s.rooms
       .filter((room) => room.projectHash === hash)
-      .map((room) => `${room.id}:${room.updatedAt}:${room.running}`)
+      .map((room) => `${room.id}:${room.messages}:${room.running}`)
       .join(","),
   );
   const [overview, setOverview] = useState<Overview | null>(null);

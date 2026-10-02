@@ -20,9 +20,6 @@ import { cn } from "@/lib/utils";
  * the thread as the human's message). "Threads" lists this room's threads; the whole room opens on its own.
  */
 
-/** How often the open thread is read again. */
-const POLL_MS = 2000;
-
 function ThreadList({ threads, onPick }: { threads: RoomSummary[]; onPick: (id: string) => void }) {
   if (!threads.length) return <Hint className="p-4">No threads yet. An agent starts one with `agoryx new --from here`.</Hint>;
   return (
@@ -92,6 +89,8 @@ function Steer({ id, running }: { id: string; running: boolean }) {
     try {
       await api("POST", roomPath(id, "/messages"), { text });
       setText("");
+      // The thread is read again when the room list shows its new message: now, not at the next look.
+      void useStore.getState().loadRooms();
     } catch (err) {
       if (!(err instanceof Unauthorized)) toast.error(errText(err));
     } finally {
@@ -137,32 +136,32 @@ export function ThreadPanel() {
   const [listing, setListing] = useState(false);
   const [state, setState] = useState<RoomState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Read again when the thread said something or a run of it started or ended, as the room list shows it (which is
+  // not read while the tab is hidden): not on a timer.
+  const changed = useStore((s) => {
+    const room = s.rooms.find((entry) => entry.id === id);
+    return room ? `${room.messages}:${room.running}` : "";
+  });
 
   useEffect(() => {
     setState(null);
     setError(null);
     setListing(false);
+  }, [id]);
+  useEffect(() => {
     if (!id) return;
     let live = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const read = async () => {
-      try {
-        const snap = await api<{ state: RoomState }>("GET", roomPath(id));
+    api<{ state: RoomState }>("GET", roomPath(id))
+      .then((snap) => {
         if (!live) return;
         setState(snap.state);
         setError(null);
-      } catch (err) {
-        if (!live || err instanceof Unauthorized) return;
-        setError(errText(err));
-      }
-      if (live) timer = setTimeout(() => void read(), POLL_MS);
-    };
-    void read();
+      })
+      .catch((err) => live && !(err instanceof Unauthorized) && setError(errText(err)));
     return () => {
       live = false;
-      clearTimeout(timer);
     };
-  }, [id]);
+  }, [id, changed]);
 
   const threads = rooms.filter((room) => room.parent && room.parent === here);
   const summary = rooms.find((room) => room.id === id);

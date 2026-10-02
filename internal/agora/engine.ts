@@ -620,16 +620,18 @@ export class RoomEngine {
     return this.postMessage({ author: actor.by, kind: "system", text, sys, mentions: [], wakes: false, ...(actor.from ? { from: actor.from } : {}) });
   }
 
-  postHuman(text: string, author = this.state.human): MessageEntry {
+  postHuman(text: string, author = this.state.human, skill?: import("./types.js").SkillInvocation): MessageEntry {
     const body = text.trim();
     if (!body) throw new Error("empty message");
+    if (skill && (!skill.targets.length || skill.targets.some(id => !this.state.agents.some(a => a.id === id)))) throw new Error("The skill's participant has left this room.");
     const handles = [...this.state.agents.map((agent) => agent.id), this.state.human.toLowerCase()];
     this.benched.clear();
     const message = this.postMessage({
       author,
       kind: "human",
       text: body,
-      mentions: parseMentions(body, handles),
+      mentions: skill ? [...skill.targets] : parseMentions(body, handles),
+      ...(skill ? { skill } : {}),
       wakes: true,
     });
     this.startWork(message.id);

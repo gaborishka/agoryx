@@ -20,6 +20,7 @@ import { lanInterfaces, normalizeHosts, writeExposure, type Exposure } from "./e
 import { linkedMedia, markdownTexts } from "./media.js";
 import { MAX_UPLOAD, saveUpload, UploadError } from "./uploads.js";
 import { agentModels } from "./models.js";
+import { roomSkills, resolveSkillInvocation } from "./skills.js";
 import { locateNativeSession } from "./native.js";
 import { readLimits, recordLimits } from "./limits-store.js";
 import { roomUsage } from "./usage.js";
@@ -1464,6 +1465,12 @@ export class AgoraDaemon {
       return;
     }
 
+    if (action === "skills" && method === "GET") {
+      if (caller.agent) throw new HttpError(403, "the skill picker is for the human");
+      sendJson(res, 200, await roomSkills(handle.store.state.workspace, handle.store.state.agents, this.env));
+      return;
+    }
+
     if (method !== "POST") throw new HttpError(405, "method not allowed");
     const body = (await readBody(req)) as Record<string, unknown>;
     const engine = this.engineFor(handle);
@@ -1475,6 +1482,18 @@ export class AgoraDaemon {
       case "messages": {
         const text = typeof body.text === "string" ? body.text : "";
         if (!text.trim()) throw new HttpError(400, "text is required");
+        if (body.skill !== undefined) {
+          if (caller.agent) throw new HttpError(403, "only the human chooses a skill invocation");
+          const catalog = await roomSkills(engine.state.workspace, engine.state.agents, this.env);
+          try {
+            const skill = resolveSkillInvocation(catalog, body.skill);
+            const message = engine.postHuman(text, actor.by, skill);
+            sendJson(res, 201, { message });
+          } catch (error) {
+            throw new HttpError(400, error instanceof Error ? error.message : String(error));
+          }
+          return;
+        }
         const message = engine.post(text, actor);
         sendJson(res, 201, { message });
         return;

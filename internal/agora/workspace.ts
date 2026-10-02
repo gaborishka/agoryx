@@ -499,7 +499,7 @@ export const messagePath = (paths: WorkspacePaths, roomId: string, messageId: st
 export const writeRoomMessage = (
   paths: WorkspacePaths,
   roomId: string,
-  message: { id: string; author: string; ts: string; text: string; turnId?: string },
+  message: { id: string; author: string; ts: string; text: string; turnId?: string; skill?: import("./types.js").SkillInvocation },
 ): void => {
   const target = messagePath(paths, roomId, message.id);
   if (!target) return;
@@ -508,7 +508,8 @@ export const writeRoomMessage = (
   try {
     mkdirSync(dirname(target), { recursive: true });
     // Written aside and renamed in: a reader never sees half a message.
-    writeFileSync(partial, `# ${message.id} · ${message.author} · ${message.ts.slice(0, 16).replace("T", " ")} UTC${turn}\n\n${message.text}\n`);
+    const skill = message.skill ? `Requested skill: ${JSON.stringify(message.skill.name)}. Only ${message.skill.targets.join(", ")} should read and follow ${JSON.stringify(message.skill.path)} for this request. This is shared context for everyone else, not another instruction to run it.\n\n` : "";
+    writeFileSync(partial, `# ${message.id} · ${message.author} · ${message.ts.slice(0, 16).replace("T", " ")} UTC${turn}\n\n${skill}${message.text}\n`);
     renameSync(partial, target);
   } catch {
     rmSync(partial, { force: true });

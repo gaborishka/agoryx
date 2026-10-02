@@ -106,6 +106,7 @@ export const HumanMessage = memo(function HumanMessage({ m }: { m: MessageEntry 
   return (
     <div className="flex flex-col items-end gap-1 pl-[12%]">
       <div data-quote={m.id} data-author={m.author} className="max-w-full rounded-[20px] rounded-br-[6px] bg-human-soft px-4 py-2.5 text-foreground ring-1 ring-human/20">
+        {m.skill ? <div className="mb-2 flex flex-wrap gap-1.5 text-meta text-muted-foreground"><span className="font-mono">/{m.skill.name}</span><span>→ {m.skill.targets.map(id => `@${id}`).join(", ")}</span></div> : null}
         <Markdown text={m.text} source={`m:${m.id}`} />
       </div>
       <div className="flex items-center gap-2 pr-1">

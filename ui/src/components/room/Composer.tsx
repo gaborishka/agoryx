@@ -15,6 +15,8 @@ import {
   UserPlusIcon,
   UsersIcon,
   WifiOffIcon,
+  XIcon,
+  SlashIcon,
 } from "lucide-react";
 import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -24,11 +26,11 @@ import { Avatar } from "@/components/room/bits";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { api, local, roomPath, Unauthorized } from "@/lib/api";
 import { useLoad } from "@/lib/load";
-import { clearSentComposerDraft, composerChoices, composerCommand, composerDraftSnapshot, composerHistory, composerTrigger, historyBoundary, historyStep, recallSent, replaceComposerToken, savedContextFiles, saveContextFiles, withContextFiles, type ComposerChoice } from "@/lib/composer-context";
+import { clearSentComposerDraft, composerChoices, composerCommand, composerDraftSnapshot, composerHistoryMessages, composerTrigger, historyBoundary, historyStep, recallSent, replaceComposerToken, savedContextFiles, saveContextFiles, withContextFiles, type ComposerChoice, type ComposerAction, type CommandId, savedComposerAction, saveComposerAction, COMMANDS } from "@/lib/composer-context";
 import { useRoomDiff } from "@/lib/changes";
 import { keyLabel } from "@/lib/keys";
 import { baseName, names as nameList, plural } from "@/lib/format";
-import type { AgentModels, LimitSnapshot, RoomAgent, RoomState } from "@/lib/types";
+import type { AgentModels, LimitSnapshot, RoomAgent, RoomState, SkillCatalog } from "@/lib/types";
 import { useModels } from "@/lib/models";
 import { ModelMenu } from "@/components/room/ModelMenu";
 import { QuoteList } from "@/components/room/QuoteList";
@@ -100,23 +102,41 @@ export function Composer() {
   const [composing, setComposing] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [selected, setSelected] = useState(0);
+  const [action, setAction] = useState<ComposerAction | null>(null);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [targetOpen, setTargetOpen] = useState(false);
+  const [filter, setFilter] = useState("all");
+  const presence = useStore(s => s.snap?.presence);
   const [historyIndex, setHistoryIndex] = useState(-1);
-  const historyDraft = useRef<{ text: string; quotes: Quote[]; files: string[] }>({ text: "", quotes: [], files: [] });
-  const history = useMemo(() => room ? composerHistory(room.messages, room.human) : [], [room?.messages, room?.human]);
-  const trigger = driven && focused && !sending && !composing ? composerTrigger(text, caret.start, caret.end) : null;
+  const historyDraft = useRef<{ text: string; quotes: Quote[]; files: string[]; action: ComposerAction | null }>({ text: "", quotes: [], files: [], action: null });
+  const history = useMemo(() => room ? composerHistoryMessages(room.messages, room.human) : [], [room?.messages, room?.human]);
+  const rawTrigger = driven && focused && !sending && !composing ? composerTrigger(text, caret.start, caret.end) : null;
+  const trigger = action && rawTrigger?.kind === "command" ? null : rawTrigger;
   const token = trigger ? `${trigger.kind}:${trigger.start}:${trigger.end}:${trigger.query}` : null;
-  const suggesting = Boolean(trigger && token !== dismissed);
+  const suggesting = driven && !sending && !composing && (targetOpen || catalogOpen || Boolean(trigger && token !== dismissed));
+  const commandPicker = catalogOpen || trigger?.kind === "command";
+  const catalog = useLoad(roomId && (commandPicker || targetOpen || action?.kind === "skill") ? `${roomId}:skills:${room?.workspace}:${room?.agents.map(a => a.id).join(",")}` : null,
+    () => api<SkillCatalog>("GET", roomPath(roomId!, "/skills")));
+  const currentSkill = action?.kind === "skill" ? catalog.data?.skills.find(s => s.id === action.skill.id) ?? action.skill : null;
+  const eligible = room?.agents.filter(a => action?.kind === "command" || currentSkill?.agents.includes(a.id)) ?? [];
   const ended = room?.turns.filter((t) => t.status !== "running").length ?? 0;
   const tree = useLoad(suggesting && trigger?.kind === "context" && roomId ? `${roomId}:composer-tree:${ended}` : null,
     () => api<{ files: string[] }>("GET", roomPath(roomId!, "/tree")));
   const filesLoading = suggesting && trigger?.kind === "context" && !tree.data && !tree.error;
-  const choices = useMemo(() => composerChoices(suggesting ? trigger : null,
-    room ? [...room.agents, { id: room.human, label: room.human }] : [], tree.data?.files ?? []),
-    [suggesting, token, room?.agents, room?.human, tree.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const choices: ComposerChoice[] = targetOpen ? [
+    ...eligible.map(a => ({ kind: "target" as const, value: a.id, label: a.label, detail: presence?.[a.id] === "working" || presence?.[a.id] === "native" ? "Queued after the current conversation" : `@${a.id}`, owner: a.kind })),
+    ...(action?.kind === "skill" && eligible.length > 1 ? [{ kind: "target" as const, value: "$all", label: "All available agents", detail: `${eligible.length} separate skill runs`, owner: `${eligible.length} runs` }] : []),
+  ] : composerChoices(suggesting ? (catalogOpen && trigger?.kind !== "command" ? { kind: "command", start: caret.start, end: caret.end, query: "" } : trigger) : null,
+    room ? [...room.agents, { id: room.human, label: room.human }] : [], tree.data?.files ?? [], catalog.data?.skills ?? [], filter);
   const active = Math.min(selected, choices.length - 1);
-  useEffect(() => setSelected(0), [token]);
+  useEffect(() => setSelected(0), [token, filter, targetOpen]);
   // A file attached to, or taken off, a recalled message makes it a new draft, as a chip does.
   useEffect(() => setHistoryIndex(-1), [files.items.length]);
+  const keepAction = (next: ComposerAction | null) => {
+    setAction(next);
+    setHistoryIndex(-1);
+    if (roomId) saveComposerAction(roomId, next);
+  };
   const keepContextFiles = (next: string[]) => {
     setContextFiles(next);
     if (roomId) saveContextFiles(roomId, next);
@@ -132,6 +152,10 @@ export function Composer() {
     setText(local.get(`draft.${roomId}`) ?? "");
     setQuotes(savedQuotes(roomId));
     setContextFiles(savedContextFiles(roomId));
+    setAction(savedComposerAction(roomId));
+    setCatalogOpen(false);
+    setTargetOpen(false);
+    setFilter("all");
     setHistoryIndex(-1);
     setDismissed(null);
     setCaret({ start: 0, end: 0 });
@@ -142,6 +166,9 @@ export function Composer() {
   useEffect(() => {
     if (!compose || !roomId) return;
     setText(compose.text);
+    keepAction(null);
+    setTargetOpen(false);
+    setCatalogOpen(false);
     setHistoryIndex(-1);
     local.set(`draft.${roomId}`, compose.text);
     setTimeout(() => {
@@ -170,7 +197,7 @@ export function Composer() {
     // A quote, of words or of a diff, goes to the agent who wrote it unless the draft already names someone, read as the room reads it; the human can change it.
     const to = quoting.to;
     const handles = room ? [...room.agents.map((a) => a.id), room.human] : [];
-    if (to && !parseMentions(text, handles).length) {
+    if (to && !action && !parseMentions(text, handles).length) {
       setText(`@${to} ${text}`);
       local.set(`draft.${roomId}`, `@${to} ${text}`);
     }
@@ -193,9 +220,30 @@ export function Composer() {
     });
   };
   const pick = (choice: ComposerChoice) => {
+    if (choice.kind === "target" && action) {
+      keepAction({ ...action, targets: choice.value === "$all" ? eligible.map(a => a.id) : [choice.value] });
+      setTargetOpen(false);
+      position(text.length);
+      return;
+    }
+    if (choice.kind === "skill" || choice.kind === "command") {
+      const owners = choice.skill?.agents ?? (choice.value === "model" ? room.agents.map(a => a.id) : []);
+      const explicit = trigger?.targets?.filter(id => id !== "all") ?? (filter !== "all" && filter !== "room" ? [filter] : []);
+      const targets = explicit.length && explicit.every(id => owners.includes(id)) ? explicit : owners.length === 1 ? owners : [];
+      const next: ComposerAction = choice.kind === "skill" && choice.skill
+        ? { kind: "skill", skill: choice.skill, targets }
+        : { kind: "command", command: choice.value as CommandId, targets };
+      keepAction(next);
+      if (trigger?.kind === "command") change(text.slice(trigger.end).replace(/^ /, ""));
+      setCatalogOpen(false);
+      setTargetOpen(owners.length > 1 && !targets.length);
+      setDismissed(token);
+      position(trigger?.kind === "command" ? 0 : text.length);
+      return;
+    }
     if (!trigger) return;
     if (choice.kind === "file") keepContextFiles([...new Set([...contextFiles, choice.value])]);
-    const value = choice.kind === "file" ? "" : `${choice.kind === "command" ? "/" : "@"}${choice.value}`;
+    const value = choice.kind === "file" ? "" : `@${choice.value}`;
     const next = replaceComposerToken(text, trigger, value);
     change(next.text);
     const picked = composerTrigger(next.text, next.caret);
@@ -234,22 +282,30 @@ export function Composer() {
   };
   const send = async () => {
     const body = text.trim();
-    if ((!body && !files.items.length && !quotes.length && !contextFiles.length) || !driven || sending) return;
+    if (suggesting) return;
+    if ((!body && !files.items.length && !quotes.length && !contextFiles.length && action?.kind !== "command") || !driven || sending) return;
+    if (action && (action.kind === "skill" || action.command === "model") && (!action.targets.length || action.targets.some(id => !room.agents.some(a => a.id === id)))) {
+      setTargetOpen(true);
+      return;
+    }
     const sentDraft = composerDraftSnapshot(room.id);
     setSending(true);
     try {
-      const command = composerCommand(body);
+      const command = action?.kind === "command" ? { id: action.command, args: action.command === "model" ? `@${action.targets[0]}` : body } : action ? null : composerCommand(body);
       if (command) {
         if (files.items.length || quotes.length || contextFiles.length) throw new Error("Remove context before running a command, or send it as a message with text before the /command");
         await runCommand(command);
       } else {
-        await post("/messages", { text: withFiles(withContextFiles(withQuotes(body, quotes), contextFiles), await files.upload()) });
+        await post("/messages", { text: withFiles(withContextFiles(withQuotes(body, quotes), contextFiles), await files.upload()), ...(action?.kind === "skill" ? { skill: { id: action.skill.id, targets: action.targets } } : {}) });
       }
-      clearSentComposerDraft(sentDraft);
+      clearSentComposerDraft(action?.kind === "command" && action.command === "model" ? sentDraft.filter(s => s.key !== `draft.${room.id}`) : sentDraft);
       if (useStore.getState().snap?.state.id !== room.id) return;
       setText(local.get(`draft.${room.id}`) ?? "");
       setQuotes(savedQuotes(room.id));
       setContextFiles(savedContextFiles(room.id));
+      setAction(savedComposerAction(room.id));
+      setTargetOpen(false);
+      setCatalogOpen(false);
       setHistoryIndex(-1);
       files.clear();
     } catch (error) {
@@ -262,7 +318,7 @@ export function Composer() {
   const onKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || composing) return;
     if (suggesting && !event.altKey && !event.metaKey && !event.ctrlKey) {
-      if (event.key === "Enter" && !event.shiftKey && !choices[active] && filesLoading) {
+      if (event.key === "Enter" && !event.shiftKey && !choices[active]) {
         event.preventDefault();
         return;
       }
@@ -280,21 +336,26 @@ export function Composer() {
         event.preventDefault();
         event.stopPropagation();
         setDismissed(token);
+        setCatalogOpen(false);
+        setTargetOpen(false);
         return;
       }
     }
     if (!suggesting && !event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey &&
       // History opens on an empty draft only: chips not yet sent are never swapped out for a sent message's.
-      (event.key === "ArrowUp" || event.key === "ArrowDown") && (historyIndex >= 0 || (!text && !quotes.length && !contextFiles.length && !files.items.length)) &&
+      (event.key === "ArrowUp" || event.key === "ArrowDown") && (historyIndex >= 0 || (!text && !action && !quotes.length && !contextFiles.length && !files.items.length)) &&
       historyBoundary(text, event.currentTarget.selectionStart, event.currentTarget.selectionEnd, event.key === "ArrowUp" ? "older" : "newer")) {
       const next = historyStep(historyIndex, event.key === "ArrowUp" ? "older" : "newer", history.length);
       if (next !== historyIndex) {
         event.preventDefault();
-        if (historyIndex === -1) historyDraft.current = { text, quotes, files: contextFiles };
+        if (historyIndex === -1) historyDraft.current = { text, quotes, files: contextFiles, action };
         // A sent message comes back as it was composed: its quotes and files as chips again, not as `> …` text.
         const sourceAuthor = (id: string) => room.messages.find((m) => m.id === id)?.author ?? room.turns.find((t) => t.id === id)?.agent;
-        const sent = next === -1 ? null : recallSent(history[next]!, sourceAuthor);
-        const back = sent ? { text: sent.body, quotes: sent.quotes, files: sent.files } : historyDraft.current;
+        const sent = next === -1 ? null : recallSent(history[next]!.text, sourceAuthor);
+        const skill = next === -1 ? null : history[next]?.skill;
+        const restored: ComposerAction | null = skill ? { kind: "skill", skill: { ...skill, description: "Previously used skill", source: "History", agents: skill.targets }, targets: skill.targets } : null;
+        const back = sent ? { text: sent.body, quotes: sent.quotes, files: sent.files, action: restored } : historyDraft.current;
+        keepAction(back.action);
         setText(back.text);
         local.set(`draft.${room.id}`, back.text || null);
         keepQuotes(back.quotes);
@@ -321,7 +382,13 @@ export function Composer() {
     position(pos);
   };
   const names = nameList(room.agents.map((a) => a.label));
-  const ready = Boolean(text.trim() || files.items.length || quotes.length || contextFiles.length);
+  const hasBody = Boolean(text.trim() || files.items.length || quotes.length || contextFiles.length);
+  const needsTarget = action && (action.kind === "skill" || action.command === "model");
+  const ready = !suggesting && (hasBody || action?.kind === "command") && (!needsTarget || (action.targets.length > 0 && action.targets.every(id => room.agents.some(a => a.id === id))));
+  const actionName = action?.kind === "skill" ? action.skill.name : action?.command;
+  const actionTargets = action?.targets.map(id => room.agents.find(a => a.id === id)?.label ?? `@${id} (left)`).join(", ");
+  const skillLoading = commandPicker && !catalog.data && !catalog.error;
+  const pickerFilter = trigger?.targets?.length ? trigger.targets.length === 1 ? trigger.targets[0] : "all" : filter;
 
   return (
     <div className="flex w-full flex-col gap-2">
@@ -339,12 +406,27 @@ export function Composer() {
         }}
       >
         {suggesting ? <ComposerSuggestions choices={choices} active={active} onPick={pick} onActive={setSelected}
-          loading={filesLoading} error={tree.error} /> : null}
+          loading={commandPicker ? skillLoading : filesLoading}
+          loadingLabel={commandPicker ? "Loading installed skills…" : undefined}
+          error={commandPicker || targetOpen ? catalog.error ?? catalog.data?.warnings.join(" · ") : tree.error}
+          filters={commandPicker && !targetOpen ? [{ id: "all", label: "All" }, { id: "room", label: "Room" }, ...room.agents] : undefined}
+          filter={pickerFilter} onFilter={id => { setFilter(id); if (trigger?.targets?.length) { const next = text.slice(trigger.start); change(next); position(next.length); } }}
+          title={targetOpen ? `/${actionName} → choose who runs it` : undefined}
+          onBack={targetOpen ? () => { keepAction(null); setTargetOpen(false); setCatalogOpen(true); } : undefined} /> : null}
+        {action ? <div className="flex flex-wrap items-center gap-1.5 px-3 pt-3 text-meta">
+          <span className="inline-flex max-w-full items-center gap-1 rounded-lg border border-border bg-muted/50 py-1 pr-1 pl-2">
+            <span className="break-all font-mono">/{actionName}</span>
+            <button type="button" disabled={sending} onClick={() => { keepAction(null); setTargetOpen(false); }} aria-label="Remove action" className="grid size-6 shrink-0 place-items-center rounded hover:bg-accent"><XIcon className="size-3" /></button>
+          </span>
+          {needsTarget ? <button type="button" disabled={sending} onClick={() => { setTargetOpen(true); setCatalogOpen(false); setSelected(0); ta.current?.focus(); }} className="rounded-lg border border-border px-2 py-1.5 hover:bg-accent">→ {actionTargets || "Choose agent"}</button> : <span className="px-1 text-muted-foreground">Room</span>}
+          <span className="min-w-0 break-words text-muted-foreground">{action.kind === "skill" ? `Reply in this room${action.targets.some(id => presence?.[id] === "working" || presence?.[id] === "native") ? " · waits for busy agents" : ""}` : COMMANDS.find(c => c.id === action.command)?.hint}</span>
+        </div> : null}
         {/* A chip taken off a recalled message makes it a new draft, as typing does. */}
         <QuoteList quotes={quotes} onRemove={(q) => { keepQuotes(quotes.filter((x) => x !== q)); setHistoryIndex(-1); }} />
         <ContextFileList paths={contextFiles} onRemove={(path) => { keepContextFiles(contextFiles.filter((p) => p !== path)); setHistoryIndex(-1); }} />
         <AttachmentList items={files.items} onRemove={files.remove} className="px-3 pt-3" />
         <div className="flex items-end gap-1 py-1.5 pr-2 pl-2">
+          <Button type="button" variant="ghost" size="icon" className="mb-1 size-8 shrink-0 rounded-lg text-muted-foreground" disabled={!driven || sending} aria-label="Commands and skills" onClick={() => { if (!action && !text) { change("/"); position(1); } else setCatalogOpen(!catalogOpen); setTargetOpen(false); setSelected(0); ta.current?.focus(); }}><SlashIcon className="size-4" /></Button>
           <AttachButton onFiles={files.add} disabled={!driven} className="mb-1" />
           <textarea
             ref={ta}
@@ -362,7 +444,7 @@ export function Composer() {
             onCompositionEnd={() => setComposing(false)}
             onKeyDown={onKey}
             onPaste={files.onPaste}
-            placeholder={driven ? `Message ${names}…` : "Another process runs this room — view only"}
+            placeholder={driven ? action?.kind === "skill" ? "What should this skill do?" : action?.kind === "command" ? "Optional arguments…" : `Message ${names}…` : "Another process runs this room — view only"}
             aria-label="Message"
             aria-describedby="composer-keys"
             role="combobox"
@@ -379,8 +461,8 @@ export function Composer() {
             variant={ready ? "default" : "ghost"}
             className={cn("mb-1 size-8 shrink-0 rounded-full", !ready && "text-faint")}
             disabled={!driven || sending || !ready}
-            aria-label="Send"
-            title="Send (Enter)"
+            aria-label={action ? "Run action" : "Send"}
+            title={action ? "Run action (Enter)" : "Send (Enter)"}
           >
             {ready ? <ArrowUpIcon className="size-4" /> : <CornerDownLeftIcon className="size-4" />}
           </Button>
@@ -593,7 +675,7 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
         <span className="flex h-5 items-center gap-1"><Kbd>{keyLabel("send")}</Kbd> send</span>
         <span className="flex h-5 items-center gap-1"><Kbd>{keyLabel("newline")}</Kbd> new line</span>
         <span className="flex h-5 items-center gap-1"><Kbd>@</Kbd> people / files</span>
-        <span className="flex h-5 items-center gap-1"><Kbd>/</Kbd> commands</span>
+        <span className="flex h-5 items-center gap-1"><Kbd>/</Kbd> commands / skills</span>
         <span className="flex h-5 items-center gap-1"><Kbd>↑</Kbd> history</span>
       </span>
       {/* The agents, one pill each, on one line: a long roster scrolls rather than wraps. */}

@@ -75,11 +75,34 @@ export const DEFAULT_SETTINGS: RoomSettings = {
  */
 export type MessageKind = "human" | "agent" | "pass" | "system" | "decision" | "update";
 
+/** An explicitly chosen local skill, scoped to this request and these room participants. */
+export interface SkillInvocation {
+  id: string;
+  name: string;
+  path: string;
+  targets: string[];
+}
+
+export interface RoomSkill {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  source: string;
+  agents: string[];
+}
+
+export interface SkillCatalog {
+  skills: RoomSkill[];
+  warnings: string[];
+}
+
 export interface RoomMessage {
   id: string;
   author: string;
   kind: MessageKind;
   text: string;
+  skill?: SkillInvocation;
   /** Participant handles mentioned with @ (lower-case). */
   mentions: string[];
   /** Whether this message wakes agents (other than its author). */

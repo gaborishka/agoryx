@@ -1,6 +1,6 @@
 import { local } from "./api";
 import { type Quote, readQuote } from "./quote";
-import type { RoomMessage } from "./types";
+import type { RoomMessage, RoomSkill } from "./types";
 
 export const COMMANDS = [
   { id: "stop", hint: "Stop the current run" },
@@ -14,8 +14,9 @@ export const COMMANDS = [
   { id: "model", hint: "Open model settings; /model @handle selects an agent" },
 ] as const;
 export type CommandId = (typeof COMMANDS)[number]["id"];
-export type ComposerTrigger = { kind: "context" | "command"; start: number; end: number; query: string };
-export type ComposerChoice = { kind: "participant" | "file" | "command"; value: string; label: string; detail: string };
+export type ComposerTrigger = { kind: "context" | "command"; start: number; end: number; query: string; targets?: string[] };
+export type ComposerChoice = { kind: "participant" | "file" | "command" | "skill" | "target"; value: string; label: string; detail: string; owner?: string; group?: string; skill?: RoomSkill };
+export type ComposerAction = { kind: "skill"; skill: RoomSkill; targets: string[] } | { kind: "command"; command: CommandId; targets: string[] };
 export const choiceKey = (choice: ComposerChoice) => `${choice.kind}:${choice.value}`;
 
 /** Only the token at a collapsed caret, outside quoted lines and fenced code. */
@@ -33,10 +34,11 @@ export function composerTrigger(text: string, start: number, end = start): Compo
     else if (mark === fence.mark && match[1]!.length >= fence.length && !match[2]!.trim()) fence = null;
   }
   if (fence) return null;
-  const slash = before.match(/^\s*\/([a-z]*)$/i);
+  const slash = before.match(/^\s*((?:@[\w-]+\s+)*)\/([\p{L}\p{N}_:-]*)$/iu);
   if (slash) {
     const tokenStart = before.lastIndexOf("/");
-    return { kind: "command", start: tokenStart, end: start + (text.slice(start).match(/^[a-z]*/i)?.[0].length ?? 0), query: slash[1]! };
+    const targets = [...slash[1]!.matchAll(/@([\w-]+)/g)].map(m => m[1]!.toLowerCase());
+    return { kind: "command", start: tokenStart, end: start + (text.slice(start).match(/^[\p{L}\p{N}_:-]*/u)?.[0].length ?? 0), query: slash[2]!, ...(targets.length ? { targets } : {}) };
   }
   const at = before.match(/(?:^|[^\w@])@([\p{L}\p{N}_./-]*)$/u);
   if (!at) return null;
@@ -45,10 +47,20 @@ export function composerTrigger(text: string, start: number, end = start): Compo
   return { kind: "context", start: start - at[1]!.length - 1, end: start + (text.slice(start).match(/^[\p{L}\p{N}_./-]*/u)?.[0].length ?? 0), query: at[1]! };
 }
 
-export function composerChoices(trigger: ComposerTrigger | null, people: readonly { id: string; label: string }[], files: readonly string[]): ComposerChoice[] {
+export function composerChoices(trigger: ComposerTrigger | null, people: readonly { id: string; label: string }[], files: readonly string[], skills: readonly RoomSkill[] = [], filter = "all"): ComposerChoice[] {
   if (!trigger) return [];
   const query = trigger.query.toLowerCase();
-  if (trigger.kind === "command") return COMMANDS.filter((c) => c.id.startsWith(query)).map((c) => ({ kind: "command", value: c.id, label: `/${c.id}`, detail: c.hint }));
+  if (trigger.kind === "command") {
+    const targets = trigger.targets?.filter(id => id !== "all") ?? (filter !== "all" && filter !== "room" ? [filter] : []);
+    const onlyRoom = filter === "room" && !trigger.targets?.length;
+    const skillChoices: ComposerChoice[] = onlyRoom ? [] : skills.filter(s =>
+      targets.every(id => s.agents.includes(id)) && `${s.name} ${s.description}`.toLowerCase().includes(query),
+    ).map(s => ({ kind: "skill", value: s.id, label: `/${s.name}`, detail: `${s.source} · ${s.description}${skills.filter(other => other.name === s.name).length > 1 ? ` · ${s.path}` : ""}`, owner: s.agents.map(id => people.find(p => p.id === id)?.label ?? id).join(" · "), skill: s }));
+    const commands: ComposerChoice[] = COMMANDS.filter(c =>
+      (c.id.startsWith(query) || c.hint.toLowerCase().includes(query)) && (!targets.length || c.id === "model") && (!onlyRoom || c.id !== "model"),
+    ).map(c => ({ kind: "command", value: c.id, label: `/${c.id}`, detail: c.hint, group: c.id === "model" ? "Agent settings" : "Room commands", owner: c.id === "model" ? "Choose agent" : "Room" }));
+    return [...skillChoices, ...commands];
+  }
   const participants: ComposerChoice[] = [...people, { id: "all", label: "Everyone" }]
     .filter((p) => `${p.id} ${p.label}`.toLowerCase().includes(query))
     .slice(0, 6).map((p) => ({ kind: "participant", value: p.id, label: p.label, detail: `@${p.id}` }));
@@ -74,8 +86,20 @@ export function composerCommand(text: string): { id: CommandId; args: string } |
 }
 
 /** The user's sent messages, newest first. Recalling one is a draft, never a send. */
-export const composerHistory = (messages: readonly RoomMessage[], human: string) =>
-  messages.filter((m) => m.kind === "human" && m.author === human && !m.native && m.text.trim()).map((m) => m.text).reverse();
+export const composerHistoryMessages = (messages: readonly RoomMessage[], human: string) =>
+  messages.filter((m) => m.kind === "human" && m.author === human && !m.native && m.text.trim()).slice().reverse();
+export const composerHistory = (messages: readonly RoomMessage[], human: string) => composerHistoryMessages(messages, human).map(m => m.text);
+
+export const saveComposerAction = (room: string, action: ComposerAction | null) => local.set(`action.${room}`, action ? JSON.stringify(action) : null);
+export function savedComposerAction(room: string): ComposerAction | null {
+  try {
+    const a = JSON.parse(local.get(`action.${room}`) ?? "null");
+    if (!a || !Array.isArray(a.targets) || a.targets.some((t: unknown) => typeof t !== "string")) return null;
+    if (a.kind === "command" && COMMANDS.some(c => c.id === a.command)) return a;
+    if (a.kind === "skill" && a.skill && ["id", "name", "path", "description", "source"].every(k => typeof a.skill[k] === "string") && Array.isArray(a.skill.agents) && a.skill.agents.every((id: unknown) => typeof id === "string")) return a;
+  } catch { /* Invalid local draft. */ }
+  return null;
+}
 
 /**
  * A sent message taken apart again for the composer: the files and quotes it opens with (as withContextFiles
@@ -111,7 +135,7 @@ export function historyBoundary(text: string, start: number, end: number, direct
   return direction === "older" ? !text.slice(0, start).includes("\n") : !text.slice(end).includes("\n");
 }
 
-const draftKeys = (roomId: string) => [`draft.${roomId}`, `quotes.${roomId}`, `contextFiles.${roomId}`];
+const draftKeys = (roomId: string) => [`draft.${roomId}`, `quotes.${roomId}`, `contextFiles.${roomId}`, `action.${roomId}`];
 export const composerDraftSnapshot = (roomId: string) => draftKeys(roomId).map((key) => ({ key, value: local.get(key) }));
 /** A successful send clears its saved draft even after navigation, but preserves edits made while it was pending. */
 export const clearSentComposerDraft = (snapshot: ReturnType<typeof composerDraftSnapshot>) => {

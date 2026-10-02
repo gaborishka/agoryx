@@ -123,18 +123,20 @@ export type SystemNote =
   | { code: "agent.removed"; by: string; agent: string }
   | { code: "turn.failed"; agent: string; cli: AgentKind; error: TurnError["kind"]; message: string }
   | { code: "agent.busy"; agent: string }
+  /** The agent failed `failures` turns in a row (`error`/`message`: the last one's), so the room stopped waking it until the human writes. */
+  | { code: "agent.failing"; agent: string; handle: string; cli: AgentKind; failures: number; error: TurnError["kind"]; message: string }
   /** The agent's CLI compacted its context (`handle`: the agent's id, `key`: the line in its session file, `at`: when). Agents never read it. */
   | { code: "agent.compacted"; agent: string; handle: string; key: string; at: string }
   | { code: "jev.second_look"; agent: string; readers: JevShare[] }
   | { code: "jev.meant_for"; agent: string; message: string; readers: JevShare[] }
   | { code: "decision"; n: number; option: string; title: string; note?: string; by: string }
-  /** A pull request's checks came to an end, as gh tells it. */
-  | { code: "pr.checks"; n: number; result: "pass" | "fail"; failed?: string[]; total: number }
+  /** A pull request's checks came to an end, as gh tells it. `repo` (here and below): another repository's than the folder's. */
+  | { code: "pr.checks"; n: number; repo?: string; result: "pass" | "fail"; failed?: string[]; total: number }
   /** A review was given on a pull request. */
-  | { code: "pr.review"; n: number; review: "approved" | "changes"; by?: string }
-  | { code: "pr.merged"; n: number; by?: string; base: string }
-  | { code: "pr.closed"; n: number }
-  | { code: "pr.reopened"; n: number }
+  | { code: "pr.review"; n: number; repo?: string; review: "approved" | "changes"; by?: string }
+  | { code: "pr.merged"; n: number; repo?: string; by?: string; base: string }
+  | { code: "pr.closed"; n: number; repo?: string }
+  | { code: "pr.reopened"; n: number; repo?: string }
   /**
    * An agent's push rewrote remote branches (`refs`, as `origin/feat`, or `feat at ../fork.git` pushed to by URL or
    * path), as git said in its output; `rewrote: false`: git said nothing of it (a quiet push), the push forced.
@@ -549,11 +551,12 @@ export type RoomEventBody =
   | { type: "repo.gone" }
   /**
    * A pull request came into the room: an agent opened it (`gh pr create`) or linked it (`via`), or the human opened
-   * it. `by`: agent id or the human's name.
+   * it. `by`: agent id or the human's name. `repo`: its repository, lowercase `owner/name` (the folder's, or a
+   * fork's upstream); a pull request is its repository and number (older rooms: the URL says).
    */
-  | { type: "pr.linked"; number: number; url: string; by: string; via?: "linked"; from?: ActorOrigin; turnId?: string }
+  | { type: "pr.linked"; repo?: string; number: number; url: string; by: string; via?: "linked"; from?: ActorOrigin; turnId?: string }
   /** What gh says about a pull request now. */
-  | { type: "pr.status"; number: number; status: PrStatus }
+  | { type: "pr.status"; repo?: string; number: number; status: PrStatus }
   | DocRevisedEvent;
 
 /** The canonical file changed. `text` is the whole new version (omitted past MAX_DOC_TEXT). */
@@ -598,7 +601,9 @@ export type EphemeralEvent =
   | { type: "turn.stream"; turnId: string; agent: string; text: string; reset?: boolean }
   | { type: "presence"; agents: Record<string, AgentPresence> }
   /** What the agents' CLIs last said about their subscriptions (every kind and account). */
-  | { type: "limits"; limits: LimitSnapshot[] };
+  | { type: "limits"; limits: LimitSnapshot[] }
+  /** Whether the room's folder is a git repository now (it became one, or stopped being one). */
+  | { type: "git"; gitRepo: boolean };
 
 /** "native": someone is mid-exchange with the agent in its own session, outside the room. */
 export type AgentPresence = "idle" | "working" | "queued" | "native";
@@ -758,6 +763,8 @@ export interface PrStatus {
 }
 
 export interface PrState {
+  /** Lowercase `owner/name`: the folder's repository, or another one the pull request was opened into. */
+  repo: string;
   number: number;
   url: string;
   by: string;

@@ -2,6 +2,9 @@ import { guestHandle } from "./actor.js";
 import { applyTableOp, emptyTable } from "./table.js";
 import type { ActorOrigin, RoomCreatedEvent, RoomEvent, RoomState, RunState, TurnState } from "./types.js";
 
+/** `owner/name`, lowercase, of a pull request's URL. */
+export const prRepo = (url: string): string => (/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\//.exec(url)?.[1] ?? "").toLowerCase();
+
 export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string }): RoomState => ({
   id: event.id,
   name: event.name,
@@ -260,13 +263,15 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
     case "repo.gone":
       delete state.repo;
       return;
-    case "pr.linked":
-      if (!(state.prs ??= []).some((pr) => pr.number === event.number)) {
-        state.prs.push({ number: event.number, url: event.url, by: event.by, ...(event.via ? { via: event.via } : {}), seq: event.seq, ...(event.turnId ? { turnId: event.turnId } : {}) });
+    case "pr.linked": {
+      const repo = event.repo ?? prRepo(event.url);
+      if (!(state.prs ??= []).some((pr) => pr.repo === repo && pr.number === event.number)) {
+        state.prs.push({ repo, number: event.number, url: event.url, by: event.by, ...(event.via ? { via: event.via } : {}), seq: event.seq, ...(event.turnId ? { turnId: event.turnId } : {}) });
       }
       return;
+    }
     case "pr.status": {
-      const pr = state.prs?.find((entry) => entry.number === event.number);
+      const pr = state.prs?.find((entry) => entry.number === event.number && (event.repo === undefined || entry.repo === event.repo));
       if (pr) pr.status = event.status;
       return;
     }

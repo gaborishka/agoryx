@@ -23,11 +23,17 @@ const STATE = {
 
 const live = (pr: PrState) => !pr.status || pr.status.state === "open" || pr.status.state === "draft";
 
-/** The pull request of the folder's branch, else none. */
+/** `#12`, or `owner/name#12` for a pull request into another repository than the folder's (a fork's upstream). */
+export const prRef = (pr: PrState, room: RoomState | undefined) => `${room?.repo && pr.repo && pr.repo !== room.repo.repo.toLowerCase() ? pr.repo : ""}#${pr.number}`;
+
+/** Into the folder's own repository (an older room's have no `repo`: they all are). */
+const ofFolder = (pr: PrState, room: RoomState | undefined) => !pr.repo || pr.repo === room?.repo?.repo.toLowerCase();
+
+/** The pull request of the folder's branch, else none; the folder's own repository's first, then a fork's upstream's. */
 export const branchPr = (room: RoomState | undefined): PrState | undefined => {
   const branch = room?.repo?.branch;
   if (!branch) return undefined;
-  const prs = room.prs ?? [];
+  const prs = (room.prs ?? []).toSorted((a, b) => Number(ofFolder(a, room)) - Number(ofFolder(b, room)));
   return prs.findLast((pr) => live(pr) && pr.status?.head === branch) ?? prs.findLast((pr) => pr.status?.head === branch);
 };
 
@@ -79,14 +85,14 @@ export function PrCard({ pr }: { pr: PrState }) {
   const by = pr.by === room?.human ? "you" : nameOf(room, pr.by);
   const open = status?.state === "open" || status?.state === "draft";
   return (
-    <div className="flex w-full max-w-xl min-w-0 flex-col gap-1.5 rounded-xl border border-border bg-card px-3.5 py-2.5 text-small shadow-soft" data-pr={pr.number}>
+    <div className="flex w-full max-w-xl min-w-0 flex-col gap-1.5 rounded-xl border border-border bg-card px-3.5 py-2.5 text-small shadow-soft" data-pr={prRef(pr, room)}>
       <div className="flex min-w-0 items-center gap-2">
         <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-meta font-medium", look.tone)}>
           <look.Icon className="size-3.5" />
           {look.label}
         </span>
         <a href={pr.url} target="_blank" rel="noreferrer" className="min-w-0 truncate font-medium text-foreground underline decoration-border underline-offset-2 hover:decoration-current">
-          <span className="font-mono text-muted-foreground">#{pr.number}</span> {status?.title ?? pr.url}
+          <span className="font-mono text-muted-foreground">{prRef(pr, room)}</span> {status?.title ?? pr.url}
         </a>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-muted-foreground">
@@ -117,11 +123,12 @@ export function PrCard({ pr }: { pr: PrState }) {
 
 /** The branch's pull request in the header: its number and state, a link to it. */
 export function PrChip() {
-  const pr = useStore((s) => branchPr(s.snap?.state));
+  const room = useStore((s) => s.snap?.state);
+  const pr = branchPr(room);
   if (!pr) return null;
   const look = STATE[pr.status?.state ?? "open"];
   return (
-    <Tip tip={`Pull request #${pr.number}${pr.status ? ` — ${look.label.toLowerCase()}: ${pr.status.title}` : ""}. Opens on GitHub.`}>
+    <Tip tip={`Pull request ${prRef(pr, room)}${pr.status ? ` — ${look.label.toLowerCase()}: ${pr.status.title}` : ""}. Opens on GitHub.`}>
       <a
         href={pr.url}
         target="_blank"
@@ -129,7 +136,7 @@ export function PrChip() {
         onClick={(event) => event.stopPropagation()}
         className="inline-flex shrink-0 items-center gap-0.5 font-mono text-micro text-faint hover:text-muted-foreground"
       >
-        <look.Icon className="size-3" />#{pr.number}
+        <look.Icon className="size-3" />{prRef(pr, room)}
       </a>
     </Tip>
   );
@@ -138,7 +145,7 @@ export function PrChip() {
 /** Whether the human can open a pull request from here: a GitHub repository, a branch of its own, none open for it. */
 export const canOpenPr = (room: RoomState | undefined, driven: boolean | undefined): boolean => {
   const repo = room?.repo;
-  return Boolean(driven && repo?.branch && repo.branch !== repo.base && !(room?.prs ?? []).some((pr) => live(pr) && pr.status?.head === repo.branch));
+  return Boolean(driven && repo?.branch && repo.branch !== repo.base && !(room?.prs ?? []).some((pr) => live(pr) && pr.status?.head === repo.branch && ofFolder(pr, room)));
 };
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));

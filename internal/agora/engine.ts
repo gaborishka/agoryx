@@ -162,6 +162,8 @@ interface NativeTracker {
   nextLocateAt: number;
   /** When a native exchange was last seen open or imported. */
   nativeAt?: number;
+  /** Commands Claude Code ran itself that the engine has acted on (a rescan returns them again). */
+  commands?: Set<string>;
 }
 
 /** A change to the canonical file this soon after a native exchange is credited to that agent. */
@@ -372,6 +374,8 @@ export class RoomEngine {
   private readonly running = new Map<string, RunningTurn>();
   /** Agents that failed hard (spawn/auth) sit out until the next human message. */
   private readonly benched = new Set<string>();
+  /** How many failed turns in a row (since the human last spoke) make the room stop waking an agent. */
+  static readonly FAILURES_IN_A_ROW = 3;
   /** Agents being sent out of the room: no new turn starts for them while theirs stops. */
   private readonly leaving = new Set<string>();
   private idleWaiters: Array<() => void> = [];
@@ -1236,6 +1240,33 @@ export class RoomEngine {
     return this.firstWake(agent) !== null;
   }
 
+  /**
+   * The agent's failed turns in a row since the human last gave it fresh tries: wrote, moved on the table, asked
+   * for another round, or seated it again or changed it (a model or effort that works may be the fix).
+   */
+  private failedInARow(agentId: string): number {
+    const events = this.store.events;
+    // An agent sent out of the room since is not the human either.
+    const human = (by: string | undefined, from: unknown) =>
+      !from && by !== undefined && this.byHuman({ by }) && !this.state.former.some((agent) => agent.id === by);
+    let failures = 0;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!;
+      if (event.type === "message.posted") {
+        if (event.message.kind === "human") break;
+        if (event.message.sys?.code === "run.continued" && human(event.message.author, event.message.from)) break;
+        continue;
+      }
+      if (event.type === "table.op" && human(event.op.by, event.op.from)) break;
+      if (event.type === "agent.added" && event.agent.id === agentId) break;
+      if ((event.type === "agent.removed" || event.type === "agent.changed") && event.agent === agentId) break;
+      if (event.type !== "turn.ended" || event.agent !== agentId) continue;
+      if (event.status !== "error") break;
+      failures += 1;
+    }
+    return failures;
+  }
+
   /** The oldest unseen event that wakes this agent, or null. */
   private firstWake(agent: RoomAgent): RoomEvent | null {
     const cursor = this.state.cursors[agent.id] ?? 0;
@@ -1275,6 +1306,7 @@ export class RoomEngine {
     // at a time, and each sees what the other just said. Whoever has waited longest goes first.
     const candidates = this.state.agents
       .filter((agent) => !this.running.has(agent.id) && !this.beingRead.has(agent.id) && !this.benched.has(agent.id) && !this.leaving.has(agent.id) && this.runners[agent.kind])
+      .filter((agent) => this.failedInARow(agent.id) < RoomEngine.FAILURES_IN_A_ROW)
       .map((agent) => ({ agent, wake: this.firstWake(agent) }))
       .filter((entry): entry is { agent: RoomAgent; wake: RoomEvent } => entry.wake !== null)
       .sort((a, b) => a.wake.seq - b.wake.seq);
@@ -1870,6 +1902,18 @@ export class RoomEngine {
       ...(changed && changed.changes.length > 0 ? changed : {}),
     });
     if (head !== undefined) this.noteStepCommits(agent.id, turnId, head, startedAt, foreign.length > 0 || this.overlapping(turnId).length > 0);
+    // A failed turn shows the agent the same messages again, which wakes it again: when that keeps failing,
+    // the room stops waking it and says so, until the human writes.
+    if (status === "error" && this.failedInARow(agent.id) === RoomEngine.FAILURES_IN_A_ROW) {
+      const error = result.error ?? { kind: "unknown" as const, message: "failed" };
+      const failures = RoomEngine.FAILURES_IN_A_ROW;
+      this.postSystem(
+        `${agent.label} failed ${failures} turns in a row (${error.message}), so Agoryx stopped waking it — it is woken again when you write.`,
+        { code: "agent.failing", agent: agent.label, handle: agent.id, cli: agent.kind, failures, error: error.kind, message: error.message },
+        false,
+        turnId,
+      );
+    }
     this.log(`${agent.id} ${turnId} ${status}`);
     // With native sync on, the inbox stays watched between turns (ops from the agents' own sessions).
     if (this.running.size === 0 && this.opsTimer && this.nativePollMs <= 0) {
@@ -2274,6 +2318,12 @@ export class RoomEngine {
         if (scan.openNative || scan.exchanges.length > 0) {
           tracker.nativeAt = Date.now();
           // Someone talked to this session outside the room: a process that kept the session in memory no longer has all of it.
+          this.closeLive(agent.id, "the session was used outside the room");
+        }
+        // A command run in the app (/compact, /model) changed the session without a word: the same, once per command.
+        const commands = (scan.commands ?? []).filter((key) => !tracker!.commands?.has(key));
+        if (commands.length > 0) {
+          for (const key of commands) (tracker.commands ??= new Set()).add(key);
           this.closeLive(agent.id, "the session was used outside the room");
         }
         tracker.size = size;

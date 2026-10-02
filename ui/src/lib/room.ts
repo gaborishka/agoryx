@@ -178,7 +178,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   }
   items.push(...stepCommits.values());
   for (const r of st.reverts ?? []) items.push({ key: `v-${r.seq}`, seq: r.seq, type: "revert", r });
-  for (const pr of st.prs ?? []) items.push({ key: `pr-${pr.number}`, seq: pr.seq, type: "pr", pr });
+  for (const pr of st.prs ?? []) items.push({ key: `pr-${pr.repo}#${pr.number}`, seq: pr.seq, type: "pr", pr });
   items.sort((a, b) => a.seq - b.seq);
 
   const name = (h: string) => nameOf(st, h);
@@ -525,7 +525,9 @@ export const turnClock = (elapsedMs: number, limitMs: number, short = false) => 
             : "d";
   const limit = span(limitMs, unit);
   if (elapsed >= limitMs) return `over ${limit}`;
-  const done = span(elapsed, unit);
+  // Rounded down, the clock shows less than the limit until the limit is reached: never "1:30 of 1:30" at 1:30.4 of 1:30.9.
+  const step = unit === "d" ? 3_600_000 : unit === "min" || unit === "h" ? 60_000 : 1000;
+  const done = span(Math.min(elapsed, Math.max(0, Math.floor(limitMs / step) * step - 1)), unit);
   if (short) return done;
   // "18 of 20 min", not "18 min of 20 min".
   return unit === "min" && done.endsWith(" min") ? `${done.slice(0, -4)} of ${limit}` : `${done} of ${limit}`;

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { prose } from "./mentions.js";
+import { prRepo } from "./projection.js";
 import { shellCommands, shellSteps } from "./shell-writes.js";
 import type { Activity, MessageEntry, PrCheck, PrPlan, PrState, PrStatus, RepoState, RoomAgent, RoomEventBody, RoomState, SystemNote } from "./types.js";
 
@@ -120,6 +121,10 @@ export const prLinks = (text: string, repo: string): Array<{ number: number; url
   }
   return [...found].map(([number, url]) => ({ number, url }));
 };
+
+/** The pull request URL gh printed last, of any repository. */
+const lastPrUrl = (output: string): string | undefined =>
+  [...output.matchAll(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\b/g)].at(-1)?.[0];
 
 /** gh pr create's options that take a value: the next word, `--name=value`, or `-Xvalue`. */
 const PR_CREATE_VALUES = new Set(["-t", "--title", "-b", "--body", "-F", "--body-file", "-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assignee", "-l", "--label", "-m", "--milestone", "-p", "--project", "-r", "--reviewer", "-T", "--template", "--recover"]);
@@ -904,19 +909,24 @@ export class RoomGithub {
       if (this.unsure) again();
       return;
     }
-    // Another repository's (a fork's upstream) is not the room's.
-    if (opens.repo && opens.repo !== seen.repo.toLowerCase()) return;
     const output = activity.output ?? "";
     // gh refused, the branch already has one (`|| true` hid it): it opened none.
     if (ALREADY_OPEN.test(output)) return;
+    // Into the repository it named (a fork's upstream too), else the one gh chose: the room's, or the upstream gh
+    // defaults to, as the URL it printed tells (the room's own when it printed one: another may be a later command's).
+    const own = seen.repo.toLowerCase();
+    const latest = lastPrUrl(output);
+    const target = opens.repo ?? (latest && prRepo(latest) !== own && !prLinks(output, own).length ? prRepo(latest) : own);
     // Which one it opened: the URL gh printed, else the open pull request of the branch it named — not after a
     // command that failed without printing one (gh refused, or never ran).
-    const printed = prLinks(output, seen.repo)[0]?.url;
+    const printed = prLinks(output, target)[0]?.url;
     const head = opens.head ?? seen.branch;
+    const owner = opens.owner ?? seen.repo.split("/")[0]!;
     if (!printed && (!head || activity.status !== "ok")) return;
     let found: Awaited<ReturnType<typeof viewPr>>;
     try {
-      found = await viewPr(this.cwd, this.host.env, printed ?? head!, seen.repo);
+      // In another repository the branch is asked for with its owner: others' forks may have one of the same name.
+      found = await viewPr(this.cwd, this.host.env, printed ?? (target === own ? head! : `${owner}:${head}`), target);
     } catch (error) {
       if (!NO_PR.test(error instanceof Error ? error.message : "")) again();
       throw error;
@@ -924,11 +934,12 @@ export class RoomGithub {
     if (this.closed) return;
     // One made before this turn is not the one it opened.
     if (found.createdAt && Number.isFinite(startedAt) && Date.parse(found.createdAt) < startedAt - CLOCK_SKEW_MS) return;
-    if (!printed) {
-      // Not one of the branch's old ones, merged or closed long ago.
+    if (!printed || target !== own) {
+      // Not one of the branch's old ones, merged or closed long ago; into another repository, of the room's branch.
       if (!(found.status.head === head && (found.status.state === "open" || found.status.state === "draft"))) return;
-      // Of this repository's branch, not a fork's of the same name.
-      const owner = opens.owner ?? seen.repo.split("/")[0]!;
+    }
+    if (!printed) {
+      // Of this repository's branch, not a fork's of the same name (into an upstream: of the room's own branch).
       if (found.headOwner && found.headOwner.toLowerCase() !== owner.toLowerCase()) return;
     }
     this.add(found, agent.id, "opened", turnId);
@@ -988,12 +999,13 @@ export class RoomGithub {
     // A closed one may have been reopened since gh was last asked.
     for (const pr of (this.host.state().prs ?? []).filter((entry) => entry.status?.state === "closed" && entry.status.head === branch)) {
       try {
-        this.update(pr.number, (await viewPr(this.cwd, this.host.env, pr.url, repo.repo)).status);
+        this.update(pr, (await viewPr(this.cwd, this.host.env, pr.url, repo.repo)).status);
       } catch (error) {
         this.host.log(`github: #${pr.number} not read: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    const already = this.host.state().prs?.find((pr) => live(pr) && pr.status?.head === branch);
+    // One into another repository (a fork's upstream) does not keep the folder's own from being opened.
+    const already = this.host.state().prs?.find((pr) => live(pr) && pr.status?.head === branch && (pr.repo ?? prRepo(pr.url)) === repo.repo.toLowerCase());
     if (already) throw new GithubUnavailable(`pull request #${already.number} is already open for ${branch}`);
     // One the room doesn't know (opened from a terminal, another room): nothing is pushed for a pull request gh would
     // refuse. gh finding none, or not able to tell, is left to gh pr create.
@@ -1052,9 +1064,10 @@ export class RoomGithub {
       throw error;
     }
     const found = await viewPr(this.cwd, this.host.env, url ?? plan.branch, plan.repo);
-    if (this.known(found.url)) this.update(found.number, found.status);
+    const known = this.find(found.url);
+    if (known) this.update(known, found.status);
     else this.add(found, by, "opened");
-    return this.host.state().prs!.find((pr) => pr.number === found.number)!;
+    return this.find(found.url)!;
   }
 
   /** Ask gh again about the open pull requests (and git about the branch); `always`: even with none open and nobody looking. */
@@ -1101,27 +1114,39 @@ export class RoomGithub {
         continue;
       }
       if (this.closed) return;
-      this.update(pr.number, found.status);
+      this.update(pr, found.status);
     }
   }
 
+  private find(url: string): PrState | undefined {
+    return this.host.state().prs?.find((pr) => pr.url.toLowerCase() === url.toLowerCase());
+  }
+
   private known(url: string): boolean {
-    return Boolean(this.host.state().prs?.some((pr) => pr.url.toLowerCase() === url.toLowerCase()));
+    return Boolean(this.find(url));
   }
 
   private add(found: { number: number; url: string; status: PrStatus }, by: string, via: "opened" | "linked", turnId?: string): void {
     if (this.closed || this.known(found.url)) return;
-    this.host.append({ type: "pr.linked", number: found.number, url: found.url, by, ...(via === "linked" ? { via } : {}), ...(turnId ? { turnId } : {}) });
-    this.host.append({ type: "pr.status", number: found.number, status: found.status });
+    const repo = prRepo(found.url);
+    this.host.append({ type: "pr.linked", repo, number: found.number, url: found.url, by, ...(via === "linked" ? { via } : {}), ...(turnId ? { turnId } : {}) });
+    this.host.append({ type: "pr.status", repo, number: found.number, status: found.status });
     this.schedule();
   }
 
   /** A new status; what changed since the last one comes as a quiet line (the first one is where it started). */
-  private update(number: number, status: PrStatus): void {
+  private update(pr: PrState, status: PrStatus): void {
     if (this.closed) return;
-    const before = this.host.state().prs?.find((pr) => pr.number === number)?.status;
+    const { number } = pr;
+    const before = pr.status;
     if (before && JSON.stringify(before) === JSON.stringify(status)) return;
-    this.host.append({ type: "pr.status", number, status });
+    const repo = pr.repo ?? prRepo(pr.url);
+    this.host.append({ type: "pr.status", repo, number, status });
+    // Another repository's (a fork's upstream) is named with it.
+    const own = this.repo?.repo.toLowerCase();
+    const other = own && repo && repo !== own ? repo : undefined;
+    const ref = `${other ?? ""}#${number}`;
+    const where = other ? { repo: other } : {};
     if (!before) return;
     const was = checksResult(before.checks);
     const now = checksResult(status.checks);
@@ -1129,31 +1154,33 @@ export class RoomGithub {
       const failed = status.checks.filter((check) => check.result === "fail").map((check) => check.name);
       this.host.note(
         now === "pass"
-          ? `PR #${number}: ${status.checks.length === 1 ? "the check" : `all ${status.checks.length} checks`} passed.`
-          : `PR #${number}: ${failed.length} of ${status.checks.length} checks failed — ${failed.join(", ")}.`,
-        { code: "pr.checks", n: number, result: now, ...(now === "fail" ? { failed } : {}), total: status.checks.length },
+          ? `PR ${ref}: ${status.checks.length === 1 ? "the check" : `all ${status.checks.length} checks`} passed.`
+          : `PR ${ref}: ${failed.length} of ${status.checks.length} checks failed — ${failed.join(", ")}.`,
+        { code: "pr.checks", n: number, ...where, result: now, ...(now === "fail" ? { failed } : {}), total: status.checks.length },
       );
     }
     if ((status.review === "approved" || status.review === "changes") && status.review !== before.review) {
       const who = status.reviewer ? ` by ${status.reviewer}` : "";
-      this.host.note(status.review === "approved" ? `PR #${number} approved${who}.` : `PR #${number}: changes requested${who}.`, {
+      this.host.note(status.review === "approved" ? `PR ${ref} approved${who}.` : `PR ${ref}: changes requested${who}.`, {
         code: "pr.review",
         n: number,
+        ...where,
         review: status.review,
         ...(status.reviewer ? { by: status.reviewer } : {}),
       });
     }
     if (status.state === "merged" && before.state !== "merged") {
-      this.host.note(`PR #${number} merged into ${status.base}${status.mergedBy ? ` by ${status.mergedBy}` : ""}.`, {
+      this.host.note(`PR ${ref} merged into ${status.base}${status.mergedBy ? ` by ${status.mergedBy}` : ""}.`, {
         code: "pr.merged",
         n: number,
+        ...where,
         base: status.base,
         ...(status.mergedBy ? { by: status.mergedBy } : {}),
       });
     } else if (status.state === "closed" && before.state !== "closed") {
-      this.host.note(`PR #${number} closed without merging.`, { code: "pr.closed", n: number });
+      this.host.note(`PR ${ref} closed without merging.`, { code: "pr.closed", n: number, ...where });
     } else if ((status.state === "open" || status.state === "draft") && before.state === "closed") {
-      this.host.note(`PR #${number} reopened.`, { code: "pr.reopened", n: number });
+      this.host.note(`PR ${ref} reopened.`, { code: "pr.reopened", n: number, ...where });
     }
   }
 

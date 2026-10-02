@@ -1,9 +1,13 @@
+import { limitText } from "../../../../internal/agora/duration";
 import type { RoomSettings, SystemCode, SystemNote, TurnError } from "../types";
 
 /**
  * The UI's catalogue: every line Agoryx writes (by its code), and the words the UI uses for models, effort
  * and the room's own worktree. The interface speaks one locale, English; the rest of the UI keeps its copy in place.
  */
+
+/** A pull request as the lines name it: `#12`, or `owner/name#12` when it is another repository's. */
+const prRef = (n: { n: number; repo?: string }) => `${n.repo ?? ""}#${n.n}`;
 
 /** "1 turn", "3 turns". */
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -37,7 +41,7 @@ const settings = (patch: Partial<RoomSettings>): string =>
     patch.access === undefined ? null : patch.access === "readonly" ? "read-only" : "agents can edit the folder",
     patch.network === undefined ? null : `network ${onOff(patch.network)}`,
     patch.autoCommit === undefined ? null : `checkpoints ${onOff(patch.autoCommit)}`,
-    patch.turnTimeoutMs === undefined ? null : `turn time limit ${Math.round(patch.turnTimeoutMs / 60_000)} min`,
+    patch.turnTimeoutMs === undefined ? null : `turn time limit ${limitText(patch.turnTimeoutMs)}`,
     patch.doc === undefined ? null : patch.doc ? `shared document \`${patch.doc}\`` : "no shared document",
   ]
     .filter(Boolean)
@@ -55,8 +59,9 @@ const openOnTable = (open: Note<"run.budget">["open"]): string =>
 
 /** What went wrong with a turn, and what to do about it; the CLI's own message stays as it said it. */
 const failure = (error: TurnError["kind"], message: string, cli: string): string => {
-  const minutes = error === "timeout" ? /(\d+)\s*min/.exec(message)?.[1] : undefined;
-  if (minutes) return `the turn ran past its time limit (${minutes} min)`;
+  // "turn exceeded 1:30": the limit as it was set (older rooms: whole minutes, "turn exceeded 2 min").
+  const limit = error === "timeout" ? /^turn exceeded (.+)$/.exec(message)?.[1] : undefined;
+  if (limit) return `the turn ran past its time limit (${limit})`;
   const hint =
     error === "rate_limit"
       ? " (rate limit — it will try again with the next message)"
@@ -113,6 +118,7 @@ const sys: Say = {
   },
   "agent.removed": (n, who) => `${who ?? n.by} removes ${n.agent} from the room. Its messages stay.`,
   "turn.failed": (n) => `${n.agent}: the turn could not finish — ${failure(n.error, n.message, n.cli)}`,
+  "agent.failing": (n) => `${n.agent} failed ${n.failures} turns in a row — ${failure(n.error, n.message, n.cli)} — so it is not woken again until you write.`,
   "agent.busy": (n) => `${n.agent} is talking in its own session right now — its turn in the room starts after that.`,
   "agent.compacted": (n) => `${n.agent}’s context was compacted at ${clock(n.at)}.`,
   "jev.second_look": (n) => {
@@ -126,12 +132,12 @@ const sys: Say = {
   decision: (n) => `Decision #${n.n}: ${n.option} “${n.title}”${n.note ? ` — ${n.note}` : ""} (decided by ${n.by})`,
   "pr.checks": (n) =>
     n.result === "pass"
-      ? `PR #${n.n}: ${n.total === 1 ? "the check" : `all ${n.total} checks`} passed.`
-      : `PR #${n.n}: ${n.failed?.length ?? 0} of ${plural(n.total, "check", "checks")} failed${n.failed?.length ? ` — ${n.failed.join(", ")}` : ""}.`,
-  "pr.review": (n) => (n.review === "approved" ? `PR #${n.n} approved${n.by ? ` by ${n.by}` : ""}.` : `PR #${n.n}: changes requested${n.by ? ` by ${n.by}` : ""}.`),
-  "pr.merged": (n) => `PR #${n.n} merged into \`${n.base}\`${n.by ? ` by ${n.by}` : ""}.`,
-  "pr.closed": (n) => `PR #${n.n} closed without merging.`,
-  "pr.reopened": (n) => `PR #${n.n} reopened.`,
+      ? `PR ${prRef(n)}: ${n.total === 1 ? "the check" : `all ${n.total} checks`} passed.`
+      : `PR ${prRef(n)}: ${n.failed?.length ?? 0} of ${plural(n.total, "check", "checks")} failed${n.failed?.length ? ` — ${n.failed.join(", ")}` : ""}.`,
+  "pr.review": (n) => (n.review === "approved" ? `PR ${prRef(n)} approved${n.by ? ` by ${n.by}` : ""}.` : `PR ${prRef(n)}: changes requested${n.by ? ` by ${n.by}` : ""}.`),
+  "pr.merged": (n) => `PR ${prRef(n)} merged into \`${n.base}\`${n.by ? ` by ${n.by}` : ""}.`,
+  "pr.closed": (n) => `PR ${prRef(n)} closed without merging.`,
+  "pr.reopened": (n) => `PR ${prRef(n)} reopened.`,
   "git.force_pushed": (n) =>
     n.rewrote === false
       ? `${n.agent} pushed with force${n.refs?.length ? ` to ${n.refs.map((ref) => `\`${ref}\``).join(", ")}` : " to its remote"}${n.failed ? `, or tried to (${n.failed === "command" ? "the command failed" : "git printed an error"}; git did not say whether it rewrote history)` : " (git did not say whether it rewrote history)"}: \`${n.command}\``

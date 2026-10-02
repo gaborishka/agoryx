@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checksResult, forcePushed, ghReady, gitPushes, githubRepo, joinedPushes, prCreate, prLinks, prStatus, readRepo } from "../../internal/agora/github.js";
+import { applyEvent, initialState } from "../../internal/agora/projection.js";
 import { forHumanOnly } from "../../internal/agora/prompts.js";
 import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { describeCodexItem } from "../../internal/agora/runners/codex.js";
@@ -25,7 +26,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const HUMAN = { by: "Ivan" };
 const FIELDS = "number,url,title,state,isDraft,mergeable,additions,deletions,headRefName,baseRefName,reviewDecision,latestReviews,statusCheckRollup,mergedBy,createdAt,headRepositoryOwner";
 
-type GhState = { prs: Array<Record<string, any>>; calls: string[][]; loggedOut?: boolean; authUnsure?: boolean; defaultBranch?: string; noRepoView?: boolean; failCreate?: string };
+type GhState = { prs: Array<Record<string, any>>; calls: string[][]; loggedOut?: boolean; authUnsure?: boolean; defaultBranch?: string; noRepoView?: boolean; failCreate?: string; createRepo?: string };
 
 /** A `gh` that answers from a JSON file, first in PATH. */
 const fakeGh = (home: string, prs: unknown[] = [], extra: Partial<GhState> = {}) => {
@@ -609,7 +610,8 @@ test("a pull request is the room's only when it is of the room's branch and repo
     assert.equal(room.store.state.prs, undefined);
     assert.deepEqual(
       gh.asked().filter((call) => call.startsWith("pr ")),
-      [`pr view https://github.com/acme/widgets/pull/5 --json ${FIELDS}`],
+      // Into the upstream, gh printing nothing: the branch's open one there is looked for (there is none).
+      [`pr view https://github.com/acme/widgets/pull/5 --json ${FIELDS}`, `pr view acme:feat --repo upstream/widgets --json ${FIELDS}`],
       "a link in code or a quote is not asked about; a pull request nobody opened is not looked for",
     );
 
@@ -1261,4 +1263,122 @@ test("what a push shows of the command: a setting that is no secret, a proxy's o
   assert.deepEqual(gitPushes("git push -f origin feat 2>/dev/fd/01").map((push) => Boolean(push.hushed)), [false]);
   assert.deepEqual(gitPushes("git push -f origin feat 2>&01").map((push) => Boolean(push.hushed)), [false]);
   assert.equal(joinedPushes(gitPushes("git push origin a;; git push origin b")), "git push origin a;; git push origin b");
+});
+
+test("a pull request an agent opens into the fork's upstream is the room's too: named with its repository, kept apart from the folder's of the same number", async () => {
+  const home = mkdtempSync(join(tmpdir(), "agora-gh-"));
+  const pr = (number: number, repo: string | undefined, head: string, owner: string) => ({
+    number,
+    ...(repo ? { repo } : {}),
+    title: `${repo ?? "fork"} #${number}`,
+    state: "OPEN",
+    headRefName: head,
+    baseRefName: "main",
+    headRepositoryOwner: { login: owner },
+    createdAt: new Date().toISOString(),
+    statusCheckRollup: [],
+    latestReviews: [],
+  });
+  // The folder's own repository (acme/widgets, a fork) already has #1 and #2, of other branches; upstream has #1.
+  const gh = fakeGh(home, [pr(1, undefined, "docs", "acme"), pr(2, undefined, "fix", "acme"), pr(1, "upstream/widgets", "theirs", "upstream")]);
+  const room = createTestRoom({
+    env: gh.env,
+    rules: [
+      // --repo names the upstream; gh prints the URL there.
+      { agent: "claude", match: "UPSTREAM", once: true, run: [["gh", "pr", "create", "--repo", "upstream/widgets", "--fill", "--head", "acme:feat"]], command: { command: "gh pr create --repo upstream/widgets --fill --head acme:feat", output: "{run0}" }, reply: "Opened upstream." },
+      // No --repo: gh chose the upstream itself, as it does for a fork.
+      { agent: "codex", match: "DEFAULT", once: true, run: [["gh", "pr", "create", "--fill"]], command: { command: "gh pr create --fill", output: "{run0}" }, reply: "Opened." },
+      // No --repo and nothing printed the room reads: looked up by branch in the repository the room knows.
+      { agent: "claude", match: "OWN", once: true, run: [["gh", "pr", "create", "--fill"]], command: { command: "gh pr create --fill && gh pr view 1 --repo upstream/widgets", output: "{run0}\nhttps://github.com/upstream/widgets/pull/1" }, reply: "Opened ours." },
+      { agent: "codex", match: "SILENT", once: true, run: [["sh", "-c", "gh pr create --repo upstream/widgets --fill --head acme:fix2 > /dev/null"]], command: "gh pr create --repo upstream/widgets --fill --head acme:fix2 > /dev/null", reply: "Opened." },
+    ],
+  });
+  try {
+    const ws = room.store.state.workspace;
+    onGithub(ws, home);
+    await withTimeout(room.engine.syncGithub());
+    room.engine.postHuman("@claude UPSTREAM");
+    await withTimeout(room.engine.waitIdle());
+    await withTimeout(room.engine.syncGithub());
+    const prs = () => (room.store.state.prs ?? []).map((entry) => [entry.repo, entry.number, entry.by, entry.status?.title]);
+    assert.deepEqual(prs(), [["upstream/widgets", 3, "claude", "Add widgets"]]);
+    assert.equal(room.store.state.prs![0]!.url, "https://github.com/upstream/widgets/pull/3");
+
+    gh.edit((state) => {
+      state.createRepo = "upstream/widgets";
+    });
+    git(ws, "checkout", "--quiet", "-B", "next");
+    room.engine.postHuman("@codex DEFAULT");
+    await withTimeout(room.engine.waitIdle());
+    await withTimeout(room.engine.syncGithub());
+    assert.deepEqual(prs().at(-1), ["upstream/widgets", 4, "codex", "Add widgets"]);
+
+    git(ws, "checkout", "--quiet", "-B", "fix2");
+    room.engine.postHuman("@codex SILENT");
+    await withTimeout(room.engine.waitIdle());
+    await withTimeout(room.engine.syncGithub());
+    assert.deepEqual(prs().at(-1), ["upstream/widgets", 5, "codex", "Add widgets"]);
+    // Asked for with its owner: another fork's fix2 in upstream is not it.
+    assert.ok(gh.asked().some((call) => call.startsWith("pr view acme:fix2 --repo upstream/widgets --json")));
+    // The folder's own pull request can still be opened from the branch: upstream's is another repository's.
+    assert.equal((await room.engine.prPlan()).branch, "fix2");
+
+    // The folder's #3, opened by the human from a terminal and then linked: another pull request than upstream's #3.
+    gh.edit((state) => {
+      state.prs.push({ ...pr(3, undefined, "fix2", "acme"), title: "fork #3" });
+      state.prs.find((entry) => entry.repo === "upstream/widgets" && entry.number === 3)!.state = "MERGED";
+    });
+    room.engine.post("Also https://github.com/acme/widgets/pull/3", "claude");
+    await withTimeout(room.engine.waitIdle());
+    await withTimeout(room.engine.syncGithub());
+    assert.deepEqual(
+      (room.store.state.prs ?? []).filter((entry) => entry.number === 3).map((entry) => [entry.repo, entry.status?.title, entry.status?.state]),
+      [
+        ["upstream/widgets", "Add widgets", "merged"],
+        ["acme/widgets", "fork #3", "open"],
+      ],
+    );
+    assert.deepEqual(lines(room.store.state.messages, "pr."), [
+      ["PR upstream/widgets#3 merged into main.", { code: "pr.merged", n: 3, repo: "upstream/widgets", base: "main" }],
+    ]);
+    // And the other way round: the folder's #3 closed, upstream's stays merged.
+    gh.edit((state) => {
+      state.prs.find((entry) => !entry.repo && entry.number === 3)!.state = "CLOSED";
+    });
+    await withTimeout(room.engine.syncGithub());
+    assert.deepEqual(lines(room.store.state.messages, "pr.").at(-1), ["PR #3 closed without merging.", { code: "pr.closed", n: 3 }]);
+    assert.equal(room.store.state.prs!.find((entry) => entry.repo === "upstream/widgets" && entry.number === 3)!.status!.state, "merged");
+
+    // gh opened one in the folder's repository, and a later command printed upstream's: the folder's is the one opened.
+    gh.edit((state) => {
+      delete state.createRepo;
+    });
+    git(ws, "checkout", "--quiet", "-B", "own");
+    room.engine.postHuman("@claude OWN");
+    await withTimeout(room.engine.waitIdle());
+    await withTimeout(room.engine.syncGithub());
+    assert.deepEqual(prs().at(-1), ["acme/widgets", 6, "claude", "Add widgets"]);
+  } finally {
+    await room.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pull requests are their repository and number: the same number of two repositories is two of them, an older room's are read by number", () => {
+  const state = initialState({ type: "room.created", seq: 1, ts: "2026-10-02T00:00:00Z", id: "r", title: "t", workspace: "/w", human: "Ivan", agents: [], settings: {} } as never);
+  const status = (title: string) => ({ title, state: "open" as const, mergeable: "yes" as const, additions: 0, deletions: 0, head: "feat", base: "main", checks: [], review: null });
+  let seq = 1;
+  const apply = (event: Record<string, unknown>) => applyEvent(state, { ...event, seq: (seq += 1), ts: "2026-10-02T00:00:00Z" } as never);
+  apply({ type: "pr.linked", number: 7, url: "https://github.com/acme/widgets/pull/7", by: "claude" });
+  apply({ type: "pr.status", number: 7, status: status("old room's") });
+  apply({ type: "pr.linked", repo: "upstream/widgets", number: 7, url: "https://github.com/upstream/widgets/pull/7", by: "codex" });
+  apply({ type: "pr.status", repo: "upstream/widgets", number: 7, status: status("upstream's") });
+  apply({ type: "pr.status", repo: "acme/widgets", number: 7, status: status("the fork's, again") });
+  assert.deepEqual(
+    state.prs!.map((pr) => [pr.repo, pr.number, pr.by, pr.status?.title]),
+    [
+      ["acme/widgets", 7, "claude", "the fork's, again"],
+      ["upstream/widgets", 7, "codex", "upstream's"],
+    ],
+  );
 });

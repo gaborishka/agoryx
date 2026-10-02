@@ -113,6 +113,7 @@ const sys: Say = {
   },
   "agent.removed": (n, who) => `${who ?? n.by} removes ${n.agent} from the room. Its messages stay.`,
   "turn.failed": (n) => `${n.agent}: the turn could not finish — ${failure(n.error, n.message, n.cli)}`,
+  "agent.failing": (n) => `${n.agent} failed ${n.failures} turns in a row — ${failure(n.error, n.message, n.cli)} — so it is not woken again until you write.`,
   "agent.busy": (n) => `${n.agent} is talking in its own session right now — its turn in the room starts after that.`,
   "agent.compacted": (n) => `${n.agent}’s context was compacted at ${clock(n.at)}.`,
   "jev.second_look": (n) => {

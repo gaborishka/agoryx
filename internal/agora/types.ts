@@ -123,6 +123,8 @@ export type SystemNote =
   | { code: "agent.removed"; by: string; agent: string }
   | { code: "turn.failed"; agent: string; cli: AgentKind; error: TurnError["kind"]; message: string }
   | { code: "agent.busy"; agent: string }
+  /** The agent failed `failures` turns in a row (`error`/`message`: the last one's), so the room stopped waking it until the human writes. */
+  | { code: "agent.failing"; agent: string; handle: string; cli: AgentKind; failures: number; error: TurnError["kind"]; message: string }
   /** The agent's CLI compacted its context (`handle`: the agent's id, `key`: the line in its session file, `at`: when). Agents never read it. */
   | { code: "agent.compacted"; agent: string; handle: string; key: string; at: string }
   | { code: "jev.second_look"; agent: string; readers: JevShare[] }

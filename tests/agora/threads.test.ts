@@ -132,8 +132,9 @@ test("an agent starts a thread; when its run ends the parent gets the report ver
   assert.deepEqual(thread.agents.map((a: any) => a.id), ["claude"]);
   // The thread's agent was told whose thread it is; the parent's, how to start one.
   const prompts = readFileSync(join(home, "fake.log"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line).prompt ?? "");
-  assert.match(prompts.find((prompt) => prompt.includes("THREAD-BRIEF"))!, /Thread: this room is a thread of "Main" \(main-\w+\), on its own branch agoryx\/parser-fix\./);
-  assert.match(prompts.find((prompt) => prompt.includes("Split the parser off"))!, /Threads: `.*new --from here --agents/);
+  // Any order: under load the parent's codex (whose prompt may quote the command) can start before the thread does.
+  assert.ok(prompts.some((prompt) => /Thread: this room is a thread of "Main" \(main-\w+\), on its own branch agoryx\/parser-fix\./.test(prompt)));
+  assert.ok(prompts.some((prompt) => prompt.includes("Split the parser off") && /Threads: `.*new --from here --agents/.test(prompt)));
   const rooms = (await call("GET", "/api/rooms")).body.rooms;
   assert.equal(rooms.find((r: any) => r.id === thread.id).parent, parent.id);
   // An agent's thread is the agent's to read: the human is not called for it.

@@ -8,7 +8,7 @@ import { local } from "@/lib/api";
 import { waitingReason } from "@/lib/attention";
 import { keyLabel, withMod } from "@/lib/keys";
 import { ago, baseName, names, plural, roomPreviewParts, shortPath } from "@/lib/format";
-import { ink, toneText } from "@/lib/room";
+import { ink, nestThreads, toneText } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { THEME_LABEL, useTheme } from "@/lib/theme";
 import type { RoomAgent, RoomSummary } from "@/lib/types";
@@ -142,7 +142,7 @@ function LiveLine({ room, on }: { room: RoomSummary; on: boolean }) {
   );
 }
 
-function RoomRow({ room, on }: { room: RoomSummary; on: boolean }) {
+function RoomRow({ room, on, depth = 0 }: { room: RoomSummary; on: boolean; depth?: number }) {
   const go = useStore((s) => s.go);
   const agents = (room.agents ?? []) as RoomAgent[];
   const working = new Set((room.working ?? []).map((w) => w.agent));
@@ -151,8 +151,10 @@ function RoomRow({ room, on }: { room: RoomSummary; on: boolean }) {
   return (
     <button
       type="button"
-      title={room.mode === "chat" ? "Chat · no project" : room.workspace}
+      title={room.mode === "chat" ? "Chat · no project" : depth ? `Thread · ${room.branch ?? room.workspace}` : room.workspace}
       data-on={on}
+      data-thread={depth ? room.parent : undefined}
+      style={depth ? { marginLeft: `${Math.min(depth, 3) * 0.875}rem`, width: `calc(100% - ${Math.min(depth, 3) * 0.875}rem)` } : undefined}
       aria-current={on ? "page" : undefined}
       onClick={() => go({ kind: "room", id: room.id })}
       className={cn(
@@ -237,9 +239,9 @@ const isGrouped = (rooms: RoomSummary[]) => new Set(rooms.map(groupKey)).size > 
 /** The rooms as the list shows them, top to bottom (filtered, folded folders left out): what ⌥↑/⌥↓ step through. */
 export const sidebarOrder = (rooms: RoomSummary[], current: string | null): RoomSummary[] => {
   const shown = rooms.filter((r) => passes(r, readFilter(), current));
-  if (!isGrouped(rooms)) return shown;
+  if (!isGrouped(rooms)) return nestThreads(shown).map(({ room }) => room);
   const folded = readFolded();
-  return groupRooms(shown).flatMap((group) => (folded.has(group.key) ? [] : group.rooms));
+  return groupRooms(shown).flatMap((group) => (folded.has(group.key) ? [] : nestThreads(group.rooms).map(({ room }) => room)));
 };
 
 function GroupHead({ group, open, onToggle, current, onProject, on }: { group: Group; open: boolean; onToggle: () => void; current: string | null; onProject?: () => void; on?: boolean }) {
@@ -313,7 +315,7 @@ export function Sidebar() {
   );
   const shown = rooms.filter((r) => passes(r, filter, current));
   const grouped = isGrouped(rooms);
-  const row = (room: RoomSummary) => <RoomRow key={room.id} room={room} on={room.id === current} />;
+  const rows = (list: RoomSummary[]) => nestThreads(list).map(({ room, depth }) => <RoomRow key={room.id} room={room} on={room.id === current} depth={depth} />);
 
   return (
     <nav className="flex h-full w-full flex-col bg-sidebar text-foreground" aria-label="Rooms">
@@ -399,12 +401,12 @@ export function Sidebar() {
                   current={current}
                   {...(group.project ? { onProject: () => go({ kind: "project", hash: group.project! }), on: route.kind === "project" && route.hash === group.project } : {})}
                 />
-                {open ? group.rooms.map(row) : null}
+                {open ? rows(group.rooms) : null}
               </section>
             );
           })
         ) : (
-          shown.map(row)
+          rows(shown)
         )}
       </div>
       <div className="flex items-center gap-1 border-t border-border/70 px-2 py-2">

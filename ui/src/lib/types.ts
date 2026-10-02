@@ -29,6 +29,8 @@ export interface RoomSummary {
   /** Work rooms: their project (folder), by hash, and the name written for it. */
   projectHash?: string;
   projectName?: string;
+  /** A thread: the room it was started from. */
+  parent?: string;
 }
 
 /** A project event: a name, goal or instructions written, with who wrote it. */

@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { Avatar, Name, Tip } from "./bits";
 import { AgentMessage, CommitLine, DecisionLine, DocLine, Fresh, HumanMessage, PassLine, RevertLine, StandaloneOp, StepCommitLine, SystemLine, UpdateLine } from "./Messages";
 import { PrCard } from "./Github";
+import { isThreadReport, ThreadCard } from "@/components/thread/ThreadCard";
 import { ActivityList } from "./Trace";
 import { QuoteSelection } from "./QuoteSelection";
 
@@ -88,6 +89,7 @@ function Item({ item, model, fresh, card, clamp }: { item: FeedItem; model: Feed
   const docs = m.turnId ? model.docByTurn.get(m.turnId) : undefined;
   let body;
   if (m.kind === "pass") body = <PassLine m={m} turn={turn} ops={ops} docs={docs} />;
+  else if (isThreadReport(m)) body = <ThreadCard m={m} />;
   else if (m.kind === "system") body = <SystemLine m={m} />;
   else if (m.kind === "decision") body = <DecisionLine m={m} />;
   else if (m.kind === "update") body = <UpdateLine m={m} />;

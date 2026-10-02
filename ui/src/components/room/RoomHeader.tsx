@@ -153,6 +153,11 @@ function Presence({ a }: { a: RoomAgent }) {
 function Title() {
   const name = useStore((s) => s.snap?.state.name ?? "");
   const createdBy = useStore((s) => s.snap?.state.createdBy);
+  const id = useStore((s) => s.snap?.state.id);
+  const parent = useStore((s) => s.snap?.state.parent);
+  const parentName = useStore((s) => s.rooms.find((room) => room.id === s.snap?.state.parent)?.name);
+  const go = useStore((s) => s.go);
+  const openThread = useStore((s) => s.openThread);
   const post = useStore((s) => s.post);
   const [editing, setEditing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -193,7 +198,7 @@ function Title() {
       </form>
     );
   }
-  return (
+  const title = (
     <button
       type="button"
       onClick={() => setEditing(true)}
@@ -202,6 +207,25 @@ function Title() {
     >
       {name}
     </button>
+  );
+  if (!parent) return title;
+  // A thread: the room it came from, which opens with this thread beside it.
+  return (
+    <span className="flex min-w-0 items-center gap-1">
+      <button
+        type="button"
+        title="The room this thread was started from"
+        onClick={() => {
+          go({ kind: "room", id: parent });
+          if (id) openThread(id);
+        }}
+        className="max-w-[40%] shrink-0 truncate rounded-md px-1 text-small text-muted-foreground hover:bg-accent hover:text-foreground"
+      >
+        {parentName ?? parent}
+      </button>
+      <span className="shrink-0 text-faint">›</span>
+      {title}
+    </span>
   );
 }
 

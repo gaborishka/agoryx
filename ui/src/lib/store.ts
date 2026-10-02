@@ -9,9 +9,10 @@ import type { AgentPresence, LimitSnapshot, OpEntry, RoomEvent, RoomSummary, Run
 /**
  * The right-hand panel's tabs: an agent's own session, the shared document, the room's browser (in the app),
  * what turns changed, the workspace's files, and the table beside the conversation (it is also a view of its own,
- * but never both at once).
+ * but never both at once). `thread`: a thread of this room, opened from its card; it is not one of the tabs an
+ * address or the toggle brings back, since it shows another room.
  */
-export type PanelTab = "session" | "doc" | "browser" | "diff" | "files" | "table";
+export type PanelTab = "session" | "doc" | "browser" | "diff" | "files" | "table" | "thread";
 export const PANEL_TABS: readonly PanelTab[] = ["session", "doc", "browser", "diff", "files", "table"];
 
 /** Which changes the Changes tab shows: one turn's, the whole room's against where it began, or one checkpoint. */
@@ -86,6 +87,8 @@ interface Store {
   lastTab: PanelTab;
   /** Whose session the session panel shows. */
   sessionAgent: string | null;
+  /** The thread the thread tab shows: a room started from this one. */
+  thread: string | null;
   changes: ChangesFocus;
   /** The file the Files tab shows; null: the list. */
   filePath: string | null;
@@ -139,6 +142,8 @@ interface Store {
   setDocFocus: (seq: number | null) => void;
   /** Show an agent's session in the side panel (the first agent's when none is named); again for the same agent closes it. */
   openSession: (agent?: string, toggle?: boolean) => void;
+  /** Show a thread of this room in the side panel. */
+  openThread: (id: string) => void;
   setView: (view: RoomView) => void;
   setWide: (wide: boolean) => void;
   setNavWidth: (width: number | null) => void;
@@ -178,6 +183,7 @@ export const useStore = create<Store>((set, get) => ({
   panel: null,
   lastTab: PANEL_TABS.includes(local.get("panelTab") as PanelTab) ? (local.get("panelTab") as PanelTab) : "session",
   sessionAgent: null,
+  thread: null,
   changes: { scope: "turn" },
   filePath: null,
   fileTabs: [],
@@ -257,14 +263,15 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   setPanel(panel) {
-    if (panel) local.set("panelTab", panel);
+    if (panel === "thread" && !get().thread) panel = null;
+    if (panel && panel !== "thread") local.set("panelTab", panel);
     // The table beside the conversation: the room's column goes back to the conversation.
     if (panel === "table" && get().view === "table") get().setView("chat");
     set(panel ? { panel, lastTab: panel } : { panel });
   },
   togglePanel(tab) {
-    const { panel, lastTab } = get();
-    if (!tab) get().setPanel(panel ? null : lastTab);
+    const { panel, lastTab, thread } = get();
+    if (!tab) get().setPanel(panel ? null : lastTab === "thread" && !thread ? "session" : lastTab);
     else get().setPanel(panel === tab ? null : tab);
   },
   openChanges(focus) {
@@ -308,6 +315,10 @@ export const useStore = create<Store>((set, get) => ({
     }
     get().setPanel("session");
     set({ sessionAgent: target });
+  },
+  openThread(id) {
+    set({ thread: id });
+    get().setPanel("thread");
   },
   setView(view) {
     const route = get().route;
@@ -537,7 +548,7 @@ const parseHash = (): { route: Route | null; params: URLSearchParams } => {
   return { route: head ? { kind: "room", id: head } : null, params };
 };
 
-type Addressed = Pick<Store, "route" | "view" | "panel" | "changes" | "filePath" | "sessionAgent" | "docFocus">;
+type Addressed = Pick<Store, "route" | "view" | "panel" | "changes" | "filePath" | "sessionAgent" | "docFocus" | "thread">;
 
 /** The address of what the page shows. */
 const hashFor = (s: Addressed): string => {
@@ -558,13 +569,14 @@ const hashFor = (s: Addressed): string => {
     } else if (s.panel === "files" && s.filePath) p.set("path", s.filePath);
     else if (s.panel === "session" && s.sessionAgent) p.set("agent", s.sessionAgent);
     else if (s.panel === "doc" && s.docFocus != null) p.set("rev", String(s.docFocus));
+    else if (s.panel === "thread" && s.thread) p.set("thread", s.thread);
   }
   const query = p.toString();
   return `#${encodeURIComponent(s.route.id)}${query ? `?${query}` : ""}`;
 };
 
 /** Nothing of another room's selected: its own turns, files and revisions. */
-const FRESH = { changes: { scope: "turn" } as ChangesFocus, filePath: null, fileTabs: [] as string[], docFocus: null };
+const FRESH = { changes: { scope: "turn" } as ChangesFocus, filePath: null, fileTabs: [] as string[], docFocus: null, thread: null };
 
 /**
  * What entering a room sets besides the route. From an address (`params`): what it says, the view otherwise
@@ -576,13 +588,15 @@ const routeState = (route: Route, params: URLSearchParams | null): Partial<Store
   const same = s.route.kind === "room" && s.route.id === route.id;
   const remembered: RoomView = local.get(`view.${route.id}`) === "table" ? "table" : "chat";
   // A bare #<room> (the app opening a room it is already on) leaves what is shown as it is.
-  if (!params || (same && !params.size)) return same ? {} : { view: remembered, ...FRESH };
+  // Another room's thread is not this one's: that tab closes.
+  if (!params || (same && !params.size)) return same ? {} : { view: remembered, ...FRESH, ...(s.panel === "thread" ? { panel: null } : {}) };
   const view = params.get("view");
   // The view an address names is the one now shown here, so it is remembered: the rewritten address omits chat.
   if (view === "table" || view === "chat") local.set(`view.${route.id}`, view === "table" ? "table" : null);
   const tab = params.get("panel") as PanelTab | null;
   // An address without a panel closes it in this room; another room's address keeps the tab open.
-  const panel = tab && PANEL_TABS.includes(tab) ? tab : same ? null : s.panel;
+  const thread = tab === "thread" ? params.get("thread") : null;
+  const panel = thread ? "thread" : tab && PANEL_TABS.includes(tab) ? tab : same || s.panel === "thread" ? null : s.panel;
   const turn = params.get("turn");
   const sha = params.get("commit");
   const scope = params.get("scope");
@@ -603,6 +617,7 @@ const routeState = (route: Route, params: URLSearchParams | null): Partial<Store
     fileTabs: same ? s.fileTabs : [],
     sessionAgent: params.get("agent") || s.sessionAgent,
     docFocus: panel === "doc" && Number.isFinite(rev) ? rev : null,
+    thread,
   };
 };
 
@@ -650,7 +665,8 @@ const followAddress = () =>
       s.changes === prev.changes &&
       s.filePath === prev.filePath &&
       s.sessionAgent === prev.sessionAgent &&
-      s.docFocus === prev.docFocus
+      s.docFocus === prev.docFocus &&
+      s.thread === prev.thread
     )
       return;
     const hash = hashFor(s);

@@ -565,3 +565,25 @@ export const refAnchor = (st: RoomState, ref: string) => {
   }
   return `ti-${ref}`;
 };
+
+/**
+ * The rooms with each thread right under the room it came from, in the order given; a thread whose room is not in
+ * the list stays where it is. `depth`: how many threads deep.
+ */
+export const nestThreads = (rooms: RoomSummary[]): Array<{ room: RoomSummary; depth: number }> => {
+  const ids = new Set(rooms.map((room) => room.id));
+  const nested = (room: RoomSummary) => Boolean(room.parent && room.parent !== room.id && ids.has(room.parent));
+  const children = new Map<string, RoomSummary[]>();
+  for (const room of rooms) if (nested(room)) children.set(room.parent!, [...(children.get(room.parent!) ?? []), room]);
+  const out: Array<{ room: RoomSummary; depth: number }> = [];
+  const seen = new Set<string>();
+  const visit = (room: RoomSummary, depth: number) => {
+    if (seen.has(room.id)) return;
+    seen.add(room.id);
+    out.push({ room, depth });
+    for (const child of children.get(room.id) ?? []) visit(child, depth + 1);
+  };
+  for (const room of rooms) if (!nested(room)) visit(room, 0);
+  for (const room of rooms) visit(room, 0);
+  return out;
+};

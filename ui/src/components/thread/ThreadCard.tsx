@@ -1,4 +1,4 @@
-import { GitBranchIcon, PanelRightOpenIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GitBranchIcon, PanelRightOpenIcon } from "lucide-react";
 import { useState } from "react";
 import { Markdown } from "@/components/md/Markdown";
 import { Stats } from "@/components/room/bits";
@@ -10,9 +10,9 @@ import type { MessageEntry } from "@/lib/types";
 import type { SystemNote } from "@agora/types";
 
 /**
- * What a thread left when its run ended, as its parent's feed shows it: its name and who works in it, its branch
- * with the diff stat (uncommitted files counted), the files, what its table got, and its last message verbatim. No
- * summary: the thread itself opens beside the conversation.
+ * What a thread left when its run ended, as its parent's feed shows it: one line — its name, who works in it, how its
+ * run ended, the files and the diff stat — that opens in place into the card: its branch, the files, what its table
+ * got, and its last message verbatim. No summary: the thread itself opens beside the conversation.
  */
 
 type ThreadNote = Extract<SystemNote, { code: "thread.reported" }>;
@@ -27,6 +27,8 @@ export function ThreadCard({ m }: { m: MessageEntry & { sys: ThreadNote } }) {
   const openThread = useStore((s) => s.openThread);
   const shown = useStore((s) => s.panel === "thread" && s.thread === sys.room);
   const room = useStore((s) => s.snap?.state);
+  const resolved = useStore((s) => s.rooms.find((entry) => entry.id === sys.room)?.resolved);
+  const [expanded, setExpanded] = useState(false);
   const [all, setAll] = useState(false);
   const added = sys.files.reduce((sum, file) => sum + (file.added ?? 0), 0);
   const removed = sys.files.reduce((sum, file) => sum + (file.removed ?? 0), 0);
@@ -34,15 +36,64 @@ export function ThreadCard({ m }: { m: MessageEntry & { sys: ThreadNote } }) {
   const chips = all ? sys.files : sys.files.slice(0, CHIPS);
   const hidden = sys.files.length - chips.length + (sys.more ?? 0);
   const open = sys.open && !sys.items.some((item) => item.id === sys.open!.id) ? sys.open : null;
+  const status = resolved ? (
+    <span className="flex shrink-0 items-center gap-0.5 text-meta text-faint" title={`Resolved by ${resolved.by}`}>
+      <CheckIcon className="size-3.5" /> resolved
+    </span>
+  ) : null;
+  if (!expanded) {
+    return (
+      <div className="flex w-full max-w-xl min-w-0 items-center gap-1 rounded-full border border-border bg-card pr-1 text-small shadow-soft" data-thread={sys.room}>
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          aria-expanded={false}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-full py-1.5 pl-3 text-left transition hover:bg-foreground/[0.03]"
+        >
+          <ChevronRightIcon className="size-3.5 shrink-0 text-faint" />
+          <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 truncate font-medium">{sys.name}</span>
+          <span className="hidden shrink-0 text-meta text-muted-foreground sm:inline">
+            {sys.agents.join(", ")} · {ENDED[sys.reason]}
+          </span>
+          <span className="ml-auto shrink-0 text-meta text-muted-foreground">
+            {total ? (
+              <>
+                {total} file{total === 1 ? "" : "s"}{" "}
+                <span className="font-mono">
+                  <Stats added={added} removed={removed} />
+                </span>
+              </>
+            ) : (
+              "no changes"
+            )}
+          </span>
+          {status}
+        </button>
+        <Button
+          size="icon"
+          variant={shown ? "secondary" : "ghost"}
+          className="size-7 shrink-0 rounded-full"
+          aria-label="View thread"
+          title="View the thread beside the conversation"
+          onClick={() => openThread(sys.room)}
+        >
+          <PanelRightOpenIcon className="size-3.5" />
+        </Button>
+      </div>
+    );
+  }
   return (
     <div className="flex w-full max-w-xl min-w-0 flex-col gap-2 rounded-xl border border-border bg-card px-3.5 py-3 text-small shadow-soft" data-thread={sys.room}>
-      <div className="flex min-w-0 items-baseline gap-2">
+      <button type="button" onClick={() => setExpanded(false)} aria-expanded className="flex min-w-0 items-baseline gap-2 text-left">
+        <ChevronDownIcon className="size-3.5 shrink-0 self-center text-faint" />
         <span className="shrink-0 text-meta text-faint">Thread</span>
         <span className="min-w-0 truncate font-medium">{sys.name}</span>
         <span className="ml-auto shrink-0 text-meta text-muted-foreground">
           {sys.agents.join(", ")} · {ENDED[sys.reason]}
         </span>
-      </div>
+        {status}
+      </button>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-meta text-muted-foreground">
         <GitBranchIcon className="size-3.5 shrink-0" />
         {sys.branch ? (

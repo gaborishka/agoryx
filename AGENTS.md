@@ -17,33 +17,20 @@ It describes how to work on Agoryx in Codex + Claude collaboration.
 ## Source-of-Truth Files
 - `docs/CONSENSUS.md` — decisions and scope boundaries for v0.1.
 - `docs/ARCHITECTURE.md` — technical contract.
-- `bridge/SESSION.md` — current state.
-- `bridge/LOG.md` — handover log (append-only).
-- `bridge/PROTOCOL.md` — bridge rules.
+- Project memory (`/memory show`, `.agoryx/memory.md`) — current state and decisions.
 
 ## Mandatory Bootstrap for Any Agent
-1. Read `bridge/SESSION.md`.
-2. Read the last 2-3 entries in `bridge/LOG.md`.
-3. Cross-check `docs/CONSENSUS.md` and `docs/ARCHITECTURE.md`.
-4. Check `git status` and the current file tree before making changes.
+1. Read the project memory (`/memory show` or `.agoryx/memory.md`).
+2. Cross-check `docs/CONSENSUS.md` and `docs/ARCHITECTURE.md`.
+3. Check `git status` and the current file tree before making changes.
 
 ## Codex + Claude Collaboration Protocol
-1. After substantial work, update `bridge/SESSION.md`.
-2. Append a new entry to the end of `bridge/LOG.md` (never overwrite the log).
-3. If `SESSION.md` and `LOG.md` conflict, the newest (bottom-most) entry in `LOG.md` has priority.
-4. Truth order in `LOG.md` is determined by line order (append order), not timestamps.
-5. All communication in Bridge files (`bridge/*`) must be in English.
-
-Quick log entry:
-```bash
-./scripts/bridge-note.sh <agent> "<summary>" "<changes>" "<risks>" "<next>"
-```
+After substantial work, update the project memory (`/memory note` or `/memory decision`).
 
 ## Communication Rule with Ivan
 - Write in chat only in two cases:
 1. A decision/help is needed (blocker).
 2. A completed result is ready to present.
-- All other agent-to-agent communication must go through `bridge/*` files in English.
 
 ## Safe Parallel Work Rules
 - Do not create alternative layers or duplicate project structures.

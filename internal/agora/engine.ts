@@ -2,6 +2,7 @@ import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openS
 import { dirname, join, resolve } from "node:path";
 import { clearTurnContext, TURN_FILE_ENV, turnContextPath, writeTurnContext } from "./turn-context.js";
 import { actorFields, actorLabel, AGENT_KEY_ENV, describeSettings, originName } from "./actor.js";
+import { checkpointBody, checkpointSubject, roomLine, runSteps } from "./checkpoint-message.js";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
 import { embed, mediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeCompaction, type NativeExchange } from "./native.js";
@@ -40,6 +41,7 @@ import type {
 } from "./types.js";
 import {
   checkpointCommit,
+  type CheckpointBody,
   checkpointFolder,
   checkpointRef,
   clearStaleAcks,
@@ -59,6 +61,7 @@ import {
   roomDirName,
   snapshotChanges,
   snapshotTree,
+  stepCommitsSince,
   treeChangedPaths,
   treeChanges,
   workspacePaths,
@@ -2464,15 +2467,16 @@ export class RoomEngine {
   private checkpoint(run: RunState): void {
     if (!this.state.settings.autoCommit) return;
     const turns = this.state.turns.filter((turn) => turn.runId === run.id && turn.files?.length);
-    const lines = turns.map((turn) => {
-      const message = this.state.messages.find((entry) => entry.id === turn.messageId);
-      const first = message?.text.split("\n")[0]?.slice(0, 90) ?? turn.status;
-      return `${turn.id} ${turn.agent}: ${first} [${turn.files!.length} files]`;
-    });
-    const trigger = this.state.messages.find((entry) => entry.id === run.trigger);
-    const subject = `agoryx(${this.state.name}): ${trigger ? trigger.text.split("\n")[0]!.slice(0, 60) : `run ${run.id}`}`;
+    // Named by the steps the run finished, as the table holds them, not by the words that started it; the body
+    // lists the files the commit really holds, each with the turns that changed it.
+    // The room's name is the human's words more often than not: it goes at the end of the body, not in the subject.
+    const steps = runSteps(this.store.events, this.state.table.next, run.startedSeq);
+    const started = Date.parse(this.state.turns.find((turn) => turn.runId === run.id)?.startedAt ?? "") || 0;
     // Only what the run's turns were credited with: not another room's work, not anyone's staged changes.
     const files = [...new Set(turns.flatMap((turn) => turn.files ?? []))];
+    // A step its author committed during the run went in with that commit: the body says so, the subject names the rest.
+    const committed = started && steps.some((step) => step.done) ? stepCommitsSince(this.state.workspace, started, files) : new Map<string, string>();
+    const subject = `agoryx: ${checkpointSubject(steps, run.id, [...new Set(turns.map((turn) => turn.agent))], committed)}`;
     const expectedTrees = new Map<string, string>();
     // The last completed credited turn supplies each file's checkpoint version.
     const turnIds = new Set(turns.map((turn) => turn.id));
@@ -2484,13 +2488,12 @@ export class RoomEngine {
       }
     }
     // Alone in the directory, and no other room's turn ran during this run: everything, as always.
-    const started = Date.parse(this.state.turns.find((turn) => turn.runId === run.id)?.startedAt ?? "") || 0;
     const shared = roomsSharingWorkspace(this.store).length > 1 || otherRoomTurns(this.state.workspace, this.state.id, started).length > 0;
-    this.recordCheckpoint(subject, lines.join("\n"), shared ? files : undefined, shared ? expectedTrees : undefined);
+    this.recordCheckpoint(subject, (held) => `${checkpointBody(steps, held, turns, committed)}\n\n${roomLine(this.state.name)}`, shared ? files : undefined, shared ? expectedTrees : undefined);
   }
 
   /** A checkpoint commit (all of the folder, or only `files` in a shared one), and the whole folder at it, to return to. */
-  private recordCheckpoint(subject: string, body: string, files?: string[], expectedTrees?: ReadonlyMap<string, string>): void {
+  private recordCheckpoint(subject: string, body: CheckpointBody, files?: string[], expectedTrees?: ReadonlyMap<string, string>): void {
     const commit = checkpointCommit(this.state.workspace, subject, body, files, expectedTrees);
     if (!commit) return;
     const folder = checkpointFolder(this.state.workspace, commit.sha, checkpointRef(this.state.id, commit.sha));

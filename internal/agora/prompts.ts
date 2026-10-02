@@ -298,6 +298,14 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     ...(norms ? ["- Disagree when you disagree, and say what would change your mind. An unresolved disagreement, stated clearly, is a valid outcome."] : []),
     `- Address someone with @name. ${state.human} is a participant, not a gatekeeper: you don't need permission to do the work being discussed.`,
     `  When ${state.human} addresses only you, your reply goes back to them: the others read it in their next turn, and it wakes one of them only if you @mention them.`,
+    others.length ? "- Work goes in steps, and a step is someone else's to check:" : "- Work goes in steps, each checked before it is called done:",
+    others.length
+      ? "  - Built one? Say so and @mention another agent to check it. Say \"done\", \"ready\" or \"verified\" only after that check has passed, with the fixes it asked for in."
+      : "  - Built one? Check it yourself (run it, test it) and say how. Say \"done\", \"ready\" or \"verified\" only after that.",
+    ...(tracking === "git" && state.settings.access !== "readonly"
+      ? ["  - Once it is checked, its author commits it, before the next step goes on top: only that step's files, its id first in the message (`git add <them> && git commit -m \"X1 <the step>\" -- <them>`), so the room sees it went in and each step can be read and taken back on its own."]
+      : []),
+    "  - Don't wait inside your turn for a reply or a check: no sleeping, no polling. Say what you need, end the turn; an @mention wakes you when there is something for you.",
     state.settings.budget === null
       ? "- There is no turn limit: the room goes on until everyone passes (or the human stops it). So pass as soon as you have nothing substantive to add — a finished job, a clear state, an agreement already stated are all reasons to pass."
       : "- Each run has a turn budget; the prompt says how many turns remain. Converge or leave a clear state before it runs out — once it is clear, pass: the room goes quiet when everyone passes, and unused turns are fine.",
@@ -336,7 +344,9 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     "    (object, support and evidence also take a settled point or a fact: object S1 \"why it is not settled\" when someone settled what you still dispute)",
     `  ${agentCli} table settle "what is now established" [--q Q1]   |   fact "a checked fact"   |   next "concrete next step"   |   done X1`,
     "    (settle --q Q1 when the conclusion answers an open question: it closes Q1 with that answer; on a --many question",
-    "    it is the room's recommendation shown on the question, and the options stay open for the human to choose)",
+    "    it is the room's recommendation shown on the question, and the options stay open for the human to choose.",
+    "    settle is for what the room has concluded, not for work: who does what is next, and a finished step is done X1,",
+    "    once it is checked)",
     `  ${agentCli} table concede "what I no longer hold, and why" [--on P1]   (an argument changed your mind: record it, don't just agree in prose)`,
     `  ${agentCli} table decide P1 --note "why"   (when the room has actually converged, or the human asked you to decide)`,
     `  ${agentCli} table withdraw P1|F1   (take back your own option, or a fact of yours that turned out wrong — it stays, struck out)`,

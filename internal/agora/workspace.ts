@@ -22,6 +22,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stepsInSubject } from "./checkpoint-message.js";
 import type { FileChange } from "./types.js";
 
 export const AGORYX_DIR = ".agoryx";
@@ -546,14 +547,38 @@ export const patchSection = (patch: string, path: string): string | null => {
   );
 };
 
-const commitAll = (root: string, subject: string, body: string): { sha: string; files: number } | null => {
+/**
+ * The steps named first in the subjects of HEAD's commits made since `since` (ms) that hold some of `files` (paths
+ * in the workspace: what the run changed), each with the newest such commit. Another room's "X1 …", or one made
+ * before the run, is not this run's step.
+ */
+export const stepCommitsSince = (root: string, since: number, files: readonly string[]): Map<string, string> => {
+  const found = new Map<string, string>();
+  const ours = new Set(files);
+  const log = git(root, ["-c", "core.quotePath=false", "log", "-n", "200", "--no-renames", "--relative", "--name-only", "--format=%x1e%H%x1f%ct%x1f%s", "HEAD", "--"]) ?? "";
+  for (const entry of log.split("\x1e")) {
+    const [head = "", ...names] = entry.split("\n");
+    const [sha, time, subject] = head.split("\x1f");
+    // A second's grace: git keeps whole seconds.
+    if (!sha || subject === undefined || Number(time) * 1000 < since - 1000) continue;
+    if (!names.some((name) => ours.has(name))) continue;
+    for (const id of stepsInSubject(subject)) if (!found.has(id)) found.set(id, sha);
+  }
+  return found;
+};
+
+/** A commit's body, or how to write it from the files the commit holds (paths in the workspace). */
+export type CheckpointBody = string | ((files: string[]) => string);
+
+const commitAll = (root: string, subject: string, body: CheckpointBody): { sha: string; files: number } | null => {
   if (!isGitRepo(root)) return null;
   // Only the workspace: a room in a subdirectory never stages or commits the rest of the repository.
   const status = git(root, ["status", "--porcelain", "--", "."]);
   if (!status?.trim()) return null;
   if (git(root, ["add", "-A", "--", "."]) === null) return null;
-  const staged = git(root, ["diff", "--cached", "--name-only", "--", "."])?.split("\n").filter(Boolean) ?? [];
+  const staged = git(root, ["diff", "--cached", "--name-only", "--no-renames", "--relative", "-z"])?.split("\0").filter(Boolean) ?? [];
   if (staged.length === 0) return null;
+  const text = typeof body === "function" ? body(staged) : body;
   const committed = git(root, [
     "-c",
     "user.name=Agoryx",
@@ -566,7 +591,7 @@ const commitAll = (root: string, subject: string, body: string): { sha: string; 
     "--no-verify",
     "-m",
     subject,
-    ...(body ? ["-m", body] : []),
+    ...(text ? ["-m", text] : []),
     "--",
     ".",
   ]);
@@ -579,7 +604,7 @@ const commitAll = (root: string, subject: string, body: string): { sha: string; 
  * The run's checkpoint. A room alone in its directory commits all of it, as it always has. Given `files`
  * (the room shares the directory), only those credited paths go in, and nobody's staged change is taken.
  */
-export const checkpointCommit = (root: string, subject: string, body: string, files?: string[], expectedTrees?: ReadonlyMap<string, string>): { sha: string; files: number } | null => {
+export const checkpointCommit = (root: string, subject: string, body: CheckpointBody, files?: string[], expectedTrees?: ReadonlyMap<string, string>): { sha: string; files: number } | null => {
   if (!files) return commitAll(root, subject, body);
   if (!files.length || !isGitRepo(root)) return null;
   const indexRel = git(root, ["rev-parse", "--git-path", "index"])?.trim();
@@ -622,12 +647,13 @@ export const checkpointCommit = (root: string, subject: string, body: string, fi
       }
       if (!specs.length) return null;
     }
-    const changed = git(root, ["diff", "--cached", "--name-only", "-z"], 15_000, env)?.split("\0").filter(Boolean);
+    const changed = git(root, ["diff", "--cached", "--name-only", "--no-renames", "--relative", "-z"], 15_000, env)?.split("\0").filter(Boolean);
     if (!changed?.length) return null;
+    const text = typeof body === "function" ? body(changed) : body;
     const tree = git(root, ["write-tree"], 15_000, env)?.trim();
     if (!tree) return null;
     const sha = git(root, ["-c", "user.name=Agoryx", "-c", "user.email=agoryx@localhost", "-c", "commit.gpgsign=false",
-      "commit-tree", tree, ...(head ? ["-p", head] : []), "-m", subject, ...(body ? ["-m", body] : [])], 15_000, env)?.trim();
+      "commit-tree", tree, ...(head ? ["-p", head] : []), "-m", subject, ...(text ? ["-m", text] : [])], 15_000, env)?.trim();
     if (!sha) return null;
     // Prepare the real index's update before moving HEAD. Only the selected, previously unstaged
     // entries change; all foreign staged blobs (including partial staging) remain intact.

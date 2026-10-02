@@ -496,7 +496,8 @@ test("workspace changes are attributed per turn and checkpointed at run end", as
     const turn = room.store.state.turns.find((entry) => entry.agent === "claude" && entry.files?.length)!;
     assert.deepEqual(turn.files, ["site/index.html"]);
     const commit = room.store.state.commits[0]!;
-    assert.match(commit.subject, /^agoryx\(Test room\): make a page/);
+    // Named by the run's steps, or with none by the run and who changed files: never by the human's words.
+    assert.equal(commit.subject, `agoryx: run ${room.store.state.runs[0]!.id} by claude`);
     assert.equal(commit.files, 1);
     // .agoryx/ stays out of git.
     const codexPrompt = room.invocations("codex")[1]!.prompt!;

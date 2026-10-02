@@ -28,6 +28,7 @@ import { readTurnActivity, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
+import { listProjects, PROJECT_FIELDS, ProjectError, projectHash, readProject, setProjectField, type Project, type ProjectWriter } from "./projects.js";
 import { parseSubscription, PushNotes, PushSender } from "./push.js";
 import { qrSvg } from "./qr.js";
 import { defaultRoster, parseAgents, rosterPath, RosterError } from "./roster.js";
@@ -35,7 +36,7 @@ import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type Stream
 import type { AgentRunner } from "./runners/types.js";
 import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js";
 import { workspaceAt } from "./room-mode.js";
-import { changeRoomMode, createRoom, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
+import { changeRoomMode, createRoom, defaultHumanName, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
@@ -1098,6 +1099,73 @@ export class AgoraDaemon {
     }
   }
 
+  /**
+   * Projects: the folders Work rooms work in, with a name, a goal and instructions that outlive one room.
+   * `GET /api/projects`, `GET|PATCH /api/projects/<hash>` (a folder nothing was written for yet is named by
+   * `key`, its path). Agents write with their own key, and every write says who made it.
+   */
+  private async projectsApi(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[], method: string, caller: Caller): Promise<void> {
+    const rooms = RoomStore.list(roomsDir(this.env));
+    const keys = new Map<string, string>();
+    for (const project of listProjects(this.env)) keys.set(project.hash, project.key);
+    for (const room of rooms) {
+      if (!room.projectHash || keys.has(room.projectHash)) continue;
+      const handle = this.rooms.get(room.id);
+      const state = handle ? handle.store.state : RoomStore.open(roomsDir(this.env), room.id).state;
+      keys.set(room.projectHash, state.worktree?.source ?? state.workspace);
+    }
+    const view = (project: Project) => ({
+      hash: project.hash,
+      key: project.key,
+      ...(project.name ? { name: project.name } : {}),
+      ...(project.goal ? { goal: project.goal } : {}),
+      ...(project.instructions ? { instructions: project.instructions } : {}),
+      seq: project.seq,
+      rooms: rooms.filter((room) => room.projectHash === project.hash).map((room) => room.id),
+    });
+    if (parts.length === 0) {
+      if (method !== "GET") throw new HttpError(405, "GET");
+      sendJson(res, 200, { projects: [...keys.values()].map((key) => view(readProject(key, this.env))) });
+      return;
+    }
+    if (parts.length !== 1) throw new HttpError(404, "unknown endpoint");
+    const hash = parts[0]!;
+    const body = method === "PATCH" ? ((await readBody(req)) as Record<string, unknown>) : {};
+    const asked = typeof body.key === "string" ? body.key : url.searchParams.get("key");
+    let key = keys.get(hash);
+    if (!key && asked) {
+      let folder: string;
+      try {
+        folder = resolveFolder(asked, this.env);
+      } catch (error) {
+        throw new HttpError(404, error instanceof Error ? error.message : String(error));
+      }
+      if (projectHash(folder) === hash) key = folder;
+    }
+    if (!key) throw new HttpError(404, "no such project: no Work room works in that folder and nothing was written for it");
+    if (method === "PATCH") {
+      const project = readProject(key, this.env);
+      if (typeof body.seq === "number" && body.seq !== project.seq) {
+        sendJson(res, 409, { error: "the project changed since you opened it", project: { ...view(project), events: project.events } });
+        return;
+      }
+      const writer: ProjectWriter = caller.agent ? { by: caller.agent.agent, from: caller.agent } : { by: defaultHumanName(this.env) };
+      for (const field of PROJECT_FIELDS) {
+        const value = body[field];
+        if (value === undefined) continue;
+        if (typeof value !== "string" && value !== null) throw new HttpError(400, `${field} must be a string`);
+        try {
+          setProjectField(key, field, value ?? "", writer, this.env);
+        } catch (error) {
+          if (error instanceof ProjectError) throw new HttpError(400, error.message);
+          throw error;
+        }
+      }
+    } else if (method !== "GET") throw new HttpError(405, "GET or PATCH");
+    const project = readProject(key, this.env);
+    sendJson(res, 200, { project: { ...view(project), events: project.events }, rooms: rooms.filter((room) => room.projectHash === hash) });
+  }
+
   private async api(req: IncomingMessage, res: ServerResponse, url: URL, caller: Caller = { agent: null }): Promise<void> {
     const parts = url.pathname.split("/").filter(Boolean).slice(1); // drop "api"
     const method = req.method ?? "GET";
@@ -1234,20 +1302,26 @@ export class AgoraDaemon {
     }
 
     if (parts[0] === "attention") return this.attentionApi(req, res, parts.slice(1), method, caller);
+    if (parts[0] === "projects") return this.projectsApi(req, res, url, parts.slice(1), method, caller);
     if (parts[0] === "browser") return this.browserApi(req, res, parts.slice(1), method, caller);
 
     if (parts[0] !== "rooms") throw new HttpError(404, "unknown endpoint");
 
     if (parts.length === 1) {
       if (method === "GET") {
-        const rooms = RoomStore.list(roomsDir(this.env)).map((summary) => {
+        const names = new Map(listProjects(this.env).filter((project) => project.name).map((project) => [project.hash, project.name!]));
+        const named = <T extends { projectHash?: string }>(summary: T): T & { projectName?: string } => {
+          const name = summary.projectHash ? names.get(summary.projectHash) : undefined;
+          return name ? { ...summary, projectName: name } : summary;
+        };
+        const rooms = RoomStore.list(roomsDir(this.env)).map(named).map((summary) => {
           const handle = this.rooms.get(summary.id);
           if (!handle) return summary;
           // What the human has not seen is the human's: an agent key never learns it.
-          if (caller.agent) return { ...handle.store.summary(), driven: Boolean(handle.engine) };
+          if (caller.agent) return { ...named(handle.store.summary()), driven: Boolean(handle.engine) };
           const unread = this.attention.unread(summary.id);
           return {
-            ...handle.store.summary(),
+            ...named(handle.store.summary()),
             driven: Boolean(handle.engine),
             waiting: this.attention.item(summary.id),
             ...(unread !== undefined ? { unread } : {}),

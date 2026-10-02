@@ -15,6 +15,7 @@ import { join, resolve, sep } from "node:path";
 import { originName } from "./actor.js";
 import { type AgentLook, agentLook } from "./look.js";
 import { applyEvent, initialState } from "./projection.js";
+import { projectHash, projectKey } from "./projects.js";
 import { unquoted } from "./quote.js";
 import type {
   ActorOrigin,
@@ -71,6 +72,10 @@ export interface RoomSummary {
   folder?: string;
   /** The room's own branch, when it works in a worktree. */
   branch?: string;
+  /** Work rooms: the project (their folder) they belong to, by its hash in <AGORYX_HOME>/projects. */
+  projectHash?: string;
+  /** The name written for that project, when one was (the daemon adds it). */
+  projectName?: string;
 }
 
 const EVENTS_FILE = "events.jsonl";
@@ -248,6 +253,7 @@ export class RoomStore {
     const lastGuest = last && !lastBy ? this.state.guests?.[last.author] : undefined;
     const lastLabel = lastBy ? lastBy.label : lastGuest ? originName(lastGuest) : undefined;
     const working = this.state.turns.filter((turn) => turn.status === "running").map((turn) => ({ agent: turn.agent, since: turn.startedAt }));
+    const key = projectKey(this.state);
     return {
       id: this.state.id,
       mode: this.state.mode ?? "work",
@@ -265,6 +271,7 @@ export class RoomStore {
         : this.state.createdWorkspace
           ? {}
           : { folder: this.state.workspace }),
+      ...(key ? { projectHash: projectHash(key) } : {}),
     };
   }
 

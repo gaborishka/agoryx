@@ -1,4 +1,4 @@
-import { PanelLeftIcon, ChevronRightIcon, CircleHelpIcon, Settings2Icon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
+import { PanelLeftIcon, ChevronRightIcon, FolderIcon, CircleHelpIcon, Settings2Icon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { MarkMono, Wordmark } from "@/components/brand/Mark";
 import { Avatar, Tip } from "@/components/room/bits";
@@ -196,6 +196,8 @@ interface Group {
   label: string;
   title: string;
   rooms: RoomSummary[];
+  /** A folder's group: its project, by hash (the head opens the project's page). */
+  project?: string;
 }
 
 /** Rooms by the folder they work in, the most recently active folder first (the rooms come sorted so). */
@@ -209,11 +211,15 @@ const groupRooms = (rooms: RoomSummary[]): Group[] => {
       groups.set(key, group);
     }
     group.rooms.push(room);
+    if (key !== CHATS && key !== OWN && room.projectHash) {
+      group.project = room.projectHash;
+      if (room.projectName) group.label = room.projectName;
+    }
   }
   const list = [...groups.values()];
   // Two folders of one name: say which is which.
   for (const group of list) {
-    if (group.key !== OWN && group.key !== CHATS && list.some((other) => other !== group && other.label === group.label)) group.label = shortPath(group.key);
+    if (group.key !== OWN && group.key !== CHATS && list.some((other) => other !== group && other.label === group.label) && group.label === baseName(group.key)) group.label = shortPath(group.key);
   }
   return list;
 };
@@ -222,8 +228,11 @@ const groupRooms = (rooms: RoomSummary[]): Group[] => {
 const passes = (room: RoomSummary, filter: Filter, current: string | null) =>
   filter === "waiting" ? Boolean(room.waiting) && room.id !== current : filter === "working" ? room.running : true;
 
-/** Grouped only when the rooms work in more than one folder; decided on all rooms, so a filter does not reshape the list. */
-const isGrouped = (rooms: RoomSummary[]) => new Set(rooms.map(groupKey)).size > 1;
+/**
+ * Grouped when the rooms work in more than one folder, or when one of them works in a folder of the human's (its head
+ * opens the project); decided on all rooms, so a filter does not reshape the list.
+ */
+const isGrouped = (rooms: RoomSummary[]) => new Set(rooms.map(groupKey)).size > 1 || rooms.some((room) => room.projectHash && room.folder);
 
 /** The rooms as the list shows them, top to bottom (filtered, folded folders left out): what ⌥↑/⌥↓ step through. */
 export const sidebarOrder = (rooms: RoomSummary[], current: string | null): RoomSummary[] => {
@@ -233,30 +242,41 @@ export const sidebarOrder = (rooms: RoomSummary[], current: string | null): Room
   return groupRooms(shown).flatMap((group) => (folded.has(group.key) ? [] : group.rooms));
 };
 
-function GroupHead({ group, open, onToggle, current }: { group: Group; open: boolean; onToggle: () => void; current: string | null }) {
+function GroupHead({ group, open, onToggle, current, onProject, on }: { group: Group; open: boolean; onToggle: () => void; current: string | null; onProject?: () => void; on?: boolean }) {
   const waiting = group.rooms.filter((r) => r.waiting && r.id !== current).length;
   const working = group.rooms.some((r) => r.running);
   return (
-    <button
-      type="button"
-      title={group.title}
-      aria-expanded={open}
-      onClick={onToggle}
-      className="relative flex w-full items-center gap-1.5 rounded-lg px-2.5 pt-2.5 pb-1 text-left text-meta font-medium text-muted-foreground transition hover:text-foreground"
-    >
-      <ChevronRightIcon className={cn("size-3.5 shrink-0 text-faint transition-transform", open && "rotate-90")} />
-      <span className="truncate">{group.label}</span>
-      <span className="tabular text-micro text-faint">{group.rooms.length}</span>
-      {!open && waiting ? (
-        <span className="ml-auto size-2 shrink-0 rounded-full bg-amber">
-          <span className="sr-only">{plural(waiting, "room is waiting for you", "rooms are waiting for you")}</span>
-        </span>
-      ) : !open && working ? (
-        <span className="ml-auto size-2 shrink-0 animate-breathe rounded-full bg-foreground/60">
-          <span className="sr-only">Agents are working</span>
-        </span>
-      ) : null}
-    </button>
+    <div className="relative flex w-full items-center gap-0.5 px-1 pt-2.5 pb-1 text-meta font-medium text-muted-foreground">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={open ? `Fold ${group.label}` : `Unfold ${group.label}`}
+        onClick={onToggle}
+        className="flex shrink-0 items-center rounded-md p-1 transition hover:text-foreground"
+      >
+        <ChevronRightIcon className={cn("size-3.5 text-faint transition-transform", open && "rotate-90")} />
+      </button>
+      <button
+        type="button"
+        title={onProject ? `${group.title} — open the project` : group.title}
+        aria-current={on ? "page" : undefined}
+        onClick={onProject ?? onToggle}
+        className={cn("flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition hover:text-foreground", on && "text-foreground")}
+      >
+        {onProject ? <FolderIcon className="size-3.5 shrink-0 text-faint" /> : null}
+        <span className="truncate">{group.label}</span>
+        <span className="tabular text-micro text-faint">{group.rooms.length}</span>
+        {!open && waiting ? (
+          <span className="ml-auto size-2 shrink-0 rounded-full bg-amber">
+            <span className="sr-only">{plural(waiting, "room is waiting for you", "rooms are waiting for you")}</span>
+          </span>
+        ) : !open && working ? (
+          <span className="ml-auto size-2 shrink-0 animate-breathe rounded-full bg-foreground/60">
+            <span className="sr-only">Agents are working</span>
+          </span>
+        ) : null}
+      </button>
+    </div>
   );
 }
 
@@ -372,7 +392,13 @@ export function Sidebar() {
             const open = !folded.has(group.key);
             return (
               <section key={group.key || "own"} aria-label={group.label} className="flex flex-col gap-0.5">
-                <GroupHead group={group} open={open} onToggle={() => toggleFolder(group.key)} current={current} />
+                <GroupHead
+                  group={group}
+                  open={open}
+                  onToggle={() => toggleFolder(group.key)}
+                  current={current}
+                  {...(group.project ? { onProject: () => go({ kind: "project", hash: group.project! }), on: route.kind === "project" && route.hash === group.project } : {})}
+                />
                 {open ? group.rooms.map(row) : null}
               </section>
             );

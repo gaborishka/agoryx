@@ -17,8 +17,10 @@ import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../interna
 import { type AgentLook, agentLook } from "../../internal/agora/look.js";
 import { activeRun } from "../../internal/agora/projection.js";
 import { describeProfile, profilePath, readProfile } from "../../internal/agora/profile.js";
+import { describeProject, PROJECT_FIELDS, projectHash, projectKey, projectKeyOfFolder, readProject, setProjectField, type ProjectField } from "../../internal/agora/projects.js";
+import { resolveFolder } from "../../internal/agora/folders.js";
 import { readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
-import { createRoom, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
+import { createRoom, defaultHumanName, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
 import { limitText } from "../../internal/agora/duration.js";
 import { describeRevert, planRevert, RevertError, undoableRevert, type RevertRequest } from "../../internal/agora/revert.js";
@@ -53,6 +55,7 @@ export const AGORA_COMMANDS = new Set([
   "diff",
   "revert",
   "profile",
+  "project",
   "usage",
   "pair",
   "devices",
@@ -86,6 +89,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx revert [-r room] [SHA | --undo [N]] [--yes]   Return the folder to a checkpoint (no SHA: list them), or undo a return",
       "  agoryx usage [room] [--json]      Your agents' subscription limits, as their CLIs last reported them, and what the room's wakes cost",
       "  agoryx profile [-r room]           Your profile (who you are, for the agents): where it is, and who in the room sees it",
+      '  agoryx project [-r room | --dir D] [set name|goal|instructions "text"]   The project of a Work room (its folder): show it, or write to it',
       "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--access workspace|readonly] [--doc PATH|none]",
       "",
       "Table ops:",
@@ -1394,6 +1398,40 @@ const runProfile = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+/** The project a command is about: `--dir`'s folder, else the room's (none in Chat). */
+const projectKeyFor = (options: { room?: string; dir?: string }, positional?: string): string => {
+  if (options.dir) return projectKeyOfFolder(resolveFolder(resolve(options.dir)), RoomStore.list(roomsDir()));
+  const state = RoomStore.open(roomsDir(), resolveRoom(options.room ?? positional)).state;
+  const key = projectKey(state);
+  if (!key) throw new CliUsageError(`"${state.name}" is a Chat room: no project connected (switch it to Work, or name a folder with --dir)`);
+  return key;
+};
+
+const runProject = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, [ROOM_OPT, { long: "dir", takesValue: true }]);
+  if (parsed.options.help) {
+    printAgoraUsage();
+    return 0;
+  }
+  const [verb, field, ...rest] = parsed.positionals;
+  const setting = verb === "set";
+  const key = projectKeyFor(parsed.options, setting ? undefined : verb);
+  if (setting) {
+    if (!field || !PROJECT_FIELDS.includes(field as ProjectField)) throw new CliUsageError(`agoryx project set ${PROJECT_FIELDS.join("|")} "text" (an empty text clears it)`);
+    const text = rest.join(" ");
+    const info = await findDaemon();
+    if (info) {
+      await daemonClient(info).request("PATCH", `/api/projects/${projectHash(key)}`, { key, [field]: text });
+    } else {
+      const agent = localAgent();
+      setProjectField(key, field as ProjectField, text, agent ? { by: agent.agent, from: agent } : { by: defaultHumanName() });
+    }
+  }
+  const rooms = RoomStore.list(roomsDir()).filter((room) => room.projectHash === projectHash(key));
+  for (const line of describeProject(readProject(key), rooms)) console.log(line);
+  return 0;
+};
+
 /** "1h 05m", "4m 10s", "12s". */
 const span = (ms: number): string => {
   const seconds = Math.round(ms / 1000);
@@ -1629,6 +1667,8 @@ export const runAgora = async (command: string, argv: string[]): Promise<number>
       return runRevert(argv);
     case "profile":
       return runProfile(argv);
+    case "project":
+      return runProject(argv);
     case "usage":
       return runUsage(argv);
     case "pair":

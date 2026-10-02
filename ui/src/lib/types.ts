@@ -26,6 +26,33 @@ export interface RoomSummary {
   waiting?: AttentionItem;
   /** Messages from others since the human last looked (attention.json's seen cursor); the human's only. */
   unread?: number;
+  /** Work rooms: their project (folder), by hash, and the name written for it. */
+  projectHash?: string;
+  projectName?: string;
+}
+
+/** A project event: a name, goal or instructions written, with who wrote it. */
+export interface ProjectEvent {
+  type: "project.changed";
+  field: "name" | "goal" | "instructions";
+  value: string | null;
+  seq: number;
+  ts: string;
+  by: string;
+  from?: { room: string; roomName: string; agent: string; label: string };
+}
+
+export interface ProjectView {
+  hash: string;
+  /** The folder. */
+  key: string;
+  name?: string;
+  goal?: string;
+  instructions?: string;
+  /** The last event's seq: an edit made from an older one is refused (409). */
+  seq: number;
+  rooms: string[];
+  events: ProjectEvent[];
 }
 
 export interface StreamBuffer {

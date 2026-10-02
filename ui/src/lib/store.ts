@@ -51,7 +51,13 @@ export type TableFormOp = "ask" | "propose" | "object" | "support" | "evidence" 
 export const SETTINGS_SECTIONS = ["general", "profile", "agents", "phone", "limits", "about"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
-export type Route = { kind: "room"; id: string } | { kind: "new" } | { kind: "settings"; section: SettingsSection } | { kind: "boot" };
+export type Route =
+  | { kind: "room"; id: string }
+  | { kind: "new" }
+  | { kind: "settings"; section: SettingsSection }
+  /** A project (a Work folder), by its hash. */
+  | { kind: "project"; hash: string }
+  | { kind: "boot" };
 
 type Upsertable = { id: string };
 const upsert = <T extends Upsertable>(list: T[], item: T): T[] => {
@@ -504,7 +510,8 @@ function connect(roomId: string, after: number) {
 }
 
 // ---------------------------------------------------------------------------
-// Routing: #<room id>, then what the room shows (?view=table&panel=diff&turn=t3&path=…); #new = start screen; #settings[/<section>] = settings.
+// Routing: #<room id>, then what the room shows (?view=table&panel=diff&turn=t3&path=…); #new = start screen; #settings[/<section>] = settings;
+// #project/<hash> = a project's page.
 // Room changes are history entries; the panel, its tab and what it shows only replace the address.
 // ---------------------------------------------------------------------------
 
@@ -522,6 +529,7 @@ const parseHash = (): { route: Route | null; params: URLSearchParams } => {
     return { route: null, params };
   }
   if (head === "new") return { route: { kind: "new" }, params };
+  if (/^project\/[0-9a-f]{12}$/.test(head)) return { route: { kind: "project", hash: head.slice("project/".length) }, params };
   if (head === "settings" || head.startsWith("settings/")) {
     const section = head.slice("settings/".length) as SettingsSection;
     return { route: { kind: "settings", section: SETTINGS_SECTIONS.includes(section) ? section : "general" }, params };
@@ -535,6 +543,7 @@ type Addressed = Pick<Store, "route" | "view" | "panel" | "changes" | "filePath"
 const hashFor = (s: Addressed): string => {
   if (s.route.kind === "new") return "#new";
   if (s.route.kind === "settings") return s.route.section === "general" ? "#settings" : `#settings/${s.route.section}`;
+  if (s.route.kind === "project") return `#project/${s.route.hash}`;
   if (s.route.kind !== "room") return "";
   const p = new URLSearchParams();
   if (s.view === "table") p.set("view", "table");

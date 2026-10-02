@@ -1,7 +1,7 @@
 import { CopyIcon, FileTextIcon, GitBranchIcon, ImageIcon, PaperclipIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ErrorNote, Hint, Loading } from "@/components/common/states";
+import { Hint } from "@/components/common/states";
 import { rawUrl } from "@/components/md/Markdown";
 import { api, Unauthorized } from "@/lib/api";
 import { ago, baseName, ext, IMAGE_EXT, plural, took, VISUAL_EXT } from "@/lib/format";
@@ -9,7 +9,7 @@ import { errText } from "@/lib/load";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import type { LibraryEntry, LibraryKind, ProjectOverview, ThreadView } from "@agora/overview";
-import { Block } from "./ProjectPage";
+import { Block } from "./Block";
 
 /**
  * The project page's view across its rooms: the threads with what each last reported, the library (what was
@@ -17,7 +17,7 @@ import { Block } from "./ProjectPage";
  * turns took. Read again when a room of the project changes.
  */
 
-type Overview = ProjectOverview & { rawBase: Record<string, string> };
+export type Overview = ProjectOverview & { rawBase: Record<string, string> };
 
 const COLUMNS: Array<{ id: string; head: string; has: (thread: ThreadView) => boolean }> = [
   { id: "working", head: "Working", has: (thread) => thread.running },
@@ -76,12 +76,12 @@ function ThreadTile({ thread }: { thread: ThreadView }) {
   );
 }
 
-function Threads({ threads }: { threads: ThreadView[] }) {
+export function Threads({ threads }: { threads: ThreadView[] }) {
   const columns = COLUMNS.map((column) => ({ ...column, threads: threads.filter(column.has) })).filter((column) => column.threads.length);
   return (
     <Block title="Threads" aside={threads.length ? `${threads.length}` : undefined}>
       {threads.length ? (
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 @min-[36rem]:grid-cols-2">
           {columns.map((column) => (
             <div key={column.id} className="flex min-w-0 flex-col gap-2">
               <h3 className="text-meta font-medium text-muted-foreground">
@@ -163,7 +163,7 @@ function LibraryRow({ entry, rawBase }: { entry: LibraryEntry; rawBase?: string 
   );
 }
 
-function Library({ entries, rawBase }: { entries: LibraryEntry[]; rawBase: Record<string, string> }) {
+export function Library({ entries, rawBase }: { entries: LibraryEntry[]; rawBase: Record<string, string> }) {
   const [kind, setKind] = useState<LibraryKind | null>(null);
   const shown = kind ? entries.filter((entry) => entry.kind === kind) : entries;
   const counts = (Object.keys(KIND_LABEL) as LibraryKind[]).map((id) => ({ id, n: entries.filter((entry) => entry.kind === id).length })).filter(({ n }) => n);
@@ -199,7 +199,7 @@ function Library({ entries, rawBase }: { entries: LibraryEntry[]; rawBase: Recor
   );
 }
 
-function Usage({ usage }: { usage: ProjectOverview["usage"] }) {
+export function Usage({ usage }: { usage: ProjectOverview["usage"] }) {
   const go = useStore((s) => s.go);
   const kinds = Object.entries(usage.byKind).filter(([, totals]) => totals.turns);
   const top = usage.rooms.filter((room) => room.total.turns).slice(0, 8);
@@ -243,7 +243,8 @@ function Usage({ usage }: { usage: ProjectOverview["usage"] }) {
   );
 }
 
-export function OverviewSections({ hash }: { hash: string }) {
+/** The project's overview, read again when one of its rooms changes. */
+export function useOverview(hash: string): { overview: Overview | null; error: string | null } {
   // Read again when what it shows can have changed: a room's messages (reports, files linked), a run starting or
   // ending (its usage) — not with every step of a run. The room list is not read while the tab is hidden, so neither is this.
   const tick = useStore((s) =>
@@ -268,13 +269,5 @@ export function OverviewSections({ hash }: { hash: string }) {
     };
   }, [hash, tick]);
   useEffect(() => setOverview(null), [hash]);
-  if (error && !overview) return <ErrorNote>{error}</ErrorNote>;
-  if (!overview) return <Loading lines={3} />;
-  return (
-    <>
-      <Threads threads={overview.threads} />
-      <Library entries={overview.library} rawBase={overview.rawBase} />
-      <Usage usage={overview.usage} />
-    </>
-  );
+  return { overview, error };
 }

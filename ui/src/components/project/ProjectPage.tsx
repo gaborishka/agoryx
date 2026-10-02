@@ -1,90 +1,76 @@
-import { FolderIcon } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
-import { ErrorNote, Hint, Loading } from "@/components/common/states";
+import { FolderIcon, PlusIcon, Settings2Icon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ErrorNote, Loading } from "@/components/common/states";
+import { Tip } from "@/components/room/bits";
 import { NavButton } from "@/components/room/RoomHeader";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { api, ApiError, Unauthorized } from "@/lib/api";
-import { ago, baseName } from "@/lib/format";
+import { api, Unauthorized } from "@/lib/api";
+import { ago, baseName, shortPath } from "@/lib/format";
 import { errText } from "@/lib/load";
-import { useStore } from "@/lib/store";
-import type { ProjectEvent, ProjectView, RoomSummary } from "@/lib/types";
+import { type ProjectTab, useStore } from "@/lib/store";
+import type { ProjectView, RoomSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { ContextSection } from "./ContextSection";
-import { MemorySection } from "./MemorySection";
-import { OverviewSections } from "./OverviewSections";
+import { Block } from "./Block";
+import { Library, Threads, useOverview } from "./OverviewSections";
 
 /**
- * A project: the folder Work rooms work in, with a name, a goal and instructions that outlive one room. The agents
- * of its Work rooms get the goal and instructions with every fresh session. Anyone in it can write them — the human
- * here, agents with `agoryx project set` — and every write says who made it.
+ * A project: the folder Work rooms work in, with a name, a goal and instructions that outlive one room. Its page is
+ * its overview — the rooms and threads working in it beside its library; what it holds is set in its settings
+ * (the gear), where anyone in it can write, and every write says who made it.
  */
 
-type Fields = { name: string; goal: string; instructions: string };
-const FIELDS: Array<{ id: keyof Fields; label: string; hint: string; rows?: number; placeholder: string }> = [
-  { id: "name", label: "Name", hint: "Shown in the room list instead of the folder's name.", placeholder: "" },
-  { id: "goal", label: "Goal", hint: "What the work in this folder is for. Agents get it when a session starts.", rows: 3, placeholder: "Ship the first public release" },
-  {
-    id: "instructions",
-    label: "Instructions",
-    hint: "How to work here, beyond what the repository's own CLAUDE.md or AGENTS.md says. Keep it short: it goes into every fresh session.",
-    rows: 6,
-    placeholder: "Run npm test before you say a step is done.\nNo new dependencies without asking.",
-  },
-];
-
-const fieldsOf = (project: ProjectView): Fields => ({ name: project.name ?? "", goal: project.goal ?? "", instructions: project.instructions ?? "" });
-
-const changeText = (event: ProjectEvent): string => {
-  switch (event.type) {
-    case "project.changed":
-      return `${event.value === null ? "cleared" : "wrote"} the ${event.field}`;
-    case "memory.noted":
-      return `kept ${event.id} (${event.entry.kind})`;
-    case "memory.revised":
-      return `revised ${event.id}`;
-    case "memory.removed":
-      return `removed ${event.id}`;
-    case "context.added":
-      return `added the context folder ${event.path}`;
-    case "context.removed":
-      return `removed the context folder ${event.path}`;
-  }
-};
-
-const who = (event: ProjectEvent) => (event.from ? `${event.from.label} in “${event.from.roomName}”` : event.by);
-
-export function Block({ title, children, aside }: { title: string; children: ReactNode; aside?: ReactNode }) {
-  return (
-    <section className="flex flex-col gap-3">
-      <header className="flex items-baseline gap-3">
-        <h2 className="font-display text-lead font-semibold">{title}</h2>
-        {aside ? <span className="text-meta text-faint">{aside}</span> : null}
-      </header>
+/** A line that says what is not there yet, and where to set it. */
+function Placeholder({ children, onClick }: { children: string; onClick?: () => void }) {
+  return onClick ? (
+    <button type="button" onClick={onClick} className="text-left text-small text-faint transition hover:text-muted-foreground">
       {children}
-    </section>
+    </button>
+  ) : (
+    <p className="text-small text-faint">{children}</p>
+  );
+}
+
+function Rooms({ rooms, onNew }: { rooms: RoomSummary[]; onNew: () => void }) {
+  const go = useStore((s) => s.go);
+  return (
+    <Block title="Rooms" aside={rooms.length ? `${rooms.length}` : undefined}>
+      {rooms.length ? (
+        <ul className="flex flex-col divide-y divide-border/60 rounded-xl border border-border/70">
+          {rooms.map((room) => (
+            <li key={room.id}>
+              <button
+                type="button"
+                onClick={() => go({ kind: "room", id: room.id })}
+                className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition hover:bg-foreground/[0.03]"
+              >
+                <span className={cn("size-1.5 shrink-0 rounded-full", room.running ? "animate-breathe bg-foreground/60" : "bg-transparent")} />
+                <span className="min-w-0 flex-1 truncate text-ui">{room.name}</span>
+                {room.branch ? <span className="hidden truncate font-mono text-meta text-faint sm:inline">{room.branch}</span> : null}
+                <span className="shrink-0 text-meta text-faint">{ago(room.updatedAt)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <Placeholder onClick={onNew}>No Work room here yet — start one</Placeholder>
+      )}
+    </Block>
   );
 }
 
 export function ProjectPage({ hash }: { hash: string }) {
   const go = useStore((s) => s.go);
   const rooms = useStore((s) => s.rooms);
-  const loadRooms = useStore((s) => s.loadRooms);
+  const openDialog = useStore((s) => s.openDialog);
+  const settingsOpen = useStore((s) => s.dialog?.kind === "project");
   const [project, setProject] = useState<ProjectView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Fields>({ name: "", goal: "", instructions: "" });
-  const [busy, setBusy] = useState(false);
-  /** Someone else wrote since this page loaded it: their version, until the human picks. */
-  const [theirs, setTheirs] = useState<ProjectView | null>(null);
+  const { overview, error: overviewError } = useOverview(hash);
 
   const load = useCallback(async () => {
     try {
       const got = await api<{ project: ProjectView }>("GET", `/api/projects/${hash}`);
       setProject(got.project);
-      setDraft(fieldsOf(got.project));
-      setTheirs(null);
       setError(null);
     } catch (err) {
       if (!(err instanceof Unauthorized)) setError(errText(err));
@@ -94,173 +80,81 @@ export function ProjectPage({ hash }: { hash: string }) {
     setProject(null);
     void load();
   }, [load]);
+  // What the settings wrote shows here once they close.
+  const wasOpen = useRef(settingsOpen);
+  useEffect(() => {
+    if (wasOpen.current && !settingsOpen) void load();
+    wasOpen.current = settingsOpen;
+  }, [settingsOpen, load]);
 
   const title = project ? project.name || baseName(project.key) : "Project";
   useEffect(() => {
     document.title = `${title} · Agoryx`;
   }, [title]);
 
-  const saved = project ? fieldsOf(project) : null;
-  const changed = saved ? FIELDS.filter(({ id }) => draft[id].trim() !== saved[id].trim()).map(({ id }) => id) : [];
-  const save = async () => {
-    if (!project || !changed.length || busy) return;
-    setBusy(true);
-    try {
-      // Sent with the version this page holds: if anyone wrote since, nothing is overwritten.
-      const body: Record<string, unknown> = { seq: (theirs ?? project).fieldsSeq };
-      for (const id of changed) body[id] = draft[id];
-      const got = await api<{ project: ProjectView }>("PATCH", `/api/projects/${hash}`, body);
-      setProject(got.project);
-      setDraft(fieldsOf(got.project));
-      setTheirs(null);
-      // The room list shows the name.
-      if (changed.includes("name")) void loadRooms();
-      toast.success("Saved. Agents get it with their next fresh session.");
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409 && err.body.project) setTheirs(err.body.project as ProjectView);
-      else if (!(err instanceof Unauthorized)) toast.error(errText(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const members = rooms.filter((room) => room.projectHash === hash);
-  const history = project ? [...project.events].reverse().slice(0, 8) : [];
+  const settings = (tab?: ProjectTab) => openDialog({ kind: "project", hash, ...(tab ? { tab } : {}) });
+  const newRoom = () => project && go({ kind: "new", dir: project.key });
+  // Rooms, not threads: a thread is on the board, under the room it came from.
+  const members = rooms.filter((room) => room.projectHash === hash && !room.parent);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 px-3 sm:px-5">
         <NavButton />
-        <FolderIcon className="size-4 text-faint" />
-        <h1 className="max-w-[50%] shrink-0 truncate font-display text-lead font-semibold">{title}</h1>
-        {project ? (
-          <span className="hidden min-w-0 truncate font-mono text-meta text-faint sm:inline" title={project.key}>
-            {project.key}
-          </span>
-        ) : null}
+        <FolderIcon className="size-4 shrink-0 text-faint" />
+        <h1 className="min-w-0 shrink truncate font-display text-lead font-semibold">{title}</h1>
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <Tip tip="Project settings">
+            <Button variant="ghost" size="icon" className="size-8" aria-label="Project settings" disabled={!project} onClick={() => settings()}>
+              <Settings2Icon className="size-4" />
+            </Button>
+          </Tip>
+          <Button className="h-8 gap-1.5" disabled={!project} onClick={newRoom}>
+            <PlusIcon className="size-4" /> <span className="hidden sm:inline">New room here</span>
+            <span className="sm:hidden">Room</span>
+          </Button>
+        </div>
       </header>
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-[760px] flex-col gap-10 px-4 py-8 sm:px-6">
+        <div className="mx-auto flex max-w-[1100px] flex-col gap-8 px-4 py-6 sm:px-6">
           {error ? (
             <ErrorNote>{error}</ErrorNote>
           ) : !project ? (
             <Loading lines={4} />
           ) : (
             <>
-              <form
-                className="flex flex-col gap-5"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void save();
-                }}
-                onKeyDown={(event) => {
-                  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-                    event.preventDefault();
-                    void save();
-                  }
-                }}
-              >
-                {project.seq === 0 ? (
-                  <Hint>
-                    Nothing is written for this folder yet. Its Work rooms start as they always did until you (or an agent, with{" "}
-                    <code className="font-mono text-meta">agoryx project set</code>) write something here.
-                  </Hint>
-                ) : null}
-                {FIELDS.map(({ id, label, hint, rows, placeholder }) => (
-                  <div key={id} className="flex flex-col gap-1.5">
-                    <label htmlFor={`project-${id}`} className="text-ui font-medium">
-                      {label}
-                    </label>
-                    <p className="text-small leading-relaxed text-muted-foreground">{hint}</p>
-                    {rows ? (
-                      <Textarea
-                        id={`project-${id}`}
-                        rows={rows}
-                        value={draft[id]}
-                        placeholder={placeholder}
-                        onChange={(event) => setDraft({ ...draft, [id]: event.target.value })}
-                        className="resize-y text-small leading-relaxed"
-                      />
-                    ) : (
-                      <Input
-                        id={`project-${id}`}
-                        value={draft[id]}
-                        placeholder={baseName(project.key)}
-                        onChange={(event) => setDraft({ ...draft, [id]: event.target.value })}
-                      />
-                    )}
-                    {theirs && (theirs[id] ?? "") !== (project[id] ?? "") ? (
-                      <div className="rounded-lg bg-amber-soft px-3 py-2 text-small">
-                        <span className="font-medium">Changed since you opened it:</span>{" "}
-                        <span className="whitespace-pre-wrap text-muted-foreground">{theirs[id] || "(cleared)"}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-                <div className="flex flex-wrap items-center gap-3">
-                  {theirs ? (
-                    <span className="text-small text-amber-ink">Someone wrote here since you opened it. Saving now replaces what they wrote.</span>
-                  ) : null}
-                  <div className="ml-auto flex gap-2">
-                    {theirs ? (
-                      <Button type="button" variant="ghost" onClick={() => void load()}>
-                        Take theirs
-                      </Button>
-                    ) : changed.length ? (
-                      <Button type="button" variant="ghost" onClick={() => setDraft(fieldsOf(project))}>
-                        Cancel
-                      </Button>
-                    ) : null}
-                    <Button type="submit" disabled={!changed.length || busy}>
-                      {theirs ? "Save mine" : "Save"}
-                    </Button>
-                  </div>
-                </div>
-              </form>
-
-              <ContextSection project={project} onChange={setProject} />
-
-              <MemorySection project={project} onChange={setProject} />
-
-              <Block title="Rooms" aside={`${members.length}`}>
-                {members.length ? (
-                  <ul className="flex flex-col divide-y divide-border/60 rounded-xl border border-border/70">
-                    {members.map((room: RoomSummary) => (
-                      <li key={room.id}>
-                        <button
-                          type="button"
-                          onClick={() => go({ kind: "room", id: room.id })}
-                          className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition hover:bg-foreground/[0.03]"
-                        >
-                          <span className={cn("size-1.5 shrink-0 rounded-full", room.running ? "animate-breathe bg-foreground/60" : "bg-transparent")} />
-                          <span className="min-w-0 flex-1 truncate text-ui">{room.name}</span>
-                          {room.branch ? <span className="truncate font-mono text-meta text-faint">{room.branch}</span> : null}
-                          <span className="shrink-0 text-meta text-faint">{ago(room.updatedAt)}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+              <section className="flex flex-col gap-2">
+                {project.goal ? (
+                  <p className="max-w-[72ch] text-body leading-relaxed whitespace-pre-wrap">{project.goal}</p>
                 ) : (
-                  <Hint>No Work room works in this folder yet.</Hint>
+                  <Placeholder onClick={() => settings("general")}>No goal written — what is the work here for?</Placeholder>
                 )}
-              </Block>
-
-              <OverviewSections hash={hash} />
-
-              {history.length ? (
-                <Block title="Changes">
-                  <ul className="flex flex-col gap-1.5 text-small text-muted-foreground">
-                    {history.map((event) => (
-                      <li key={event.seq} className="flex gap-2">
-                        <span className="shrink-0 text-faint">{ago(event.ts)}</span>
-                        <span className="min-w-0">
-                          <span className="text-foreground">{who(event)}</span> {changeText(event)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </Block>
-              ) : null}
+                <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-faint">
+                  <span className="font-mono" title={project.key}>
+                    {shortPath(project.key)}
+                  </span>
+                  <button type="button" className="transition hover:text-muted-foreground" onClick={() => settings("context")}>
+                    {project.context.length ? `+ ${project.context.length} context ${project.context.length === 1 ? "folder" : "folders"}` : "+ context folder"}
+                  </button>
+                  <button type="button" className="transition hover:text-muted-foreground" onClick={() => settings("memory")}>
+                    {project.memory.length ? `${project.memory.length} in memory` : "nothing in memory"}
+                  </button>
+                  {project.instructions ? null : (
+                    <button type="button" className="transition hover:text-muted-foreground" onClick={() => settings("general")}>
+                      no instructions
+                    </button>
+                  )}
+                </p>
+              </section>
+              <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)]">
+                <div className="flex min-w-0 flex-col gap-8">
+                  <Rooms rooms={members} onNew={newRoom} />
+                  {overview ? <Threads threads={overview.threads} /> : overviewError ? <ErrorNote>{overviewError}</ErrorNote> : <Loading lines={2} />}
+                </div>
+                <div className="flex min-w-0 flex-col gap-8">
+                  {overview ? <Library entries={overview.library} rawBase={overview.rawBase} /> : overviewError ? null : <Loading lines={3} />}
+                </div>
+              </div>
             </>
           )}
         </div>

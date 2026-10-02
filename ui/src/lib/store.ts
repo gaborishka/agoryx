@@ -44,7 +44,12 @@ export type DialogState =
   | { kind: "keys" }
   | { kind: "usage" }
   | { kind: "phone" }
-  | { kind: "table-form"; op: TableFormOp; target?: string; q?: string };
+  | { kind: "table-form"; op: TableFormOp; target?: string; q?: string }
+  /** A project's settings, by its hash. */
+  | { kind: "project"; hash: string; tab?: ProjectTab };
+
+export const PROJECT_TABS = ["general", "context", "memory", "usage", "changes"] as const;
+export type ProjectTab = (typeof PROJECT_TABS)[number];
 
 export type TableFormOp = "ask" | "propose" | "object" | "support" | "evidence" | "decide" | "settle" | "next";
 
@@ -54,7 +59,8 @@ export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 export type Route =
   | { kind: "room"; id: string }
-  | { kind: "new" }
+  /** The start screen; `dir`: a Work room in this folder (a project's "New room here"). */
+  | { kind: "new"; dir?: string }
   | { kind: "settings"; section: SettingsSection }
   /** A project (a Work folder), by its hash. */
   | { kind: "project"; hash: string }

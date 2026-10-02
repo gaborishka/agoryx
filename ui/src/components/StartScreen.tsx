@@ -311,6 +311,14 @@ export function StartScreen() {
     setBase(null);
     local.set("folder", path);
   };
+  // "New room here" from a project: a Work room in its folder.
+  const startIn = useStore((s) => (s.route.kind === "new" ? s.route.dir : undefined));
+  useEffect(() => {
+    if (!startIn) return;
+    pickFolder(startIn);
+    setMode("work");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startIn]);
   const git = useFolderGit(folder, () => pickFolder(null));
   const toggleWorktree = (on: boolean) => {
     setWorktree(on);

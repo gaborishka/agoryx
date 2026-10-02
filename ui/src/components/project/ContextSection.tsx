@@ -8,7 +8,7 @@ import { api, Unauthorized } from "@/lib/api";
 import { baseName, shortPath } from "@/lib/format";
 import { errText } from "@/lib/load";
 import type { ProjectView } from "@/lib/types";
-import { Block } from "./ProjectPage";
+import { Block } from "./Block";
 
 /**
  * A project's context folders: other folders (a second repo, shared docs) its Work rooms' agents may read and write

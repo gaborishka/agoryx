@@ -12,6 +12,7 @@ import {
   ReceiptIcon,
   RotateCcwIcon,
   ScaleIcon,
+  Settings2Icon,
   SettingsIcon,
   SquareTerminalIcon,
   TerminalIcon,
@@ -436,6 +437,8 @@ export function RoomHeader() {
   const openDialog = useStore((s) => s.openDialog);
   const openFile = useStore((s) => s.openFile);
   const openChanges = useStore((s) => s.openChanges);
+  // A Work room is in its folder's project: its settings are a click away from here.
+  const projectHash = useStore((s) => s.rooms.find((entry) => entry.id === s.snap?.state.id)?.projectHash);
   if (!room) return null;
   return (
     <header className="@container flex h-14 shrink-0 items-center gap-1 border-b border-border/70 bg-background/85 px-2 backdrop-blur @min-[36rem]:gap-2 sm:px-4">
@@ -507,6 +510,12 @@ export function RoomHeader() {
             <SettingsIcon />
             Room settings
           </DropdownMenuItem>
+          {room.mode !== "chat" && projectHash ? (
+            <DropdownMenuItem onSelect={() => openDialog({ kind: "project", hash: projectHash })}>
+              <Settings2Icon />
+              Project settings…
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onSelect={() => useStore.getState().setPaletteOpen(true)}

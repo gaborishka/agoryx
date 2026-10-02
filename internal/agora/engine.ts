@@ -11,6 +11,7 @@ import { activeRun } from "./projection.js";
 import { inTurnAt, wakesAgent } from "./wakes.js";
 import { limitAccount } from "./limits-store.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
+import { projectBriefing, projectKey, projectUpdate, readProject } from "./projects.js";
 import { BRIEFING_VERSION, buildTurnPrompt, forHumanOnly, paragraphs, parseMentions, passNote } from "./prompts.js";
 import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
 import { cleanRole, MAX_ROLE_CHARS, parseAgents, validEffort, validModel } from "./roster.js";
@@ -1654,6 +1655,10 @@ export class RoomEngine {
     // Read once per turn: the version given is the version recorded. An agent it is off for never gets a word of it.
     const profile = seesProfile(agent) ? readProfile(this.profilePath) : null;
     const held = this.state.profiles[agent.id] ?? "";
+    // The project (Work only), likewise read once: the seq given is the seq recorded.
+    const key = projectKey(this.state);
+    const project = key ? readProject(key, this.env) : null;
+    const cli = this.agentCliHint().command;
     const promptFor = (fresh: boolean, rejoin: boolean) =>
       buildTurnPrompt({
         state: this.state,
@@ -1666,6 +1671,7 @@ export class RoomEngine {
         rejoin,
         doc: this.docDelta(agent, fromSeq, fresh),
         profile: fresh ? (profile ? profileBriefing(profile, this.state.human) : null) : profileUpdate(profile, held, this.state.human),
+        project: !project ? null : fresh ? projectBriefing(project, cli) : projectUpdate(project, this.state.projectSeen?.[agent.id] ?? 0, { room: this.state.id, agent: agent.id }),
         tracking: fresh ? workspaceTracking(this.state.workspace) : undefined,
       });
     const prompt = promptFor(!sessionId, false);
@@ -1680,6 +1686,7 @@ export class RoomEngine {
       sessionId,
       promptChars: prompt.length,
       ...(profile ? { profile: profile.hash } : {}),
+      ...(project ? { project: project.seq } : {}),
       limitMs: this.state.settings.turnTimeoutMs,
     });
 

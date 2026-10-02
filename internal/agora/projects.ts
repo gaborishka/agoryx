@@ -180,3 +180,50 @@ export const describeProject = (project: Project, rooms: Array<{ id: string; nam
   lines.push("", rooms.length ? `Work rooms in it: ${rooms.map((room) => `"${room.name}" (${room.id})`).join(", ")}` : "No Work room works in it yet.");
   return lines;
 };
+
+const writerOf = (event: ProjectEvent): string => (event.from ? `${event.by} in "${event.from.roomName}"` : event.by);
+
+const lastChange = (events: ProjectEvent[], field: ProjectField) =>
+  [...events].reverse().find((event) => event.type === "project.changed" && event.field === field);
+
+const block = (text: string): string => text.split("\n").map((line) => `    ${line}`).join("\n");
+
+/**
+ * The project for a fresh Work session's briefing: what was written for this folder, each part with who wrote it,
+ * and how to change it. With nothing written, one line on how to write it.
+ */
+export const projectBriefing = (project: Project, cli: string): string => {
+  const lines = [`Project: ${projectTitle(project)} — this folder's project, shared by every Work room in it (${project.key}).`];
+  if (project.seq === 0) {
+    lines.push(`  Nothing is written for it yet. \`${cli} project set goal|instructions "…"\` writes what every Work room here starts with — anyone may, you included.`);
+    return lines.join("\n");
+  }
+  lines.push("  Written by those who work here, each part by someone; Agoryx adds nothing to it:");
+  for (const field of ["goal", "instructions"] as const) {
+    const value = project[field];
+    if (!value) continue;
+    const event = lastChange(project.events, field);
+    lines.push(`  ${field === "goal" ? "Goal" : "Instructions"}${event ? ` — by ${writerOf(event)}` : ""}:`, block(value));
+  }
+  lines.push(`  \`${cli} project\` shows it; \`${cli} project set goal|instructions|name "…"\` changes it for every Work room in this folder.`);
+  return lines.join("\n");
+};
+
+/**
+ * What changed in the project since this agent's session last got it (`seen`: the project's seq then), for a running
+ * session's delta: each part someone else changed, with its new text. Its own writes it already knows. Null: nothing new.
+ */
+export const projectUpdate = (project: Project, seen: number, reader: { room: string; agent: string }): string | null => {
+  const fresh = project.events.filter((event) => event.seq > seen && !(event.by === reader.agent && event.from?.room === reader.room));
+  if (fresh.length === 0) return null;
+  const lines = [`── The project (${projectTitle(project)}) changed since your last turn:`];
+  for (const field of PROJECT_FIELDS) {
+    const event = lastChange(fresh, field);
+    if (!event) continue;
+    const now = project[field];
+    if (!now) lines.push(`  ${writerOf(event)} cleared the ${field}.`);
+    else if (field === "name") lines.push(`  ${writerOf(event)} named it "${now}".`);
+    else lines.push(`  ${writerOf(event)} wrote the ${field}:`, block(now));
+  }
+  return lines.length > 1 ? lines.join("\n") : null;
+};

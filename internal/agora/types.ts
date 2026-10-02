@@ -479,6 +479,8 @@ export type RoomEventBody =
        * Only the hash: the profile itself is never written to the room.
        */
       profile?: string;
+      /** The project's seq (projects.ts) this agent's session holds once it has read this prompt; absent: no project (Chat). */
+      project?: number;
       /** The turn's time limit as it started (the room's setting then); absent in logs from before. */
       limitMs?: number;
     }
@@ -636,6 +638,9 @@ export interface TurnState {
   /** The profile hash this turn's prompt left the agent with, and the one it held before (restored like the cursor). */
   profile?: string;
   profileBefore?: string;
+  /** The project's seq this turn's prompt carried, and what the agent held before it. */
+  project?: number;
+  projectBefore?: number;
   seq: number;
   /** The seq of its turn.ended event: what was posted before it, the turn was there for. */
   endSeq?: number;
@@ -730,6 +735,8 @@ export interface RoomState {
   cursors: Record<string, number>;
   /** Hash of the human's profile each agent's session holds ("" or absent: none). */
   profiles: Record<string, string>;
+  /** The project's seq each agent's session holds (absent: it got none of it). */
+  projectSeen?: Record<string, number>;
   table: TableState;
   commits: Array<{ sha: string; subject: string; files: number; seq: number; folder?: string; workspace?: string; internal?: boolean }>;
   /** Returns of the folder to a checkpoint and their undos, oldest first. */

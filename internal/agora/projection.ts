@@ -27,6 +27,7 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   sessions: {},
   cursors: Object.fromEntries(event.agents.map((agent) => [agent.id, 0])),
   profiles: {},
+  projectSeen: {},
   table: emptyTable(),
   commits: [],
   reverts: [],
@@ -98,6 +99,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       state.sessions = {};
       state.cursors = Object.fromEntries(state.agents.map((agent) => [agent.id, 0]));
       state.profiles = {};
+      state.projectSeen = {};
       delete state.repo;
       return;
     }
@@ -148,10 +150,12 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         activity: [],
         profile: event.profile ?? "",
         profileBefore: state.profiles[event.agent] ?? "",
+        ...(event.project !== undefined ? { project: event.project, projectBefore: state.projectSeen?.[event.agent] ?? 0 } : {}),
         ...(event.limitMs !== undefined ? { limitMs: event.limitMs } : {}),
       });
       state.cursors[event.agent] = Math.max(state.cursors[event.agent] ?? 0, event.cursor);
       state.profiles[event.agent] = event.profile ?? "";
+      if (event.project !== undefined) (state.projectSeen ??= {})[event.agent] = event.project;
       const run = findRun(state, event.runId);
       if (run) run.used += 1;
       return;
@@ -186,6 +190,9 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       // Likewise the profile: a version it never answered is given again.
       if ((event.status === "error" || event.unseen) && state.profiles[turn.agent] === turn.profile && turn.profileBefore !== undefined) {
         state.profiles[turn.agent] = turn.profileBefore;
+      }
+      if ((event.status === "error" || event.unseen) && turn.project !== undefined && state.projectSeen?.[turn.agent] === turn.project) {
+        state.projectSeen[turn.agent] = turn.projectBefore ?? 0;
       }
       for (const entry of turn.activity) {
         if (entry.status === "running") entry.status = event.status === "ok" || event.status === "pass" ? "ok" : "fail";

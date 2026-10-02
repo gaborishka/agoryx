@@ -85,6 +85,8 @@ export const createTestRoom = (options: {
   /** Whether someone has the room open, and how often GitHub is asked again (see EngineOptions). */
   viewed?: () => boolean;
   githubPollMs?: number;
+  /** The test home is the Agoryx home too (AGORYX_HOME): the agents' own CLI finds the room, projects live there. */
+  agoraHome?: boolean;
 } = {}): TestRoom => {
   const home = mkdtempSync(join(tmpdir(), "agora-test-"));
   const roomsRoot = join(home, "rooms");
@@ -107,6 +109,7 @@ export const createTestRoom = (options: {
     AGORYX_ACK_MS: "60000",
     // Rules order their turns by marks made here (mark / waitForMark), not by sleeps.
     FAKE_MARKS: home,
+    ...(options.agoraHome ? { AGORYX_HOME: home } : {}),
     ...options.env,
   };
   const shimDir = join(home, "shim");

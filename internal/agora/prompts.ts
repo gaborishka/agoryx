@@ -237,6 +237,11 @@ export interface BriefingInput {
    * to that session. Null for an agent the profile is off for — it gets nothing of it.
    */
   profile?: string | null;
+  /**
+   * The project block (projects.ts): in a fresh Work session's briefing, or, in a running one, only what changed
+   * since that session last got it. Never in Chat.
+   */
+  project?: string | null;
   /** How the workspace's changes are seen (workspace.ts workspaceTracking); its own git when not given. */
   tracking?: "git" | "shadow" | "none";
 }
@@ -262,7 +267,7 @@ const indent = (text: string, pad = "  "): string => text.split("\n").map((line)
  * First-turn context. No role of Agoryx's own (only one the human gave): who is here, where the work lives,
  * how turns and passing work, and how to use the table.
  */
-export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, tracking = "git" }: BriefingInput): string => {
+export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, project, tracking = "git" }: BriefingInput): string => {
   const agentCli = cli.command;
   const norms = promptNorms(env);
   const others = state.agents.filter((entry) => entry.id !== agent.id);
@@ -331,6 +336,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     "- Reply in the language the human writes in.",
     "",
     ...(profile ? [profile, ""] : []),
+    ...(project && state.mode !== "chat" ? [project, ""] : []),
     ...(state.settings.doc
       ? [
           `The room's canonical file: ${state.settings.doc} (in the workspace)`,
@@ -416,6 +422,8 @@ interface DeltaOptions {
   doc?: string | null;
   /** The human's profile, when it is new to this agent's session (profileUpdate); null otherwise. */
   profile?: string | null;
+  /** What changed in the project since this agent's session last got it (projectUpdate); null otherwise. */
+  project?: string | null;
 }
 
 /**
@@ -466,7 +474,7 @@ const fitDelta = (input: string[], kept: Set<number>, stubs: Map<number, string>
 };
 
 /** Everything others did since this agent's last turn, rendered as a thin transcript. */
-export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false, doc = null, profile = null }: DeltaOptions): string => {
+export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false, doc = null, profile = null, project = null }: DeltaOptions): string => {
   const blocks: string[] = [];
   /** Blocks the length bound never drops. */
   const kept = new Set<number>();
@@ -589,6 +597,8 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
   let body = fitDelta(blocks, kept, stubs);
   // The file's current state, not a moment in the transcript: it goes last.
   if (doc) body = body ? `${body}\n\n${doc}` : doc;
+  // What the project's people wrote for every room in the folder: before this room's talk, like the profile.
+  if (project && state.mode !== "chat") body = body ? `${project}\n\n${body}` : project;
   // Who the human is, before what they and the others said: given once per version, never repeated.
   if (profile) body = body ? `${profile}\n\n${body}` : profile;
 
@@ -635,6 +645,7 @@ export const buildTurnPrompt = (
     doc: input.doc ?? null,
     // A fresh session has it in the briefing.
     profile: input.fresh ? null : (input.profile ?? null),
+    project: input.fresh ? null : (input.project ?? null),
   });
   if (!input.fresh) return delta;
   const intro = input.rejoin

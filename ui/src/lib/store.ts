@@ -727,7 +727,9 @@ export const boot = async () => {
     },
     (fn) => useStore.subscribe(fn),
   );
-  setInterval(() => void useStore.getState().loadRooms(), 5000);
+  // The room list is asked for while it can be seen; a hidden tab asks once when it is shown again.
+  setInterval(() => document.visibilityState === "visible" && void useStore.getState().loadRooms(), 5000);
+  document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && void useStore.getState().loadRooms());
   listenToServiceWorker();
   try {
     const info = await api<{ device: { id: string; name: string } | null }>("GET", "/api/info");

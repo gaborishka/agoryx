@@ -697,7 +697,9 @@ export class AgoraDaemon {
     const root = roomsDir(this.env);
     let id: string;
     try {
-      id = RoomStore.resolveId(root, decodeURIComponent(ref), process.cwd());
+      // A room already open, by its id, needs no lookup among all of them.
+      const decoded = decodeURIComponent(ref);
+      id = this.rooms.has(decoded) ? decoded : RoomStore.resolveId(root, decoded, process.cwd());
     } catch (error) {
       throw new HttpError(404, error instanceof Error ? error.message : String(error));
     }

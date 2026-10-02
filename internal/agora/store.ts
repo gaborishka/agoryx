@@ -84,6 +84,9 @@ export interface RoomSummary {
 
 const EVENTS_FILE = "events.jsonl";
 
+/** Rooms' summaries by event log, with the log's mtime and size when it was read (RoomStore.list). */
+const summaries = new Map<string, { mtimeMs: number; size: number; summary: RoomSummary }>();
+
 /** Events that are no activity of the room's: a room is as recent as its last other event (see summary). */
 const QUIET_EVENTS = new Set<RoomEvent["type"]>(["repo.seen", "repo.gone", "pr.status"]);
 
@@ -196,15 +199,27 @@ export class RoomStore {
   static list(root: string): RoomSummary[] {
     if (!existsSync(root)) return [];
     const rooms: RoomSummary[] = [];
+    const listed = new Set<string>();
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
+      const file = join(root, entry.name, EVENTS_FILE);
+      listed.add(file);
       try {
-        const store = RoomStore.open(root, entry.name);
-        rooms.push(store.summary());
+        // A room's summary is its event log's: read again only when the log changed.
+        const { mtimeMs, size } = statSync(file);
+        const cached = summaries.get(file);
+        if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+          rooms.push(cached.summary);
+          continue;
+        }
+        const summary = RoomStore.open(root, entry.name).summary();
+        summaries.set(file, { mtimeMs, size, summary });
+        rooms.push(summary);
       } catch {
         // skip unreadable rooms
       }
     }
+    for (const file of summaries.keys()) if (file.startsWith(`${root}${sep}`) && !listed.has(file)) summaries.delete(file);
     return rooms.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 

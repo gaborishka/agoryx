@@ -46,6 +46,8 @@ export interface Snapshot {
   rawBase: string;
   resume: Record<string, string>;
   driven: boolean;
+  /** The room's folder is a git repository of its own (steps can be committed). */
+  gitRepo?: boolean;
   lockedBy?: string;
   /** The human's profile: where it is and whether it exists (its text never reaches the UI). */
   profile?: { path: string; exists: boolean };

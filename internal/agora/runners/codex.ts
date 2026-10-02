@@ -72,8 +72,12 @@ export const describeCodexItem = (item: Json): Omit<Activity, "id"> | null => {
         kind: "command",
         label: truncate(command, 800),
         command,
+        ...(typeof item.cwd === "string" && item.cwd ? { cwd: item.cwd } : {}),
         status: status === "in_progress" ? "running" : failed ? "fail" : "ok",
         ...(failed && output ? { detail: truncate(output, 240) } : {}),
+        // What it printed, its end, failed or not: the engine reads it (the pull request gh opened, a force-push before a
+        // later step failed), never keeps it.
+        ...(status !== "in_progress" ? { output: output.slice(-2000), ...(output.length > 2000 ? { outputCut: true as const } : {}) } : {}),
       };
     }
     case "file_change": {
@@ -173,6 +177,7 @@ export const execShapedItem = (item: Json): Json | null => {
       return {
         type: "command_execution",
         command: item.command,
+        ...(typeof item.cwd === "string" ? { cwd: item.cwd } : {}),
         status: status(item.status),
         aggregated_output: item.aggregatedOutput,
         exit_code: item.exitCode,

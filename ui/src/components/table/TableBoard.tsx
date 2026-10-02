@@ -33,7 +33,8 @@ import { disputeOf } from "@agora/table";
 import { type TableFormOp, useStore } from "@/lib/store";
 import type { RoomState, TableItem, TableNote, TableOption, TableQuestion, TableState } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { FilePreview, NoteSource, noteCounts, RefChip } from "./OpCard";
+import { FilePreview, NoteItem, noteCounts, RefChip } from "./OpCard";
+import { RouteCards, StepRow } from "./RouteCard";
 
 const band = { claude: "border-l-claude", codex: "border-l-codex", human: "border-l-human", sys: "border-l-border" } as const;
 
@@ -374,21 +375,6 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
 }
 
 // --- an option as a debate -------------------------------------------------------------------------
-
-function NoteItem({ n }: { n: TableNote }) {
-  return (
-    <div id={`ti-${n.id}`} className="scroll-mt-24 rounded-xl bg-card px-3 py-2 ring-1 ring-border/60">
-      <div className="mb-0.5 flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground">
-        <Avatar handle={n.by} size={16} />
-        <Name handle={n.by} className="font-medium" />
-        {n.source ? <NoteSource source={n.source} /> : null}
-      </div>
-      <Clamp max={120} more="More">
-        <Markdown text={n.text} className="text-ui text-foreground" />
-      </Clamp>
-    </div>
-  );
-}
 
 function Side({ title, Icon, tone, notes, empty }: { title: string; Icon: typeof CheckIcon; tone: string; notes: TableNote[]; empty: string }) {
   const [all, setAll] = useState(false);
@@ -791,11 +777,12 @@ function RailSection({ id, title, Icon, aside, children }: { id: string; title: 
 }
 
 function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
-  const post = useStore((s) => s.post);
   const decisions = [...table.decisions].reverse();
   const ground = [...table.settled.map((s) => ({ ...s, fact: false })), ...table.facts.map((f) => ({ ...f, fact: true }))].sort((a, b) => a.seq - b.seq);
   const shifts = shiftsOf(table);
-  const done = table.next.filter((n) => n.done).length;
+  // Steps on a route are on its card; here, the ones on none (or on an option no longer on the table).
+  const steps = table.next.filter((n) => !n.target || !table.options.some((o) => o.id === n.target));
+  const done = steps.filter((n) => n.done).length;
   const empty = !ground.length && !shifts.length && !decisions.length && !table.next.length;
   return (
     <aside className="flex flex-col gap-4 rounded-3xl border border-border bg-card p-4 shadow-soft sm:p-5">
@@ -901,44 +888,23 @@ function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
           </ul>
         </RailSection>
       ) : null}
-      {table.next.length ? (
+      {steps.length ? (
         <RailSection
           id="board-next"
-          title="Next steps"
+          title={steps.length < table.next.length ? "Other next steps" : "Next steps"}
           Icon={FootprintsIcon}
           aside={
             <span className="tabular text-faint">
-              {done} / {table.next.length}
+              {done} / {steps.length}
             </span>
           }
         >
           <div className="h-1 overflow-hidden rounded-full bg-muted">
-            <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${(done / table.next.length) * 100}%` }} />
+            <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${(done / steps.length) * 100}%` }} />
           </div>
-          <ul className="flex flex-col gap-2">
-            {table.next.map((n) => (
-              <li key={n.id} id={`ti-${n.id}`} className={cn("flex scroll-mt-24 gap-2.5", n.done && "text-muted-foreground")}>
-                <button
-                  type="button"
-                  disabled={n.done}
-                  aria-label={n.done ? "Done" : "Mark done"}
-                  title={n.done ? "Done" : "Mark done"}
-                  onClick={() => post("/table", { op: "done", target: n.id }).catch((e) => toast.error(e instanceof Error ? e.message : String(e)))}
-                  className={cn(
-                    "mt-0.5 grid size-4 shrink-0 place-items-center rounded border transition",
-                    n.done ? "border-primary bg-primary text-primary-foreground" : "border-input bg-card hover:border-primary",
-                  )}
-                >
-                  {n.done ? <CheckIcon className="size-3" strokeWidth={3} /> : null}
-                </button>
-                <div className="min-w-0">
-                  <Markdown text={n.text} className={cn("text-ui", n.done && "line-through decoration-faint")} />
-                  <div className="text-meta text-faint">
-                    {participant(room, n.by).label}
-                    {n.doneBy && n.doneBy !== n.by ? ` · done by ${participant(room, n.doneBy).label}` : ""}
-                  </div>
-                </div>
-              </li>
+          <ul className="flex flex-col gap-3">
+            {steps.map((n) => (
+              <StepRow key={n.id} n={n} table={table} room={room} />
             ))}
           </ul>
         </RailSection>
@@ -1115,6 +1081,7 @@ export function TableBoard({ beside = false }: { beside?: boolean }) {
           <Standing table={table} room={room} />
           <div className="grid items-start gap-5 @4xl:grid-cols-[minmax(0,1fr)_minmax(280px,340px)]">
             <div id="board-open" className="flex min-w-0 scroll-mt-6 flex-col gap-4">
+              <RouteCards table={table} room={room} />
               {open.map((q) => (
                 <Question key={q.id} q={q} table={table} room={room} />
               ))}

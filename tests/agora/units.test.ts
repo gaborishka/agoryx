@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { passNote } from "../../internal/agora/prompts.js";
 import { unwrapShellCommand } from "../../internal/agora/runners/codex.js";
 import { parseTableCommand, TableCommandError } from "../../internal/agora/table-cli.js";
@@ -86,13 +87,23 @@ test("table ops taken by a process that died before applying them are picked up 
     // Another live process is still working on this one: left alone.
     writeFileSync(join(paths.opsDir, `claude.jsonl.${process.ppid}.1.taking`), `${JSON.stringify({ op: "ask", text: "busy" })}\n`);
     writeFileSync(join(paths.opsDir, "claude.jsonl"), `${JSON.stringify({ op: "ask", text: "fresh" })}\n`);
+    // An op the agent tool never finished writing: one long left is gone, one being written now is left to it.
+    writeFileSync(join(paths.opsDir, "1-1-old.codex.op.tmp"), "{");
+    utimesSync(join(paths.opsDir, "1-1-old.codex.op.tmp"), new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+    writeFileSync(join(paths.opsDir, "2-2-new.codex.op.tmp"), "{");
     const seen: InboxOp[] = [];
-    drainOpsInbox(paths, (op) => seen.push(op));
+    // The dead process's file is claimed (renamed) before it is applied, so a drain beside this one cannot take it too.
+    const claimed: boolean[] = [];
+    drainOpsInbox(paths, (op) => {
+      seen.push(op);
+      claimed.push(!existsSync(join(paths.opsDir, `codex.jsonl.${dead}.1.taking`)));
+    });
     assert.deepEqual(
       seen.map((op) => `${op.agent}:${op.raw.text}`),
       ["codex:orphaned", "claude:fresh"],
     );
-    assert.deepEqual(readdirSync(paths.opsDir), [`claude.jsonl.${process.ppid}.1.taking`]);
+    assert.deepEqual(claimed, [true, true]);
+    assert.deepEqual(readdirSync(paths.opsDir).sort(), ["2-2-new.codex.op.tmp", `claude.jsonl.${process.ppid}.1.taking`]);
 
     // A file whose ops could not all be applied stays, and is applied on the next drain.
     writeFileSync(join(paths.opsDir, "codex.jsonl"), `${JSON.stringify({ op: "ask", text: "retry" })}\n`);
@@ -100,6 +111,41 @@ test("table ops taken by a process that died before applying them are picked up 
     const again: InboxOp[] = [];
     drainOpsInbox(paths, (op) => again.push(op));
     assert.deepEqual(again.map((op) => op.raw.text), ["retry"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ops many agents send while the room drains its inbox all reach it, each once, in the order each agent sent them", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agora-ops-"));
+  try {
+    const paths = workspacePaths(root);
+    const agentTool = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "agoryx-agent.mjs");
+    const writers = 6;
+    const each = 12;
+    // Each agent sends its ops one after another; nobody acks, so the tool says "queued" right away.
+    const sender = `const { execFileSync } = require("node:child_process"); for (let i = 0; i < ${each}; i++) execFileSync(process.execPath, [${JSON.stringify(agentTool)}, "table", "fact", process.argv[1] + "-" + i]);`;
+    let running = writers;
+    for (let w = 0; w < writers; w++) {
+      const child = spawn(process.execPath, ["-e", sender, String(w)], {
+        cwd: root,
+        env: { PATH: process.env.PATH, AGORYX_AGENT: `w${w}`, AGORYX_OPS_DIR: paths.opsDir, AGORYX_ACK_MS: "1" },
+        stdio: "ignore",
+      });
+      child.on("exit", () => (running -= 1));
+    }
+    const seen: string[] = [];
+    const take = () => drainOpsInbox(paths, ({ agent, raw }) => seen.push(`${agent} ${String(raw.text)}`));
+    while (running > 0) {
+      take();
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    take();
+    assert.equal(seen.length, writers * each);
+    for (let w = 0; w < writers; w++) {
+      assert.deepEqual(seen.filter((entry) => entry.startsWith(`w${w} `)), Array.from({ length: each }, (_, i) => `w${w} ${w}-${i}`));
+    }
+    assert.deepEqual(readdirSync(paths.opsDir).filter((name) => name !== "acks"), []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -125,12 +171,18 @@ test("a step marked done by someone else says who did it — the table never rea
   const table = emptyTable();
   applyTableOp(table, { op: "next", text: "write down the chosen semantics", by: "claude", id: "X1" }, 1);
   applyTableOp(table, { op: "next", text: "run the suite", by: "codex", id: "X2" }, 2);
-  applyTableOp(table, { op: "done", target: "X1", by: "codex" }, 3);
-  applyTableOp(table, { op: "done", target: "X2", by: "codex" }, 4);
+  applyTableOp(table, { op: "next", text: "note the edge cases", by: "claude", id: "X3" }, 3);
+  applyTableOp(table, { op: "review", target: "X1", by: "claude" }, 4);
+  applyTableOp(table, { op: "done", target: "X1", by: "codex" }, 5);
+  applyTableOp(table, { op: "done", target: "X2", by: "codex" }, 6);
+  applyTableOp(table, { op: "done", target: "X3", by: "codex" }, 7);
   assert.equal(table.next[0]!.doneBy, "codex");
   const md = renderTableMarkdown(table, "room");
-  assert.match(md, /- ~~X1: write down the chosen semantics~~ \(claude; done by codex\)/);
-  assert.match(md, /- ~~X2: run the suite~~ \(codex\)$/m);
+  assert.match(md, /- ~~X1: write down the chosen semantics~~ \(claude; done by codex\) — checked$/m);
+  // Its author marked it done: nobody else checked it.
+  assert.match(md, /- ~~X2: run the suite~~ \(codex\) — done without a check$/m);
+  // Someone else marked it done, but no check was asked for: it was closed, not checked.
+  assert.match(md, /- ~~X3: note the edge cases~~ \(claude; done by codex\) — done without a check$/m);
 });
 
 test("a point one agent settled can be objected to by another: contested until the objector or its author concedes on it", () => {
@@ -154,7 +206,8 @@ test("a point one agent settled can be objected to by another: contested until t
   assert.throws(() => prepareTableOp(table, { op: "object", target: "F1", text: "hm" }, "codex", false), /F1 is your own fact — withdraw F1/);
   move({ op: "support", target: "F1", text: "reran it: 208/208" }, "claude");
   assert.match(renderTableMarkdown(table, "room"), /- F1: ref passes 208\/208 \(codex\)\n  - ✓ support \(claude\): reran it/);
-  assert.throws(() => prepareTableOp(table, { op: "object", target: "X9", text: "no" }, "claude", false), /no X9 on the table to object — it takes an option \(P1\), a settled point \(S1\) or a fact \(F1\)/);
+  assert.throws(() => prepareTableOp(table, { op: "object", target: "Q9", text: "no" }, "claude", false), /no Q9 on the table to object — it takes an option \(P1\), a step \(X1\), a settled point \(S1\) or a fact \(F1\)/);
+  assert.throws(() => prepareTableOp(table, { op: "object", target: "X9", text: "no" }, "claude", false), /no step X9 on the table/);
   assert.throws(() => prepareTableOp(table, { op: "object", target: "P9", text: "no" }, "claude", false), /no option P9 on the table/);
   // The objector concedes on it: common ground again.
   move({ op: "concede", target: "S1", text: "outer scope is what Handlebars does" }, "claude");

@@ -226,8 +226,9 @@ test("an edit no one can be credited with during a three-way blind round is thei
     agents: parseAgents(TRIO),
     settings: { doc: "README.md" },
     rules: [
-      { id: "opus", match: "essay", sleepMs: 1200, reply: "Thinking.", once: true },
-      { id: "sonnet", match: "essay", sleepMs: 1000, reply: "Thinking too.", once: true },
+      // Both are still working when Codex's turn ends: they wait for its reply, which holds under any load.
+      { id: "opus", match: "essay", waitForText: "Drafted.", reply: "Thinking.", once: true },
+      { id: "sonnet", match: "essay", waitForText: "Drafted.", reply: "Thinking too.", once: true },
       { id: "codex", match: "essay", sleepMs: 200, write: { path: "README.md", content: "# Time\n\nA draft.\n", via: "shell" }, reply: "Drafted.", once: true },
     ],
   });

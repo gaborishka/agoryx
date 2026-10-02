@@ -43,6 +43,7 @@ const eventOrigin = (event: RoomEvent): ActorOrigin | undefined => {
     case "room.renamed":
     case "agent.changed":
     case "doc.revised":
+    case "pr.linked":
       return event.from;
     default:
       return undefined;
@@ -123,6 +124,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         activity: [],
         profile: event.profile ?? "",
         profileBefore: state.profiles[event.agent] ?? "",
+        ...(event.limitMs !== undefined ? { limitMs: event.limitMs } : {}),
       });
       state.cursors[event.agent] = Math.max(state.cursors[event.agent] ?? 0, event.cursor);
       state.profiles[event.agent] = event.profile ?? "";
@@ -170,7 +172,10 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       state.sessions[event.agent] = { sessionId: event.sessionId, boundAt: event.ts };
       return;
     case "table.op":
-      applyTableOp(state.table, event.op, event.seq);
+      applyTableOp(state.table, event.op, event.seq, {
+        alone: state.agents.length === 1,
+        human: !event.op.from && event.op.by === state.human,
+      });
       return;
     case "settings.changed":
       state.settings = { ...state.settings, ...event.patch };
@@ -219,6 +224,10 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
     case "commit.created":
       state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq, ...(event.folder ? { folder: event.folder } : {}) });
       return;
+    case "step.committed":
+      // The first commit a step went into is the one it is in; a later one naming it again does not move it.
+      for (const step of state.table.next) if (event.steps.includes(step.id) && !step.commit) step.commit = { sha: event.sha, by: event.by, seq: event.seq };
+      return;
     case "workspace.reverted": {
       const { type: _type, seq, ts, ...rest } = event;
       state.reverts.push({ seq, ts, ...rest });
@@ -245,6 +254,22 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         removed: event.removed,
       });
       return;
+    case "repo.seen":
+      state.repo = { repo: event.repo, remote: event.remote, branch: event.branch, ...(event.base ? { base: event.base } : {}), seq: event.seq };
+      return;
+    case "repo.gone":
+      delete state.repo;
+      return;
+    case "pr.linked":
+      if (!(state.prs ??= []).some((pr) => pr.number === event.number)) {
+        state.prs.push({ number: event.number, url: event.url, by: event.by, ...(event.via ? { via: event.via } : {}), seq: event.seq, ...(event.turnId ? { turnId: event.turnId } : {}) });
+      }
+      return;
+    case "pr.status": {
+      const pr = state.prs?.find((entry) => entry.number === event.number);
+      if (pr) pr.status = event.status;
+      return;
+    }
   }
 };
 

@@ -23,41 +23,6 @@ The core problem: working with multiple LLMs today means manually copying text b
 - **Claude** (Anthropic) — session layer, context builder, orchestrator, docs, architecture
 - **Codex** (OpenAI) — adapters, CLI integration, storage, chat engine, project infrastructure
 
-## Bridge Protocol
-
-> Deprecated for v0.3 daily workflow: prefer Agoryx memory (`/memory show`, `.agoryx/memory.md`). Bridge files remain for legacy handover history.
-
-We use a file-based bridge to sync context between agents. **On every substantial response:**
-
-1. **Read first:**
-   - `bridge/SESSION.md` — current project state (single source of truth)
-   - Last entries in `bridge/LOG.md` — recent handover notes
-
-2. **After finishing work:**
-   - Update `bridge/SESSION.md` with current state (keep short, only current state)
-   - Append a new entry to `bridge/LOG.md` (never overwrite, only append)
-
-3. **LOG format:**
-   ```
-   ## YYYY-MM-DDTHH:MM:SSZ | claude
-   ### Summary
-   - What was done
-   ### Changes
-   - Which files/decisions changed
-   ### Risks
-   - Risks or limitations
-   ### Next
-   - What's expected from the other agent/human
-   ---
-   ```
-
-4. **Rules:**
-   - `LOG.md` is append-only, never rewrite
-   - `SESSION.md` stays short — current state, not history
-   - If SESSION.md and LOG.md conflict, the newest (bottom) LOG entry wins
-   - Truth order in LOG.md is determined by line order (append order), not by timestamp in headers
-   - All communication in Bridge files (`bridge/*`) must be in English
-
 ## Important Files
 
 | Path | Purpose |
@@ -65,9 +30,6 @@ We use a file-based bridge to sync context between agents. **On every substantia
 | `docs/VISION.md` | Project vision, use cases, roadmap |
 | `docs/ARCHITECTURE.md` | Technical architecture, event contracts, sequence diagrams |
 | `docs/CONSENSUS.md` | Joint decisions between Claude and Codex |
-| `bridge/SESSION.md` | Current project state (read this first!) |
-| `bridge/LOG.md` | Handover log between agents |
-| `bridge/PROTOCOL.md` | Bridge protocol rules |
 | `internal/events/types.ts` | Canonical type definitions (Codex authored) |
 | `internal/session/context.ts` | Context builder algorithm (Claude authored) |
 | `internal/config/index.ts` | Config loader and defaults (Claude authored) |
@@ -97,27 +59,24 @@ We use a file-based bridge to sync context between agents. **On every substantia
 ## Communication Style
 
 - Ivan may communicate in Ukrainian in chat.
-- Keep all Bridge communication (`bridge/*`) in English.
 - Ivan relays messages between agents manually (until Agoryx itself replaces this).
 - When Ivan says "Codex said X" — treat it as Codex's actual position.
-- Keep bridge updates factual and concise.
 - Don't duplicate Codex's work. Read the codebase before writing.
-- If there's a conflict, flag it in bridge and ask Ivan for a decision.
+- If there's a conflict, flag it and ask Ivan for a decision.
 
 ## Common Pitfalls From This Session
 
 1. **Check `internal/` before creating files in `src/`.** The project uses `internal/` layout. `tsconfig.json` only includes `cmd/**/*.ts` and `internal/**/*.ts`.
 2. **Read Codex's types first.** The canonical types are in `internal/events/types.ts`. Adapt your code to use those types, don't create parallel type definitions.
 3. **`src/` is orphaned.** Claude initially created code there before discovering Codex's layout. Files couldn't be deleted due to permissions. They should be ignored or cleaned up.
-4. **Codex works fast and in parallel.** Always read the latest bridge files and check what exists before starting work.
+4. **Codex works fast and in parallel.** Always check what exists before starting work.
 
 ## Quick Start for a New Session
 
 ```
 1. Read CLAUDE.md (this file)
 2. Open current project memory via /memory show (or read .agoryx/memory.md)
-3. (Legacy only) read last 2-3 entries in bridge/LOG.md if extra handover context is needed
-4. Check what files exist: find internal/ -name "*.ts" | sort
-5. Start working on the task Ivan gives you
-6. After finishing: update project memory (/memory note or /memory decision); append bridge/LOG.md only if legacy bridge handover is still being used
+3. Check what files exist: find internal/ -name "*.ts" | sort
+4. Start working on the task Ivan gives you
+5. After finishing: update project memory (/memory note or /memory decision)
 ```

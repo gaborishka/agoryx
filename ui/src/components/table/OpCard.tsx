@@ -11,6 +11,7 @@ import {
   PencilIcon,
   RefreshCcwIcon,
   RotateCcwIcon,
+  ScanEyeIcon,
   ShieldAlertIcon,
   SignpostIcon,
   ThumbsUpIcon,
@@ -19,11 +20,12 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { Clamp } from "@/components/common/Clamp";
+import { Avatar, Name } from "@/components/room/bits";
 import { Markdown, rawUrl } from "@/components/md/Markdown";
 import { LiveFrame } from "@/components/md/LiveFrame";
 import { ext, FRAME_EXT, IMAGE_EXT, plural, workspaceRel } from "@/lib/format";
 import { useStore } from "@/lib/store";
-import type { TableOp, TableOption, TableState } from "@/lib/types";
+import type { TableNote, TableOp, TableOption, TableState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export const TC_KIND: Record<TableOp["op"], string> = {
@@ -35,6 +37,7 @@ export const TC_KIND: Record<TableOp["op"], string> = {
   fact: "Fact",
   settle: "Settled",
   next: "Next step",
+  review: "Check asked for",
   done: "Done",
   withdraw: "Withdrawn",
   decide: "Decision",
@@ -53,6 +56,7 @@ export const KIND_ICON: Record<TableOp["op"], LucideIcon> = {
   fact: FlagIcon,
   settle: BadgeCheckIcon,
   next: SignpostIcon,
+  review: ScanEyeIcon,
   done: CheckIcon,
   withdraw: UndoIcon,
   decide: GavelIcon,
@@ -71,6 +75,7 @@ export const KIND_TONE: Record<TableOp["op"], string> = {
   fact: "text-fact",
   settle: "text-meet-ink",
   next: "text-muted-foreground",
+  review: "text-codex",
   done: "text-add-ink",
   withdraw: "text-muted-foreground",
   decide: "text-meet-ink",
@@ -80,12 +85,12 @@ export const KIND_TONE: Record<TableOp["op"], string> = {
   delete: "text-muted-foreground",
 };
 
-export function Kind({ op }: { op: TableOp["op"] }) {
+export function Kind({ op, label }: { op: TableOp["op"]; label?: string }) {
   const Icon = KIND_ICON[op];
   return (
     <span className={cn("inline-flex items-center gap-1 text-micro font-semibold", KIND_TONE[op])}>
       <Icon className="size-3.5" />
-      {TC_KIND[op]}
+      {label ?? TC_KIND[op]}
     </span>
   );
 }
@@ -168,6 +173,22 @@ export function FilePreview({ file }: { file: string }) {
   );
 }
 
+/** An argument on the table: who made it, where it comes from, what it says. */
+export function NoteItem({ n }: { n: TableNote }) {
+  return (
+    <div id={`ti-${n.id}`} className="scroll-mt-24 rounded-xl bg-card px-3 py-2 ring-1 ring-border/60">
+      <div className="mb-0.5 flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground">
+        <Avatar handle={n.by} size={16} />
+        <Name handle={n.by} className="font-medium" />
+        {n.source ? <NoteSource source={n.source} /> : null}
+      </div>
+      <Clamp max={120} more="More">
+        <Markdown text={n.text} className="text-ui text-foreground" />
+      </Clamp>
+    </div>
+  );
+}
+
 export function NoteSource({ source }: { source: string }) {
   const workspace = useStore((s) => s.snap?.state.workspace);
   const openFile = useStore((s) => s.openFile);
@@ -214,7 +235,9 @@ function OptionActions({ id }: { id: string }) {
 
 const optionTitle = (table: TableState, id: string) => {
   const o = table.options.find((x) => x.id === id);
-  return o ? `“${o.title}”` : "";
+  if (o) return `“${o.title}”`;
+  const step = table.next.find((x) => x.id === id);
+  return step ? `“${step.text}”` : "";
 };
 
 export function OpCard({ o }: { o: TableOp }) {
@@ -290,7 +313,8 @@ export function OpCard({ o }: { o: TableOp }) {
       return (
         <div className={cn(card, "border-l-[3px]", tone)}>
           <div className="flex flex-wrap items-center gap-2">
-            <Kind op={o.op} />
+            {/* An objection to a step is what its check found. */}
+            <Kind op={o.op} label={o.op === "object" && o.target.startsWith("X") ? "Finding" : undefined} />
             <span className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
               on <RefChip id={o.target} /> <span className="truncate">{optionTitle(table, o.target)}</span>
             </span>
@@ -374,7 +398,7 @@ export function OpCard({ o }: { o: TableOp }) {
       );
     default: {
       const text =
-        o.op === "done"
+        o.op === "done" || o.op === "review"
           ? table.next.find((x) => x.id === o.target)?.text
           : (table.options.find((x) => x.id === o.target)?.title ?? table.questions.find((x) => x.id === o.target)?.text ?? table.facts.find((x) => x.id === o.target)?.text ?? table.settled.find((x) => x.id === o.target)?.text);
       return (
@@ -397,6 +421,11 @@ function ItemCard({ o, table }: { o: Extract<TableOp, { op: "fact" | "settle" | 
     <div className={cn(card, "flex items-baseline gap-2.5 py-2")}>
       <Kind op={o.op} />
       <span className={cn("min-w-0 flex-1 text-ui", (done || withdrawn) && "text-muted-foreground line-through")}>{o.text}</span>
+      {o.op === "next" && o.target ? (
+        <span className="inline-flex shrink-0 items-center gap-1 text-micro text-muted-foreground">
+          on <RefChip id={o.target} />
+        </span>
+      ) : null}
       {done ? <span className="text-micro font-medium text-add-ink">done</span> : null}
       {withdrawn ? <span className="text-micro font-medium text-muted-foreground">withdrawn</span> : null}
     </div>
@@ -434,6 +463,7 @@ const TC_MANY: Record<TableOp["op"], [string, string]> = {
   fact: ["fact", "facts"],
   settle: ["settled point", "settled points"],
   next: ["step", "steps"],
+  review: ["check asked for", "checks asked for"],
   done: ["done", "done"],
   withdraw: ["withdrawn", "withdrawn"],
   reopen: ["reopened", "reopened"],

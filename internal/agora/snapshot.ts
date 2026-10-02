@@ -55,6 +55,7 @@ export const eventPatch = (state: RoomState, event: RoomEvent): Record<string, u
     case "session.bound":
       return { ...base, sessions: state.sessions };
     case "table.op":
+    case "step.committed":
       return { ...base, table: state.table };
     case "settings.changed":
       return { ...base, settings: state.settings };
@@ -71,6 +72,12 @@ export const eventPatch = (state: RoomState, event: RoomEvent): Record<string, u
       return { ...base, reverts: state.reverts };
     case "doc.revised":
       return { ...base, docRevisions: state.docRevisions };
+    case "repo.seen":
+    case "repo.gone":
+      return { ...base, repo: state.repo ?? null };
+    case "pr.linked":
+    case "pr.status":
+      return { ...base, prs: state.prs };
     default:
       return base;
   }

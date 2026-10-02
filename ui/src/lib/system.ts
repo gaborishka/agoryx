@@ -22,6 +22,15 @@ export const sysLine = (m: Line, who?: string): string => {
   return note ? say(note, who) : m.text;
 };
 
+/** Codes for a risky step someone took: the line stands out, short of an error. */
+const RISKS = new Set<SystemCode>(["git.force_pushed"]);
+
+/** Whether a system line reports a risky step (see RISKS). */
+export const sysRisk = (m: Line): boolean => {
+  const note = noteOf(m);
+  return Boolean(note && RISKS.has(note.code));
+};
+
 /** Whether a system line reports a failure: by its code; an older line nobody can read, by its words. */
 export const sysError = (m: Line): boolean => {
   const note = noteOf(m);

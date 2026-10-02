@@ -13,6 +13,8 @@ import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, origin
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { type AgentPatch, DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch, roomWorkspaceDiff } from "./engine.js";
 import { planRevert, RevertError, type RevertRequest } from "./revert.js";
+import { GhError, GithubUnavailable } from "./github.js";
+import { planStepCommit, StepCommitError } from "./step-commit.js";
 import { deviceLabel, DeviceRegistry, formatCode, isDeviceToken, PairingError, type DeviceInfo } from "./devices.js";
 import { lanInterfaces, normalizeHosts, writeExposure, type Exposure } from "./exposure.js";
 import { linkedMedia, markdownTexts } from "./media.js";
@@ -22,7 +24,7 @@ import { locateNativeSession } from "./native.js";
 import { readLimits, recordLimits } from "./limits-store.js";
 import { roomUsage } from "./usage.js";
 import { readTranscript } from "./transcript.js";
-import { turnActivityEntries, turnSession } from "./turn-activity.js";
+import { readTurnActivity, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
@@ -38,7 +40,7 @@ import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
 import { TerminalError, TerminalHub } from "./terminal.js";
-import { listWorkspaceFiles, repoRoot, resolveInside, workspacePaths, workspaceTracking } from "./workspace.js";
+import { isGitRepo, listWorkspaceFiles, repoRoot, resolveInside, workspacePaths, workspaceTracking } from "./workspace.js";
 
 export interface DaemonOptions {
   env?: NodeJS.ProcessEnv;
@@ -703,6 +705,8 @@ export class AgoraDaemon {
         runners: this.runners,
         log: (message) => this.log(`[${fresh.id}] ${message}`),
         onLimits: (snapshot) => this.onLimits(snapshot),
+        // GitHub is asked about a room nobody has open only while a pull request of it is open.
+        viewed: () => handle.followers > 0,
         ...(this.options.opsPollMs ? { opsPollMs: this.options.opsPollMs } : {}),
       });
       // Deliver what the followed store has not read yet — including what the engine just appended on
@@ -1381,6 +1385,29 @@ export class AgoraDaemon {
       return;
     }
 
+    if (action === "pr" && method === "GET") {
+      // What "Open PR" would push and open, for the human to confirm. Nothing is pushed.
+      try {
+        sendJson(res, 200, await this.engineFor(handle).prPlan());
+      } catch (error) {
+        if (error instanceof GithubUnavailable) throw new HttpError(409, error.message);
+        if (error instanceof GhError) throw new HttpError(502, error.message);
+        throw error;
+      }
+      return;
+    }
+
+    if (action === "step-commit" && method === "GET") {
+      // What committing a step would take, for the human to choose its files. Nothing is touched.
+      try {
+        sendJson(res, 200, planStepCommit(handle.store.state, handle.store.events, url.searchParams.get("step") ?? ""));
+      } catch (error) {
+        if (!(error instanceof StepCommitError)) throw error;
+        sendJson(res, error.status, { error: error.message });
+      }
+      return;
+    }
+
     if (action === "terminals") {
       await this.terminalsApi(req, res, handle, parts.slice(3), method, caller);
       return;
@@ -1497,6 +1524,33 @@ export class AgoraDaemon {
         }
         return;
       }
+      case "step-commit": {
+        // The human's button: an agent commits a step with git itself, naming it.
+        if (caller.agent) throw new HttpError(403, "an agent commits a step with git itself, naming it: git commit -m \"X1 <the step>\"");
+        const files = Array.isArray(body.files) ? body.files.filter((file): file is string => typeof file === "string") : [];
+        try {
+          sendJson(res, 201, engine.commitStep(typeof body.step === "string" ? body.step : "", files, actor));
+        } catch (error) {
+          if (!(error instanceof StepCommitError)) throw error;
+          sendJson(res, error.status, { error: error.message });
+        }
+        return;
+      }
+      case "pr": {
+        // The human's alone: gh pushes and opens the pull request as them, from the branch and commit they were shown.
+        if (caller.agent) throw new HttpError(403, "only the human opens a pull request from the room; an agent runs gh itself");
+        try {
+          // What the human was shown: the branch and commit, and where it goes.
+          const seen = Object.fromEntries(["repo", "remote", "branch", "base", "sha", "pushUrl"].flatMap((key) => (typeof body[key] === "string" ? [[key, body[key]]] : [])));
+          const pr = await engine.openPr(actor, seen);
+          sendJson(res, 201, { pr });
+        } catch (error) {
+          if (error instanceof GithubUnavailable) throw new HttpError(409, error.message);
+          if (error instanceof GhError) throw new HttpError(502, error.message);
+          throw error;
+        }
+        return;
+      }
       case "revert": {
         // The human's alone: an agent never rewinds the folder under the others.
         if (caller.agent) throw new HttpError(403, "only the human returns the folder to a checkpoint");
@@ -1528,6 +1582,8 @@ export class AgoraDaemon {
       rawBase: this.rawBase(handle.store.id, device),
       resume: resumeCommands(handle.store, this.runners),
       driven: Boolean(handle.engine),
+      // Whether the folder is a git repository of its own: only then can a step be committed.
+      gitRepo: isGitRepo(handle.store.state.workspace),
       ...(handle.lockedBy ? { lockedBy: handle.lockedBy } : {}),
       // Whether there is a profile at all, never what it says: the UI shows who is given it.
       profile: { path: profilePath(this.env), exists: readProfile(profilePath(this.env)) !== null },
@@ -1582,8 +1638,7 @@ export class AgoraDaemon {
     if (!file) return empty;
     const endParam = params.get("end");
     if (endParam !== null && !/^\d{1,15}$/.test(endParam)) throw new HttpError(400, "invalid session page");
-    const page = readTranscript(agent.kind, file, endParam === null ? {} : { end: Number(endParam) });
-    return { turn: turn.id, sessionId, entries: turnActivityEntries(turn, page.entries), start: page.start, size: page.size };
+    return { turn: turn.id, sessionId, ...readTurnActivity(agent.kind, file, turn, endParam === null ? {} : { end: Number(endParam) }) };
   }
 
   /** The canonical file as it is on disk now. */
@@ -1741,6 +1796,7 @@ export class AgoraDaemon {
       this.deviceStreams.set(device.id, mine);
     }
     handle.followers += 1;
+    handle.engine?.lookAtGithub();
     if (!handle.engine && !handle.followTimer) {
       // Another process drives this room: follow its event log.
       handle.followTimer = setInterval(() => {

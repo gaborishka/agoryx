@@ -21,6 +21,14 @@ export const passNote = (text: string): string | null => {
   return rest.length > 280 ? null : rest;
 };
 
+/** Lines the room shows the human and no agent reads: not in a delta, not in `read new`. */
+// What gh said of a pull request (checks, review, merged, closed, reopened) is the human's too, whatever comes next.
+const HUMAN_ONLY = new Set(["agent.compacted", "git.force_pushed"]);
+export const forHumanOnly = (message: Pick<RoomMessage, "sys">): boolean => {
+  const code = message.sys?.code ?? "";
+  return HUMAN_ONLY.has(code) || code.startsWith("pr.");
+};
+
 const clock = (iso: string): string => {
   const date = new Date(iso);
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
@@ -295,6 +303,19 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     ...(norms ? ["- Disagree when you disagree, and say what would change your mind. An unresolved disagreement, stated clearly, is a valid outcome."] : []),
     `- Address someone with @name. ${state.human} is a participant, not a gatekeeper: you don't need permission to do the work being discussed.`,
     `  When ${state.human} addresses only you, your reply goes back to them: the others read it in their next turn, and it wakes one of them only if you @mention them.`,
+    `  When you need ${state.human}'s answer or decision, @mention them (@${state.human}): the room then shows them that you are waiting for it.`,
+    others.length ? "- Work goes in steps, and a step is someone else's to check:" : "- Work goes in steps, each checked before it is called done:",
+    "  - A step goes on the table (`table next`, on the route option it carries out), so the human sees where it stands.",
+    ...(others.length
+      ? [
+          "  - Built one? Ask for its check (`table review X1`) and @mention another agent. Say \"done\", \"ready\" or \"verified\" only after that check has passed, with the fixes it asked for in.",
+          "  - Checking one? What fails goes on the step (`table object X1 \"what fails\"`); once it passes, `table done X1`.",
+        ]
+      : ["  - Built one? Check it yourself (run it, test it), say how, then `table done X1`. Say \"done\", \"ready\" or \"verified\" only after that."]),
+    ...(tracking === "git" && state.settings.access !== "readonly"
+      ? ["  - Once it is checked, its author commits it, before the next step goes on top: only that step's files, its id first in the message (`git add <them> && git commit -m \"X1 <the step>\" -- <them>`), so the room sees it went in and each step can be read and taken back on its own."]
+      : []),
+    "  - Don't wait inside your turn for a reply or a check: no sleeping, no polling. Say what you need, end the turn; an @mention wakes you when there is something for you.",
     state.settings.budget === null
       ? "- There is no turn limit: the room goes on until everyone passes (or the human stops it). So pass as soon as you have nothing substantive to add — a finished job, a clear state, an agreement already stated are all reasons to pass."
       : "- Each run has a turn budget; the prompt says how many turns remain. Converge or leave a clear state before it runs out — once it is clear, pass: the room goes quiet when everyone passes, and unused turns are fine.",
@@ -330,10 +351,15 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     `  ${agentCli} table propose "short title" --body "what and why (markdown)" [--file path/in/workspace] [--q Q1]`,
     "    (a long body with a diagram: write it to a file and pass --body-file notes.md, or pipe it with --body -)",
     `  ${agentCli} table object P1 "reason"   |   support P1 "reason"   |   evidence P1 "finding" --source <url|path>`,
-    "    (object, support and evidence also take a settled point or a fact: object S1 \"why it is not settled\" when someone settled what you still dispute)",
-    `  ${agentCli} table settle "what is now established" [--q Q1]   |   fact "a checked fact"   |   next "concrete next step"   |   done X1`,
+    "    (object, support and evidence also take a settled point, a fact or a step: object S1 \"why it is not settled\" when someone settled what you still dispute;",
+    "    object X1 \"what fails\" when checking a step finds something)",
+    `  ${agentCli} table settle "what is now established" [--q Q1]   |   fact "a checked fact"`,
     "    (settle --q Q1 when the conclusion answers an open question: it closes Q1 with that answer; on a --many question",
-    "    it is the room's recommendation shown on the question, and the options stay open for the human to choose)",
+    "    it is the room's recommendation shown on the question, and the options stay open for the human to choose.",
+    "    settle is for what the room has concluded, not for work: work is steps)",
+    `  ${agentCli} table next "a concrete step" [--on P1]   |   review X1   |   done X1`,
+    "    (next: a step, --on the route option it carries out; review X1: built, waiting for its check;",
+    "    done X1: its check passed)",
     `  ${agentCli} table concede "what I no longer hold, and why" [--on P1]   (an argument changed your mind: record it, don't just agree in prose)`,
     `  ${agentCli} table decide P1 --note "why"   (when the room has actually converged, or the human asked you to decide)`,
     `  ${agentCli} table withdraw P1|F1   (take back your own option, or a fact of yours that turned out wrong — it stays, struck out)`,
@@ -471,6 +497,7 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
     }
     if (event.type === "message.posted") {
       const message = event.message;
+      if (forHumanOnly(message)) continue;
       const own = message.author === agent.id || message.native?.agent === agent.id;
       // The agent's own session already holds what it said and what was said to it there.
       if (own && !replayOwn) continue;
@@ -528,6 +555,9 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
       blocks.push(lines.join("\n"));
     } else if (event.type === "commit.created") {
       blocks.push(`── Agoryx · ${clock(event.ts)}\nworkspace checkpoint ${event.sha.slice(0, 8)}: ${event.subject}`);
+    } else if (event.type === "step.committed" && event.by !== "agoryx" && event.by !== agent.id) {
+      // A checkpoint's steps are in its line above; an agent's own commit, it made.
+      blocks.push(`── ${displayName(state, event.by)} · ${clock(event.ts)}\ncommitted ${event.steps.join(", ")} as ${event.sha.slice(0, 8)}: ${event.subject}`);
     } else if (event.type === "workspace.reverted") {
       // Files under the agent's feet changed without a turn: it must know before it builds on them.
       kept.add(blocks.length);

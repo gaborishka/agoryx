@@ -221,6 +221,8 @@ export const openEngine = (
     agentKey?: (agentId: string) => string | undefined;
     /** Where the agents' limits go. Default: kept in <AGORYX_HOME>/limits.json (see limits-store.ts). */
     onLimits?: (snapshot: LimitSnapshot) => void;
+    /** Whether someone has the room open (see EngineOptions.viewed). */
+    viewed?: () => boolean;
   } = {},
 ): RoomEngine => {
   const env = options.env ?? process.env;
@@ -240,6 +242,7 @@ export const openEngine = (
     onLimits: options.onLimits ?? ((snapshot) => void recordLimits(env, snapshot)),
     ...(options.log ? { log: options.log } : {}),
     ...(options.opsPollMs ? { opsPollMs: options.opsPollMs } : {}),
+    ...(options.viewed ? { viewed: options.viewed } : {}),
   });
 };
 

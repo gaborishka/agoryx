@@ -24,7 +24,7 @@ import { Avatar } from "@/components/room/bits";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { api, local, roomPath, Unauthorized } from "@/lib/api";
 import { useLoad } from "@/lib/load";
-import { clearSentComposerDraft, composerChoices, composerCommand, composerDraftSnapshot, composerHistory, composerTrigger, historyBoundary, historyStep, replaceComposerToken, savedContextFiles, saveContextFiles, withContextFiles, type ComposerChoice } from "@/lib/composer-context";
+import { clearSentComposerDraft, composerChoices, composerCommand, composerDraftSnapshot, composerHistory, composerTrigger, historyBoundary, historyStep, recallSent, replaceComposerToken, savedContextFiles, saveContextFiles, withContextFiles, type ComposerChoice } from "@/lib/composer-context";
 import { useRoomDiff } from "@/lib/changes";
 import { keyLabel } from "@/lib/keys";
 import { baseName, names as nameList, plural } from "@/lib/format";
@@ -101,7 +101,7 @@ export function Composer() {
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [selected, setSelected] = useState(0);
   const [historyIndex, setHistoryIndex] = useState(-1);
-  const historyDraft = useRef("");
+  const historyDraft = useRef<{ text: string; quotes: Quote[]; files: string[] }>({ text: "", quotes: [], files: [] });
   const history = useMemo(() => room ? composerHistory(room.messages, room.human) : [], [room?.messages, room?.human]);
   const trigger = driven && focused && !sending && !composing ? composerTrigger(text, caret.start, caret.end) : null;
   const token = trigger ? `${trigger.kind}:${trigger.start}:${trigger.end}:${trigger.query}` : null;
@@ -115,6 +115,8 @@ export function Composer() {
     [suggesting, token, room?.agents, room?.human, tree.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const active = Math.min(selected, choices.length - 1);
   useEffect(() => setSelected(0), [token]);
+  // A file attached to, or taken off, a recalled message makes it a new draft, as a chip does.
+  useEffect(() => setHistoryIndex(-1), [files.items.length]);
   const keepContextFiles = (next: string[]) => {
     setContextFiles(next);
     if (roomId) saveContextFiles(roomId, next);
@@ -156,6 +158,8 @@ export function Composer() {
     // Only a new quote, not one left from another room when this one opens.
     if (!quoting || !roomId || quoted.current === quoting.at) return;
     quoted.current = quoting.at;
+    // A quote added to a recalled message makes it a new draft, as typing does.
+    setHistoryIndex(-1);
     // The same passage twice is one quote; the draft below stays as it is.
     const q = quoting.quote;
     setQuotes((prev) => {
@@ -163,7 +167,7 @@ export function Composer() {
       saveQuotes(roomId, next);
       return next;
     });
-    // Lines of a turn's diff go to that turn's agent unless the draft already names someone, read as the room reads it; the human can change it.
+    // A quote, of words or of a diff, goes to the agent who wrote it unless the draft already names someone, read as the room reads it; the human can change it.
     const to = quoting.to;
     const handles = room ? [...room.agents.map((a) => a.id), room.human] : [];
     if (to && !parseMentions(text, handles).length) {
@@ -280,17 +284,23 @@ export function Composer() {
       }
     }
     if (!suggesting && !event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey &&
-      (event.key === "ArrowUp" || event.key === "ArrowDown") && (historyIndex >= 0 || !text) &&
+      // History opens on an empty draft only: chips not yet sent are never swapped out for a sent message's.
+      (event.key === "ArrowUp" || event.key === "ArrowDown") && (historyIndex >= 0 || (!text && !quotes.length && !contextFiles.length && !files.items.length)) &&
       historyBoundary(text, event.currentTarget.selectionStart, event.currentTarget.selectionEnd, event.key === "ArrowUp" ? "older" : "newer")) {
       const next = historyStep(historyIndex, event.key === "ArrowUp" ? "older" : "newer", history.length);
       if (next !== historyIndex) {
         event.preventDefault();
-        if (historyIndex === -1) historyDraft.current = text;
-        const value = next === -1 ? historyDraft.current : history[next]!;
-        setText(value);
-        local.set(`draft.${room.id}`, value || null);
+        if (historyIndex === -1) historyDraft.current = { text, quotes, files: contextFiles };
+        // A sent message comes back as it was composed: its quotes and files as chips again, not as `> …` text.
+        const sourceAuthor = (id: string) => room.messages.find((m) => m.id === id)?.author ?? room.turns.find((t) => t.id === id)?.agent;
+        const sent = next === -1 ? null : recallSent(history[next]!, sourceAuthor);
+        const back = sent ? { text: sent.body, quotes: sent.quotes, files: sent.files } : historyDraft.current;
+        setText(back.text);
+        local.set(`draft.${room.id}`, back.text || null);
+        keepQuotes(back.quotes);
+        keepContextFiles(back.files);
         setHistoryIndex(next);
-        position(value.length);
+        position(back.text.length);
       }
       return;
     }
@@ -330,8 +340,9 @@ export function Composer() {
       >
         {suggesting ? <ComposerSuggestions choices={choices} active={active} onPick={pick} onActive={setSelected}
           loading={filesLoading} error={tree.error} /> : null}
-        <QuoteList quotes={quotes} onRemove={(q) => keepQuotes(quotes.filter((x) => x !== q))} />
-        <ContextFileList paths={contextFiles} onRemove={(path) => keepContextFiles(contextFiles.filter((p) => p !== path))} />
+        {/* A chip taken off a recalled message makes it a new draft, as typing does. */}
+        <QuoteList quotes={quotes} onRemove={(q) => { keepQuotes(quotes.filter((x) => x !== q)); setHistoryIndex(-1); }} />
+        <ContextFileList paths={contextFiles} onRemove={(path) => { keepContextFiles(contextFiles.filter((p) => p !== path)); setHistoryIndex(-1); }} />
         <AttachmentList items={files.items} onRemove={files.remove} className="px-3 pt-3" />
         <div className="flex items-end gap-1 py-1.5 pr-2 pl-2">
           <AttachButton onFiles={files.add} disabled={!driven} className="mb-1" />

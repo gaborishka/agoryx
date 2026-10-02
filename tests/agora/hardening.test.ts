@@ -108,7 +108,7 @@ test("table commands reject flags their verb does not take, in both CLIs", () =>
     });
     assert.notEqual(run.status, 0);
     assert.match(run.stderr, /does not take --nte/);
-    assert.equal(existsSync(join(paths.opsDir, "codex.jsonl")), false, "nothing was queued");
+    assert.equal(existsSync(paths.opsDir), false, "nothing was queued");
   } finally {
     rmSync(ws, { recursive: true, force: true });
   }

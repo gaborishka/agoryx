@@ -1,8 +1,5 @@
-# Ephemeral bridge state
-bridge/SESSION.md
-bridge/LOG.md
-bridge/CLAUDE_PROMPT.md
-bridge/CODEX_PROMPT.md
+# The old bridge between agents: kept locally, not in the repository
+bridge/
 
 # Local secrets (the daemon's Jev key)
 .env

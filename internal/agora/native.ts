@@ -33,6 +33,15 @@ export interface NativeScan {
   openNative: boolean;
   /** Whether the last finished exchange came from Agoryx (pass it to the next scan). */
   lastAgoryx: boolean;
+  /** Times the CLI compacted the session's context; a rescan from an unfinished exchange returns them again. */
+  compactions: NativeCompaction[];
+}
+
+export interface NativeCompaction {
+  /** Stable id inside the session file. */
+  key: string;
+  /** When it happened, from the session file. */
+  at: string;
 }
 
 /** Prompts Agoryx sends: the first-turn briefing and every delta. */
@@ -246,6 +255,7 @@ const TURN_ENDS = new Set(["end_turn", "max_tokens", "stop_sequence", "refusal"]
 
 const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: boolean): NativeScan => {
   const exchanges: NativeExchange[] = [];
+  const compactions: NativeCompaction[] = [];
   let draft: Draft | null = null;
   let lastAgoryx = tailAgoryx;
   let consumed = offset;
@@ -260,6 +270,14 @@ const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: bool
 
   for (const { start, end: lineEnd, value } of lines) {
     if (value.isSidechain) {
+      if (!draft) consumed = lineEnd;
+      continue;
+    }
+    // Compacting its context, Claude Code writes the summary as a "user" line only its own transcript view shows
+    // (no origin, the promptId of the turn it happened in). Nobody typed it, and the reply after it goes on with
+    // the same exchange.
+    if (value.isCompactSummary || value.isVisibleInTranscriptOnly) {
+      if (value.isCompactSummary) compactions.push({ key: String(value.uuid ?? start), at: String(value.timestamp ?? "") });
       if (!draft) consumed = lineEnd;
       continue;
     }
@@ -341,6 +359,7 @@ const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: bool
     offset: open ? open.start : Math.max(consumed, end),
     openNative: Boolean(open && !open.agoryx),
     lastAgoryx,
+    compactions,
   };
 };
 
@@ -373,6 +392,7 @@ const LEADING_BLOCK = /^\s*<([a-z][\w-]*)(?:\s[^>]*)?>[\s\S]*?<\/\1>/;
 
 const scanCodex = (lines: Line[], offset: number, end: number, tailAgoryx: boolean): NativeScan => {
   const exchanges: NativeExchange[] = [];
+  const compactions: NativeCompaction[] = [];
   let draft: Draft | null = null;
   let lastAgoryx = tailAgoryx;
   let consumed = offset;
@@ -397,6 +417,8 @@ const scanCodex = (lines: Line[], offset: number, end: number, tailAgoryx: boole
   for (const { start, end: lineEnd, value } of lines) {
     const payload = value.payload ?? {};
     const ts = String(value.timestamp ?? "");
+    // Codex replaces its history with a summary; the line has no id of its own, its time is one.
+    if (value.type === "compacted") compactions.push({ key: `compacted@${ts || start}`, at: ts });
     if (value.type === "event_msg") {
       switch (payload.type) {
         case "task_started":
@@ -447,6 +469,7 @@ const scanCodex = (lines: Line[], offset: number, end: number, tailAgoryx: boole
     offset: current ? current.start : Math.max(consumed, end),
     openNative: Boolean(current && !current.agoryx && current.prompts.length > 0),
     lastAgoryx,
+    compactions,
   };
 };
 

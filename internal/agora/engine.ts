@@ -2,21 +2,24 @@ import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openS
 import { dirname, join, resolve } from "node:path";
 import { clearTurnContext, TURN_FILE_ENV, turnContextPath, writeTurnContext } from "./turn-context.js";
 import { actorFields, actorLabel, AGENT_KEY_ENV, describeSettings, originName } from "./actor.js";
+import { checkpointBody, checkpointSubject, roomLine, runSteps, stepCommitBody, stepsInSubject } from "./checkpoint-message.js";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
+import { GithubUnavailable, type PrPlan, RoomGithub } from "./github.js";
 import { embed, mediaRefs } from "./media.js";
-import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
+import { locateNativeSession, scanNativeSession, type NativeCompaction, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { inTurnAt, wakesAgent } from "./wakes.js";
 import { limitAccount } from "./limits-store.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
-import { buildTurnPrompt, paragraphs, parseMentions, passNote } from "./prompts.js";
+import { buildTurnPrompt, forHumanOnly, paragraphs, parseMentions, passNote } from "./prompts.js";
 import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
 import { cleanRole, MAX_ROLE_CHARS, parseAgents, validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { MAX_REVERT_CHANGES, REVERT_FAILURE, RevertError, revertTarget, type RevertRequest } from "./revert.js";
 import { RoomStore } from "./store.js";
-import { namesFile, shellWriteTargets, shellWrites, type ShellCwd } from "./shell-writes.js";
-import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
+import { fromWorkspace, namesFile, shellWriteTargets, shellWrites, type ShellCwd } from "./shell-writes.js";
+import { planStepCommit, stepOf, StepCommitError, stepTurns } from "./step-commit.js";
+import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, stepBuilder, TableOpError } from "./table.js";
 import type {
   Activity,
   Actor,
@@ -28,6 +31,7 @@ import type {
   LimitSnapshot,
   MessageEntry,
   MessageKind,
+  PrState,
   RevertEntry,
   RoomAgent,
   RoomEvent,
@@ -40,6 +44,11 @@ import type {
 } from "./types.js";
 import {
   checkpointCommit,
+  commitFiles,
+  commitFilesOf,
+  commitsSince,
+  headCommit,
+  type CheckpointBody,
   checkpointFolder,
   checkpointRef,
   clearStaleAcks,
@@ -59,6 +68,7 @@ import {
   roomDirName,
   snapshotChanges,
   snapshotTree,
+  stepCommitsSince,
   treeChangedPaths,
   treeChanges,
   workspacePaths,
@@ -85,6 +95,10 @@ export interface EngineOptions {
   opsPollMs?: number;
   /** How often to read the agents' native sessions for turns taken outside the room (0 = never). */
   nativePollMs?: number;
+  /** How often to ask git and gh about the room's GitHub repository and its open pull requests (0 = never). */
+  githubPollMs?: number;
+  /** Whether someone has the room open (the daemon's SSE streams): with no pull request open, GitHub is asked only then. */
+  viewed?: () => boolean;
   log?: (message: string) => void;
   /**
    * Issues an agent's key to the daemon (see actor.ts), put in its turns' environment as
@@ -120,9 +134,20 @@ interface LiveEntry {
   idleTimer?: NodeJS.Timeout;
   /** Turns it has taken: one that has taken none is new, and its failure to start says something about live mode itself. */
   turns: number;
+  /** Where its shell was when its last turn ended: Claude Code keeps a `cd` into the next turn of the same process. */
+  cwd?: ShellCwd;
 }
 
 export const DEFAULT_LIVE_IDLE_MS = 5 * 60 * 1000;
+
+/** The files a command's label names as written, or none when it cannot be read. */
+const labelWrites = (label: string): string[] => {
+  try {
+    return shellWriteTargets(label);
+  } catch {
+    return [];
+  }
+};
 
 /** Where the engine is in an agent's native session file. */
 interface NativeTracker {
@@ -179,6 +204,8 @@ interface RunningTurn {
   snapshot: ChangeSnapshot | null;
   /** The workspace as a git tree when the turn started (null without git, or too dirty to snapshot). */
   tree: string | null;
+  /** HEAD of the workspace's repository when the turn started: the commits it gains after are the turn's to name steps. */
+  head: string | null;
   startedAt: number;
   done: Promise<void>;
   /** Hash of the canonical file as the human last saved it while this turn ran (not the turn's work). */
@@ -191,6 +218,8 @@ const LOCK_FILE = "engine.lock";
 
 /** Past this, the canonical file's diff in a turn prompt is cut; the agent reads the file for the rest. */
 const MAX_DOC_DELTA_CHARS = 6_000;
+/** A shell command that commits: `git commit`, with options or `-C dir` before it, not past a pipe or another command. */
+const GIT_COMMIT = /\bgit\b[^\n;&|]*?\scommit\b/;
 
 interface LockSnapshot {
   ino: number;
@@ -323,7 +352,11 @@ export class RoomEngine {
   private readonly profilePath?: string;
   private readonly opsPollMs: number;
   private readonly nativePollMs: number;
+  private readonly github: RoomGithub;
   private readonly native = new Map<string, NativeTracker>();
+  /** The room's last event when this engine opened it: a compaction from before is history, one after it is news even if no engine ran then. */
+  private readonly compactedSince: number;
+  private compactedKeys?: Set<string>;
   private nativeKeys?: Set<string>;
   private nativeTimer: NodeJS.Timeout | undefined;
   private lastPresence = "";
@@ -365,6 +398,7 @@ export class RoomEngine {
 
   constructor(options: EngineOptions) {
     this.store = options.store;
+    this.compactedSince = Date.parse(this.store.events.at(-1)?.ts ?? "") || Date.now();
     this.runners = options.runners;
     this.shimDir = options.shimDir;
     this.agentCli = options.agentCli ?? "agoryx";
@@ -378,6 +412,18 @@ export class RoomEngine {
     this.profilePath = options.profilePath;
     this.opsPollMs = options.opsPollMs ?? 250;
     this.nativePollMs = options.nativePollMs ?? 2000;
+    this.github = new RoomGithub(
+      {
+        state: () => this.state,
+        env: this.env,
+        append: (event) => this.store.append(event),
+        note: (text, sys) => this.postSystem(text, sys, false),
+        log: (line) => this.log(line),
+        viewed: () => options.viewed?.() ?? false,
+        busy: () => this.pushBlocked(),
+      },
+      options.githubPollMs ?? 60_000,
+    );
     this.log = options.log ?? (() => {});
     this.onLimits = options.onLimits;
     this.acquireLock();
@@ -403,6 +449,7 @@ export class RoomEngine {
       this.releaseLock();
       throw error;
     }
+    this.github.start();
     if (this.nativePollMs > 0) {
       this.nativeTimer = setInterval(() => this.syncNative(), this.nativePollMs);
       this.nativeTimer.unref();
@@ -518,6 +565,7 @@ export class RoomEngine {
     if (this.opsTimer) clearInterval(this.opsTimer);
     if (this.nativeTimer) clearInterval(this.nativeTimer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.github.close();
     enginesHere.get(workspaceKey(this.state.workspace))?.delete(this);
     this.releaseLock();
   }
@@ -897,6 +945,34 @@ export class RoomEngine {
     const foreign = otherRoomTurns(this.state.workspace, this.state.id, Date.now()).filter((turn) => turn.endedAt === undefined);
     if (foreign.length) return `a turn of ${this.roomHandles(foreign).join(", ")} is running in this folder; wait for it, or stop it there`;
     return null;
+  }
+
+  /**
+   * The human commits a step with its button: only the files they chose, as the folder holds them now, under the
+   * folder's own git identity, named by the step (`X3 Quote chips`) with its turns in the body. Agents commit with
+   * git themselves.
+   */
+  commitStep(id: string, files: string[], by?: string | Actor): { sha: string; subject: string; files: number } {
+    const actor = this.actor(by);
+    if (!this.byHuman(actor)) throw new StepCommitError("an agent commits a step with git itself, naming it: git commit -m \"X1 <the step>\"", 403);
+    const step = stepOf(this.state, id);
+    if (step.commit) throw new StepCommitError(`${step.id} is already committed as ${step.commit.sha.slice(0, 7)}`, 409);
+    // A running turn may still be changing the files: what goes in would not be what the human looked at.
+    if (this.running.size) throw new StepCommitError("a turn is running; commit the step once it has ended", 409);
+    const foreign = otherRoomTurns(this.state.workspace, this.state.id, Date.now()).filter((turn) => turn.endedAt === undefined);
+    if (foreign.length) throw new StepCommitError(`a turn of ${this.roomHandles(foreign).join(", ")} is running in this folder; commit the step once it has ended`, 409);
+    const plan = planStepCommit(this.state, this.store.events, id);
+    const chosen = [...new Set(files)];
+    if (!chosen.length) throw new StepCommitError("no files chosen");
+    const unknown = chosen.filter((file) => !plan.files.some((entry) => entry.path === file));
+    if (unknown.length) throw new StepCommitError(`not uncommitted in the folder: ${unknown.join(", ")}`, 409);
+    const turns = stepTurns(this.state, this.store.events, step);
+    let why = "";
+    const commit = commitFiles(this.state.workspace, plan.subject, (committed) => stepCommitBody(step, committed, turns), chosen, (reason) => (why = reason));
+    if (!commit) throw new StepCommitError(`git could not commit these files${why ? `: ${why}` : ""}`, 409);
+    this.store.append({ type: "step.committed", steps: [step.id], sha: commit.sha, subject: plan.subject, by: actor.by });
+    this.writeTableFile();
+    return { sha: commit.sha, subject: plan.subject, files: commit.files };
   }
 
   /**
@@ -1365,16 +1441,19 @@ export class RoomEngine {
     });
     const reused = entry.turns > 0;
     entry.turns += 1;
+    if (reused && entry.cwd !== undefined && agent.kind === "claude") this.shellCwds.set(turnId, entry.cwd);
     let result: TurnResult;
     try {
       result = await proc.runTurn(request, callbacks);
     } finally {
       // The turn is over: what names it (and the agent's key) goes with it.
       clearTurnContext(file);
+      entry.cwd = this.shellAt(turnId);
     }
     if (result.liveUnavailable && reused && !request.signal.aborted && !this.closed) {
       // A process that had served turns died between them: that says nothing about live mode. Start another.
       this.closeLive(agent.id, "process died between turns");
+      this.freshShell(turnId);
       return this.runLive(agent, runner, request, turnId, callbacks);
     }
     if (this.live.get(agent.id) !== entry) {
@@ -1398,16 +1477,105 @@ export class RoomEngine {
 
   /** What each running turn's shell commands named as written, read from the whole command before its label is clipped. */
   private shellWrites = new Map<string, Set<string>>();
-  /** Where a Claude turn's shell is after its last command: Claude Code keeps a `cd` for the commands after it; Codex starts each at the workspace. */
+  /** Where a Claude turn's shell is after its last command ended: Claude Code keeps a `cd` for the commands after it; Codex starts each at the workspace. */
   private shellCwds = new Map<string, ShellCwd>();
+  /** The commands already seen: a runner reports each when it starts and again when it ends. */
+  private shellNoted = new Set<string>();
+  /**
+   * A Claude turn's commands that have been asked for and not ended, in the order they were. Each is read when it ends,
+   * from where the shell is then: commands asked for in one message are reported together but run one after another,
+   * and a `cd` holds only from a command that exited 0 in the shell, which is known only at its end.
+   */
+  private shellPending = new Map<string, { turnId: string; command: string; detached?: boolean }>();
+  /** The workspace as a command may spell it: its path and its real path. */
+  private roots?: string[];
+  /** The `git commit` commands each running turn ran: a commit made while it ran is its own when one of them says its subject. */
+  private commitCommands = new Map<string, string[]>();
 
-  private noteShellWrites(turnId: string, command: string, carriesCwd: boolean): void {
-    const { targets, cwd } = shellWrites(this.tidyText(command), carriesCwd ? (this.shellCwds.get(turnId) ?? "") : "");
-    if (carriesCwd) this.shellCwds.set(turnId, cwd);
+  /** A turn's next try is a new process: its shell starts at the workspace, and its commands' ids may repeat the last one's. */
+  private freshShell(turnId: string): void {
+    this.shellCwds.delete(turnId);
+    for (const key of [...this.shellNoted]) if (key.startsWith(`${turnId} `)) this.shellNoted.delete(key);
+    for (const [key, entry] of [...this.shellPending]) if (entry.turnId === turnId) this.shellPending.delete(key);
+  }
+
+  /** Where a Claude turn's shell is now ("" its workspace, null not known). */
+  private shellAt(turnId: string): ShellCwd {
+    return this.shellCwds.has(turnId) ? this.shellCwds.get(turnId)! : "";
+  }
+
+  private workspaceRoots(): string[] {
+    if (!this.roots) {
+      let real = this.state.workspace;
+      try { real = realpathSync(real); } catch { /* keep as given */ }
+      this.roots = [...new Set([this.state.workspace, real])];
+    }
+    return this.roots;
+  }
+
+  /** A command read from `from`: the files it names as written, and where it leaves the shell (null: not known). */
+  private readShell(turnId: string, command: string, from: ShellCwd, quiet = false): { targets: string[]; cwd: ShellCwd } {
+    try {
+      // Read as written: `cd <workspace>/ui` goes to ui from wherever the shell was, not from there into ./ui.
+      const { targets, cwd } = shellWrites(command, from, this.workspaceRoots());
+      // Claude Code takes its shell back to the workspace after a command that left it.
+      return { targets, cwd: cwd !== null && (cwd.startsWith("/") || cwd === ".." || cwd.startsWith("../")) ? "" : cwd };
+    } catch (error) {
+      if (!quiet) this.log(`${turnId}: command not read for written files: ${error instanceof Error ? error.message : String(error)}`);
+      // Not read: where the shell is from here is not known either.
+      return { targets: [], cwd: null };
+    }
+  }
+
+  /**
+   * What a Claude turn's commands that have not ended may have written so far, each read from where its shell is: none of
+   * them has moved it. Of its own commands only the first asked for has started (the others in its message wait for it);
+   * a subagent's or one in the background runs beside them.
+   */
+  private pendingWrites(turnId: string): string[] {
+    const found: string[] = [];
+    const at = this.shellAt(turnId);
+    let waiting = false;
+    for (const entry of this.shellPending.values()) {
+      if (entry.turnId !== turnId || (waiting && !entry.detached)) continue;
+      if (!entry.detached) waiting = true;
+      found.push(...this.readShell(turnId, entry.command, at, true).targets);
+    }
+    return found;
+  }
+
+  private addShellWrites(turnId: string, targets: readonly string[]): void {
     if (targets.length === 0) return;
     const known = this.shellWrites.get(turnId) ?? new Set<string>();
     for (const target of targets) known.add(target);
     this.shellWrites.set(turnId, known);
+  }
+
+  private noteShellWrites(turnId: string, activity: Activity, carriesCwd: boolean): void {
+    const key = `${turnId} ${activity.id}`;
+    const pending = this.shellPending.get(key);
+    if (this.shellNoted.has(key) && (!pending || activity.status === "running")) return;
+    this.shellNoted.add(key);
+    const command = activity.command ?? pending?.command ?? activity.label;
+    if (carriesCwd && activity.status === "running") {
+      // Claude's: read when it ends, from where the commands before it left the shell.
+      this.shellPending.set(key, { turnId, command, ...(activity.detached ? { detached: true } : {}) });
+      return;
+    }
+    this.shellPending.delete(key);
+    // Claude's shell is where its last command left it; Codex's at the workspace, or in the folder it named for the command.
+    const from = carriesCwd ? this.shellAt(turnId) : activity.cwd ? fromWorkspace(activity.cwd, this.workspaceRoots()) : "";
+    const { targets, cwd } = this.readShell(turnId, command, from);
+    // Its `cd` holds only if it exited 0 in the shell (Claude Code reads the shell's folder after `<command> &&`): not
+    // if it failed, exited 1 to a grep, went on in the background, or was a subagent's.
+    if (carriesCwd && activity.status !== "fail" && !activity.detached) this.shellCwds.set(turnId, cwd);
+    this.addShellWrites(turnId, targets);
+  }
+
+  /** A turn is over: its commands that had started and never said they ended are read as they stand, and move its shell nowhere. */
+  private flushShell(turnId: string): void {
+    this.addShellWrites(turnId, this.pendingWrites(turnId));
+    for (const [key, entry] of [...this.shellPending]) if (entry.turnId === turnId) this.shellPending.delete(key);
   }
 
   private tidyText(text: string): string {
@@ -1429,7 +1597,7 @@ export class RoomEngine {
     return this.tidyRules!.reduce((acc, [from, to]) => acc.split(from).join(to), text);
   }
 
-  private tidyActivity({ command: _command, ...activity }: Activity): Activity {
+  private tidyActivity({ command: _command, cwd: _cwd, detached: _detached, output: _output, outputCut: _outputCut, ...activity }: Activity): Activity {
     // Runners keep labels long enough for this to see whole paths; clip afterwards.
     const tidy = (text: string, max: number) => truncate(this.tidyText(text), max);
     return {
@@ -1481,6 +1649,7 @@ export class RoomEngine {
       sessionId,
       promptChars: prompt.length,
       ...(profile ? { profile: profile.hash } : {}),
+      limitMs: this.state.settings.turnTimeoutMs,
     });
 
     const controller = new AbortController();
@@ -1489,6 +1658,8 @@ export class RoomEngine {
     markTurnLive(this.state.workspace, { room: this.state.id, turn: turnId, pid: process.pid, startedAt });
     const snapshot = snapshotChanges(this.state.workspace);
     const tree = snapshot && snapshot.size <= MAX_TREE_SNAPSHOT_DIRTY ? snapshotTree(this.state.workspace) : null;
+    // The commits the turn makes are those HEAD gains after this.
+    const head = headCommit(this.state.workspace);
     const env = this.agentEnv(agent, turnId);
 
     const callbacks = {
@@ -1500,9 +1671,15 @@ export class RoomEngine {
       onText: (text: string, reset?: boolean) => {
         this.store.emit({ type: "turn.stream", turnId, agent: agent.id, text, ...(reset ? { reset } : {}) });
       },
+      onShellLost: () => this.shellCwds.set(turnId, null),
       onActivity: (activity: Activity) => {
-        if (activity.kind === "command") this.noteShellWrites(turnId, activity.command ?? activity.label, agent.kind === "claude");
+        if (activity.kind === "command") {
+          this.noteShellWrites(turnId, activity, agent.kind === "claude");
+          const command = activity.command ?? activity.label;
+          if (GIT_COMMIT.test(command)) this.commitCommands.set(turnId, [...(this.commitCommands.get(turnId) ?? []), command]);
+        }
         this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity: this.tidyActivity(activity) });
+        this.github.command(agent, turnId, activity);
       },
       onLimits: (report: LimitReport, source: LimitSnapshot["source"]) => {
         if (!this.onLimits) return;
@@ -1529,6 +1706,7 @@ export class RoomEngine {
       const canLive = this.liveOn && !this.liveOff.has(agent.id) && Boolean(runner.openLive && runner.liveFingerprint);
       const liveEnv = canLive ? this.agentEnv(agent, turnId, true) : env;
       const runOnce = async (req: TurnRequest): Promise<TurnResult> => {
+        this.freshShell(turnId);
         if (canLive && !this.liveOff.has(agent.id) && !this.closed) {
           const result = await this.runLive(agent, runner, { ...req, env: liveEnv }, turnId, callbacks);
           if (!result.liveUnavailable) return result;
@@ -1536,6 +1714,7 @@ export class RoomEngine {
           this.liveOff.add(agent.id);
           this.closeLive(agent.id);
           this.log(`${agent.id} live mode unavailable (${result.error?.message ?? "unknown"}); using one process per turn`);
+          this.freshShell(turnId);
         }
         return runner.run(req, callbacks);
       };
@@ -1556,7 +1735,7 @@ export class RoomEngine {
       }))
       .then((result) => this.finishTurn(agent, turnId, run.id, result, snapshot, tree, startedAt));
 
-    this.running.set(agent.id, { turnId, agent, controller, snapshot, tree, startedAt, done });
+    this.running.set(agent.id, { turnId, agent, controller, snapshot, tree, head, startedAt, done });
     this.notePresence();
     this.ensureOpsPolling();
     this.log(`${agent.id} ${turnId} started (${sessionId ? "resume" : "fresh"}, ${prompt.length} chars)`);
@@ -1573,7 +1752,8 @@ export class RoomEngine {
   ): void {
     // Sweep the inbox while this turn still counts as running, so its ops are attributed to it.
     this.ingestOps();
-    const { outsideDoc, handoff } = this.running.get(agent.id) ?? {};
+    this.flushShell(turnId);
+    const { outsideDoc, handoff, head } = this.running.get(agent.id) ?? {};
     this.running.delete(agent.id);
     this.notePresence();
     markTurnLive(this.state.workspace, { room: this.state.id, turn: turnId, pid: process.pid, startedAt, endedAt: Date.now() });
@@ -1610,6 +1790,8 @@ export class RoomEngine {
     if (this.running.size === 0) {
       this.shellWrites.clear();
       this.shellCwds.clear();
+      this.shellNoted.clear();
+      this.shellPending.clear();
     }
     // A file only touched (same content) is not a change.
     if (changed) files = files.filter((file) => changed.changes.some((change) => change.path === file));
@@ -1687,6 +1869,7 @@ export class RoomEngine {
       ...(files.length > 0 ? { files } : {}),
       ...(changed && changed.changes.length > 0 ? changed : {}),
     });
+    if (head !== undefined) this.noteStepCommits(agent.id, turnId, head, startedAt, foreign.length > 0 || this.overlapping(turnId).length > 0);
     this.log(`${agent.id} ${turnId} ${status}`);
     // With native sync on, the inbox stays watched between turns (ops from the agents' own sessions).
     if (this.running.size === 0 && this.opsTimer && this.nativePollMs <= 0) {
@@ -1761,11 +1944,55 @@ export class RoomEngine {
       entry.activity.some(
         (activity) =>
           (activity.kind === "edit" && activity.label.includes(file)) ||
-          (activity.kind === "command" && shellWriteTargets(activity.label).some((target) => namesFile(target, file))),
+          // One read as it ran (whole, and from where its shell was) is in shellWrites; only one that was not is read from its label.
+          (activity.kind === "command" && !this.shellNoted.has(`${entry.id} ${activity.id}`) && labelWrites(activity.label).some((target) => namesFile(target, file))),
       ) ||
-      [...(this.shellWrites.get(entry.id) ?? [])].some((target) => namesFile(target, file)) ||
+      [...(this.shellWrites.get(entry.id) ?? []), ...this.pendingWrites(entry.id)].some((target) => namesFile(target, file)) ||
       this.state.docRevisions.some((revision) => revision.turnId === entry.id && revision.path === file)
     );
+  }
+
+  /**
+   * The commits HEAD gained during a turn whose subjects name this room's steps (`git commit -m "X3 …"`): those steps
+   * went into them. A commit is the turn's when one of its `git commit` commands says the commit's subject — or, with
+   * the message taken from a file (-F) and no other turn running beside it, when it ran one at all. The human's own
+   * commits, another turn's, Agoryx's checkpoints and those already recorded are not the turn's. A step went into
+   * one only when it holds some of the step's work or the committer's: the files of the step's turns, of this turn,
+   * or — when the step's builder is the committer, or none is on record — of the committing agent's turns since the
+   * step was put on the table (fixes after its check, a step the human closed).
+   */
+  private noteStepCommits(agent: string, turnId: string, head: string | null, startedAt: number, beside: boolean): void {
+    const commands = this.commitCommands.get(turnId) ?? [];
+    this.commitCommands.delete(turnId);
+    const steps = this.state.table.next.filter((step) => !step.withdrawn);
+    if (!commands.length || !steps.length) return;
+    const commits = commitsSince(this.state.workspace, head, startedAt);
+    if (!commits.length) return;
+    const recorded = new Set([...this.state.commits.map((commit) => commit.sha), ...steps.flatMap((step) => (step.commit ? [step.commit.sha] : []))]);
+    let noted = false;
+    // Quoting and escapes aside: `-m "X1 \"chips\""` says X1 "chips".
+    const bare = (text: string) => text.replace(/[\\'"]/g, "");
+    const said = commands.map(bare);
+    const fromFile = !beside && commands.some((command) => /\s(?:-F|--file)(?:[\s=]|$)/.test(command));
+    for (const commit of commits) {
+      if (commit.agoryx || recorded.has(commit.sha)) continue;
+      // The steps it names first, as agents are asked to (`X3 …`, `X3, X4: …`): a step mentioned later in the subject
+      // is not one it holds. A step already in a commit stays in that one.
+      if (!(fromFile || said.some((command) => command.includes(bare(commit.subject))))) continue;
+      const held = new Set(commit.files);
+      const named = [...new Set(stepsInSubject(commit.subject))].filter((id) => {
+        const step = steps.find((entry) => entry.id === id && !entry.commit);
+        if (!step) return false;
+        const builder = stepBuilder(step, this.state.human);
+        const mine = builder === undefined || builder === agent;
+        const theirs = this.state.turns.filter((turn) => turn.id === turnId || (mine && turn.agent === agent && (turn.endSeq ?? Number.POSITIVE_INFINITY) > step.seq));
+        return [...stepTurns(this.state, this.store.events, step), ...theirs].some((turn) => turn.files?.some((file) => held.has(file)));
+      });
+      if (!named.length) continue;
+      this.store.append({ type: "step.committed", steps: named, sha: commit.sha, subject: commit.subject, by: agent, turnId });
+      noted = true;
+    }
+    if (noted) this.writeTableFile();
   }
 
   /** The other turns that ran at some point while this one did. */
@@ -1971,6 +2198,41 @@ export class RoomEngine {
   // Native sessions: turns the human took in the agents' own apps
   // -------------------------------------------------------------------------
 
+  /** What the human's "Open PR" would push and open now, or why it can't. */
+  prPlan(): Promise<PrPlan> {
+    return this.github.plan();
+  }
+
+  /**
+   * The human opens a pull request for the room's branch, through gh signed in as them: only with no turn running
+   * (it could still be committing), and only if the folder is at the branch and commit, going where, they were shown
+   * (`seen`).
+   */
+  async openPr(actor: Actor, seen: Partial<PrPlan>): Promise<PrState> {
+    if (!this.byHuman(actor)) throw new GithubUnavailable("only the human opens a pull request from the room");
+    const busy = this.pushBlocked();
+    if (busy) throw new GithubUnavailable(busy);
+    return this.github.open(actor.by, seen);
+  }
+
+  /** Why the human's push can't go now: a turn running in the folder, of this room or another. */
+  private pushBlocked(): string | null {
+    if (this.running.size) return "a turn is running; open the pull request once it has ended";
+    const foreign = otherRoomTurns(this.state.workspace, this.state.id, Date.now()).filter((turn) => turn.endedAt === undefined);
+    return foreign.length ? `a turn of ${this.roomHandles(foreign).join(", ")} is running in this folder; open the pull request once it has ended` : null;
+  }
+
+  /** Someone opened the room: what GitHub says now (unless it was just asked). */
+  lookAtGithub(): void {
+    this.github.look();
+  }
+
+  /** Ask git and gh again now, open pull request or not (the timer does it every githubPollMs); resolves when their answers are in. */
+  async syncGithub(): Promise<void> {
+    await this.github.settled();
+    await this.github.poll(true);
+  }
+
   /**
    * Reads new exchanges from each idle agent's native session file and posts
    * the ones that did not come from Agoryx. Cheap when nothing changed (a stat).
@@ -2017,6 +2279,7 @@ export class RoomEngine {
         tracker.size = size;
         tracker.mtimeMs = mtimeMs;
         for (const exchange of scan.exchanges) this.importNative(agent, exchange);
+        for (const compaction of scan.compactions) this.noteCompaction(agent, compaction);
       } catch (error) {
         this.log(`could not read ${agent.id}'s native session: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -2047,6 +2310,25 @@ export class RoomEngine {
       );
     }
     return true;
+  }
+
+  /**
+   * The agent's CLI compacted its context: a quiet line for the human (its next answers may have lost detail),
+   * once per compaction (a rescan from an unfinished exchange returns it again). Ones from before the room's last
+   * event when this engine opened are history; ones after it are news, even if they happened while no engine ran.
+   */
+  private noteCompaction(agent: RoomAgent, compaction: NativeCompaction): void {
+    const at = Date.parse(compaction.at);
+    if (!Number.isFinite(at) || at < this.compactedSince) return;
+    this.compactedKeys ??= new Set(
+      this.state.messages.flatMap((message) => (message.sys?.code === "agent.compacted" ? [`${message.sys.handle}:${message.sys.key}`] : [])),
+    );
+    const key = `${agent.id}:${compaction.key}`;
+    if (this.compactedKeys.has(key)) return;
+    this.compactedKeys.add(key);
+    const time = new Date(at);
+    const hhmm = `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
+    this.postSystem(`${agent.label}'s context was compacted at ${hhmm}.`, { code: "agent.compacted", agent: agent.label, handle: agent.id, key: compaction.key, at: compaction.at }, false);
   }
 
   private importNative(agent: RoomAgent, exchange: NativeExchange): void {
@@ -2105,7 +2387,8 @@ export class RoomEngine {
     const id = `m${(this.state.counters.m ?? 0) + 1}`;
     this.store.append({ type: "message.posted", message: { id, ...input } });
     const entry = this.state.messages[this.state.messages.length - 1]!;
-    writeRoomMessage(this.ws, this.state.id, entry);
+    if (!forHumanOnly(entry)) writeRoomMessage(this.ws, this.state.id, entry);
+    this.github.message(entry);
     return entry;
   }
 
@@ -2113,7 +2396,7 @@ export class RoomEngine {
   private writeMissingMessages(): void {
     for (const message of this.state.messages) {
       const target = messagePath(this.ws, this.state.id, message.id);
-      if (target && !existsSync(target)) writeRoomMessage(this.ws, this.state.id, message);
+      if (target && !existsSync(target) && !forHumanOnly(message)) writeRoomMessage(this.ws, this.state.id, message);
     }
   }
 
@@ -2214,7 +2497,7 @@ export class RoomEngine {
     // where an op waits that was queued before this room first opened with them). It is this room's
     // only when no other room lives in the workspace; otherwise nobody can tell whose an op is.
     const legacy = workspacePaths(this.state.workspace);
-    if (!existsSync(legacy.opsDir) || !readdirSync(legacy.opsDir).some((name) => /\.jsonl(\.\d+\.\d+\.taking)?$/.test(name))) return;
+    if (!existsSync(legacy.opsDir) || !readdirSync(legacy.opsDir).some((name) => /\.(?:jsonl|op)(\.\d+\.\d+\.taking)?$/.test(name))) return;
     const rooms = roomsSharingWorkspace(this.store);
     if (rooms.length === 1) {
       this.drainInbox(legacy);
@@ -2332,15 +2615,43 @@ export class RoomEngine {
   private checkpoint(run: RunState): void {
     if (!this.state.settings.autoCommit) return;
     const turns = this.state.turns.filter((turn) => turn.runId === run.id && turn.files?.length);
-    const lines = turns.map((turn) => {
-      const message = this.state.messages.find((entry) => entry.id === turn.messageId);
-      const first = message?.text.split("\n")[0]?.slice(0, 90) ?? turn.status;
-      return `${turn.id} ${turn.agent}: ${first} [${turn.files!.length} files]`;
-    });
-    const trigger = this.state.messages.find((entry) => entry.id === run.trigger);
-    const subject = `agoryx(${this.state.name}): ${trigger ? trigger.text.split("\n")[0]!.slice(0, 60) : `run ${run.id}`}`;
+    // Named by the steps the run finished, as the table holds them, not by the words that started it; the body
+    // lists the files the commit really holds, each with the turns that changed it.
+    // The room's name is the human's words more often than not: it goes at the end of the body, not in the subject.
+    const steps = runSteps(this.store.events, this.state.table.next, run.startedSeq);
+    const started = Date.parse(this.state.turns.find((turn) => turn.runId === run.id)?.startedAt ?? "") || 0;
     // Only what the run's turns were credited with: not another room's work, not anyone's staged changes.
     const files = [...new Set(turns.flatMap((turn) => turn.files ?? []))];
+    // A step its author committed during the run went in with that commit: the body says so, the subject names the rest.
+    const committed = started && steps.some((step) => step.done) ? stepCommitsSince(this.state.workspace, started, files) : new Map<string, string>();
+    // And those the room saw go into a commit of their own (an agent's, the human's button).
+    for (const step of steps) if (step.commit && !committed.has(step.id)) committed.set(step.id, step.commit.sha);
+    // A step the run finished is in this checkpoint when its work is: the files of its builder's turns. Work built in
+    // an earlier run went into the first checkpoint after the last of those turns (the version its check passed), not
+    // a return of the folder; a step whose work no commit holds is in none (a check that changed nothing, a step built
+    // with no file).
+    const ran = new Set(files);
+    const earlier = new Map<string, { sha: string; subject: string }>();
+    const elsewhere = new Set<string>();
+    for (const step of steps) {
+      if (!step.done || committed.has(step.id)) continue;
+      const built = stepTurns(this.state, this.store.events, step);
+      const own = new Set(built.flatMap((turn) => turn.files ?? []));
+      if ([...own].some((file) => ran.has(file))) continue;
+      elsewhere.add(step.id);
+      const after = Math.max(step.seq, ...built.map((turn) => turn.endSeq ?? turn.seq));
+      const found = own.size
+        ? this.state.commits.find((commit) => commit.seq > after && !commit.subject.startsWith("agoryx(") && commitFilesOf(this.state.workspace, commit.sha).some((file) => own.has(file)))
+        : undefined;
+      if (found) {
+        earlier.set(step.id, found);
+        committed.set(step.id, found.sha);
+      }
+    }
+    for (const [id, commit] of earlier) this.store.append({ type: "step.committed", steps: [id], sha: commit.sha, subject: commit.subject, by: "agoryx" });
+    if (earlier.size) this.writeTableFile();
+    const named = steps.filter((step) => !elsewhere.has(step.id) || committed.has(step.id));
+    const subject = `agoryx: ${checkpointSubject(named, run.id, [...new Set(turns.map((turn) => turn.agent))], committed)}`;
     const expectedTrees = new Map<string, string>();
     // The last completed credited turn supplies each file's checkpoint version.
     const turnIds = new Set(turns.map((turn) => turn.id));
@@ -2352,16 +2663,22 @@ export class RoomEngine {
       }
     }
     // Alone in the directory, and no other room's turn ran during this run: everything, as always.
-    const started = Date.parse(this.state.turns.find((turn) => turn.runId === run.id)?.startedAt ?? "") || 0;
     const shared = roomsSharingWorkspace(this.store).length > 1 || otherRoomTurns(this.state.workspace, this.state.id, started).length > 0;
-    this.recordCheckpoint(subject, lines.join("\n"), shared ? files : undefined, shared ? expectedTrees : undefined);
+    const commit = this.recordCheckpoint(subject, (held) => `${checkpointBody(named, held, turns, committed)}\n\n${roomLine(this.state.name)}`, shared ? files : undefined, shared ? expectedTrees : undefined);
+    // The steps the run finished went into it, unless their work is in another commit or in none.
+    const finished = named.filter((step) => step.done && !committed.has(step.id)).map((step) => step.id);
+    if (commit && finished.length) {
+      this.store.append({ type: "step.committed", steps: finished, sha: commit.sha, subject, by: "agoryx" });
+      this.writeTableFile();
+    }
   }
 
   /** A checkpoint commit (all of the folder, or only `files` in a shared one), and the whole folder at it, to return to. */
-  private recordCheckpoint(subject: string, body: string, files?: string[], expectedTrees?: ReadonlyMap<string, string>): void {
+  private recordCheckpoint(subject: string, body: CheckpointBody, files?: string[], expectedTrees?: ReadonlyMap<string, string>): { sha: string } | null {
     const commit = checkpointCommit(this.state.workspace, subject, body, files, expectedTrees);
-    if (!commit) return;
+    if (!commit) return null;
     const folder = checkpointFolder(this.state.workspace, commit.sha, checkpointRef(this.state.id, commit.sha));
     this.store.append({ type: "commit.created", sha: commit.sha, subject, files: commit.files, ...(folder && folder !== commit.sha ? { folder } : {}) });
+    return commit;
   }
 }

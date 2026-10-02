@@ -16,14 +16,22 @@ import {
   rmdirSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stepsInSubject } from "./checkpoint-message.js";
 import type { FileChange } from "./types.js";
 
 export const AGORYX_DIR = ".agoryx";
+
+/**
+ * The daemon's git never takes git's optional locks: a `git status` of its, refreshing the index while an
+ * agent's `git add` or `git commit` runs in the folder, would make the agent's command fail on index.lock.
+ */
+const quiet = (env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({ ...(env ?? process.env), GIT_OPTIONAL_LOCKS: "0" });
 
 const git = (cwd: string, args: string[], timeout = 15_000, env?: NodeJS.ProcessEnv): string | null => {
   try {
@@ -31,12 +39,22 @@ const git = (cwd: string, args: string[], timeout = 15_000, env?: NodeJS.Process
       cwd,
       encoding: "utf8",
       timeout,
-      ...(env ? { env } : {}),
+      env: quiet(env),
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 16 * 1024 * 1024,
     });
   } catch {
     return null;
+  }
+};
+
+/** git, and what it said on stderr when it failed. */
+const gitSays = (cwd: string, args: string[], timeout = 15_000, env?: NodeJS.ProcessEnv): { out: string | null; err: string } => {
+  try {
+    return { out: execFileSync("git", args, { cwd, encoding: "utf8", timeout, env: quiet(env), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 }), err: "" };
+  } catch (error) {
+    const stderr = (error as { stderr?: unknown }).stderr;
+    return { out: null, err: String(stderr ?? "").trim().split("\n").slice(-3).join(" ").slice(0, 300) };
   }
 };
 
@@ -201,7 +219,7 @@ export const snapshotChanges = (root: string): ChangeSnapshot | null => {
     if (entry.length < 4) continue;
     const code = entry.slice(0, 2);
     const path = underPrefix(prefix, entry.slice(3));
-    if (code[0] === "R" || code[0] === "C") i += 1; // skip rename source
+    if (/[RC]/.test(code)) i += 1; // skip rename source
     if (path === null || path.startsWith(`${AGORYX_DIR}/`)) continue;
     let signature = code;
     try {
@@ -294,6 +312,19 @@ export const otherRoomTurns = (root: string, room: string, since: number, now = 
   return found;
 };
 
+/**
+ * A copy of a git index that keeps the original's mtime. git trusts an entry's stat only when the entry is
+ * older than the index file; an entry from the index's own second is checked by content. A copy stamped
+ * "now" would make such an entry look settled, and an edit made in that second that kept the file's size
+ * would be missed.
+ */
+const copyIndex = (from: string, to: string): void => {
+  // Stamped before copying: an index rewritten in between gives the copy an older time, never a newer one.
+  const { atime, mtime } = statSync(from);
+  copyFileSync(from, to);
+  utimesSync(to, atime, mtime);
+};
+
 /** Past this many dirty files (a fresh `npm install` without .gitignore…) turns are not snapshotted as trees. */
 export const MAX_TREE_SNAPSHOT_DIRTY = 3000;
 
@@ -309,7 +340,7 @@ export const snapshotTree = (root: string): string | null => {
   const index = isAbsolute(indexRel) ? indexRel : join(root, indexRel);
   const scratch = join(tmpdir(), `agoryx-index-${process.pid}-${randomBytes(4).toString("hex")}`);
   try {
-    if (existsSync(index)) copyFileSync(index, scratch);
+    if (existsSync(index)) copyIndex(index, scratch);
     const env = { ...process.env, GIT_INDEX_FILE: scratch };
     if (track(root, ["add", "-A", "--", "."], 30_000, env) === null) return null;
     return track(root, ["write-tree"], 15_000, env)?.trim() || null;
@@ -532,14 +563,112 @@ export const patchSection = (patch: string, path: string): string | null => {
   );
 };
 
-const commitAll = (root: string, subject: string, body: string): { sha: string; files: number } | null => {
+/**
+ * The steps named first in the subjects of HEAD's commits made since `since` (ms) that hold some of `files` (paths
+ * in the workspace: what the run changed), each with the newest such commit. Another room's "X1 …", or one made
+ * before the run, is not this run's step.
+ */
+export const stepCommitsSince = (root: string, since: number, files: readonly string[]): Map<string, string> => {
+  const found = new Map<string, string>();
+  const ours = new Set(files);
+  const log = git(root, ["-c", "core.quotePath=false", "log", "-n", "200", "--no-renames", "--relative", "--name-only", "--format=%x1e%H%x1f%ct%x1f%s", "HEAD", "--"]) ?? "";
+  for (const entry of log.split("\x1e")) {
+    const [head = "", ...names] = entry.split("\n");
+    const [sha, time, subject] = head.split("\x1f");
+    // A second's grace: git keeps whole seconds.
+    if (!sha || subject === undefined || Number(time) * 1000 < since - 1000) continue;
+    if (!names.some((name) => ours.has(name))) continue;
+    for (const id of stepsInSubject(subject)) if (!found.has(id)) found.set(id, sha);
+  }
+  return found;
+};
+
+const AGORYX_IDENT = ["-c", "user.name=Agoryx", "-c", "user.email=agoryx@localhost", "-c", "commit.gpgsign=false"];
+
+/** HEAD of the workspace's own repository (never Agoryx's shadow one): null without one, or before its first commit. */
+export const headCommit = (root: string): string | null => (isGitRepo(root) ? git(root, ["rev-parse", "--verify", "-q", "HEAD"])?.trim() || null : null);
+
+/** A commit on HEAD: what it says first, the workspace files it holds, and whether Agoryx made it (a checkpoint). */
+export interface HeadCommit {
+  sha: string;
+  subject: string;
+  files: string[];
+  agoryx: boolean;
+}
+
+/**
+ * The commits HEAD gained after `from` (all of HEAD's when there was none), oldest first, committed at or after
+ * `since` (ms): a branch switched to during a turn brings its old commits, not new ones. At most `limit`.
+ */
+export const commitsSince = (root: string, from: string | null, since: number, limit = 30): HeadCommit[] => {
+  const head = headCommit(root);
+  if (!head || head === from) return [];
+  const log = git(root, ["log", `--max-count=${limit}`, "--reverse", "--format=%H%x1f%ct%x1f%ce%x1f%s", from ? `${from}..HEAD` : "HEAD", "--"]);
+  if (!log) return [];
+  return log.split("\n").flatMap((line) => {
+    const [sha, time, email, subject] = line.split("\x1f");
+    if (!sha || !subject || Number(time) * 1000 < since - 2_000) return [];
+    return [{ sha, subject, files: commitFilesOf(root, sha), agoryx: email === "agoryx@localhost" }];
+  });
+};
+
+/** The workspace files a commit changed (paths in the workspace). */
+export const commitFilesOf = (root: string, sha: string): string[] =>
+  git(root, ["diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", "--relative", "--root", sha])?.split("\0").filter(Boolean) ?? [];
+
+/**
+ * The workspace's files git sees changed or new since HEAD (never .agoryx/), a renamed file's old path with its new
+ * one (committing only the new one would keep both); null outside a repository of its own.
+ */
+export const uncommittedFiles = (root: string): string[] | null => {
+  if (!isGitRepo(root)) return null;
+  const output = git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
+  if (output === null) return null;
+  const prefix = repoPrefix(root);
+  const files = new Set<string>();
+  const parts = output.split("\0");
+  for (let i = 0; i < parts.length; i += 1) {
+    const entry = parts[i]!;
+    if (entry.length < 4) continue;
+    const code = entry.slice(0, 2);
+    const paths = [entry.slice(3)];
+    // A rename's source follows it (staged, or in the worktree after `git add -N`); a copy's source is unchanged.
+    if (/[RC]/.test(code)) {
+      i += 1;
+      if (code.includes("R") && parts[i]) paths.push(parts[i]!);
+    }
+    for (const path of paths.map((entry) => underPrefix(prefix, entry))) {
+      if (path !== null && !path.startsWith(`${AGORYX_DIR}/`)) files.add(path);
+    }
+  }
+  return [...files].sort();
+};
+
+/** A git operation the repository is in the middle of (a merge, a rebase…): a commit now would land inside it. */
+export const gitOperation = (root: string): string | null => {
+  const inside = (name: string) => {
+    const path = git(root, ["rev-parse", "--git-path", name])?.trim();
+    return Boolean(path && existsSync(resolve(root, path)));
+  };
+  if (inside("MERGE_HEAD")) return "a merge";
+  if (inside("rebase-merge") || inside("rebase-apply")) return "a rebase";
+  if (inside("CHERRY_PICK_HEAD")) return "a cherry-pick";
+  if (inside("REVERT_HEAD")) return "a revert";
+  return null;
+};
+
+/** A commit's body, or how to write it from the files the commit holds (paths in the workspace). */
+export type CheckpointBody = string | ((files: string[]) => string);
+
+const commitAll = (root: string, subject: string, body: CheckpointBody): { sha: string; files: number } | null => {
   if (!isGitRepo(root)) return null;
   // Only the workspace: a room in a subdirectory never stages or commits the rest of the repository.
   const status = git(root, ["status", "--porcelain", "--", "."]);
   if (!status?.trim()) return null;
   if (git(root, ["add", "-A", "--", "."]) === null) return null;
-  const staged = git(root, ["diff", "--cached", "--name-only", "--", "."])?.split("\n").filter(Boolean) ?? [];
+  const staged = git(root, ["diff", "--cached", "--name-only", "--no-renames", "--relative", "-z"])?.split("\0").filter(Boolean) ?? [];
   if (staged.length === 0) return null;
+  const text = typeof body === "function" ? body(staged) : body;
   const committed = git(root, [
     "-c",
     "user.name=Agoryx",
@@ -552,7 +681,7 @@ const commitAll = (root: string, subject: string, body: string): { sha: string; 
     "--no-verify",
     "-m",
     subject,
-    ...(body ? ["-m", body] : []),
+    ...(text ? ["-m", text] : []),
     "--",
     ".",
   ]);
@@ -565,8 +694,30 @@ const commitAll = (root: string, subject: string, body: string): { sha: string; 
  * The run's checkpoint. A room alone in its directory commits all of it, as it always has. Given `files`
  * (the room shares the directory), only those credited paths go in, and nobody's staged change is taken.
  */
-export const checkpointCommit = (root: string, subject: string, body: string, files?: string[], expectedTrees?: ReadonlyMap<string, string>): { sha: string; files: number } | null => {
-  if (!files) return commitAll(root, subject, body);
+export const checkpointCommit = (root: string, subject: string, body: CheckpointBody, files?: string[], expectedTrees?: ReadonlyMap<string, string>): { sha: string; files: number } | null =>
+  files ? commitPaths(root, subject, body, files, expectedTrees, false) : commitAll(root, subject, body);
+
+/**
+ * The human's commit of a step: only `files`, as they are in the folder now, under the folder's own git identity
+ * (Agoryx's when it has none). A file the human staged goes in whole; every other staged change stays staged.
+ * When git cannot, `fail` hears why (another git holds the index, a signing key that would not sign, HEAD moved).
+ */
+export const commitFiles = (root: string, subject: string, body: CheckpointBody, files: string[], fail?: (why: string) => void): { sha: string; files: number } | null =>
+  files.length ? commitPaths(root, subject, body, files, undefined, true, fail) : null;
+
+const commitPaths = (
+  root: string,
+  subject: string,
+  body: CheckpointBody,
+  files: string[],
+  expectedTrees: ReadonlyMap<string, string> | undefined,
+  own: boolean,
+  fail?: (why: string) => void,
+): { sha: string; files: number } | null => {
+  const failed = (why: string) => {
+    fail?.(why);
+    return null;
+  };
   if (!files.length || !isGitRepo(root)) return null;
   const indexRel = git(root, ["rev-parse", "--git-path", "index"])?.trim();
   if (!indexRel) return null;
@@ -577,7 +728,12 @@ export const checkpointCommit = (root: string, subject: string, body: string, fi
   let locked = false;
   try {
     // Also serializes checkpoints from separate daemons. On contention skip this checkpoint.
-    closeSync(openSync(lock, "wx"));
+    try {
+      closeSync(openSync(lock, "wx"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return failed("another git command holds the index (index.lock); try again when it is done");
+      throw error;
+    }
     locked = true;
     const head = git(root, ["rev-parse", "--verify", "HEAD"])?.trim();
     const prefix = repoPrefix(root);
@@ -586,7 +742,7 @@ export const checkpointCommit = (root: string, subject: string, body: string, fi
     const occupied = new Set(staged.split("\0"));
     const paths = [...new Set(files)].filter((file) =>
       file && !isAbsolute(file) && !file.split("/").some((part) => part === ".." || part === ".git" || part === AGORYX_DIR) &&
-      !occupied.has(`${prefix}${file}`),
+      (own || !occupied.has(`${prefix}${file}`)),
     );
     if (!paths.length) return null;
     let specs = paths.map((file) => `:(top,literal)${prefix}${file}`);
@@ -608,21 +764,23 @@ export const checkpointCommit = (root: string, subject: string, body: string, fi
       }
       if (!specs.length) return null;
     }
-    const changed = git(root, ["diff", "--cached", "--name-only", "-z"], 15_000, env)?.split("\0").filter(Boolean);
+    const changed = git(root, ["diff", "--cached", "--name-only", "--no-renames", "--relative", "-z"], 15_000, env)?.split("\0").filter(Boolean);
     if (!changed?.length) return null;
+    const text = typeof body === "function" ? body(changed) : body;
     const tree = git(root, ["write-tree"], 15_000, env)?.trim();
     if (!tree) return null;
-    const sha = git(root, ["-c", "user.name=Agoryx", "-c", "user.email=agoryx@localhost", "-c", "commit.gpgsign=false",
-      "commit-tree", tree, ...(head ? ["-p", head] : []), "-m", subject, ...(body ? ["-m", body] : [])], 15_000, env)?.trim();
-    if (!sha) return null;
+    const ident = own && git(root, ["var", "GIT_COMMITTER_IDENT"]) !== null && git(root, ["var", "GIT_AUTHOR_IDENT"]) !== null ? [] : AGORYX_IDENT;
+    const made = gitSays(root, [...ident, "commit-tree", tree, ...(head ? ["-p", head] : []), "-m", subject, ...(text ? ["-m", text] : [])], 15_000, env);
+    const sha = made.out?.trim();
+    if (!sha) return failed(made.err || "git commit-tree failed");
     // Prepare the real index's update before moving HEAD. Only the selected, previously unstaged
     // entries change; all foreign staged blobs (including partial staging) remain intact.
-    if (existsSync(index)) copyFileSync(index, preserved);
+    if (existsSync(index)) copyIndex(index, preserved);
     const keptEnv = { ...process.env, GIT_INDEX_FILE: preserved };
     if (git(root, ["reset", "-q", sha, "--", ...specs], 15_000, keptEnv) === null) return null;
-    copyFileSync(preserved, lock);
+    copyIndex(preserved, lock);
     // Compare-and-swap: another writer moving HEAD cannot make us overwrite its commit.
-    if (git(root, ["update-ref", "-m", subject, "HEAD", sha, head ?? "0".repeat(sha.length)]) === null) return null;
+    if (git(root, ["update-ref", "-m", subject, "HEAD", sha, head ?? "0".repeat(sha.length)]) === null) return failed("HEAD moved while committing (another commit?); try again");
     renameSync(lock, index);
     locked = false;
     return { sha, files: changed.length };
@@ -645,8 +803,6 @@ export const revertRef = (roomId: string, n: number): string => `refs/agoryx/rev
 
 /** Where the whole folder at a checkpoint is kept when the checkpoint's commit does not hold all of it. */
 export const checkpointRef = (roomId: string, sha: string): string => `refs/agoryx/checkpoint/${refRoom(roomId)}/${sha.slice(0, 12)}`;
-
-const AGORYX_IDENT = ["-c", "user.name=Agoryx", "-c", "user.email=agoryx@localhost", "-c", "commit.gpgsign=false"];
 
 /** `tree` as a commit on `parent`, kept under `ref`; its sha, or null when git could not. */
 const keepTree = (root: string, tree: string, parent: string | undefined, ref: string, message: string): string | null => {
@@ -908,7 +1064,13 @@ export interface InboxOp {
   raw: Record<string, unknown>;
 }
 
-const TAKING = /^(.+)\.jsonl\.(\d+)\.\d+\.taking$/;
+/** An op the agent tool queued: `<ms>-<ns>-<nonce>.<agent>.op`, one per file, so it sorts by when it was sent. */
+const OP = /^\d+-\d+-[^.]*\.(.+)\.op$/;
+/** A file taken by a drain: an op (or a whole `<agent>.jsonl` from an agent tool before ops had files of their own), its taker and when. */
+const TAKING = /^(.+\.(?:jsonl|op))\.(\d+)\.\d+\.taking$/;
+
+/** Who queued what a file in the inbox holds, by its name; undefined for one that is not an op. */
+const inboxAgent = (name: string): string | undefined => (name.endsWith(".jsonl") ? name.slice(0, -".jsonl".length) : OP.exec(name)?.[1]);
 
 const processAlive = (pid: number): boolean => {
   try {
@@ -919,35 +1081,78 @@ const processAlive = (pid: number): boolean => {
   }
 };
 
+/** An op the agent tool began to write and never renamed into place (killed, or the disk full) is gone after this. */
+const STALE_OP_MS = 60_000;
+
 /**
- * Take every ops file (one per agent) out of the inbox and hand each op to `apply`.
- * A file is renamed aside first (atomic; agents keep appending to a fresh file)
- * and deleted only after all its ops were applied. A taken file left behind by a
- * process that died mid-way (or by this one, if `apply` threw) is picked up again.
+ * Take every op out of the inbox, oldest first, and hand each to `apply`. An op is
+ * a file of its own, renamed in whole by the agent tool; a drain renames it aside
+ * first (atomic: two drains never both take it) and deletes it only after applying
+ * it. A taken file left behind by a process that died mid-way (or by this one, if
+ * `apply` threw) is taken again the same way, by a rename of its own. A
+ * `<agent>.jsonl` from an agent tool before ops had files of their own is taken
+ * the same way.
  */
 export const drainOpsInbox = (paths: WorkspacePaths, apply: (op: InboxOp) => void): void => {
   if (!existsSync(paths.opsDir)) return;
   const names = readdirSync(paths.opsDir).sort();
   const taken: Array<{ agent: string; file: string }> = [];
   for (const name of names) {
+    if (name.endsWith(".op.tmp")) {
+      try {
+        if (Date.now() - statSync(join(paths.opsDir, name)).mtimeMs > STALE_OP_MS) rmSync(join(paths.opsDir, name), { force: true });
+      } catch {
+        // gone already: renamed into place, or taken by another drain
+      }
+      continue;
+    }
     const orphan = TAKING.exec(name);
-    if (!orphan) continue;
+    const agent = orphan && inboxAgent(orphan[1]!);
+    if (!agent) continue;
     const owner = Number(orphan[2]);
     // Draining is synchronous, so a file of this process found here is one it failed to finish.
     if (owner !== process.pid && processAlive(owner)) continue;
-    taken.push({ agent: orphan[1]!, file: join(paths.opsDir, name) });
+    // Claimed first, as a fresh op is: another drain that listed it too finds it gone and leaves it.
+    const file = join(paths.opsDir, `${orphan[1]}.${process.pid}.${Date.now()}.taking`);
+    try {
+      renameSync(join(paths.opsDir, name), file);
+    } catch {
+      continue;
+    }
+    taken.push({ agent, file });
   }
-  for (const name of names) {
-    if (!name.endsWith(".jsonl")) continue;
+  const take = (name: string): { name: string; agent: string; file: string } | undefined => {
+    const agent = inboxAgent(name);
+    if (!agent) return undefined;
     const source = join(paths.opsDir, name);
     const file = `${source}.${process.pid}.${Date.now()}.taking`;
     try {
       renameSync(source, file);
     } catch {
-      continue;
+      return undefined;
     }
-    taken.push({ agent: name.slice(0, -".jsonl".length), file });
+    return { name, agent, file };
+  };
+  // Those from before ops had files of their own first: they are older.
+  for (const name of names) if (name.endsWith(".jsonl")) taken.push(...[take(name)].filter((entry) => entry !== undefined));
+  // A folder read while files come into it lists them in the order of its own index (a hash of the name, on APFS and
+  // ext4 alike), not by name: an op sent during the read may be listed while one sent just before it is not. Read it
+  // again for an op older than one taken of the same agent (a few times at most), so one sent earlier is not applied
+  // after a later one; those sent since wait for the next drain.
+  const ops: Array<{ name: string; agent: string; file: string }> = [];
+  let listed = names;
+  for (let pass = 0; pass < 5; pass += 1) {
+    const newest = new Map<string, string>();
+    for (const op of ops) if (op.name > (newest.get(op.agent) ?? "")) newest.set(op.agent, op.name);
+    const found = listed
+      .filter((name) => name.endsWith(".op") && (pass === 0 || name < (newest.get(inboxAgent(name) ?? "") ?? "")))
+      .map(take)
+      .filter((entry) => entry !== undefined);
+    if (found.length === 0) break;
+    ops.push(...found);
+    listed = readdirSync(paths.opsDir);
   }
+  taken.push(...ops.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)));
   for (const { agent, file } of taken) {
     let text: string;
     try {

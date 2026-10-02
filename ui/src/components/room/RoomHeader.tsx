@@ -3,6 +3,7 @@ import {
   FolderIcon,
   GitBranchIcon,
   GitCompareArrowsIcon,
+  HourglassIcon,
   LayoutPanelLeftIcon,
   MenuIcon,
   MessagesSquareIcon,
@@ -29,13 +30,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useNow } from "@/hooks/use-now";
 import { api, roomPath, Unauthorized } from "@/lib/api";
-import { baseName, secs, shortPath } from "@/lib/format";
+import { baseName, clock as timeOf, names, secs, shortPath } from "@/lib/format";
 import { ariaKeys, keyLabel } from "@/lib/keys";
-import { ink, participant, profileLine, tableCount } from "@/lib/room";
+import { ink, nameOf, participant, profileLine, tableCount, turnClock, turnLimit, waitingFor } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Tip } from "./bits";
+import { OpenPr, PrChip } from "./Github";
 import { t } from "@/lib/i18n";
 
 function Presence({ a }: { a: RoomAgent }) {
@@ -44,6 +46,7 @@ function Presence({ a }: { a: RoomAgent }) {
     s.snap?.state.turns.find((t) => t.agent === a.id && t.status === "running"),
   );
   const room = useStore((s) => s.snap?.state);
+  const ops = useStore((s) => s.snap?.ops);
   const openSession = useStore((s) => s.openSession);
   const profile = useStore((s) => s.snap?.profile);
   const tick = useNow(now === "working" && Boolean(turn));
@@ -51,15 +54,36 @@ function Presence({ a }: { a: RoomAgent }) {
   const tone = who.tone;
   const working = now === "working" && turn;
   const seen = profileLine(a, profile);
+  // The limit the turn started with: a change to the setting applies from the next turn.
+  const limit = working && room ? turnLimit(room, turn) : 0;
+  const elapsed = working ? tick - new Date(turn.startedAt).getTime() : 0;
+  const late = Boolean(working && limit && elapsed >= limit * 0.8);
+  const clock = working ? (limit ? turnClock(elapsed, limit) : secs(elapsed)) : "";
+  const brief = working && limit ? turnClock(elapsed, limit, true) : clock;
+  // Whom it wrote to who has not written since: an agent may wait inside its turn, burning the turn's time.
+  const waits = room && (now === "working" || now === "idle") ? waitingFor(room, a.id, ops) : null;
+  const awaited = waits ? names(waits.who.map((h) => (h === room?.human.toLowerCase() ? "you" : nameOf(room, h)))) : "";
   const state = working
-    ? `${a.label} is taking a turn in the room`
+    ? `${a.label} is taking a turn in the room${limit ? ` — ${clock}: the room stops a turn at its limit` : ""}`
     : now === "native"
       ? `${a.label} is in a direct conversation in its own session; its room turn starts after that`
       : now === "queued"
         ? `${a.label} is queued for a turn`
-        : `${a.label} is waiting for something new in the conversation`;
-  const tip = `${seen ? `${state}. ${seen}` : state}. Click to open the session on the side.`;
-  const short = working ? "working" : now === "native" ? "in own session" : now === "queued" ? "queued" : "waiting";
+        : waits
+          ? `${a.label} is waiting for ${awaited}`
+          : `${a.label} is waiting for something new in the conversation`;
+  const wrote = waits ? room?.messages.find((m) => m.id === waits.since)?.ts : undefined;
+  const asked = waits ? ` It wrote to ${awaited}${wrote ? ` at ${timeOf(wrote)}` : ""}, and ${waits.who.length > 1 ? "they have" : awaited === "you" ? "you have" : "it has"} not written since.` : "";
+  const tip = `${seen ? `${state}. ${seen}` : state}.${asked} Click to open the session on the side.`;
+  const short = working
+    ? `working, ${clock}${waits ? `, waiting for ${awaited}` : ""}`
+    : now === "native"
+      ? "in own session"
+      : now === "queued"
+        ? "queued"
+        : waits
+          ? `waiting for ${awaited}`
+          : "waiting";
   return (
     <Tip tip={tip}>
       <button
@@ -68,7 +92,10 @@ function Presence({ a }: { a: RoomAgent }) {
         aria-label={`${a.label}: ${short}. Open session`}
         style={ink(who)}
         className={cn(
-          "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-small transition",
+          "inline-flex h-7 min-w-0 shrink items-center gap-1.5 overflow-hidden rounded-full border px-2.5 text-small whitespace-nowrap transition",
+          // Short of room, whom it waits for gives way first (as long as there is any of that name left): the other
+          // chips, its own name and the clocks stay whole.
+          waits && (working ? "@min-[61rem]:shrink-[10000]" : "@min-[52rem]:shrink-[10000]"),
           now === "idle"
             ? "border-border text-muted-foreground hover:bg-accent"
             : tone === "codex"
@@ -78,7 +105,7 @@ function Presence({ a }: { a: RoomAgent }) {
       >
         <span
           className={cn(
-            "size-2 rounded-full",
+            "size-2 shrink-0 rounded-full",
             now === "idle"
               ? tone === "codex"
                 ? "bg-codex/50"
@@ -89,17 +116,34 @@ function Presence({ a }: { a: RoomAgent }) {
             now !== "idle" && "animate-breathe",
           )}
         />
-        <b className="font-semibold">{a.label}</b>
+        <b className="min-w-[3ch] truncate font-semibold">{a.label}</b>
+        {/* The narrower the header, the less a chip says: the words, then whom it waits for, then the limit, then all but
+            the name. The widths are those at which two agents' chips fit whole. */}
         {working ? (
-          <span className="tabular hidden opacity-80 md:inline">
-            working · {secs(tick - new Date(turn.startedAt).getTime())}
+          <span className="tabular hidden shrink-0 @min-[53rem]:inline">
+            <span className="hidden opacity-80 @min-[74rem]:inline">working · </span>
+            <span className={cn(late ? "font-medium text-amber-ink" : "opacity-80")} data-turn-clock>
+              <span className="@min-[58rem]:hidden">{brief}</span>
+              <span className="hidden @min-[58rem]:inline">{clock}</span>
+            </span>
+          </span>
+        ) : null}
+        {waits && working ? (
+          <span className="hidden min-w-3 shrink items-center gap-1 opacity-80 @min-[53rem]:inline-flex @min-[61rem]:shrink-[10000]" data-waiting>
+            <HourglassIcon className="size-3 shrink-0" aria-hidden />
+            <span className="hidden @min-[74rem]:inline">waiting for</span>
+            <span className="hidden min-w-0 truncate @min-[61rem]:inline">{awaited}</span>
+          </span>
+        ) : waits ? (
+          <span className="hidden min-w-0 shrink-[10000] truncate opacity-80 @min-[52rem]:inline" data-waiting>
+            waiting for {awaited}
           </span>
         ) : null}
         {now === "native" ? (
-          <span className="hidden opacity-80 md:inline">in own session</span>
+          <span className="hidden shrink-0 opacity-80 @min-[52rem]:inline">in own session</span>
         ) : null}
         {now === "queued" ? (
-          <span className="hidden opacity-80 md:inline">queued</span>
+          <span className="hidden shrink-0 opacity-80 @min-[52rem]:inline">queued</span>
         ) : null}
       </button>
     </Tip>
@@ -259,7 +303,8 @@ function useBranch(roomId: string, turns: number): string | null {
 function Place() {
   const room = useStore((s) => s.snap?.state);
   const openFile = useStore((s) => s.openFile);
-  const branch = useBranch(room?.id ?? "", room?.turns.length ?? 0);
+  const asked = useBranch(room?.id ?? "", room?.turns.length ?? 0);
+  const branch = room?.repo ? (room.repo.branch ?? asked) : asked;
   if (!room) return null;
   const wt = room.worktree;
   const folder = wt ? wt.source : room.workspace;
@@ -267,28 +312,31 @@ function Place() {
     ? t.worktree.place(wt.branch, wt.base, room.workspace, room.agents.map((a) => a.label), wt.source)
     : `Working folder: ${room.workspace}${branch ? `, branch ${branch}` : ""}`;
   return (
-    <Tip tip={tip}>
-      <button
-        type="button"
-        onClick={() => openFile(null)}
-        className="flex w-fit max-w-full min-w-0 items-center gap-1.5 text-micro text-faint hover:text-muted-foreground"
-      >
-        <span className="truncate font-mono">
-          {wt ? baseName(folder) : shortPath(folder)}
-        </span>
-        {branch ? (
-          <span className="flex min-w-0 items-center gap-1">
-            <GitBranchIcon className="size-3 shrink-0" />
-            <span className="max-w-[180px] truncate font-mono">{branch}</span>
+    <div className="flex min-w-0 items-center gap-1.5">
+      <Tip tip={tip}>
+        <button
+          type="button"
+          onClick={() => openFile(null)}
+          className="flex w-fit max-w-full min-w-0 items-center gap-1.5 text-micro text-faint hover:text-muted-foreground"
+        >
+          <span className="truncate font-mono">
+            {wt ? baseName(folder) : shortPath(folder)}
           </span>
-        ) : null}
-        {wt ? (
-          <span className="shrink-0 rounded bg-secondary px-1 text-micro font-medium text-secondary-foreground">
-            {t.worktree.label}
-          </span>
-        ) : null}
-      </button>
-    </Tip>
+          {branch ? (
+            <span className="flex min-w-0 items-center gap-1">
+              <GitBranchIcon className="size-3 shrink-0" />
+              <span className="max-w-[180px] truncate font-mono">{branch}</span>
+            </span>
+          ) : null}
+          {wt ? (
+            <span className="shrink-0 rounded bg-secondary px-1 text-micro font-medium text-secondary-foreground">
+              {t.worktree.label}
+            </span>
+          ) : null}
+        </button>
+      </Tip>
+      <PrChip />
+    </div>
   );
 }
 
@@ -361,16 +409,18 @@ export function RoomHeader() {
   return (
     <header className="@container flex h-14 shrink-0 items-center gap-2 border-b border-border/70 bg-background/85 px-3 backdrop-blur sm:px-4">
       <NavButton />
-      <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight">
+      {/* The name keeps its room when a side panel narrows the header: the agents' chips give way first. */}
+      <div className="flex min-w-[min(10rem,40cqw)] flex-1 flex-col justify-center leading-tight">
         <Title />
         <Place />
       </div>
       <ViewSwitch />
-      <div className="hidden items-center gap-1.5 @min-[36rem]:flex">
+      <div className="hidden min-w-0 shrink items-center gap-1.5 @min-[36rem]:flex">
         {room.agents.map((a) => (
           <Presence key={a.id} a={a} />
         ))}
       </div>
+      <OpenPr />
       <span className="mx-0.5 hidden h-5 w-px bg-border @min-[36rem]:block" />
       <TerminalToggle />
       <PanelToggle />

@@ -82,6 +82,9 @@ export const createTestRoom = (options: {
   createdWorkspace?: boolean;
   /** Where the agents' limits go (see EngineOptions.onLimits). */
   onLimits?: (snapshot: import("../../internal/agora/types.js").LimitSnapshot) => void;
+  /** Whether someone has the room open, and how often GitHub is asked again (see EngineOptions). */
+  viewed?: () => boolean;
+  githubPollMs?: number;
 } = {}): TestRoom => {
   const home = mkdtempSync(join(tmpdir(), "agora-test-"));
   const roomsRoot = join(home, "rooms");
@@ -100,6 +103,8 @@ export const createTestRoom = (options: {
     // Native session files (written by the fake CLIs) stay inside the test home.
     CLAUDE_CONFIG_DIR: join(home, "claude-config"),
     CODEX_HOME: join(home, "codex-home"),
+    // The agent tool waits this long for the room to take an op; under the whole suite's load 5 s is not enough.
+    AGORYX_ACK_MS: "60000",
     ...options.env,
   };
   const shimDir = join(home, "shim");
@@ -123,6 +128,8 @@ export const createTestRoom = (options: {
     ...(options.secondLook ? { secondLook: options.secondLook } : {}),
     ...(options.readMessage ? { readMessage: options.readMessage } : {}),
     ...(options.onLimits ? { onLimits: options.onLimits } : {}),
+    ...(options.viewed ? { viewed: options.viewed } : {}),
+    ...(options.githubPollMs !== undefined ? { githubPollMs: options.githubPollMs } : {}),
     opsPollMs: 50,
     nativePollMs: 50,
   });

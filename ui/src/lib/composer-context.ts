@@ -1,4 +1,5 @@
 import { local } from "./api";
+import { type Quote, readQuote } from "./quote";
 import type { RoomMessage } from "./types";
 
 export const COMMANDS = [
@@ -75,6 +76,30 @@ export function composerCommand(text: string): { id: CommandId; args: string } |
 /** The user's sent messages, newest first. Recalling one is a draft, never a send. */
 export const composerHistory = (messages: readonly RoomMessage[], human: string) =>
   messages.filter((m) => m.kind === "human" && m.author === human && !m.native && m.text.trim()).map((m) => m.text).reverse();
+
+/**
+ * A sent message taken apart again for the composer: the files and quotes it opens with (as withContextFiles
+ * and withQuotes wrote them) come back as chips, the rest as the draft. A block that would not be written
+ * exactly so stays text. `authorOf`: who wrote a message or a turn (m12, t7) in this room.
+ */
+export function recallSent(text: string, authorOf: (id: string) => string | undefined): { body: string; quotes: Quote[]; files: string[] } {
+  const blocks = text.split("\n\n");
+  const files: string[] = [];
+  const quotes: Quote[] = [];
+  let at = 0;
+  for (; at < blocks.length; at += 1) {
+    const block = blocks[at]!;
+    const file = quotes.length ? null : /^> File: \[(`+) (.*) \1\]\([^)]*\)$/.exec(block)?.[2];
+    if (file !== undefined && file !== null && validContextPath(file) && withContextFiles("", [file]) === block) {
+      files.push(file);
+      continue;
+    }
+    const q = readQuote(block, authorOf);
+    if (!q) break;
+    quotes.push(q);
+  }
+  return { body: blocks.slice(at).join("\n\n"), quotes, files };
+}
 
 export function historyStep(index: number, direction: "older" | "newer", length: number): number {
   return direction === "older" ? Math.min(index + 1, length - 1) : Math.max(index - 1, -1);

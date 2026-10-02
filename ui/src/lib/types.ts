@@ -87,6 +87,8 @@ export interface ProjectView {
   instructions?: string;
   /** Folders besides its own that its Work rooms' agents may read and write (absolute). */
   context: string[];
+  /** When the last write was made (none: nothing written). */
+  updatedAt?: string;
   /** The last event's seq. */
   seq: number;
   /** The last name/goal/instructions change: an edit of them made from an older one is refused (409). */

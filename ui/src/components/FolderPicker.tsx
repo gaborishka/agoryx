@@ -309,11 +309,15 @@ export function FolderDialog({
   onOpenChange,
   start,
   onPick,
+  title = "Folder for the room",
+  description = "Agents will work in it.",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   start: string | null;
   onPick: (path: string) => void;
+  title?: string;
+  description?: string;
 }) {
   const [data, setData] = useState<FsReply | null>(null);
   const [input, setInput] = useState("");
@@ -349,10 +353,8 @@ export function FolderDialog({
         }}
       >
         <DialogHeader>
-          <DialogTitle>Folder for the room</DialogTitle>
-          <DialogDescription>
-            Agents will work in it.
-          </DialogDescription>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         <form
           className="flex items-center gap-1.5"

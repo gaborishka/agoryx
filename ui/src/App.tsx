@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { ProjectPage } from "@/components/project/ProjectPage";
+import { ProjectsPage } from "@/components/project/ProjectsPage";
 import { Palette } from "@/components/Palette";
 import { SidePanel, warmPanels } from "@/components/panel/SidePanel";
 import { Mark } from "@/components/brand/Mark";
@@ -184,6 +185,8 @@ function Shell() {
           </Suspense>
         ) : route.kind === "project" ? (
           <ProjectPage hash={route.hash} />
+        ) : route.kind === "projects" ? (
+          <ProjectsPage />
         ) : null}
       </main>
       {route.kind === "room" ? <SidePanel overlay={!docked} phone={phone} /> : null}

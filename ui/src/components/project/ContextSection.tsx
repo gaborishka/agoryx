@@ -5,7 +5,7 @@ import { Hint } from "@/components/common/states";
 import { FolderDialog } from "@/components/FolderPicker";
 import { Button } from "@/components/ui/button";
 import { api, Unauthorized } from "@/lib/api";
-import { baseName } from "@/lib/format";
+import { baseName, shortPath } from "@/lib/format";
 import { errText } from "@/lib/load";
 import type { ProjectView } from "@/lib/types";
 import { Block } from "./ProjectPage";
@@ -46,7 +46,7 @@ export function ContextSection({ project, onChange }: { project: ProjectView; on
         <li className="flex items-center gap-3 px-3.5 py-2.5">
           <FolderIcon className="size-4 shrink-0 text-faint" />
           <span className="min-w-0 flex-1 truncate font-mono text-meta" title={project.key}>
-            {project.key}
+            {shortPath(project.key)}
           </span>
           <span className="shrink-0 text-meta text-faint">its own folder</span>
         </li>
@@ -54,7 +54,7 @@ export function ContextSection({ project, onChange }: { project: ProjectView; on
           <li key={path} className="flex items-center gap-3 px-3.5 py-2.5">
             <FolderIcon className="size-4 shrink-0 text-faint" />
             <span className="min-w-0 flex-1 truncate font-mono text-meta" title={path}>
-              {path}
+              {shortPath(path)}
             </span>
             <Button type="button" variant="ghost" size="icon" className="size-7" disabled={busy} aria-label={`Remove ${path}`} onClick={() => void send("DELETE", path)}>
               <XIcon className="size-3.5" />
@@ -65,7 +65,14 @@ export function ContextSection({ project, onChange }: { project: ProjectView; on
       {project.context.length === 0 ? (
         <Hint>Another repository or a folder of docs the agents here should read and write too. Each agent gets it on its next turn.</Hint>
       ) : null}
-      <FolderDialog open={browse} onOpenChange={setBrowse} start={parent} onPick={(path) => void send("POST", path)} />
+      <FolderDialog
+        open={browse}
+        onOpenChange={setBrowse}
+        start={parent}
+        onPick={(path) => void send("POST", path)}
+        title="A context folder"
+        description="Its agents may read and write it too, from their next turn."
+      />
     </Block>
   );
 }

@@ -30,7 +30,7 @@ import { readTurnActivity, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
-import { addProjectContext, listProjects, PROJECT_FIELDS, ProjectError, projectHash, projectKey, readProject, removeProjectContext, setProjectField, type Project, type ProjectWriter } from "./projects.js";
+import { addProjectContext, checkContextFolder, listProjects, MAX_PROJECT_TEXT, PROJECT_FIELDS, ProjectError, projectHash, projectKey, projectKeyOfFolder, readProject, removeProjectContext, setProjectField, type Project, type ProjectWriter } from "./projects.js";
 import { memoryPath, noteMemory, promoteToMemory, removeMemory, reviseMemory } from "./memory.js";
 import { parseSubscription, PushNotes, PushSender } from "./push.js";
 import { qrSvg } from "./qr.js";
@@ -1131,6 +1131,49 @@ export class AgoraDaemon {
    * `GET /api/projects/<hash>/overview` (its library, threads and usage, read from its rooms).
    * Agents write with their own key, and every write says who made it.
    */
+  /**
+   * New project: the name, goal and context folders written for a folder, by whoever asks. Nothing is written unless
+   * all of it can be; a folder that has a name already is not written over (the caller opens it instead).
+   */
+  private createProject(body: Record<string, unknown>, rooms: ReturnType<typeof RoomStore.list>, caller: Caller): Project | { taken: Project } {
+    const field = (name: string): string => {
+      const value = body[name] ?? "";
+      if (typeof value !== "string") throw new HttpError(400, `${name} must be a string`);
+      return value.trim();
+    };
+    const dir = field("dir");
+    const name = field("name");
+    const goal = field("goal");
+    if (!dir) throw new HttpError(400, "dir: the project's folder");
+    if (!name) throw new HttpError(400, "name: what to call the project");
+    if (name.includes("\n")) throw new HttpError(400, "a project's name is one line");
+    for (const [label, text] of [["name", name], ["goal", goal]] as const) {
+      if (text.length > MAX_PROJECT_TEXT) throw new HttpError(400, `the ${label} is ${text.length} characters; at most ${MAX_PROJECT_TEXT}`);
+    }
+    if (body.context !== undefined && !(Array.isArray(body.context) && body.context.every((entry) => typeof entry === "string"))) {
+      throw new HttpError(400, "context must be a list of folders");
+    }
+    let key: string;
+    try {
+      key = projectKeyOfFolder(resolveFolder(dir, this.env), rooms);
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : String(error));
+    }
+    const existing = readProject(key, this.env);
+    if (existing.name) return { taken: existing };
+    const writer: ProjectWriter = caller.agent ? { by: caller.agent.agent, from: caller.agent } : { by: defaultHumanName(this.env) };
+    try {
+      const context = [...new Set(((body.context as string[] | undefined) ?? []).map((path) => checkContextFolder(key, path, this.env)))];
+      setProjectField(key, "name", name, writer, this.env);
+      if (goal) setProjectField(key, "goal", goal, writer, this.env);
+      for (const folder of context) addProjectContext(key, folder, writer, this.env);
+    } catch (error) {
+      if (error instanceof ProjectError) throw new HttpError(400, error.message);
+      throw error;
+    }
+    return readProject(key, this.env);
+  }
+
   private async projectsApi(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[], method: string, caller: Caller): Promise<void> {
     const rooms = RoomStore.list(roomsDir(this.env));
     const keys = new Map<string, string>();
@@ -1148,14 +1191,25 @@ export class AgoraDaemon {
       ...(project.goal ? { goal: project.goal } : {}),
       ...(project.instructions ? { instructions: project.instructions } : {}),
       context: project.context,
+      ...(project.events.length ? { updatedAt: project.events.at(-1)!.ts } : {}),
       seq: project.seq,
       fieldsSeq: project.fieldsSeq,
       memory: project.memory,
       memoryPath: memoryPath(project.key, this.env),
       rooms: rooms.filter((room) => room.projectHash === project.hash).map((room) => room.id),
     });
+    if (parts.length === 0 && method === "POST") {
+      const body = ((await readBody(req)) ?? {}) as Record<string, unknown>;
+      const project = this.createProject(body, rooms, caller);
+      if ("taken" in project) {
+        sendJson(res, 409, { error: `${project.taken.key} is the project "${project.taken.name}" already: open it`, project: view(project.taken) });
+        return;
+      }
+      sendJson(res, 200, { project: { ...view(project), events: project.events } });
+      return;
+    }
     if (parts.length === 0) {
-      if (method !== "GET") throw new HttpError(405, "GET");
+      if (method !== "GET") throw new HttpError(405, "GET or POST");
       sendJson(res, 200, { projects: [...keys.values()].map((key) => view(readProject(key, this.env))) });
       return;
     }

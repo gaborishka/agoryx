@@ -1,4 +1,4 @@
-import { PanelLeftIcon, ChevronRightIcon, FolderIcon, CircleHelpIcon, Settings2Icon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
+import { PanelLeftIcon, ChevronRightIcon, FolderIcon, FoldersIcon, CircleHelpIcon, Settings2Icon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { MarkMono, Wordmark } from "@/components/brand/Mark";
 import { Avatar, Tip } from "@/components/room/bits";
@@ -353,6 +353,20 @@ export function Sidebar() {
             <SearchIcon className="size-4" />
           </Button>
         </Tip>
+      </div>
+      <div className="px-2 pb-2">
+        <button
+          type="button"
+          aria-current={route.kind === "projects" ? "page" : undefined}
+          onClick={() => go({ kind: "projects" })}
+          className={cn(
+            "flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-ui transition",
+            route.kind === "projects" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground",
+          )}
+        >
+          <FoldersIcon className="size-4" />
+          Projects
+        </button>
       </div>
       {rooms.length ? (
         <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Which rooms to show">

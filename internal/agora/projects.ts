@@ -163,11 +163,8 @@ const contextPath = (path: string, env: NodeJS.ProcessEnv): string => {
   return resolve(raw).replace(/[\\/]+$/, "") || sep;
 };
 
-/**
- * Add a context folder: an existing folder outside the project's own (inside it the agents have it already).
- * `path` is absolute or `~/…`; returns the project after it. Nothing is appended for a folder already there.
- */
-export const addProjectContext = (key: string, path: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
+/** The folder `path` names, if it can be a context folder of the project in `key`; else why not. */
+export const checkContextFolder = (key: string, path: string, env: NodeJS.ProcessEnv = process.env): string => {
   const folder = contextPath(path, env);
   let isDir = false;
   try {
@@ -178,6 +175,15 @@ export const addProjectContext = (key: string, path: string, writer: ProjectWrit
   if (!isDir) throw new ProjectError(`no folder at ${folder}`);
   if (folder === key || folder.startsWith(`${key}${sep}`)) throw new ProjectError(`${folder} is inside the project's own folder: its agents work there already`);
   if (key.startsWith(`${folder}${sep}`)) throw new ProjectError(`${folder} holds the project's own folder: name a folder beside it, not above it`);
+  return folder;
+};
+
+/**
+ * Add a context folder: an existing folder outside the project's own (inside it the agents have it already).
+ * `path` is absolute or `~/…`; returns the project after it. Nothing is appended for a folder already there.
+ */
+export const addProjectContext = (key: string, path: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
+  const folder = checkContextFolder(key, path, env);
   const project = readProject(key, env);
   if (project.context.includes(folder)) return project;
   return appendProjectEvent(key, { type: "context.added", path: folder }, writer, env);

@@ -4,6 +4,7 @@ import { clearTurnContext, TURN_FILE_ENV, turnContextPath, writeTurnContext } fr
 import { actorFields, actorLabel, AGENT_KEY_ENV, describeSettings, originName } from "./actor.js";
 import { checkpointBody, checkpointSubject, roomLine, runSteps, stepCommitBody, stepsInSubject } from "./checkpoint-message.js";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
+import { GithubUnavailable, type PrPlan, RoomGithub } from "./github.js";
 import { embed, mediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeCompaction, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
@@ -30,6 +31,7 @@ import type {
   LimitSnapshot,
   MessageEntry,
   MessageKind,
+  PrState,
   RevertEntry,
   RoomAgent,
   RoomEvent,
@@ -93,6 +95,10 @@ export interface EngineOptions {
   opsPollMs?: number;
   /** How often to read the agents' native sessions for turns taken outside the room (0 = never). */
   nativePollMs?: number;
+  /** How often to ask git and gh about the room's GitHub repository and its open pull requests (0 = never). */
+  githubPollMs?: number;
+  /** Whether someone has the room open (the daemon's SSE streams): with no pull request open, GitHub is asked only then. */
+  viewed?: () => boolean;
   log?: (message: string) => void;
   /**
    * Issues an agent's key to the daemon (see actor.ts), put in its turns' environment as
@@ -346,6 +352,7 @@ export class RoomEngine {
   private readonly profilePath?: string;
   private readonly opsPollMs: number;
   private readonly nativePollMs: number;
+  private readonly github: RoomGithub;
   private readonly native = new Map<string, NativeTracker>();
   /** The room's last event when this engine opened it: a compaction from before is history, one after it is news even if no engine ran then. */
   private readonly compactedSince: number;
@@ -405,6 +412,18 @@ export class RoomEngine {
     this.profilePath = options.profilePath;
     this.opsPollMs = options.opsPollMs ?? 250;
     this.nativePollMs = options.nativePollMs ?? 2000;
+    this.github = new RoomGithub(
+      {
+        state: () => this.state,
+        env: this.env,
+        append: (event) => this.store.append(event),
+        note: (text, sys) => this.postSystem(text, sys, false),
+        log: (line) => this.log(line),
+        viewed: () => options.viewed?.() ?? false,
+        busy: () => this.pushBlocked(),
+      },
+      options.githubPollMs ?? 60_000,
+    );
     this.log = options.log ?? (() => {});
     this.onLimits = options.onLimits;
     this.acquireLock();
@@ -430,6 +449,7 @@ export class RoomEngine {
       this.releaseLock();
       throw error;
     }
+    this.github.start();
     if (this.nativePollMs > 0) {
       this.nativeTimer = setInterval(() => this.syncNative(), this.nativePollMs);
       this.nativeTimer.unref();
@@ -545,6 +565,7 @@ export class RoomEngine {
     if (this.opsTimer) clearInterval(this.opsTimer);
     if (this.nativeTimer) clearInterval(this.nativeTimer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.github.close();
     enginesHere.get(workspaceKey(this.state.workspace))?.delete(this);
     this.releaseLock();
   }
@@ -1576,7 +1597,7 @@ export class RoomEngine {
     return this.tidyRules!.reduce((acc, [from, to]) => acc.split(from).join(to), text);
   }
 
-  private tidyActivity({ command: _command, cwd: _cwd, detached: _detached, ...activity }: Activity): Activity {
+  private tidyActivity({ command: _command, cwd: _cwd, detached: _detached, output: _output, outputCut: _outputCut, ...activity }: Activity): Activity {
     // Runners keep labels long enough for this to see whole paths; clip afterwards.
     const tidy = (text: string, max: number) => truncate(this.tidyText(text), max);
     return {
@@ -1657,6 +1678,7 @@ export class RoomEngine {
           if (GIT_COMMIT.test(command)) this.commitCommands.set(turnId, [...(this.commitCommands.get(turnId) ?? []), command]);
         }
         this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity: this.tidyActivity(activity) });
+        this.github.command(agent, turnId, activity);
       },
       onLimits: (report: LimitReport, source: LimitSnapshot["source"]) => {
         if (!this.onLimits) return;
@@ -2175,6 +2197,41 @@ export class RoomEngine {
   // Native sessions: turns the human took in the agents' own apps
   // -------------------------------------------------------------------------
 
+  /** What the human's "Open PR" would push and open now, or why it can't. */
+  prPlan(): Promise<PrPlan> {
+    return this.github.plan();
+  }
+
+  /**
+   * The human opens a pull request for the room's branch, through gh signed in as them: only with no turn running
+   * (it could still be committing), and only if the folder is at the branch and commit, going where, they were shown
+   * (`seen`).
+   */
+  async openPr(actor: Actor, seen: Partial<PrPlan>): Promise<PrState> {
+    if (!this.byHuman(actor)) throw new GithubUnavailable("only the human opens a pull request from the room");
+    const busy = this.pushBlocked();
+    if (busy) throw new GithubUnavailable(busy);
+    return this.github.open(actor.by, seen);
+  }
+
+  /** Why the human's push can't go now: a turn running in the folder, of this room or another. */
+  private pushBlocked(): string | null {
+    if (this.running.size) return "a turn is running; open the pull request once it has ended";
+    const foreign = otherRoomTurns(this.state.workspace, this.state.id, Date.now()).filter((turn) => turn.endedAt === undefined);
+    return foreign.length ? `a turn of ${this.roomHandles(foreign).join(", ")} is running in this folder; open the pull request once it has ended` : null;
+  }
+
+  /** Someone opened the room: what GitHub says now (unless it was just asked). */
+  lookAtGithub(): void {
+    this.github.look();
+  }
+
+  /** Ask git and gh again now, open pull request or not (the timer does it every githubPollMs); resolves when their answers are in. */
+  async syncGithub(): Promise<void> {
+    await this.github.settled();
+    await this.github.poll(true);
+  }
+
   /**
    * Reads new exchanges from each idle agent's native session file and posts
    * the ones that did not come from Agoryx. Cheap when nothing changed (a stat).
@@ -2330,6 +2387,7 @@ export class RoomEngine {
     this.store.append({ type: "message.posted", message: { id, ...input } });
     const entry = this.state.messages[this.state.messages.length - 1]!;
     if (!forHumanOnly(entry)) writeRoomMessage(this.ws, this.state.id, entry);
+    this.github.message(entry);
     return entry;
   }
 

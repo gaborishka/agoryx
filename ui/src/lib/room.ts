@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import { type AgentLook, agentLook } from "../../../internal/agora/look";
 import { unquoted } from "../../../internal/agora/quote";
 import { names as nameList } from "./format";
-import type { ActorOrigin, DocRevision, MessageEntry, RoomAgent, RoomState, RoomSummary, TableItem, TableOp, TurnState } from "./types";
+import type { ActorOrigin, DocRevision, MessageEntry, PrState, RoomAgent, RoomState, RoomSummary, TableItem, TableOp, TurnState } from "./types";
 import type { OpEntry } from "./types";
 
 export type Tone = "claude" | "codex" | "human" | "sys";
@@ -117,7 +117,8 @@ export type FeedItem =
   | { key: string; seq: number; type: "step"; sha: string; by: string; steps: TableItem[] }
   | { key: string; seq: number; type: "revert"; r: RoomState["reverts"][number] }
   | { key: string; seq: number; type: "op"; op: TableOp }
-  | { key: string; seq: number; type: "doc"; r: DocRevision };
+  | { key: string; seq: number; type: "doc"; r: DocRevision }
+  | { key: string; seq: number; type: "pr"; pr: PrState };
 
 export type FeedRow =
   | FeedItem
@@ -175,6 +176,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   }
   items.push(...stepCommits.values());
   for (const r of st.reverts ?? []) items.push({ key: `v-${r.seq}`, seq: r.seq, type: "revert", r });
+  for (const pr of st.prs ?? []) items.push({ key: `pr-${pr.number}`, seq: pr.seq, type: "pr", pr });
   items.sort((a, b) => a.seq - b.seq);
 
   const name = (h: string) => nameOf(st, h);

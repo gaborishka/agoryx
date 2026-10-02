@@ -13,6 +13,7 @@ import type { TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Name, Tip } from "./bits";
 import { AgentMessage, CommitLine, DecisionLine, DocLine, Fresh, HumanMessage, PassLine, RevertLine, StandaloneOp, StepCommitLine, SystemLine, UpdateLine } from "./Messages";
+import { PrCard } from "./Github";
 import { ActivityList } from "./Trace";
 import { QuoteSelection } from "./QuoteSelection";
 
@@ -79,6 +80,7 @@ function Item({ item, model, fresh, card, clamp }: { item: FeedItem; model: Feed
   if (item.type === "revert") return <RevertLine r={item.r} />;
   if (item.type === "doc") return <DocLine r={item.r} />;
   if (item.type === "op") return <StandaloneOp op={item.op} />;
+  if (item.type === "pr") return <PrCard pr={item.pr} />;
   const m = item.m;
   const turn = m.turnId ? model.turns.get(m.turnId) : undefined;
   const ops = m.turnId ? model.opsByTurn.get(m.turnId) : undefined;

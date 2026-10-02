@@ -127,7 +127,20 @@ export type SystemNote =
   | { code: "agent.compacted"; agent: string; handle: string; key: string; at: string }
   | { code: "jev.second_look"; agent: string; readers: JevShare[] }
   | { code: "jev.meant_for"; agent: string; message: string; readers: JevShare[] }
-  | { code: "decision"; n: number; option: string; title: string; note?: string; by: string };
+  | { code: "decision"; n: number; option: string; title: string; note?: string; by: string }
+  /** A pull request's checks came to an end, as gh tells it. */
+  | { code: "pr.checks"; n: number; result: "pass" | "fail"; failed?: string[]; total: number }
+  /** A review was given on a pull request. */
+  | { code: "pr.review"; n: number; review: "approved" | "changes"; by?: string }
+  | { code: "pr.merged"; n: number; by?: string; base: string }
+  | { code: "pr.closed"; n: number }
+  | { code: "pr.reopened"; n: number }
+  /**
+   * An agent's push rewrote remote branches (`refs`, as `origin/feat`, or `feat at ../fork.git` pushed to by URL or
+   * path), as git said in its output; `rewrote: false`: git said nothing of it (a quiet push), the push forced.
+   * `failed`: and the command failed, or git printed an error — it may not have pushed at all.
+   */
+  | { code: "git.force_pushed"; agent: string; command: string; refs?: string[]; rewrote?: false; failed?: "command" | "git" };
 
 export type SystemCode = SystemNote["code"];
 
@@ -192,6 +205,10 @@ export interface Activity {
    * commands, and one Claude Code reports done without exit 0 (grep found nothing, sent to the background at its timeout).
    */
   detached?: boolean;
+  /** What a shell command that ended printed, its end only: read for the pull request `gh pr create` opened, never stored. */
+  output?: string;
+  /** It printed more than `output` holds: what it printed first is not known. */
+  outputCut?: true;
 }
 
 export type TurnStatus = "running" | "ok" | "pass" | "error" | "interrupted";
@@ -524,6 +541,17 @@ export type RoomEventBody =
    * has to settle — null where not asked.
    */
   | { type: "message.read"; messageId: string; by: "jev"; addressed: Record<string, number>; stances: Array<number | null> }
+  /** The folder's GitHub repository and branch, recorded when gh is there and they first show or change. */
+  | { type: "repo.seen"; repo: string; remote: string; branch: string | null; base?: string }
+  /** The folder no longer has a github.com remote, or gh is no longer signed in: nothing of GitHub shows. */
+  | { type: "repo.gone" }
+  /**
+   * A pull request came into the room: an agent opened it (`gh pr create`) or linked it (`via`), or the human opened
+   * it. `by`: agent id or the human's name.
+   */
+  | { type: "pr.linked"; number: number; url: string; by: string; via?: "linked"; from?: ActorOrigin; turnId?: string }
+  /** What gh says about a pull request now. */
+  | { type: "pr.status"; number: number; status: PrStatus }
   | DocRevisedEvent;
 
 /** The canonical file changed. `text` is the whole new version (omitted past MAX_DOC_TEXT). */
@@ -684,6 +712,71 @@ export interface RoomState {
   guests: Record<string, ActorOrigin>;
   /** The agent that opened this room from another room, if one did. */
   createdBy?: ActorOrigin;
+  /** The folder's GitHub repository, when gh is there and the folder has a github.com remote. */
+  repo?: RepoState;
+  /** Pull requests that came into the room, oldest first. */
+  prs?: PrState[];
+}
+
+export interface RepoState {
+  /** `owner/name`. */
+  repo: string;
+  remote: string;
+  /** null: a detached HEAD. */
+  branch: string | null;
+  /**
+   * The branch a pull request goes into: the room's worktree's base when the remote has it, else the remote's
+   * default branch (as git knows it, else as gh does), when either is known.
+   */
+  base?: string;
+  seq: number;
+}
+
+export interface PrCheck {
+  name: string;
+  result: "pass" | "fail" | "pending";
+}
+
+export interface PrStatus {
+  title: string;
+  state: "open" | "draft" | "merged" | "closed";
+  mergeable: "yes" | "conflicts" | "unknown";
+  additions: number;
+  deletions: number;
+  head: string;
+  base: string;
+  checks: PrCheck[];
+  /** The review decision: approved, changes requested, a review still required; null when none is asked. */
+  review: "approved" | "changes" | "required" | null;
+  /** Who gave the latest approving or changes-requesting review. */
+  reviewer?: string;
+  mergedBy?: string;
+}
+
+export interface PrState {
+  number: number;
+  url: string;
+  by: string;
+  /** Linked in a message of `by`'s, not opened by them. */
+  via?: "linked";
+  /** The seq it came in at. */
+  seq: number;
+  turnId?: string;
+  /** Absent until gh was asked. */
+  status?: PrStatus;
+}
+
+/** What the human's "Open PR" would push and open, shown before they confirm. */
+export interface PrPlan {
+  repo: string;
+  remote: string;
+  branch: string;
+  base: string;
+  sha: string;
+  /** Commits on the branch the remote's base does not have, when git knows the remote's base. */
+  ahead?: number;
+  /** Where git pushes, when that is not the GitHub repository (a pushurl, a pushInsteadOf), without credentials. */
+  pushUrl?: string;
 }
 
 // ---------------------------------------------------------------------------

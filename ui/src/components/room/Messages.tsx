@@ -7,7 +7,7 @@ import { OpCard, OpCards, RefChip } from "@/components/table/OpCard";
 import { Button } from "@/components/ui/button";
 import { cost, passNote, plural, secs } from "@/lib/format";
 import { t } from "@/lib/i18n";
-import { decisionOf, sysError, sysLine } from "@/lib/system";
+import { decisionOf, sysError, sysLine, sysRisk } from "@/lib/system";
 import { ink, nameOf, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { DocRevision, MessageEntry, RevertEntry, TableItem, TableOp, TurnState } from "@/lib/types";
@@ -167,13 +167,15 @@ export function SystemLine({ m }: { m: MessageEntry }) {
   // A line an agent's action wrote (it is the author): say who, by the name the UI gives it.
   const who = m.author !== "agoryx" && m.author !== room?.human ? nameOf(room, m.author) : undefined;
   const err = sysError(m);
-  const Icon = err ? TriangleAlertIcon : InfoIcon;
+  const risk = !err && sysRisk(m);
+  const Icon = err || risk ? TriangleAlertIcon : InfoIcon;
   return (
     <div
       className={cn(
         "mx-auto flex max-w-[92%] items-start gap-2 rounded-xl px-3 py-2 text-small",
-        err ? "bg-destructive-soft text-destructive" : "text-muted-foreground",
+        err ? "bg-destructive-soft text-destructive" : risk ? "bg-amber-soft text-amber-ink" : "text-muted-foreground",
       )}
+      data-risk={risk || undefined}
     >
       <Icon className="mt-0.5 size-4 shrink-0" />
       <Markdown text={sysLine(m, who)} className="text-small leading-relaxed" />

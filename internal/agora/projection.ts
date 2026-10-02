@@ -43,6 +43,7 @@ const eventOrigin = (event: RoomEvent): ActorOrigin | undefined => {
     case "room.renamed":
     case "agent.changed":
     case "doc.revised":
+    case "pr.linked":
       return event.from;
     default:
       return undefined;
@@ -252,6 +253,22 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         removed: event.removed,
       });
       return;
+    case "repo.seen":
+      state.repo = { repo: event.repo, remote: event.remote, branch: event.branch, ...(event.base ? { base: event.base } : {}), seq: event.seq };
+      return;
+    case "repo.gone":
+      delete state.repo;
+      return;
+    case "pr.linked":
+      if (!(state.prs ??= []).some((pr) => pr.number === event.number)) {
+        state.prs.push({ number: event.number, url: event.url, by: event.by, ...(event.via ? { via: event.via } : {}), seq: event.seq, ...(event.turnId ? { turnId: event.turnId } : {}) });
+      }
+      return;
+    case "pr.status": {
+      const pr = state.prs?.find((entry) => entry.number === event.number);
+      if (pr) pr.status = event.status;
+      return;
+    }
   }
 };
 

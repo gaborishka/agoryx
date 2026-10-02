@@ -13,6 +13,7 @@ import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, origin
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { type AgentPatch, DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch, roomWorkspaceDiff } from "./engine.js";
 import { planRevert, RevertError, type RevertRequest } from "./revert.js";
+import { GhError, GithubUnavailable } from "./github.js";
 import { planStepCommit, StepCommitError } from "./step-commit.js";
 import { deviceLabel, DeviceRegistry, formatCode, isDeviceToken, PairingError, type DeviceInfo } from "./devices.js";
 import { lanInterfaces, normalizeHosts, writeExposure, type Exposure } from "./exposure.js";
@@ -704,6 +705,8 @@ export class AgoraDaemon {
         runners: this.runners,
         log: (message) => this.log(`[${fresh.id}] ${message}`),
         onLimits: (snapshot) => this.onLimits(snapshot),
+        // GitHub is asked about a room nobody has open only while a pull request of it is open.
+        viewed: () => handle.followers > 0,
         ...(this.options.opsPollMs ? { opsPollMs: this.options.opsPollMs } : {}),
       });
       // Deliver what the followed store has not read yet — including what the engine just appended on
@@ -1382,6 +1385,18 @@ export class AgoraDaemon {
       return;
     }
 
+    if (action === "pr" && method === "GET") {
+      // What "Open PR" would push and open, for the human to confirm. Nothing is pushed.
+      try {
+        sendJson(res, 200, await this.engineFor(handle).prPlan());
+      } catch (error) {
+        if (error instanceof GithubUnavailable) throw new HttpError(409, error.message);
+        if (error instanceof GhError) throw new HttpError(502, error.message);
+        throw error;
+      }
+      return;
+    }
+
     if (action === "step-commit" && method === "GET") {
       // What committing a step would take, for the human to choose its files. Nothing is touched.
       try {
@@ -1518,6 +1533,21 @@ export class AgoraDaemon {
         } catch (error) {
           if (!(error instanceof StepCommitError)) throw error;
           sendJson(res, error.status, { error: error.message });
+        }
+        return;
+      }
+      case "pr": {
+        // The human's alone: gh pushes and opens the pull request as them, from the branch and commit they were shown.
+        if (caller.agent) throw new HttpError(403, "only the human opens a pull request from the room; an agent runs gh itself");
+        try {
+          // What the human was shown: the branch and commit, and where it goes.
+          const seen = Object.fromEntries(["repo", "remote", "branch", "base", "sha", "pushUrl"].flatMap((key) => (typeof body[key] === "string" ? [[key, body[key]]] : [])));
+          const pr = await engine.openPr(actor, seen);
+          sendJson(res, 201, { pr });
+        } catch (error) {
+          if (error instanceof GithubUnavailable) throw new HttpError(409, error.message);
+          if (error instanceof GhError) throw new HttpError(502, error.message);
+          throw error;
         }
         return;
       }
@@ -1766,6 +1796,7 @@ export class AgoraDaemon {
       this.deviceStreams.set(device.id, mine);
     }
     handle.followers += 1;
+    handle.engine?.lookAtGithub();
     if (!handle.engine && !handle.followTimer) {
       // Another process drives this room: follow its event log.
       handle.followTimer = setInterval(() => {

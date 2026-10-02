@@ -242,6 +242,9 @@ class ClaudeTurn {
           status: failed ? "fail" : "ok",
           // A browser error can quote a URL's query or a script's exception: its step stays value-free.
           ...(failed && output && pending.kind !== "browser" ? { detail: truncate(output, 240) } : {}),
+          // What a command printed, its end, failed or not: the engine reads it (the pull request gh opened, a force-push
+          // before a later step failed), never keeps it.
+          ...(pending.kind === "command" ? { output: output.slice(-2000), ...(output.length > 2000 ? { outputCut: true as const } : {}) } : {}),
         });
         this.pendingTools.delete(id!);
       }

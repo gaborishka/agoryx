@@ -371,6 +371,9 @@ type Patch = {
   commits?: Snapshot["state"]["commits"];
   reverts?: Snapshot["state"]["reverts"];
   docRevisions?: Snapshot["state"]["docRevisions"];
+  /** null: the room's folder no longer has a GitHub remote, or gh is signed out. */
+  repo?: Snapshot["state"]["repo"] | null;
+  prs?: Snapshot["state"]["prs"];
   guests?: Snapshot["state"]["guests"];
   agents?: Snapshot["state"]["agents"];
   former?: Snapshot["state"]["former"];
@@ -395,6 +398,9 @@ const applyPatch = (event: RoomEvent, patch: Patch) => {
   if (patch.commits) st.commits = patch.commits;
   if (patch.reverts) st.reverts = patch.reverts;
   if (patch.docRevisions) st.docRevisions = patch.docRevisions;
+  if (patch.repo === null) delete st.repo;
+  else if (patch.repo) st.repo = patch.repo;
+  if (patch.prs) st.prs = patch.prs;
   if (patch.guests) st.guests = patch.guests;
   if (patch.agents) st.agents = patch.agents;
   if (patch.former) st.former = patch.former;

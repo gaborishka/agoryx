@@ -156,7 +156,7 @@ type Line = { text: string; prose: boolean; from: number; joins: boolean; alone:
  * code span stays within its paragraph, heading or table cell, as the page reads them, and may run from a
  * quote into a line markdown continues it with.
  */
-const prose = (text: string): string => {
+export const prose = (text: string): string => {
   // CR, LF and CRLF each end a line, as they do for the page.
   const source = text.split(/\r\n?|\n/);
   const lines: Line[] = [];

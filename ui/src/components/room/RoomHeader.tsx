@@ -36,6 +36,7 @@ import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Tip } from "./bits";
+import { OpenPr, PrChip } from "./Github";
 import { t } from "@/lib/i18n";
 
 function Presence({ a }: { a: RoomAgent }) {
@@ -259,7 +260,8 @@ function useBranch(roomId: string, turns: number): string | null {
 function Place() {
   const room = useStore((s) => s.snap?.state);
   const openFile = useStore((s) => s.openFile);
-  const branch = useBranch(room?.id ?? "", room?.turns.length ?? 0);
+  const asked = useBranch(room?.id ?? "", room?.turns.length ?? 0);
+  const branch = room?.repo ? (room.repo.branch ?? asked) : asked;
   if (!room) return null;
   const wt = room.worktree;
   const folder = wt ? wt.source : room.workspace;
@@ -267,28 +269,31 @@ function Place() {
     ? t.worktree.place(wt.branch, wt.base, room.workspace, room.agents.map((a) => a.label), wt.source)
     : `Working folder: ${room.workspace}${branch ? `, branch ${branch}` : ""}`;
   return (
-    <Tip tip={tip}>
-      <button
-        type="button"
-        onClick={() => openFile(null)}
-        className="flex w-fit max-w-full min-w-0 items-center gap-1.5 text-micro text-faint hover:text-muted-foreground"
-      >
-        <span className="truncate font-mono">
-          {wt ? baseName(folder) : shortPath(folder)}
-        </span>
-        {branch ? (
-          <span className="flex min-w-0 items-center gap-1">
-            <GitBranchIcon className="size-3 shrink-0" />
-            <span className="max-w-[180px] truncate font-mono">{branch}</span>
+    <div className="flex min-w-0 items-center gap-1.5">
+      <Tip tip={tip}>
+        <button
+          type="button"
+          onClick={() => openFile(null)}
+          className="flex w-fit max-w-full min-w-0 items-center gap-1.5 text-micro text-faint hover:text-muted-foreground"
+        >
+          <span className="truncate font-mono">
+            {wt ? baseName(folder) : shortPath(folder)}
           </span>
-        ) : null}
-        {wt ? (
-          <span className="shrink-0 rounded bg-secondary px-1 text-micro font-medium text-secondary-foreground">
-            {t.worktree.label}
-          </span>
-        ) : null}
-      </button>
-    </Tip>
+          {branch ? (
+            <span className="flex min-w-0 items-center gap-1">
+              <GitBranchIcon className="size-3 shrink-0" />
+              <span className="max-w-[180px] truncate font-mono">{branch}</span>
+            </span>
+          ) : null}
+          {wt ? (
+            <span className="shrink-0 rounded bg-secondary px-1 text-micro font-medium text-secondary-foreground">
+              {t.worktree.label}
+            </span>
+          ) : null}
+        </button>
+      </Tip>
+      <PrChip />
+    </div>
   );
 }
 
@@ -372,6 +377,7 @@ export function RoomHeader() {
           <Presence key={a.id} a={a} />
         ))}
       </div>
+      <OpenPr />
       <span className="mx-0.5 hidden h-5 w-px bg-border @min-[36rem]:block" />
       <TerminalToggle />
       <PanelToggle />

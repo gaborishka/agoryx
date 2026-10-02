@@ -22,7 +22,12 @@ export const passNote = (text: string): string | null => {
 };
 
 /** Lines the room shows the human and no agent reads: not in a delta, not in `read new`. */
-export const forHumanOnly = (message: Pick<RoomMessage, "sys">): boolean => message.sys?.code === "agent.compacted";
+// What gh said of a pull request (checks, review, merged, closed, reopened) is the human's too, whatever comes next.
+const HUMAN_ONLY = new Set(["agent.compacted", "git.force_pushed"]);
+export const forHumanOnly = (message: Pick<RoomMessage, "sys">): boolean => {
+  const code = message.sys?.code ?? "";
+  return HUMAN_ONLY.has(code) || code.startsWith("pr.");
+};
 
 const clock = (iso: string): string => {
   const date = new Date(iso);

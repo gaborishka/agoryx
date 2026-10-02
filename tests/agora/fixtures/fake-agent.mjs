@@ -7,9 +7,9 @@
 //   { agent, id, match, reply, table: [[...argv]], run: [[command, ...argv]] (outputs logged as runOutputs),
 //     write: {path, content, via?: "shell"} (or a list), earlyWrite: {path, content} (with the edit tool, before sleepMs),
 //     command: "shown as the tool call; {cwd} and {cli} expand" (commands: [...], several in order; one may be
-//     {command, fail, background, parent, together, result, hang}: it exits 1 / claude runs it in the background /
+//     {command, fail, background, parent, together, result, hang, output}: it exits 1 / claude runs it in the background /
 //     in a subagent / asks for it in the same message as the command before it / its tool_use_result has these fields /
-//     it never ends, and the turn waits on it until it is stopped),
+//     it never ends, and the turn waits on it until it is stopped / what it printed ({run0}, {run1}… expand to `run`'s outputs)),
 //     between: ["command", ...] (live claude: commands the model runs after the turn ended, as when a background task wakes it),
 //     workdir (codex: the folder its commands name; {cwd} expands),
 //     sleepMs, afterTableMs (a pause after the table ops),
@@ -298,7 +298,8 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
 
   const commands = (rule?.commands ?? [rule?.command ?? "ls -a"])
     .map((command) => (typeof command === "string" ? { command } : command))
-    .map((step) => ({ ...step, command: step.command.replaceAll("{cwd}", process.cwd()).replaceAll("{cli}", process.env.AGORYX_CLI ?? "agoryx") }));
+    .map((step) => ({ ...step, command: step.command.replaceAll("{cwd}", process.cwd()).replaceAll("{cli}", process.env.AGORYX_CLI ?? "agoryx") }))
+    .map((step) => (step.output === undefined ? step : { ...step, output: step.output.replace(/\{run(\d+)\}/g, (_, i) => runOutputs[Number(i)] ?? "") }));
   if (kind === "claude") {
     // Commands asked for in one message: their calls come together, then each one's result.
     const messages = [];
@@ -311,13 +312,13 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
       const parent = calls[0].parent ?? null;
       const content = calls.map(({ id, command, background }) => ({ type: "tool_use", id, name: "Bash", input: { command, ...(background ? { run_in_background: true } : {}) } }));
       out({ type: "assistant", session_id: sessionId, parent_tool_use_id: parent, message: { content } });
-      for (const { id, fail, result, hang } of calls) {
+      for (const { id, fail, result, hang, output } of calls) {
         // It never ends: the calls after it in its message never start.
         if (hang) {
           setInterval(() => {}, 60_000);
           await new Promise(() => {});
         }
-        out({ type: "user", session_id: sessionId, parent_tool_use_id: parent, message: { content: [{ type: "tool_result", tool_use_id: id, content: fail ? "Exit code 1" : "ok", is_error: Boolean(fail) }] }, ...(result ? { tool_use_result: { stdout: "", stderr: "", interrupted: false, ...result } } : {}) });
+        out({ type: "user", session_id: sessionId, parent_tool_use_id: parent, message: { content: [{ type: "tool_result", tool_use_id: id, content: fail ? "Exit code 1" : (output ?? "ok"), is_error: Boolean(fail) }] }, ...(result ? { tool_use_result: { stdout: "", stderr: "", interrupted: false, ...result } } : {}) });
       }
     }
     if (process.env.FAKE_RATE_LIMITS) out(claudeRateLimitEvent(sessionId));
@@ -338,11 +339,11 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
     }
   } else {
     const workdir = rule?.workdir ? { cwd: rule.workdir.replaceAll("{cwd}", process.cwd()) } : {};
-    commands.forEach(({ command, fail }, i) => {
+    commands.forEach(({ command, fail, output }, i) => {
       const id = i ? `item_1_${i}` : "item_1";
       const wrapped = `/bin/zsh -lc '${command.replace(/'/g, "'\\''")}'`;
       out({ type: "item.started", item: { id, type: "command_execution", command: wrapped, ...workdir, status: "in_progress" } });
-      out({ type: "item.completed", item: { id, type: "command_execution", command: wrapped, ...workdir, aggregated_output: ".\n", exit_code: fail ? 1 : 0, status: fail ? "failed" : "completed" } });
+      out({ type: "item.completed", item: { id, type: "command_execution", command: wrapped, ...workdir, aggregated_output: output === undefined ? ".\n" : `${output}\n`, exit_code: fail ? 1 : 0, status: fail ? "failed" : "completed" } });
     });
     out({ type: "item.completed", item: { id: "item_2", type: "agent_message", text: reply } });
     out({ type: "turn.completed", usage: { input_tokens: 12, cached_input_tokens: 2, output_tokens: 6 } });

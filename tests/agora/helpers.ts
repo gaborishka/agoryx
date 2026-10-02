@@ -82,6 +82,9 @@ export const createTestRoom = (options: {
   createdWorkspace?: boolean;
   /** Where the agents' limits go (see EngineOptions.onLimits). */
   onLimits?: (snapshot: import("../../internal/agora/types.js").LimitSnapshot) => void;
+  /** Whether someone has the room open, and how often GitHub is asked again (see EngineOptions). */
+  viewed?: () => boolean;
+  githubPollMs?: number;
 } = {}): TestRoom => {
   const home = mkdtempSync(join(tmpdir(), "agora-test-"));
   const roomsRoot = join(home, "rooms");
@@ -125,6 +128,8 @@ export const createTestRoom = (options: {
     ...(options.secondLook ? { secondLook: options.secondLook } : {}),
     ...(options.readMessage ? { readMessage: options.readMessage } : {}),
     ...(options.onLimits ? { onLimits: options.onLimits } : {}),
+    ...(options.viewed ? { viewed: options.viewed } : {}),
+    ...(options.githubPollMs !== undefined ? { githubPollMs: options.githubPollMs } : {}),
     opsPollMs: 50,
     nativePollMs: 50,
   });

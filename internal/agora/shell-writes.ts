@@ -361,8 +361,11 @@ const heredocs = (command: string): Heredoc[] => {
   return found;
 };
 
-/** Words of a shell command, quotes removed, with the operators that separate commands and redirections as their own words. */
-const tokenize = (text: string): string[] => {
+/**
+ * Words of a shell command, quotes removed, with the operators that separate commands and redirections as their own words.
+ * `fds`: a redirection keeps the file descriptor written before it (`2>`, `2>&`); otherwise it is dropped.
+ */
+const tokenize = (text: string, fds = false): string[] => {
   const tokens: string[] = [];
   let current = "";
   let open = false;
@@ -396,13 +399,15 @@ const tokenize = (text: string): string[] => {
     } else if (/\s/.test(char)) {
       flush();
     } else if (";|&<>()".includes(char)) {
-      // A digit right before > is its file descriptor (2>), not a word.
-      if (char === ">" && /^\d$/.test(current) && open) {
+      // A digit right before > is its file descriptor (2>), not a word; not the one a dup names (`2>&1>/dev/null`).
+      let fd = "";
+      if (char === ">" && /^\d$/.test(current) && open && !/[<>]&$/.test(tokens.at(-1) ?? "")) {
+        fd = fds ? current : "";
         current = "";
         open = false;
       }
       flush();
-      let op = char;
+      let op = fd + char;
       // A subshell's ( and ) stand alone: `); next` is a close, then a separator.
       if (char !== "(" && char !== ")") while (i + 1 < text.length && ";|&<>".includes(text[i + 1]!)) op += text[++i];
       tokens.push(op);
@@ -416,7 +421,9 @@ const tokenize = (text: string): string[] => {
 };
 
 const isOperator = (token: string) => /^[;|&<>()]+$/.test(token);
-const SEPARATORS = new Set([";", "&&", "||", "|", "&", "(", ")", "|&"]);
+/** An operator, or a redirection with the file descriptor tokenize kept for it (`2>`, `2>&`). */
+const isStepOperator = (token: string) => isOperator(token) || /^\d[<>][;|&<>]*$/.test(token);
+const SEPARATORS = new Set([";", "&&", "||", "|", "&", "(", ")", "|&", ";;", ";&", ";;&"]);
 /** Words before a command that are not it: `then cd ui`, `if cd ui`, `! sed -i …`. */
 const KEYWORDS = new Set(["then", "do", "else", "elif", "if", "while", "until", "{", "!", "time"]);
 
@@ -527,6 +534,224 @@ const cdsIn = (command: string, docs: Heredoc[], cwd: ShellCwd, roots: readonly 
 /** How much of a command is read: a longer one's rest is not. */
 const MAX_COMMAND = 100_000;
 
+/** A command as the shell reads it: a heredoc's body is not more shell (a script reads it), its opener's line is. */
+const shellText = (command: string, docs: Heredoc[]): string => {
+  const cuts = docs.flatMap(({ opener, cut }) => [{ ...opener, with: " " }, { ...cut, with: "" }]).sort((a, b) => a.from - b.from);
+  let shell = "";
+  let from = 0;
+  for (const cut of cuts) {
+    if (cut.from < from) continue;
+    shell += command.slice(from, cut.from) + cut.with;
+    from = cut.to;
+  }
+  return shell + command.slice(from);
+};
+
+/** Words before a command that only run it: `sudo git push`, `env X=1 gh pr create`, `nohup gh pr create`. */
+const WRAPPERS = ["sudo", "command", "exec", "env", "builtin", "nohup", "time"];
+
+/** Past keywords, variable assignments and wrappers (`time -p`) to the command itself: where its name is. */
+const commandStart = (words: readonly string[]): number => {
+  let start = 0;
+  while (start < words.length) {
+    const word = words[start]!;
+    if (KEYWORDS.has(word) || /^[A-Za-z_]\w*=/.test(word) || WRAPPERS.includes(word)) start += 1;
+    else if (word === "-p" && words[start - 1] === "time") start += 1;
+    else break;
+  }
+  return start;
+};
+
+/** A shell that runs its `-c` argument as a command: `bash -c "gh pr create"`, `zsh -lc '…'`. */
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+
+/**
+ * The commands a shell is given with `-c`: its first operand, as the shell reads its options (`bash -euo pipefail -c
+ * '…'`). After a script's name the words are the script's own: `bash ./x.sh -c` runs no `-c` string.
+ */
+const shellString = (words: readonly string[]): string | undefined => {
+  let given = false;
+  for (let i = 1; i < words.length; i += 1) {
+    const word = words[i]!;
+    if (word === "--" || word === "-") return given ? words[i + 1] : undefined;
+    if (/^[-+][A-Za-z]+$/.test(word)) {
+      if (word.startsWith("-") && word.includes("c")) given = true;
+      // `-o pipefail`: the option's name is the next word.
+      if (/[oO]$/.test(word)) i += 1;
+      continue;
+    }
+    // `--rcfile ~/.rc`: the file is the option's.
+    if (word === "--rcfile" || word === "--init-file") i += 1;
+    if (word.startsWith("--")) continue;
+    return given ? word : undefined;
+  }
+  return undefined;
+};
+
+/**
+ * The commands a shell command runs, each as its words with quotes removed: past keywords, variable assignments and
+ * wrappers, without redirections; a shell's `-c` string is read as the commands it runs. Words in quotes, in comments
+ * or in a heredoc's body are no command of their own: `echo 'gh pr create'` is `echo`, `git commit -m 'git push -f'`
+ * is `git commit`.
+ */
+export function shellCommands(command: string): string[][] {
+  return shellSteps(command).map((step) => step.words);
+}
+
+/** Where a command's stdout or stderr goes, as the shell around it has them: its stdout ("1"), its stderr ("2"), or away. */
+type Fd = "1" | "2" | "away";
+type Fds = Record<string, Fd>;
+const shown = (): Fds => ({ "1": "1", "2": "2" });
+
+/** A redirection on a table of where a command's descriptors go: `2>&1`, `>&2`, `2>&-`, `2>/dev/null`, `&> log`, `>& log`. */
+const redirect = (fds: Fds, op: string, to: string): void => {
+  const dup = /^(\d?)>&$/.exec(op);
+  if (dup && (dup[1] || /^(?:\d+|-)$/.test(to))) {
+    // `2>&1`: stderr goes where stdout goes now; `2>&-` closes it; a descriptor not open is no output either.
+    fds[dup[1] || "1"] = to === "-" ? "away" : (fds[String(Number(to))] ?? "away");
+    return;
+  }
+  const into = /^(\d?)(>|>>|>\||&>|&>>|>&)$/.exec(op);
+  if (!into) return;
+  // `>/dev/stderr`, `>/dev/fd/2`: to that descriptor, not away (one not open is no output).
+  const number = /^\/dev\/fd\/(\d+)$/.exec(to)?.[1];
+  const fd = to === "/dev/stdout" ? "1" : to === "/dev/stderr" ? "2" : number === undefined ? undefined : String(Number(number));
+  const where: Fd = fd === undefined ? "away" : (fds[fd] ?? "away");
+  if (into[2]!.includes("&")) fds["1"] = fds["2"] = where;
+  else fds[into[1] || "1"] = where;
+};
+
+/** A table as seen from outside its subshell or `sh -c`: what goes to the subshell's stdout goes where the subshell's does. */
+const through = (inner: Fds, outer: Fds): Fds =>
+  Object.fromEntries(Object.entries(inner).map(([fd, where]) => [fd, where === "away" ? "away" : (outer[where] ?? "away")]));
+
+/**
+ * The simple commands of a shell command, in order: their words, the operator that joins each to the one before (`&&`,
+ * `||`, `|`, `;`; none for the first; a `-c` string's first command takes its shell's), and `hushed` when its stderr,
+ * where git push prints what it did, goes away (`2>/dev/null`, `&> log`, `> log 2>&1`, a subshell's or `sh -c`'s).
+ */
+export function shellSteps(command: string): Array<{ words: string[]; after?: string; hushed?: true; negated?: true }> {
+  return steps(command, 0).map(({ words, after, fds, negated }) => ({
+    words,
+    ...(after ? { after } : {}),
+    ...(fds["2"] === "away" ? { hushed: true as const } : {}),
+    ...(negated ? { negated } : {}),
+  }));
+}
+
+function steps(command: string, depth: number): Array<{ words: string[]; after?: string; fds: Fds; negated?: true }> {
+  if (command.length > MAX_COMMAND) command = command.slice(0, MAX_COMMAND);
+  const tokens = tokenize(shellText(command, heredocs(command)), true);
+  const commands: Array<{ words: string[]; after?: string; fds: Fds }> = [{ words: [], fds: shown() }];
+  // Each subshell: where its commands begin and end, the one it is in, and the redirections after its `)`, put on its
+  // commands once all are read (at each `)`, they would be read again for every subshell around them).
+  const subshells: Array<{ from: number; to: number; parent: number; fds: Fds }> = [];
+  // The open ones, innermost last: a subshell, a braced group or a `case` (to its `esac`; its patterns end in a `)` of
+  // their own, and it takes the redirections after it as a subshell does); the order they closed in; the one just
+  // closed, while the redirections after it come.
+  const open: Array<{ kind: "(" | "{" | "case"; id: number; pattern?: boolean }> = [];
+  const closing: number[] = [];
+  let closed: number | undefined;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const step = commands.at(-1)!;
+    const inner = open.at(-1);
+    // Where a command starts: no word yet, or keywords only (`then {`, `do {`, `! {`).
+    const starts = step.words.every((word) => KEYWORDS.has(word));
+    // A braced group (`{` where a command starts, to its `}`) takes the redirections after it as a subshell does.
+    const token = starts && (tokens[i] === "{" || (tokens[i] === "}" && inner?.kind === "{")) ? (tokens[i] === "{" ? "(" : ")") : tokens[i]!;
+    if (inner?.kind === "case") {
+      // `case $x in a) …;; (b) …;; esac`: after `in` and each `;;` comes a pattern, up to its `)`.
+      if (token === "in" && step.words.length === step.words.lastIndexOf("case") + 2) inner.pattern = true;
+      else if (token === ";;" || token === ";&" || token === ";;&") inner.pattern = true;
+      else if (inner.pattern && tokens[i] === "(" && !step.words.length) continue;
+      else if (inner.pattern && tokens[i] === ")") {
+        inner.pattern = false;
+        closed = undefined;
+        if (step.words.length) commands.push({ words: [], after: ")", fds: shown() });
+        continue;
+      } else if (token === "esac" && starts) {
+        open.pop();
+        if (step.words.length) commands.push({ words: [], fds: shown() });
+        subshells[inner.id]!.to = commands.length - 1;
+        closing.push(inner.id);
+        closed = inner.id;
+        continue;
+      }
+    }
+    if (token === "case" && starts) {
+      subshells.push({ from: commands.length - 1, to: -1, parent: inner?.id ?? -1, fds: shown() });
+      open.push({ kind: "case", id: subshells.length - 1, pattern: false });
+    }
+    if (SEPARATORS.has(token)) {
+      closed = undefined;
+      // `a || (b)`: b is joined by the `||`, not by the parenthesis; `a ||` and a new line: still the `||`; `(a)` and a
+      // new line: the new line.
+      if (step.words.length) commands.push({ words: [], after: token, fds: shown() });
+      else {
+        if (token !== "(" && token !== ")" && !(token === ";" && step.after && step.after !== ")")) step.after = token;
+        // A redirection with no command (`> log;`) is no later command's.
+        step.fds = shown();
+      }
+      if (token === "(") {
+        subshells.push({ from: commands.length - 1, to: -1, parent: inner?.id ?? -1, fds: shown() });
+        open.push({ kind: tokens[i] === "{" ? "{" : "(", id: subshells.length - 1 });
+      }
+      // A `)` closes a subshell, a `}` its braced group (a `)` with a group or a `case` open closes neither).
+      const id = token === ")" && inner?.kind === (tokens[i] === "}" ? "{" : "(") ? (open.pop(), inner!.id) : undefined;
+      if (id !== undefined && subshells[id]!.from < commands.length - 1) {
+        subshells[id]!.to = commands.length - 1;
+        closing.push(id);
+        closed = id;
+      }
+    } else if (isStepOperator(token)) {
+      // A redirection's file is no word of the command; after a subshell's `)`, it is the subshell's.
+      const to = tokens[i + 1];
+      if (/^\d?(?:<|>|>>|>\||&>|&>>|<<<|>&|<&)$/.test(token) && to !== undefined && !isStepOperator(to)) {
+        i += 1;
+        redirect(closed !== undefined && !step.words.length ? subshells[closed]!.fds : step.fds, token, to);
+      }
+    } else {
+      closed = undefined;
+      step.words.push(token);
+    }
+  }
+  // Where a subshell's commands write, through every subshell around it (an outer one comes before the ones in it).
+  const outward = subshells.map((one) => one.fds);
+  subshells.forEach((one, id) => {
+    if (one.parent >= 0) outward[id] = through(one.fds, outward[one.parent]!);
+  });
+  // Each command's innermost subshell (those inside one closed before it, and are passed over in a step).
+  const innermost: Array<number | undefined> = [];
+  const past = new Map<number, number>();
+  for (const id of closing) {
+    const { from, to } = subshells[id]!;
+    for (let at = from; at < to; ) {
+      const end = past.get(at);
+      if (end !== undefined) at = end;
+      else innermost[at++] = id;
+    }
+    past.set(from, to);
+  }
+  innermost.forEach((id, at) => {
+    if (id !== undefined) commands[at]!.fds = through(commands[at]!.fds, outward[id]!);
+  });
+  return commands
+    .map((step) => {
+      const start = commandStart(step.words);
+      return { ...step, words: step.words.slice(start), ...(step.words.slice(0, start).includes("!") ? { negated: true as const } : {}) };
+    })
+    .filter((step) => step.words.length > 0)
+    .flatMap((step) => {
+      const string = SHELLS.has(step.words[0]!.split("/").at(-1)!) ? shellString(step.words) : undefined;
+      if (string === undefined || depth >= 3) return [step];
+      // `sh -c '…' 2>/dev/null`: what runs in it writes where the shell does.
+      return steps(string, depth + 1).map((inner, at) => {
+        const after = at === 0 ? step.after : inner.after;
+        return { words: inner.words, ...(after ? { after } : {}), fds: through(inner.fds, step.fds), ...(inner.negated ? { negated: inner.negated } : {}) };
+      });
+    });
+}
+
 /**
  * Paths a shell command names as written, relative to the workspace: resolved against where the command ran
  * (`cwd`, the workspace root by default) and any `cd` before them, so `cd sub && echo > b.txt` is `sub/b.txt`.
@@ -568,17 +793,7 @@ export function shellWrites(command: string, cwd: ShellCwd = "", roots: readonly
   for (const pattern of INTERPRETER_WRITES) for (const match of script.matchAll(pattern)) add(match[2], cwdAt(match.index!));
   for (const { path, at } of writesThroughVariables(script)) add(path, cwdAt(at));
 
-  // A heredoc's body is not more shell (read above for a script's own writes); its opener's line is.
-  const cuts = docs.flatMap(({ opener, cut }) => [{ ...opener, with: " " }, { ...cut, with: "" }]).sort((a, b) => a.from - b.from);
-  let shell = "";
-  let from = 0;
-  for (const cut of cuts) {
-    if (cut.from < from) continue;
-    shell += command.slice(from, cut.from) + cut.with;
-    from = cut.to;
-  }
-  shell += command.slice(from);
-  const tokens = tokenize(shell);
+  const tokens = tokenize(shellText(command, docs));
   // Commands in order, each with the files it redirects into; "(" and ")" open and close a subshell, whose `cd` ends with it.
   type Segment = { words: string[]; redirects: string[]; paren?: "(" | ")" };
   const segments: Segment[] = [{ words: [], redirects: [] }];
@@ -613,14 +828,7 @@ export function shellWrites(command: string, cwd: ShellCwd = "", roots: readonly
     if (paren === "(") outer.push(cwd);
     if (paren === ")" && outer.length) cwd = outer.pop()!;
     for (const path of redirects) add(path, cwd);
-    // Past keywords, env assignments and wrappers to the command itself.
-    let start = 0;
-    while (
-      start < words.length &&
-      (KEYWORDS.has(words[start]!) || /^[A-Za-z_]\w*=/.test(words[start]!) || ["sudo", "command", "exec", "env", "builtin"].includes(words[start]!))
-    )
-      start += 1;
-    const [name, ...args] = words.slice(start);
+    const [name, ...args] = words.slice(commandStart(words));
     if (!name) continue;
     const operands = args.filter((arg) => !arg.startsWith("-"));
     switch (name.split("/").at(-1)) {

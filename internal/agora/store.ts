@@ -70,6 +70,9 @@ export interface RoomSummary {
 
 const EVENTS_FILE = "events.jsonl";
 
+/** Events that are no activity of the room's: a room is as recent as its last other event (see summary). */
+const QUIET_EVENTS = new Set<RoomEvent["type"]>(["repo.seen", "repo.gone", "pr.status"]);
+
 const UK_TRANSLIT: Record<string, string> = {
   а: "a", б: "b", в: "v", г: "h", ґ: "g", д: "d", е: "e", є: "ie", ж: "zh", з: "z", и: "y", і: "i",
   ї: "i", й: "i", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u",
@@ -226,7 +229,13 @@ export class RoomStore {
 
   summary(): RoomSummary {
     const last = [...this.state.messages].reverse().find((message) => message.kind !== "pass" && message.kind !== "system");
-    const lastEvent = this.events[this.events.length - 1]!;
+    // What git and gh said of the folder's GitHub repository is no activity of the room's.
+    let lastEvent = this.events[this.events.length - 1]!;
+    for (let i = this.events.length - 1; i >= 0; i -= 1) {
+      if (QUIET_EVENTS.has(this.events[i]!.type)) continue;
+      lastEvent = this.events[i]!;
+      break;
+    }
     const lastBy = last ? (this.state.agents.find((agent) => agent.id === last.author) ?? this.state.former?.find((agent) => agent.id === last.author)) : undefined;
     const look = lastBy ? agentLook(this.state.agents, lastBy.id) : undefined;
     const lastGuest = last && !lastBy ? this.state.guests?.[last.author] : undefined;

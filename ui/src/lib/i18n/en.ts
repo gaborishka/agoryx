@@ -124,6 +124,18 @@ const sys: Say = {
     return `Jev: ${n.message} from ${n.agent} is meant for ${who} (${shares(n.readers)}), even without an @ — ${who} ${n.readers.length === 1 ? "replies" : "reply"}.`;
   },
   decision: (n) => `Decision #${n.n}: ${n.option} “${n.title}”${n.note ? ` — ${n.note}` : ""} (decided by ${n.by})`,
+  "pr.checks": (n) =>
+    n.result === "pass"
+      ? `PR #${n.n}: ${n.total === 1 ? "the check" : `all ${n.total} checks`} passed.`
+      : `PR #${n.n}: ${n.failed?.length ?? 0} of ${plural(n.total, "check", "checks")} failed${n.failed?.length ? ` — ${n.failed.join(", ")}` : ""}.`,
+  "pr.review": (n) => (n.review === "approved" ? `PR #${n.n} approved${n.by ? ` by ${n.by}` : ""}.` : `PR #${n.n}: changes requested${n.by ? ` by ${n.by}` : ""}.`),
+  "pr.merged": (n) => `PR #${n.n} merged into \`${n.base}\`${n.by ? ` by ${n.by}` : ""}.`,
+  "pr.closed": (n) => `PR #${n.n} closed without merging.`,
+  "pr.reopened": (n) => `PR #${n.n} reopened.`,
+  "git.force_pushed": (n) =>
+    n.rewrote === false
+      ? `${n.agent} pushed with force${n.refs?.length ? ` to ${n.refs.map((ref) => `\`${ref}\``).join(", ")}` : " to its remote"}${n.failed ? `, or tried to (${n.failed === "command" ? "the command failed" : "git printed an error"}; git did not say whether it rewrote history)` : " (git did not say whether it rewrote history)"}: \`${n.command}\``
+      : `${n.agent} force-pushed, rewriting the history of ${n.refs?.length ? n.refs.map((ref) => `\`${ref}\``).join(", ") : "the remote branch"}: \`${n.command}\``,
 };
 
 export const en = {

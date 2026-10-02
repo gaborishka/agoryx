@@ -38,6 +38,7 @@ import type { AgentRunner } from "./runners/types.js";
 import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js";
 import { workspaceAt } from "./room-mode.js";
 import { changeRoomMode, createRoom, defaultHumanName, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
+import { threadReport } from "./threads.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
@@ -768,6 +769,22 @@ export class AgoraDaemon {
     } else if (event.type === "settings.changed" && event.patch.network === false) {
       // The room's network went off, and its browser with it.
       this.browser.closeRoom(handle.store.id);
+    } else if (event.type === "run.ended" && handle.store.state.parent) {
+      // After the engine is done ending the run: git is asked about the thread's branch.
+      setImmediate(() => this.reportThread(handle, event.runId));
+    }
+  }
+
+  /** A thread's run ended: its report goes into the room it was started from (threads.ts). */
+  private reportThread(handle: RoomHandle, runId: string): void {
+    const parentId = handle.store.state.parent!;
+    try {
+      const parent = this.room(parentId);
+      const report = threadReport(handle.store, runId, parent.store.state, roomWorkspaceDiff(handle.store)?.changes ?? []);
+      if (!report) return;
+      this.engineFor(parent).postThreadReport(report.text, report.sys);
+    } catch (error) {
+      this.log(`[${handle.store.id}] cannot report to ${parentId}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -1413,6 +1430,8 @@ export class AgoraDaemon {
             ...(typeof body.doc === "string" ? { doc: body.doc.trim() || null } : body.doc === null ? { doc: null } : {}),
             // Opened from an agent's turn: the room says so; its human is still the human.
             ...(caller.agent ? { createdBy: caller.agent } : {}),
+            // A thread: "here" is the calling agent's own room.
+            ...(typeof body.from === "string" && body.from.trim() ? { from: body.from.trim() === "here" && caller.agent ? caller.agent.room : body.from.trim() } : {}),
             env: this.env,
           });
         } catch (error) {

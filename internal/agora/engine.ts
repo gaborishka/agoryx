@@ -18,6 +18,7 @@ import { cleanRole, MAX_ROLE_CHARS, parseAgents, validEffort, validModel } from 
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { MAX_REVERT_CHANGES, REVERT_FAILURE, RevertError, revertTarget, type RevertRequest } from "./revert.js";
 import { RoomStore } from "./store.js";
+import { threadBriefing } from "./threads.js";
 import { fromWorkspace, namesFile, shellWriteTargets, shellWrites, type ShellCwd } from "./shell-writes.js";
 import { workspaceAt } from "./room-mode.js";
 import { planStepCommit, stepOf, StepCommitError, stepTurns } from "./step-commit.js";
@@ -657,6 +658,35 @@ export class RoomEngine {
     });
     this.startWork(message.id, undefined, actor);
     return message;
+  }
+
+  /**
+   * A thread of this room reported back (threads.ts): Agoryx's line, verbatim. It wakes the agent that started the
+   * thread (`sys.wakes`), if it still sits here, and no one else; one the human started wakes nobody.
+   */
+  postThreadReport(text: string, sys: Extract<SystemNote, { code: "thread.reported" }>): MessageEntry {
+    const spawner = sys.wakes ? this.state.agents.find((agent) => agent.id === sys.wakes) : undefined;
+    const { wakes: _wakes, ...rest } = sys;
+    const message = this.postMessage({
+      author: "agoryx",
+      kind: "system",
+      text,
+      sys: spawner ? { ...rest, wakes: spawner.id } : rest,
+      mentions: spawner ? [spawner.id] : [],
+      wakes: Boolean(spawner),
+    });
+    if (spawner) this.startWork(message.id);
+    return message;
+  }
+
+  /** A thread's parent room's name, read from its log; undefined when it cannot be read. */
+  private parentName(): string | undefined {
+    if (!this.state.parent) return undefined;
+    try {
+      return RoomStore.open(dirname(this.store.dir), this.state.parent).state.name;
+    } catch {
+      return undefined;
+    }
   }
 
   /** "One more round": every agent gets another turn even with nothing new. */
@@ -1671,7 +1701,7 @@ export class RoomEngine {
         rejoin,
         doc: this.docDelta(agent, fromSeq, fresh),
         profile: fresh ? (profile ? profileBriefing(profile, this.state.human) : null) : profileUpdate(profile, held, this.state.human),
-        project: !project ? null : fresh ? projectBriefing(project, cli, this.env) : projectUpdate(project, this.state.projectSeen?.[agent.id] ?? 0, { room: this.state.id, agent: agent.id }, cli),
+        project: !project ? null : fresh ? `${projectBriefing(project, cli, this.env)}\n${threadBriefing(this.state, cli, this.parentName())}` : projectUpdate(project, this.state.projectSeen?.[agent.id] ?? 0, { room: this.state.id, agent: agent.id }, cli),
         tracking: fresh ? workspaceTracking(this.state.workspace) : undefined,
       });
     const prompt = promptFor(!sessionId, false);

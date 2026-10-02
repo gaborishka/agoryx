@@ -79,6 +79,8 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx down                        Stop the background daemon",
       "  agoryx open [room]                 Open the web UI (starts the daemon if needed)",
       '  agoryx new ["name"] [--dir D [--worktree [--base BRANCH]]] [--budget N|none] [--doc PATH|none] [--agents FILE|JSON] [-m "first message"]   (no name: the message names it)',
+      '  agoryx new --from <room|here> ["name"] [--agents FILE|JSON] [--base BRANCH] -m "brief"   A thread: a Work room on its own branch of',
+      "                                     that room's folder (one agent unless --agents); it reports back there when a run ends",
       "  agoryx rooms                       List rooms",
       '  agoryx say [-r room] "text"        Post to the room and follow the run until it goes quiet',
       "  agoryx tail [-r room] [-f] [-n N] [--trace]   Print the conversation (and follow it)",
@@ -823,6 +825,7 @@ const runNew = async (argv: string[]): Promise<number> => {
     { long: "budget", takesValue: true },
     { long: "doc", takesValue: true },
     { long: "agents", takesValue: true },
+    { long: "from", takesValue: true },
     { long: "message", short: "m", takesValue: true },
   ]);
   // No name: the first message names the room (rename it later in the web UI).
@@ -850,6 +853,7 @@ const runNew = async (argv: string[]): Promise<number> => {
     ...(parsed.options.base ? { base: parsed.options.base } : {}),
     ...(budget !== undefined ? { budget } : {}),
     ...(doc !== undefined ? { doc } : {}),
+    ...(parsed.options.from ? { from: parsed.options.from } : {}),
   };
   const info = await findDaemon();
   let roomId: string;
@@ -859,17 +863,21 @@ const runNew = async (argv: string[]): Promise<number> => {
   } else {
     // Opened from an agent's turn: the room says which agent, from which room.
     const agent = localAgent();
-    roomId = createRoom({ ...input, ...(agent ? { createdBy: agent } : {}) }).id;
+    if (input.from === "here" && !agent) throw new CliUsageError("--from here: only an agent in a room's turn has a room here; name the room");
+    const from = input.from === "here" ? agent!.room : input.from;
+    roomId = createRoom({ ...input, ...(from ? { from } : {}), ...(agent ? { createdBy: agent } : {}) }).id;
   }
   const store = RoomStore.open(roomsDir(), roomId);
   console.log(`${pc.bold(store.state.name)} ${pc.dim(`(${roomId})`)}`);
   console.log(`  ${store.state.mode === "chat" ? "materials" : "workspace"}  ${store.state.workspace}${store.state.createdWorkspace ? pc.dim(" (new git repo)") : ""}`);
   if (store.state.worktree) console.log(`  worktree   ${store.state.worktree.branch} ${pc.dim(`from ${store.state.worktree.base}, in ${store.state.worktree.repo}`)}`);
+  if (store.state.parent) console.log(`  thread of  ${store.state.parent} ${pc.dim("(it reports there when a run ends)")}`);
   console.log(`  here       ${store.state.agents.map((agent) => agent.label).join(", ")} and ${store.state.human}`);
   console.log(`  budget     ${budgetLine(store.state.settings.budget)}`);
   if (store.state.settings.doc) console.log(`  doc        ${store.state.settings.doc} ${pc.dim("(the room's canonical file)")}`);
   if (parsed.options.message) {
-    return say(roomId, parsed.options.message, { trace: true });
+    // A thread runs on its own and reports back to its parent: the daemon carries it, nobody waits for it here.
+    return say(roomId, parsed.options.message, { trace: true, ...(store.state.parent ? { noWait: true } : {}) });
   }
   console.log(pc.dim(`\nnext: agoryx say -r ${roomId} "what we are doing"   ·   agoryx open ${roomId}`));
   return 0;

@@ -148,6 +148,27 @@ export type SystemNote =
   | { code: "pr.closed"; n: number; repo?: string }
   | { code: "pr.reopened"; n: number; repo?: string }
   /**
+   * A thread of this room ended a run (see threads.ts): what it left, as the thread holds it — no summary. `room`/`name`:
+   * the thread; `files`: its branch against its base plus what is uncommitted (`uncommitted` of them); `items`: what its
+   * table got in that run; `open`: its first open question; `last`: its last message, verbatim; `wakes`: the agent woken.
+   */
+  | {
+      code: "thread.reported";
+      room: string;
+      name: string;
+      reason: "quiet" | "budget" | "stopped";
+      agents: string[];
+      branch?: string;
+      base?: string;
+      files: Array<{ path: string; status: string; added: number | null; removed: number | null }>;
+      more?: number;
+      uncommitted: number;
+      items: Array<{ id: string; text: string }>;
+      open?: { id: string; text: string };
+      last?: { by: string; text: string };
+      wakes?: string;
+    }
+  /**
    * An agent's push rewrote remote branches (`refs`, as `origin/feat`, or `feat at ../fork.git` pushed to by URL or
    * path), as git said in its output; `rewrote: false`: git said nothing of it (a quiet push), the push forced.
    * `failed`: and the command failed, or git printed an error — it may not have pushed at all.
@@ -447,6 +468,8 @@ export interface RoomCreatedEvent {
    * human is still `human`; absent for rooms the human opened.
    */
   createdBy?: ActorOrigin;
+  /** A thread: the Work room it was started from (`agoryx new --from`), which gets its report when a run ends. */
+  parent?: string;
 }
 
 export type RoomEventBody =
@@ -748,6 +771,8 @@ export interface RoomState {
   guests: Record<string, ActorOrigin>;
   /** The agent that opened this room from another room, if one did. */
   createdBy?: ActorOrigin;
+  /** A thread: the room it was started from. */
+  parent?: string;
   /** The folder's GitHub repository, when gh is there and the folder has a github.com remote. */
   repo?: RepoState;
   /** Pull requests that came into the room, oldest first. */
@@ -897,7 +922,7 @@ export type AgentModels = Record<AgentKind, KindModels>;
 // Attention: a room that waits for the human (internal/agora/attention.ts)
 // ---------------------------------------------------------------------------
 
-export type AttentionReason = "done" | "budget" | "stopped" | "error" | "mention";
+export type AttentionReason = "done" | "budget" | "stopped" | "error" | "mention" | "thread";
 
 /** A room that waits for the human: at most one per room, until the human sees it. */
 export interface AttentionItem {

@@ -62,6 +62,7 @@ const SHORT: Record<AttentionReason, (by: string | undefined) => string> = {
   stopped: () => "stopped",
   mention: (by) => `${by ?? "an agent"} is calling you`,
   error: (by) => (by ? `${by}’s turn failed` : "a turn failed"),
+  thread: (by) => (by ? `thread “${by}” reported` : "a thread reported"),
 };
 
 /**

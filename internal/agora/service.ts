@@ -7,6 +7,7 @@ import { createRoomWorktree, removeRoomWorktree } from "./folders.js";
 import { RoomEngine } from "./engine.js";
 import { defaultWorkspaceRoot, roomsDir, shimDir } from "./paths.js";
 import { profilePath } from "./profile.js";
+import { projectKey } from "./projects.js";
 import { createClaudeRunner } from "./runners/claude.js";
 import { createCodexRunner } from "./runners/codex.js";
 import type { AgentRunner } from "./runners/types.js";
@@ -58,7 +59,31 @@ export interface CreateRoomOptions {
   env?: NodeJS.ProcessEnv;
   /** An agent opened the room from another room's turn (the room's human is still the human). */
   createdBy?: ActorOrigin;
+  /**
+   * A thread of this room (its id or a unique prefix): a Work room on its own branch of the parent's project folder,
+   * which reports to the parent when a run ends (threads.ts). Without `agents`, one agent: the parent's agent that
+   * started it, else the parent's first.
+   */
+  from?: string;
 }
+
+/** The room a thread is started from, and the defaults it gives the thread. */
+const threadParent = (options: CreateRoomOptions, env: NodeJS.ProcessEnv) => {
+  const root = roomsDir(env);
+  const parent = RoomStore.open(root, RoomStore.resolveId(root, options.from, process.cwd())).state;
+  const key = projectKey(parent);
+  if (!key) throw new Error(`"${parent.name}" is a Chat room: a thread works in its project's folder — switch the room to Work first`);
+  if (options.mode === "chat") throw new Error("a thread is a Work room");
+  const spawner = options.createdBy?.room === parent.id ? parent.agents.find((agent) => agent.id === options.createdBy!.agent) : undefined;
+  const { id, kind, label, model, effort } = spawner ?? parent.agents[0]!;
+  return {
+    id: parent.id,
+    dir: key,
+    // A thread goes on from the parent's branch when the parent has one.
+    base: parent.worktree?.branch,
+    agents: [{ id, kind, label, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }],
+  };
+};
 
 /**
  * A room name from its first message, for rooms started without one: the first
@@ -80,6 +105,17 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
   const env = options.env ?? process.env;
   const name = options.name.trim();
   if (!name) throw new Error("a room needs a name");
+  const parent = options.from ? threadParent(options, env) : undefined;
+  if (parent) {
+    options = {
+      ...options,
+      mode: "work",
+      dir: options.dir ?? parent.dir,
+      worktree: true,
+      ...(options.base || !parent.base ? {} : { base: parent.base }),
+      agents: options.agents ?? parent.agents,
+    };
+  }
   // All that can be refused is checked before a workspace folder is claimed, so a refused room leaves nothing behind.
   // The roster is checked here, whoever calls: one that came as JSON is not trusted to be well-formed.
   const agents = (options.agents === undefined ? defaultRoster(env) : parseAgents(options.agents)).map((agent) =>
@@ -147,7 +183,7 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     settings.autoCommit = false;
   }
   try {
-    return finishRoom({ id, name, mode, workspace, createdWorkspace, worktree, human, agents, settings, doc, env, createdBy: options.createdBy });
+    return finishRoom({ id, name, mode, workspace, createdWorkspace, worktree, human, agents, settings, doc, env, createdBy: options.createdBy, parent: parent?.id });
   } catch (error) {
     if (worktree) removeRoomWorktree(worktree);
     throw error;
@@ -167,6 +203,7 @@ const finishRoom = ({
   doc,
   env,
   createdBy,
+  parent,
 }: {
   id: string;
   name: string;
@@ -180,6 +217,7 @@ const finishRoom = ({
   doc: string | null;
   env: NodeJS.ProcessEnv;
   createdBy: ActorOrigin | undefined;
+  parent?: string;
 }): RoomStore => {
   prepareWorkspace(workspace, { initGit: createdWorkspace });
   if (doc && !lstatSync(join(workspace, doc), { throwIfNoEntry: false })) {
@@ -200,6 +238,7 @@ const finishRoom = ({
     agents,
     settings,
     ...(createdBy ? { createdBy } : {}),
+    ...(parent ? { parent } : {}),
   });
   const baseline = doc ? baselineRevision(workspace, doc) : null;
   if (baseline) store.append(baseline);

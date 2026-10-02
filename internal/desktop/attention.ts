@@ -63,6 +63,7 @@ const SHORT: Record<AttentionReason, (by: string | undefined) => string> = {
   stopped: () => "stopped",
   mention: (by) => `${by ?? "an agent"} is calling you`,
   error: (by) => (by ? `${by}’s turn failed` : "a turn failed"),
+  thread: (by) => (by ? `thread “${by}” reported` : "a thread reported"),
 };
 
 /** The tray's line for a room: “<name> — <short reason>”. */
@@ -89,6 +90,8 @@ const subtitleOf = (item: AttentionItem): string => {
       return `${by ?? "An agent"} is asking for you`;
     case "error":
       return `${by ?? "An agent"}: the turn could not finish`;
+    case "thread":
+      return by ? `Thread “${by}” reported back` : "A thread reported back";
   }
 };
 
@@ -127,7 +130,7 @@ export interface AttentionFollowerEvents {
   arrived: [item: AttentionItem];
 }
 
-const REASONS = new Set<string>(["done", "budget", "stopped", "error", "mention"]);
+const REASONS = new Set<string>(["done", "budget", "stopped", "error", "mention", "thread"]);
 
 /** The daemon's `rooms`, or null for an answer that is not one. */
 const parseItems = (rooms: unknown): AttentionItem[] | null => {

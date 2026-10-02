@@ -35,6 +35,7 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   counters: { m: 0, t: 0, r: 0 },
   guests: event.createdBy ? { [guestHandle(event.createdBy)]: event.createdBy } : {},
   ...(event.createdBy ? { createdBy: event.createdBy } : {}),
+  ...(event.parent ? { parent: event.parent } : {}),
 });
 
 /** The agent of another room an event names, if any: remembered so its handle can be named later. */

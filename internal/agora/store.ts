@@ -47,6 +47,8 @@ export interface CreateRoomInput {
   id?: string;
   /** An agent opened the room from another room. */
   createdBy?: ActorOrigin;
+  /** A thread: the room it was started from. */
+  parent?: string;
 }
 
 export interface RoomSummary {
@@ -76,6 +78,8 @@ export interface RoomSummary {
   projectHash?: string;
   /** The name written for that project, when one was (the daemon adds it). */
   projectName?: string;
+  /** A thread: the room it was started from. */
+  parent?: string;
 }
 
 const EVENTS_FILE = "events.jsonl";
@@ -161,6 +165,7 @@ export class RoomStore {
       agents: input.agents,
       settings: input.settings,
       ...(input.createdBy ? { createdBy: input.createdBy } : {}),
+      ...(input.parent ? { parent: input.parent } : {}),
     };
     const event = { ...created, seq: 1, ts: new Date().toISOString() };
     appendFileSync(store.file, `${JSON.stringify(event)}\n`);
@@ -272,6 +277,7 @@ export class RoomStore {
           ? {}
           : { folder: this.state.workspace }),
       ...(key ? { projectHash: projectHash(key) } : {}),
+      ...(this.state.parent ? { parent: this.state.parent } : {}),
     };
   }
 

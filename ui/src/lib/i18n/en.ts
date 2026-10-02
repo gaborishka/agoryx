@@ -6,6 +6,9 @@ import type { RoomSettings, SystemCode, SystemNote, TurnError } from "../types";
  */
 
 /** "1 turn", "3 turns". */
+/** A pull request as the lines name it: `#12`, or `owner/name#12` when it is another repository's. */
+const prRef = (n: { n: number; repo?: string }) => `${n.repo ?? ""}#${n.n}`;
+
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** "Claude", "Claude and Codex", "Opus, Sonnet and Codex": a room may seat any number of agents. */
@@ -127,12 +130,12 @@ const sys: Say = {
   decision: (n) => `Decision #${n.n}: ${n.option} “${n.title}”${n.note ? ` — ${n.note}` : ""} (decided by ${n.by})`,
   "pr.checks": (n) =>
     n.result === "pass"
-      ? `PR #${n.n}: ${n.total === 1 ? "the check" : `all ${n.total} checks`} passed.`
-      : `PR #${n.n}: ${n.failed?.length ?? 0} of ${plural(n.total, "check", "checks")} failed${n.failed?.length ? ` — ${n.failed.join(", ")}` : ""}.`,
-  "pr.review": (n) => (n.review === "approved" ? `PR #${n.n} approved${n.by ? ` by ${n.by}` : ""}.` : `PR #${n.n}: changes requested${n.by ? ` by ${n.by}` : ""}.`),
-  "pr.merged": (n) => `PR #${n.n} merged into \`${n.base}\`${n.by ? ` by ${n.by}` : ""}.`,
-  "pr.closed": (n) => `PR #${n.n} closed without merging.`,
-  "pr.reopened": (n) => `PR #${n.n} reopened.`,
+      ? `PR ${prRef(n)}: ${n.total === 1 ? "the check" : `all ${n.total} checks`} passed.`
+      : `PR ${prRef(n)}: ${n.failed?.length ?? 0} of ${plural(n.total, "check", "checks")} failed${n.failed?.length ? ` — ${n.failed.join(", ")}` : ""}.`,
+  "pr.review": (n) => (n.review === "approved" ? `PR ${prRef(n)} approved${n.by ? ` by ${n.by}` : ""}.` : `PR ${prRef(n)}: changes requested${n.by ? ` by ${n.by}` : ""}.`),
+  "pr.merged": (n) => `PR ${prRef(n)} merged into \`${n.base}\`${n.by ? ` by ${n.by}` : ""}.`,
+  "pr.closed": (n) => `PR ${prRef(n)} closed without merging.`,
+  "pr.reopened": (n) => `PR ${prRef(n)} reopened.`,
   "git.force_pushed": (n) =>
     n.rewrote === false
       ? `${n.agent} pushed with force${n.refs?.length ? ` to ${n.refs.map((ref) => `\`${ref}\``).join(", ")}` : " to its remote"}${n.failed ? `, or tried to (${n.failed === "command" ? "the command failed" : "git printed an error"}; git did not say whether it rewrote history)` : " (git did not say whether it rewrote history)"}: \`${n.command}\``

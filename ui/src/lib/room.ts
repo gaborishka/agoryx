@@ -178,7 +178,7 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   }
   items.push(...stepCommits.values());
   for (const r of st.reverts ?? []) items.push({ key: `v-${r.seq}`, seq: r.seq, type: "revert", r });
-  for (const pr of st.prs ?? []) items.push({ key: `pr-${pr.number}`, seq: pr.seq, type: "pr", pr });
+  for (const pr of st.prs ?? []) items.push({ key: `pr-${pr.repo}#${pr.number}`, seq: pr.seq, type: "pr", pr });
   items.sort((a, b) => a.seq - b.seq);
 
   const name = (h: string) => nameOf(st, h);

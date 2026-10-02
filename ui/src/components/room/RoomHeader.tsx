@@ -259,7 +259,7 @@ function ViewSwitch() {
   const count = tableCount(room);
   const tab = (on: boolean) =>
     cn(
-      "inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-small font-medium transition sm:px-3",
+      "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-small font-medium transition sm:px-3",
       on
         ? "bg-card text-foreground shadow-soft ring-1 ring-border"
         : "text-muted-foreground hover:text-foreground",
@@ -438,10 +438,11 @@ export function RoomHeader() {
   const openChanges = useStore((s) => s.openChanges);
   if (!room) return null;
   return (
-    <header className="@container flex h-14 shrink-0 items-center gap-2 border-b border-border/70 bg-background/85 px-3 backdrop-blur sm:px-4">
+    <header className="@container flex h-14 shrink-0 items-center gap-1 border-b border-border/70 bg-background/85 px-2 backdrop-blur @min-[36rem]:gap-2 sm:px-4">
       <NavButton />
-      {/* The name keeps its room when a side panel narrows the header: the agents' chips give way first. */}
-      <div className="flex min-w-[min(10rem,40cqw)] flex-1 flex-col justify-center leading-tight">
+      {/* The name keeps its room when a side panel narrows the header: the agents' chips give way first. On a phone
+          the mode and the pull request move into the menu, so nothing runs past the screen's edge. */}
+      <div className="flex min-w-[min(10rem,30cqw)] flex-1 flex-col justify-center leading-tight">
         <Title />
         <Place />
       </div>
@@ -451,10 +452,10 @@ export function RoomHeader() {
           <Presence key={a.id} a={a} />
         ))}
       </div>
-      <Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground" onClick={() => openDialog({ kind: "mode" })} aria-label="Change conversation mode">
+      <Button variant="ghost" size="sm" className="hidden shrink-0 text-muted-foreground @min-[36rem]:inline-flex" onClick={() => openDialog({ kind: "mode" })} aria-label="Change conversation mode">
         {room.mode === "chat" ? "Chat" : "Work"}
       </Button>
-      {room.mode !== "chat" ? <OpenPr /> : null}
+      {room.mode !== "chat" ? <OpenPr className="hidden @min-[36rem]:inline-flex" /> : null}
       <span className="mx-0.5 hidden h-5 w-px bg-border @min-[36rem]:block" />
       {room.mode !== "chat" ? <TerminalToggle /> : null}
       <PanelToggle />
@@ -489,6 +490,10 @@ export function RoomHeader() {
           <DropdownMenuItem onSelect={() => openFile(null)}>
             <FolderIcon />
             {room.mode === "chat" ? "Conversation files" : "Working folder files"}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => openDialog({ kind: "mode" })}>
+            <MessagesSquareIcon />
+            {room.mode === "chat" ? "Chat — connect a project…" : "Work — change mode…"}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openDialog({ kind: "revert" })}>
             <RotateCcwIcon />

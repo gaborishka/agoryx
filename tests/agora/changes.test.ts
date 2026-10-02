@@ -135,7 +135,7 @@ test("every turn's exact change is kept; the others see +/− and pull the patch
     assert.match(room.engine.turnPatch(codexTurn.id)!.patch, /-export const zero = 0;\n\+export const ZERO = 0;/);
 
     // What an agent runs inside its sandbox.
-    const shim = (...args: string[]) => spawnSync(process.execPath, [SHIM, "diff", ...args], { cwd: join(ws, "src"), encoding: "utf8" });
+    const shim = (...args: string[]) => spawnSync(process.execPath, [SHIM, "diff", ...args], { cwd: join(ws, "src"), encoding: "utf8", env: { PATH: process.env.PATH! } });
     const listed = shim();
     assert.equal(listed.status, 0, listed.stderr);
     assert.match(listed.stdout, new RegExp(`^${codexTurn.id} · Codex · [^\\n]+\\n {2}src/clock\\.ts {2}\\+1 −1\\n`));
@@ -299,8 +299,9 @@ test("a turn that changed nothing has no changes and no patch", async () => {
 test("a file two parallel turns both wrote is marked in each change as not that turn's alone", async () => {
   const room = createTestRoom({
     rules: [
-      { agent: "claude", match: "glob", earlyWrite: { path: "glob.test.ts", content: "mine\n" }, sleepMs: 1200, write: { path: "glob.ts", content: "x\n" }, reply: "glob.ts is in.", once: true },
-      { agent: "codex", match: "glob", sleepMs: 400, write: { path: "glob.test.ts", content: "codex 1\ncodex 2\n" }, reply: "Tests in.", once: true },
+      // Codex writes the test file after Claude's first draft of it, and Claude goes on until Codex's turn is over.
+      { agent: "claude", match: "glob", earlyWrite: { path: "glob.test.ts", content: "mine\n" }, mark: "claude-drafted", waitForText: "Tests in.", write: { path: "glob.ts", content: "x\n" }, reply: "glob.ts is in.", once: true },
+      { agent: "codex", match: "glob", waitForMark: "claude-drafted", write: { path: "glob.test.ts", content: "codex 1\ncodex 2\n" }, reply: "Tests in.", once: true },
       { agent: "claude", reply: "::pass::" },
       { agent: "codex", reply: "::pass::" },
     ],

@@ -10,11 +10,13 @@ import { createCodexRunner } from "../../internal/agora/runners/codex.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { DEFAULT_SETTINGS, type RoomAgent } from "../../internal/agora/types.js";
 import { markTurnLive, otherRoomTurns } from "../../internal/agora/workspace.js";
-import { createTestRoom, withTimeout, writeFakeBins } from "./helpers.js";
+import { createTestRoom, trackRoom, withTimeout, writeFakeBins } from "./helpers.js";
 
 /**
  * Two rooms in one workspace, driven in this process like the daemon drives them: room A has Claude,
  * room B has Codex, each with its own fake CLI rules. autoCommit on, so each run ends in a checkpoint.
+ * Rules order their turns against the other room's by marks, as a sleep cannot under load: room A's rule makes
+ * "a-started" once its turn has begun (mark), and "b-ended" is made when room B's turn is over.
  */
 const twoRooms = (rules: { a: unknown[]; b: unknown[] }, docA?: string) => {
   const home = mkdtempSync(join(tmpdir(), "agora-cross-"));
@@ -34,6 +36,7 @@ const twoRooms = (rules: { a: unknown[]; b: unknown[] }, docA?: string) => {
       CLAUDECODE: "1",
       CLAUDE_CONFIG_DIR: join(dir, "claude-config"),
       CODEX_HOME: join(dir, "codex-home"),
+      FAKE_MARKS: home,
     };
     const store = RoomStore.create(roomsRoot, {
       name,
@@ -43,16 +46,23 @@ const twoRooms = (rules: { a: unknown[]; b: unknown[] }, docA?: string) => {
       agents: [agent],
       settings: { ...DEFAULT_SETTINGS, network: false, autoCommit: true, ...(doc ? { doc } : {}) },
     });
-    return new RoomEngine({
+    const engine = new RoomEngine({
       store,
       runners: { claude: createClaudeRunner(fakeClaude), codex: createCodexRunner(fakeCodex) },
       env,
       opsPollMs: 50,
       nativePollMs: 0,
     });
+    untrack.push(trackRoom({ store, engine, logPath: env.FAKE_LOG! }));
+    return engine;
   };
+  const untrack: Array<() => void> = [];
   const a = open("Room A", { id: "claude", kind: "claude", label: "Claude" }, rules.a, docA);
   const b = open("Room B", { id: "codex", kind: "codex", label: "Codex" }, rules.b);
+  b.store.subscribe((event) => {
+    if (event.type === "turn.ended") writeFileSync(join(home, "b-ended"), "");
+    if (event.type === "commit.created") writeFileSync(join(home, "b-snapshotted"), "");
+  });
   return {
     workspace,
     a,
@@ -63,6 +73,7 @@ const twoRooms = (rules: { a: unknown[]; b: unknown[] }, docA?: string) => {
       await withTimeout(Promise.all([a.waitIdle(), b.waitIdle()]));
     },
     async cleanup() {
+      for (const forget of untrack) forget();
       await a.close();
       await b.close();
       rmSync(home, { recursive: true, force: true });
@@ -77,10 +88,10 @@ const commitOf = (engine: RoomEngine) => engine.store.events.find((event) => eve
 
 test("a file another room's agent edits during this room's turn is not this room's", async () => {
   const rooms = twoRooms({
-    // Claude (room A) thinks for a while, then writes its own file with its edit tool.
-    a: [{ agent: "claude", match: "go", sleepMs: 1500, write: { path: "a.txt", content: "from room A\n" }, reply: "Wrote a.", once: true }],
-    // Codex (room B) writes its file early, while Claude's turn in room A is still running.
-    b: [{ agent: "codex", match: "go", sleepMs: 100, write: { path: "b.txt", content: "from room B\n" }, reply: "Wrote b.", once: true }],
+    // Wait for B's recovery snapshot too, so the two snapshots have deterministic contents.
+    a: [{ agent: "claude", match: "go", mark: "a-started", waitForMark: "b-snapshotted", write: { path: "a.txt", content: "from room A\n" }, reply: "Wrote a.", once: true }],
+    // Codex (room B) writes its file while Claude's turn in room A is running.
+    b: [{ agent: "codex", match: "go", waitForMark: "a-started", write: { path: "b.txt", content: "from room B\n" }, reply: "Wrote b.", once: true }],
   });
   try {
     await rooms.both("go");
@@ -91,7 +102,7 @@ test("a file another room's agent edits during this room's turn is not this room
     assert.doesNotMatch(rooms.a.turnPatch(a.id)!.patch, /b\.txt/, "nor in room A's patch");
     assert.deepEqual(b.files, ["b.txt"]);
 
-    // Each room's checkpoint holds its own work and nothing of the other's.
+    // Recovery snapshots capture the whole folder at their respective times.
     const commitA = commitOf(rooms.a);
     const commitB = commitOf(rooms.b);
     assert.ok(commitA?.type === "commit.created" && commitB?.type === "commit.created");
@@ -104,8 +115,8 @@ test("a file another room's agent edits during this room's turn is not this room
 
 test("a shell change made while another room's turn runs is credited to nobody, and not committed", async () => {
   const rooms = twoRooms({
-    a: [{ agent: "claude", match: "go", sleepMs: 1500, reply: "Only thinking.", once: true }],
-    b: [{ agent: "codex", match: "go", sleepMs: 100, write: { path: "b.txt", content: "via sed\n", via: "shell" }, reply: "Ran a script.", once: true }],
+    a: [{ agent: "claude", match: "go", mark: "a-started", waitForMark: "b-ended", reply: "Only thinking.", once: true }],
+    b: [{ agent: "codex", match: "go", waitForMark: "a-started", write: { path: "b.txt", content: "via sed\n", via: "shell" }, reply: "Ran a script.", once: true }],
   });
   try {
     await rooms.both("go");
@@ -121,8 +132,9 @@ test("a shell change made while another room's turn runs is credited to nobody, 
 
 test("a change made after the other room's turn ended is this turn's, whatever tool made it", async () => {
   const rooms = twoRooms({
-    a: [{ agent: "claude", match: "go", sleepMs: 1500, write: { path: "a.txt", content: "late script\n", via: "shell" }, reply: "Ran it.", once: true }],
-    b: [{ agent: "codex", match: "go", write: { path: "b.txt", content: "from room B\n" }, reply: "Wrote b.", once: true }],
+    // The turns overlap (B waits for A's to begin), and A's change comes after B's turn ended.
+    a: [{ agent: "claude", match: "go", mark: "a-started", waitForMark: "b-ended", write: { path: "a.txt", content: "late script\n", via: "shell" }, reply: "Ran it.", once: true }],
+    b: [{ agent: "codex", match: "go", waitForMark: "a-started", write: { path: "b.txt", content: "from room B\n" }, reply: "Wrote b.", once: true }],
   });
   try {
     await rooms.both("go");

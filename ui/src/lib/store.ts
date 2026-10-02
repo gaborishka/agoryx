@@ -483,6 +483,11 @@ function connect(roomId: string, after: number) {
     const { snap } = useStore.getState();
     if (snap) useStore.setState({ snap: { ...snap, limits } });
   });
+  es.addEventListener("git", (event) => {
+    const { gitRepo } = JSON.parse((event as MessageEvent).data) as { gitRepo: boolean };
+    const { snap } = useStore.getState();
+    if (snap) useStore.setState({ snap: { ...snap, gitRepo } });
+  });
   es.addEventListener("presence", (event) => {
     const { agents } = JSON.parse((event as MessageEvent).data) as { agents: Record<string, AgentPresence> };
     const { snap } = useStore.getState();

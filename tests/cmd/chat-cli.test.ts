@@ -4,6 +4,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { cliArgv, makeCliSandbox } from "../helpers/cli-sandbox.js";
+
+const sandbox = makeCliSandbox();
 
 interface ChatRunResult {
   code: number | null;
@@ -20,10 +23,10 @@ const runChatCli = (
   new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      ["--import", "tsx", "cmd/agoryx/main.ts", "chat", ...args],
+      cliArgv(["chat", ...args]),
       {
-        cwd: process.cwd(),
-        env: process.env,
+        cwd: sandbox.repo,
+        env: sandbox.env,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
@@ -63,10 +66,10 @@ const runCli = (
   new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      ["--import", "tsx", "cmd/agoryx/main.ts", ...args],
+      cliArgv(args),
       {
-        cwd: process.cwd(),
-        env: process.env,
+        cwd: sandbox.repo,
+        env: sandbox.env,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );

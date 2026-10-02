@@ -156,7 +156,8 @@ function RoomRow({ room, on }: { room: RoomSummary; on: boolean }) {
       aria-current={on ? "page" : undefined}
       onClick={() => go({ kind: "room", id: room.id })}
       className={cn(
-        "group grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 rounded-xl px-2.5 py-2 text-left transition",
+        // relative: the row's sr-only span is placed in the row, not at the page's foot, where it made the page scroll.
+        "group relative grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 rounded-xl px-2.5 py-2 text-left transition",
         on ? "bg-card shadow-edge ring-1 ring-border" : "hover:bg-foreground/[0.05]",
       )}
     >
@@ -241,7 +242,7 @@ function GroupHead({ group, open, onToggle, current }: { group: Group; open: boo
       title={group.title}
       aria-expanded={open}
       onClick={onToggle}
-      className="flex w-full items-center gap-1.5 rounded-lg px-2.5 pt-2.5 pb-1 text-left text-meta font-medium text-muted-foreground transition hover:text-foreground"
+      className="relative flex w-full items-center gap-1.5 rounded-lg px-2.5 pt-2.5 pb-1 text-left text-meta font-medium text-muted-foreground transition hover:text-foreground"
     >
       <ChevronRightIcon className={cn("size-3.5 shrink-0 text-faint transition-transform", open && "rotate-90")} />
       <span className="truncate">{group.label}</span>

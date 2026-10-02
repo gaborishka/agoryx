@@ -352,6 +352,36 @@ test("the human writing into the agent's own session restarts the live process",
   }
 });
 
+test("a /compact run in the agent's own app restarts the live process too, though it says nothing in the room", async () => {
+  const room = createTestRoom({ agents: CLAUDE_ONLY, live: true, rules: [] });
+  try {
+    await say(room, "one");
+    const before = room.invocations("claude")[0]!;
+    const file = locateNativeSession("claude", room.store.state.sessions.claude!.sessionId, room.store.state.workspace, room.env)!;
+    // Claude Code's own lines for it (real, trimmed): the summary, the caveat, the command and its output.
+    const real = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "p10", "claude-manual-compact.jsonl"), "utf8").split("\n").filter(Boolean);
+    const from = real.findIndex((line) => line.includes('"isCompactSummary":true') || line.includes('"isCompactSummary": true'));
+    const to = real.findIndex((line) => line.includes("<local-command-stdout>"));
+    assert.ok(from >= 0 && to > from);
+    // Stamped now: a compaction from before the room is not its news.
+    const now = new Date().toISOString();
+    appendFileSync(file, real.slice(from, to + 1).map((line) => `${JSON.stringify({ ...JSON.parse(line), timestamp: now })}\n`).join(""));
+    await waitUntil(() => room.store.state.messages.some((message) => message.sys?.code === "agent.compacted"));
+    await waitUntil(() => !alive(before.pid!));
+    assert.equal(room.store.state.messages.filter((message) => message.native).length, 0, "nothing said in the room");
+    await say(room, "two");
+    const after = room.invocations("claude").at(-1)!;
+    assert.notEqual(after.pid, before.pid, "the next turn reads the compacted session");
+    assert.equal(room.store.state.messages.filter((message) => message.native).length, 0, "nor after the next turn");
+    // Once per command: read again (Claude Code adds lines after it), it does not restart the new process.
+    appendFileSync(file, `${JSON.stringify({ type: "attachment", uuid: "late", timestamp: new Date().toISOString() })}\n`);
+    await say(room, "three");
+    assert.equal(room.invocations("claude").at(-1)!.pid, after.pid);
+  } finally {
+    await room.cleanup();
+  }
+});
+
 test("an idle live process is closed after the idle time; the next turn starts a new one", async () => {
   const room = createTestRoom({ agents: CLAUDE_ONLY, live: { idleMs: 300 }, rules: [] });
   try {

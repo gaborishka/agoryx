@@ -4,7 +4,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { cliArgv, makeCliSandbox } from "../helpers/cli-sandbox.js";
 import { setTimeout as wait } from "node:timers/promises";
+
+const sandbox = makeCliSandbox();
 
 interface ChatRunResult {
   code: number | null;
@@ -32,11 +35,11 @@ const runChat = (
     const timeoutMs = options.timeoutMs ?? 20_000;
     const child = spawn(
       process.execPath,
-      ["--import", "tsx", "cmd/agoryx/main.ts", "chat", ...args],
+      cliArgv(["chat", ...args]),
       {
-        cwd: process.cwd(),
+        cwd: sandbox.repo,
         env: {
-          ...process.env,
+          ...sandbox.env,
           ...options.env,
         },
         stdio: ["pipe", "pipe", "pipe"],
@@ -79,11 +82,11 @@ const runChatScript = (
     const timeoutMs = options.timeoutMs ?? 20_000;
     const child = spawn(
       process.execPath,
-      ["--import", "tsx", "cmd/agoryx/main.ts", "chat", ...args],
+      cliArgv(["chat", ...args]),
       {
-        cwd: process.cwd(),
+        cwd: sandbox.repo,
         env: {
-          ...process.env,
+          ...sandbox.env,
           ...options.env,
         },
         stdio: ["pipe", "pipe", "pipe"],

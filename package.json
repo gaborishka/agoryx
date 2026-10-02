@@ -18,7 +18,7 @@
     "desktop": "npm --prefix desktop start",
     "prepare": "npm run build:core",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "node scripts/test-guard.mjs tsx --test 'tests/**/*.test.ts'",
     "verify": "npm run typecheck && npm run build && npm test"
   },
   "engines": {

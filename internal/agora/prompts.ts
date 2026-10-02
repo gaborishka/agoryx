@@ -24,7 +24,9 @@ export const passNote = (text: string): string | null => {
 
 /** Lines the room shows the human and no agent reads: not in a delta, not in `read new`. */
 // What gh said of a pull request (checks, review, merged, closed, reopened) is the human's too, whatever comes next.
-const HUMAN_ONLY = new Set(["agent.compacted", "git.force_pushed"]);
+// That an agent is no longer woken after failing turns is the human's to act on: another agent reading it would
+// take "until you write" as its own (its mention does not wake the agent).
+const HUMAN_ONLY = new Set(["agent.compacted", "agent.failing", "git.force_pushed"]);
 export const forHumanOnly = (message: Pick<RoomMessage, "sys">): boolean => {
   const code = message.sys?.code ?? "";
   return HUMAN_ONLY.has(code) || code.startsWith("pr.");

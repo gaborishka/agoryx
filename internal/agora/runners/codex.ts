@@ -15,6 +15,7 @@ import {
 import type { Activity, TurnUsage } from "../types.js";
 import { BROWSER_SERVER, codexMcpArgs, describeBrowserTool } from "../browsertools.js";
 import { parseCodexRateLimits } from "../limits.js";
+import { limitText } from "../duration.js";
 import { readCodexSessionLimits } from "../limits-store.js";
 import { locateCodexRollout } from "../native.js";
 
@@ -228,7 +229,7 @@ class CodexLiveProcess implements LiveProcess {
     failure: string | undefined;
     aborted: boolean;
     timedOut: boolean;
-    timeoutMinutes: number;
+    limit: string;
     imagesBefore: Map<string, number>;
     finish: (result: TurnResult) => void;
   } | null = null;
@@ -404,7 +405,7 @@ class CodexLiveProcess implements LiveProcess {
         status: "error",
         text: cur.lastMessage ?? "",
         sessionId: this.sessionId,
-        error: { kind: "timeout", message: `turn exceeded ${cur.timeoutMinutes} min` },
+        error: { kind: "timeout", message: `turn exceeded ${cur.limit}` },
       });
     } else if (cur.turnId === null && exit.spawnError) {
       cur.finish({ status: "error", text: "", sessionId: null, error: { kind: "spawn", message: dead.message }, liveUnavailable: true });
@@ -447,7 +448,7 @@ class CodexLiveProcess implements LiveProcess {
         failure: undefined as string | undefined,
         aborted: false,
         timedOut: false,
-        timeoutMinutes: Math.round(request.settings.turnTimeoutMs / 60000),
+        limit: limitText(request.settings.turnTimeoutMs),
         imagesBefore: listGeneratedImages(this.codexHome, this.sessionId),
         finish: (result: TurnResult) => {
           if (this.current !== cur) return;
@@ -617,7 +618,7 @@ export const createCodexRunner = (bin = process.env.AGORYX_CODEX_BIN || "codex")
         status: "error",
         text: lastMessage ?? "",
         sessionId: threadId,
-        error: { kind: "timeout", message: `turn exceeded ${Math.round(request.settings.turnTimeoutMs / 60000)} min` },
+        error: { kind: "timeout", message: `turn exceeded ${limitText(request.settings.turnTimeoutMs)}` },
       };
     }
     if (completed && !failure) {

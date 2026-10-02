@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, createReadStream, existsSync, watch, type FSWatcher, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
@@ -314,16 +314,30 @@ interface RoomHandle {
   streams: Map<string, StreamBuffer>;
   followers: number;
   followTimer?: NodeJS.Timeout;
+  /** Whether the folder was a git repository when last asked, and the watch that asks again while someone looks. */
+  gitRepo?: boolean;
+  gitWatch?: FSWatcher;
   /** SSE senders. They listen to the handle, not to a store, so they survive a takeover (see relay). */
   listeners: Set<(event: RoomEvent | EphemeralEvent) => void>;
   relayOff?: () => void;
 }
+
+/** Asks git again; tells the room's pages when the answer changed. */
+const lookAtGit = (handle: RoomHandle): void => {
+  const now = isGitRepo(handle.store.state.workspace);
+  if (now === handle.gitRepo) return;
+  handle.gitRepo = now;
+  for (const listener of handle.listeners) listener({ type: "git", gitRepo: now });
+};
 
 /** Forwards the handle's current store to every SSE listener. */
 const relay = (handle: RoomHandle): void => {
   handle.relayOff?.();
   handle.relayOff = handle.store.subscribe((event) => {
     for (const listener of handle.listeners) listener(event);
+    // An agent may have made the folder a repository (or a parent of it) during its turn: asked once per turn,
+    // and only while someone has the room open.
+    if (event.type === "turn.ended" && handle.followers > 0) lookAtGit(handle);
   });
 };
 
@@ -646,6 +660,7 @@ export class AgoraDaemon {
     await Promise.all(
       [...this.rooms.values()].map(async (handle) => {
         if (handle.followTimer) clearInterval(handle.followTimer);
+        handle.gitWatch?.close();
         if (!handle.engine) return;
         const state = handle.engine.state;
         const actor: Actor | undefined = !by ? undefined : "human" in by ? { by: state.human } : actorIn(state, by);
@@ -1305,6 +1320,10 @@ export class AgoraDaemon {
           ...(body.worktree === true ? { worktree: true } : {}),
           ...(typeof body.base === "string" ? { base: body.base } : {}),
         }, this.env);
+        // A mode switch changes the folder while existing SSE listeners stay connected.
+        handle.gitWatch?.close();
+        delete handle.gitWatch;
+        if (handle.followers > 0) this.watchGit(handle);
         this.browser.closeRoom(handle.store.id);
         this.tryDrive(handle);
         sendJson(res, 200, this.snapshot(handle, device));
@@ -1604,6 +1623,8 @@ export class AgoraDaemon {
   }
 
   private snapshot(handle: RoomHandle, device?: DeviceInfo) {
+    // Asked here and told to the room's other pages too, should the answer have changed unseen.
+    lookAtGit(handle);
     const ops = handle.store
       .since(0)
       .flatMap((event) => (event.type === "table.op" ? [{ seq: event.seq, ts: event.ts, op: event.op }] : []));
@@ -1615,7 +1636,7 @@ export class AgoraDaemon {
       resume: resumeCommands(handle.store, this.runners),
       driven: Boolean(handle.engine),
       // Whether the folder is a git repository of its own: only then can a step be committed.
-      gitRepo: isGitRepo(handle.store.state.workspace),
+      gitRepo: handle.gitRepo === true,
       ...(handle.lockedBy ? { lockedBy: handle.lockedBy } : {}),
       // Whether there is a profile at all, never what it says: the UI shows who is given it.
       profile: { path: profilePath(this.env), exists: readProfile(profilePath(this.env)) !== null },
@@ -1803,6 +1824,10 @@ export class AgoraDaemon {
         res.write(`event: limits\ndata: ${JSON.stringify({ limits: event.limits })}\n\n`);
         return;
       }
+      if (event.type === "git") {
+        res.write(`event: git\ndata: ${JSON.stringify({ gitRepo: event.gitRepo })}\n\n`);
+        return;
+      }
       const state = handle.store.state;
       const patch = {
         ...eventPatch(state, event),
@@ -1829,6 +1854,9 @@ export class AgoraDaemon {
     }
     handle.followers += 1;
     handle.engine?.lookAtGithub();
+    this.watchGit(handle);
+    // A .git that came between the page's snapshot and this stream, before anything watched the folder.
+    lookAtGit(handle);
     if (!handle.engine && !handle.followTimer) {
       // Another process drives this room: follow its event log.
       handle.followTimer = setInterval(() => {
@@ -1850,7 +1878,30 @@ export class AgoraDaemon {
         clearInterval(handle.followTimer);
         delete handle.followTimer;
       }
+      if (handle.followers <= 0) {
+        handle.gitWatch?.close();
+        delete handle.gitWatch;
+      }
     });
+  }
+
+  /**
+   * While someone has the room open, a .git appearing in (or leaving) its folder — `git init` in the human's
+   * terminal or by an agent — is told to the page at once: whether a step can be committed depends on it.
+   */
+  private watchGit(handle: RoomHandle): void {
+    if (handle.gitWatch) return;
+    try {
+      handle.gitWatch = watch(handle.store.state.workspace, { persistent: false }, (_kind, name) => {
+        if (name === null || name === ".git") lookAtGit(handle);
+      });
+      handle.gitWatch.on("error", () => {
+        handle.gitWatch?.close();
+        delete handle.gitWatch;
+      });
+    } catch {
+      // A folder that is gone or unreadable: the snapshot says what it can.
+    }
   }
 
   /**

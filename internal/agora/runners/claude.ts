@@ -13,6 +13,7 @@ import {
 import type { Activity, ActivityKind, TurnUsage } from "../types.js";
 import { BROWSER_SERVER, claudeMcpConfig, describeBrowserTool } from "../browsertools.js";
 import { parseClaudeRateLimit } from "../limits.js";
+import { limitText } from "../duration.js";
 
 type Json = Record<string, unknown>;
 
@@ -344,7 +345,7 @@ class ClaudeLiveProcess implements LiveProcess {
     callbacks: TurnCallbacks;
     aborted: boolean;
     timedOut: boolean;
-    timeoutMinutes: number;
+    limit: string;
     finish: (result: TurnResult) => void;
   } | null = null;
   private totalCost = 0;
@@ -430,7 +431,7 @@ class ClaudeLiveProcess implements LiveProcess {
         status: "error",
         text: turn.lastAssistantText,
         sessionId: this.sessionId,
-        error: { kind: "timeout", message: `turn exceeded ${cur.timeoutMinutes} min` },
+        error: { kind: "timeout", message: `turn exceeded ${cur.limit}` },
       });
       return;
     }
@@ -466,7 +467,7 @@ class ClaudeLiveProcess implements LiveProcess {
         callbacks,
         aborted: false,
         timedOut: false,
-        timeoutMinutes: Math.round(request.settings.turnTimeoutMs / 60000),
+        limit: limitText(request.settings.turnTimeoutMs),
         finish: (result: TurnResult) => {
           if (this.current !== cur) return;
           this.current = null;
@@ -553,7 +554,7 @@ export const createClaudeRunner = (bin = process.env.AGORYX_CLAUDE_BIN || "claud
           status: "error",
           text: turn.lastAssistantText,
           sessionId: turn.confirmedSession,
-          error: { kind: "timeout", message: `turn exceeded ${Math.round(request.settings.turnTimeoutMs / 60000)} min` },
+          error: { kind: "timeout", message: `turn exceeded ${limitText(request.settings.turnTimeoutMs)}` },
         };
       }
       return claudeOutcome(turn, sessionId, outcome);

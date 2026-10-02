@@ -242,8 +242,9 @@ test("an edit no one can be credited with during parallel turns is recorded as t
   const room = createTestRoom({
     settings: { doc: "README.md" },
     rules: [
-      { agent: "claude", match: "essay", sleepMs: 1200, reply: "Thinking it over.", once: true },
-      { agent: "codex", match: "essay", sleepMs: 200, write: { path: "README.md", content: "# Time\n\nA draft.\n", via: "shell" }, reply: "Drafted it.", once: true },
+      // Claude is still working when Codex's turn ends: it waits for Codex's reply, which holds under any load.
+      { agent: "claude", match: "essay", mark: "claude-started", waitForText: "Drafted it.", reply: "Thinking it over.", once: true },
+      { agent: "codex", match: "essay", waitForMark: "claude-started", write: { path: "README.md", content: "# Time\n\nA draft.\n", via: "shell" }, reply: "Drafted it.", once: true },
     ],
   });
   try {

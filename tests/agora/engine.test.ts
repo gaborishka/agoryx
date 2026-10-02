@@ -625,7 +625,8 @@ test("the event log replays into the same state", async () => {
 test("one conversation: blind in parallel after the human, then one agent at a time", async () => {
   const room = createTestRoom({
     rules: [
-      { agent: "codex", match: "Hello both", sleepMs: 300, reply: "codex here", once: true },
+      // Codex answers the human after Claude has: its reply waits for Claude's.
+      { agent: "codex", match: "Hello both", waitForText: "claude here", reply: "codex here", once: true },
       { agent: "codex", match: "claude here", reply: "Codex answers Claude.", once: true },
       { agent: "claude", match: "Codex answers Claude.", reply: "Claude agrees.", once: true },
     ],

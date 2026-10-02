@@ -108,12 +108,15 @@ test("a file a turn wrote itself before and after a parallel turn ended is its w
         agent: "claude",
         match: "semver",
         earlyWrite: { path: "semver.ts", content: "a\nb\nc\n" },
-        sleepMs: 1500,
+        mark: "claude-drafted",
+        // Until Codex's turn is over: an order that holds under any load, as a sleep does not.
+        waitForText: "Tests in.",
         write: { path: "semver.ts", content: "a\nB\nc\nd\n" },
         reply: "Wrote semver.ts.",
         once: true,
       },
-      { agent: "codex", match: "semver", sleepMs: 200, write: { path: "semver.test.ts", content: "t\n" }, reply: "Tests in.", once: true },
+      // Codex's turn ends after Claude's first write, so that write is from before the handoff.
+      { agent: "codex", match: "semver", waitForMark: "claude-drafted", write: { path: "semver.test.ts", content: "t\n" }, reply: "Tests in.", once: true },
       { reply: "::pass::" },
     ],
   });

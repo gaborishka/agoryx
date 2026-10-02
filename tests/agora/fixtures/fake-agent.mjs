@@ -13,6 +13,9 @@
 //     between: ["command", ...] (live claude: commands the model runs after the turn ended, as when a background task wakes it),
 //     workdir (codex: the folder its commands name; {cwd} expands),
 //     sleepMs, afterTableMs (a pause after the table ops),
+//     waitForText (after sleepMs: until what the others said since the turn began shows it),
+//     mark (makes the file $FAKE_MARKS/<name> once the turn has begun and written its earlyWrite),
+//     waitForMark (after waitForText: until $FAKE_MARKS/<name> exists — made by a rule's mark or by the test),
 //     streamSleepMs (claude: pause after streaming the reply, before finishing),
 //     error: "text", exitCode, once: true }
 // Without a matching rule: first turn replies "<agent id> here", later turns pass.
@@ -26,7 +29,7 @@
 // in the agent's shell read it. $FAKE_STARTUP_MS: a delay before the CLI starts work (once per process). $FAKE_NO_LIVE=1: the CLI is one that does not know the live flags (exits 2).
 // With CLAUDE_CONFIG_DIR / CODEX_HOME set, the turn is also written to a native
 // session file in the real CLI's format, like `claude -p` and `codex exec` do.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -36,6 +39,52 @@ const args = process.argv.slice(3);
 const rawOut = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 let out = rawOut;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const bornAt = Date.now();
+// How long what the turn runs took, aside from FAKE_LOG (whose lines tests count): a timed-out test prints it.
+const timing = (entry) => {
+  try {
+    appendFileSync(`${process.env.FAKE_LOG}.timing`, `${JSON.stringify({ kind, pid: process.pid, at: Date.now(), ...entry })}\n`);
+  } catch {
+    // diagnostics only
+  }
+};
+
+/**
+ * The room's messages after the last one this turn's delta covered, but not this agent's own: what `agoryx read
+ * new` prints (bin/agoryx-agent.mjs), read from the same files. A live process's turn is in $AGORYX_TURN_FILE.
+ */
+const saidSince = () => {
+  let seenId = process.env.AGORYX_SEEN;
+  if (process.env.AGORYX_TURN_FILE) {
+    try {
+      seenId = JSON.parse(readFileSync(process.env.AGORYX_TURN_FILE, "utf8")).seen;
+    } catch {
+      return "";
+    }
+  }
+  const seen = /^m(\d+)$/.exec(seenId ?? "");
+  if (!seen || !process.env.AGORYX_OPS_DIR || !process.env.AGORYX_ROOM) return "";
+  // AGORYX_OPS_DIR is <workspace>/.agoryx/rooms/<room>/ops; messages are in <workspace>/.agoryx/messages/<room>.
+  const dir = join(dirname(dirname(dirname(process.env.AGORYX_OPS_DIR))), "messages", process.env.AGORYX_ROOM);
+  if (!existsSync(dir)) return "";
+  return readdirSync(dir)
+    .filter((name) => /^m\d+\.md$/.test(name) && Number(name.slice(1, -3)) > Number(seen[1]))
+    .map((name) => {
+      try {
+        return readFileSync(join(dir, name), "utf8");
+      } catch {
+        return "";
+      }
+    })
+    .filter((text) => text.split("\n", 1)[0].split(" · ")[1] !== process.env.AGORYX_AGENT)
+    .join("\n");
+};
+
+/** Where marks are made and waited for. */
+const marks = () => {
+  if (!process.env.FAKE_MARKS) throw new Error("mark and waitForMark need $FAKE_MARKS");
+  return process.env.FAKE_MARKS;
+};
 
 const readStdin = async () => {
   const chunks = [];
@@ -143,6 +192,7 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
   if (live) liveTurns += 1;
   const turn = (existsSync(counterFile) ? Number(readFileSync(counterFile, "utf8")) : 0) + 1;
   writeFileSync(counterFile, String(turn));
+  timing({ turn, what: "turn began", sinceStart: Date.now() - bornAt });
   appendFileSync(
     process.env.FAKE_LOG,
     `${JSON.stringify({
@@ -222,29 +272,40 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
       out({ type: "item.completed", item: { id: "edit_early", type: "file_change", changes: [{ path: full, kind: "add" }], status: "completed" } });
     }
   }
+  // The turn has begun (and written its early draft): the test or another rule may order something after it.
+  if (rule?.mark) writeFileSync(join(marks(), rule.mark), "");
   if (rule?.sleepMs) await sleep(rule.sleepMs);
-  // Until `agoryx read new` shows this text: an order between agents that holds under any load, as a sleep does not.
+  // Until what the others said since this turn began shows this text: an order between agents that holds under
+  // any load, as a sleep does not. Read here from the room's message files, as `agoryx read new` reads them, not
+  // by running it: a process every 50 ms, on a loaded machine, took the time of the turn it waited for.
   if (rule?.waitForText) {
     const deadline = Date.now() + 60_000;
+    const started = Date.now();
+    let reads = 0;
     for (;;) {
-      let seen = "";
-      try {
-        seen = execFileSync("agoryx", ["read", "new"], { encoding: "utf8", env: process.env });
-      } catch {
-        // not yet
-      }
-      if (seen.includes(rule.waitForText) || Date.now() > deadline) break;
+      reads += 1;
+      if (saidSince().includes(rule.waitForText) || Date.now() > deadline) break;
       await sleep(50);
     }
+    timing({ turn, what: `waited for ${JSON.stringify(rule.waitForText)}`, reads, ms: Date.now() - started });
+  }
+  // Until the test has marked a point in another room ($FAKE_MARKS/<name>): one room's turn ordered against another's.
+  if (rule?.waitForMark) {
+    const deadline = Date.now() + 60_000;
+    const started = Date.now();
+    while (!existsSync(join(marks(), rule.waitForMark)) && Date.now() < deadline) await sleep(50);
+    timing({ turn, what: `waited for mark ${rule.waitForMark}`, ms: Date.now() - started });
   }
 
   const tableOutputs = [];
   for (const argv of rule?.table ?? []) {
+    const started = Date.now();
     try {
       tableOutputs.push(execFileSync("agoryx", argv, { encoding: "utf8", env: process.env }).trim());
     } catch (error) {
       tableOutputs.push(`ERR ${String(error.stderr || error.message).trim()}`);
     }
+    timing({ turn, what: `agoryx ${argv[0]}`, ms: Date.now() - started });
   }
   if (tableOutputs.length) appendFileSync(process.env.FAKE_LOG, `${JSON.stringify({ kind, turn, tableOutputs })}\n`);
   if (rule?.afterTableMs) await sleep(rule.afterTableMs);
@@ -252,11 +313,13 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
   // Any command, as an agent's shell would run it (the human's own CLI, say), with the turn's environment.
   const runOutputs = [];
   for (const [command, ...argv] of rule?.run ?? []) {
+    const started = Date.now();
     try {
       runOutputs.push(execFileSync(command, argv, { encoding: "utf8", env: process.env, stdio: ["ignore", "pipe", "pipe"] }).trim());
     } catch (error) {
       runOutputs.push(`ERR ${String(error.stderr || error.message).trim()}`);
     }
+    timing({ turn, what: `${command} ${argv[0] ?? ""}`.trim(), ms: Date.now() - started });
   }
   if (runOutputs.length) appendFileSync(process.env.FAKE_LOG, `${JSON.stringify({ kind, turn, runOutputs })}\n`);
 
@@ -350,6 +413,7 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
   }
 
   appendFileSync(process.env.FAKE_LOG, `${JSON.stringify({ kind, turn, readyAt: Date.now() })}\n`);
+  timing({ turn, what: "ready" });
 
   // What a real CLI does after its answer: shutting down takes a while (hooks, MCP servers, state), and
   // whatever it still writes then is not the turn's. A live process has no such tail.

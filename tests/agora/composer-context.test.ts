@@ -10,6 +10,24 @@ import type { RoomMessage } from "../../ui/src/lib/types.js";
 
 const atEnd = (text: string) => composerTrigger(text, text.length);
 
+test("slash catalog scopes skills to handles, keeps collisions distinct, and supports hyphenated names", () => {
+  const skills = [
+    { id: "a", name: "code-review", description: "Review changes", path: "/a/SKILL.md", source: "project", agents: ["codex", "claude"] },
+    { id: "b", name: "code-review", description: "A different review", path: "/b/SKILL.md", source: "personal", agents: ["claude"] },
+  ];
+  const people = [{ id: "codex", label: "Codex" }, { id: "claude", label: "Claude" }];
+  assert.deepEqual(atEnd("@codex /code-r")?.targets, ["codex"]);
+  assert.equal(atEnd("@codex /code-r")?.query, "code-r");
+  assert.deepEqual(composerChoices(atEnd("@codex /code-r"), people, [], skills).map(c => c.value), ["a"]);
+  assert.deepEqual(composerChoices(atEnd("@codex /code-r"), people, [], skills, "room").map(c => c.value), ["a"], "a typed recipient overrides a previously chosen Room filter");
+  assert.deepEqual(composerChoices(atEnd("/code-r"), people, [], skills).map(c => c.value), ["a", "b"]);
+  assert.deepEqual(composerChoices(atEnd("@unknown /"), people, [], skills).filter(c => c.kind === "skill"), []);
+  assert.ok(composerChoices(atEnd("/"), people, [], skills, "room").every(c => c.kind === "command" && c.value !== "model"));
+  assert.ok(composerChoices(atEnd("@codex /"), people, [], skills).every(c => c.kind === "skill" || c.value === "model"));
+  assert.equal(atEnd("text /code-r"), null);
+  assert.equal(atEnd("`/code-r"), null);
+});
+
 test("suggestions use the collapsed caret and ignore emails, quoted text and code", () => {
   for (const text of ["me@cla", "@@cla", "> @cla", "  > @cla", "```ts\n@cla", "~~~~\n@cla", "look `@cla"]) assert.equal(atEnd(text), null, text);
   assert.equal(composerTrigger("@cla", 1, 4), null);

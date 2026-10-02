@@ -531,6 +531,9 @@ export type RoomEventBody =
   /** `by`: who changed them (absent in logs from before authors were recorded). */
   | { type: "settings.changed"; patch: Partial<RoomSettings>; by?: string; from?: ActorOrigin }
   | { type: "room.renamed"; name: string; by?: string; from?: ActorOrigin }
+  /** A thread marked resolved, or open again: the human's, never an agent's. */
+  | { type: "thread.resolved"; by: string }
+  | { type: "thread.reopened"; by: string }
   /**
    * An agent's model or effort changed; null: back to the CLI's own default. Its next turn uses them. Also its
    * role (null: none), its name, and whether it is given the human's profile.
@@ -773,10 +776,17 @@ export interface RoomState {
   createdBy?: ActorOrigin;
   /** A thread: the room it was started from. */
   parent?: string;
+  /** A thread the human marked resolved (it changes nothing for its agents; it moves the thread on the board). */
+  resolved?: ThreadResolution;
   /** The folder's GitHub repository, when gh is there and the folder has a github.com remote. */
   repo?: RepoState;
   /** Pull requests that came into the room, oldest first. */
   prs?: PrState[];
+}
+
+export interface ThreadResolution {
+  by: string;
+  at: string;
 }
 
 export interface RepoState {

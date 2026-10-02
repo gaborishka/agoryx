@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { agentKey } from "../../internal/agora/actor.js";
 import { AgoraDaemon } from "../../internal/agora/daemon.js";
 import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { createCodexRunner } from "../../internal/agora/runners/codex.js";
@@ -173,6 +174,51 @@ test("a thread the human starts wakes nobody when it reports and waits in Attent
   const refused = await call("POST", "/api/rooms", { name: "No", from: chat.id });
   assert.equal(refused.status, 400);
   assert.match(refused.body.error, /Chat room: a thread works in its project's folder/);
+});
+
+test("resolving a thread is the human's: it moves the thread on the board, posts nothing and wakes nobody", async () => {
+  const repo = makeRepo("resolve-repo");
+  rules([{ agent: "codex", match: "RESOLVE-BRIEF", reply: "Looked, all fine." }]);
+  const parent = (await call("POST", "/api/rooms", { name: "Resolve main", dir: repo, mode: "work", agents: [{ kind: "codex" }] })).body.room;
+  const thread = (await call("POST", "/api/rooms", { name: "Check it", from: parent.id, text: "RESOLVE-BRIEF: check it" })).body.room;
+  await waitFor(async () => (await snapshot(parent.id)).messages.find((m: any) => m.sys?.code === "thread.reported"));
+  await waitFor(async () => !(await snapshot(thread.id)).turns.some((turn: any) => turn.status === "running"));
+  const before = await snapshot(thread.id);
+
+  // An agent — the thread's own, or one of the room it came from — cannot.
+  for (const [room, agent] of [[thread.id, "codex"], [parent.id, "codex"]]) {
+    const res = await fetch(`${url}/api/rooms/${thread.id}/resolve`, {
+      method: "POST",
+      headers: { "x-agoryx-token": agentKey(daemon.token, room!, agent!), "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(res.status, 403);
+  }
+  assert.equal((await call("POST", `/api/rooms/${parent.id}/resolve`, {})).status, 400, "only a thread is resolved");
+
+  const resolved = await call("POST", `/api/rooms/${thread.id}/resolve`, {});
+  assert.equal(resolved.status, 200, JSON.stringify(resolved.body));
+  assert.equal(resolved.body.room.resolved.by, "Ivan");
+  const after = await snapshot(thread.id);
+  assert.deepEqual(after.resolved, resolved.body.room.resolved);
+  assert.equal(after.messages.length, before.messages.length, "nothing posted");
+  assert.equal(after.turns.length, before.turns.length, "nobody woken");
+  const listed = (await call("GET", "/api/rooms")).body.rooms.find((room: any) => room.id === thread.id);
+  assert.equal(listed.resolved.by, "Ivan");
+  const overview = (await call("GET", `/api/projects/${listed.projectHash}/overview`)).body;
+  assert.equal(overview.threads.find((entry: any) => entry.id === thread.id).resolved.by, "Ivan");
+
+  // Twice is once; reopened, it is on the board as before.
+  await call("POST", `/api/rooms/${thread.id}/resolve`, {});
+  const reopened = await call("POST", `/api/rooms/${thread.id}/resolve`, { resolved: false });
+  assert.equal(reopened.status, 200);
+  assert.equal(reopened.body.room.resolved, undefined);
+  const events = readFileSync(join(env.AGORYX_HOME!, "rooms", thread.id, "events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+    .filter((event) => event.type.startsWith("thread."));
+  assert.deepEqual(events.map((event) => [event.type, event.by]), [["thread.resolved", "Ivan"], ["thread.reopened", "Ivan"]]);
 });
 
 test("a thread goes on from its parent's branch, in the parent's project folder", () => {

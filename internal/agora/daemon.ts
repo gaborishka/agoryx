@@ -1758,6 +1758,16 @@ export class AgoraDaemon {
         sendJson(res, 200, { room: handle.store.summary() });
         return;
       }
+      case "resolve": {
+        if (caller.agent) throw new HttpError(403, "resolving a thread is the human's");
+        try {
+          engine.resolveThread(body.resolved !== false, actor);
+        } catch (error) {
+          throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
+        sendJson(res, 200, { room: handle.store.summary() });
+        return;
+      }
       case "stop": {
         await engine.stop("human", actor);
         sendJson(res, 200, { ok: true });

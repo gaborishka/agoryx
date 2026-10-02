@@ -936,6 +936,18 @@ export class RoomEngine {
   }
 
   /**
+   * Mark this thread resolved, or open again. The human's alone: it moves the thread on the board and changes nothing
+   * for its agents — no note, no wake.
+   */
+  resolveThread(resolved: boolean, by?: string | Actor): void {
+    const actor = this.actor(by);
+    if (!this.state.parent) throw new Error("only a thread is resolved");
+    if (!this.byHuman(actor)) throw new Error("resolving a thread is the human's");
+    if (Boolean(this.state.resolved) === resolved) return;
+    this.store.append({ type: resolved ? "thread.resolved" : "thread.reopened", by: actor.by });
+  }
+
+  /**
    * "human": someone stopped the run (`by`, the human by default); "shutdown": Agoryx is closing the
    * room — with `by` when someone stopped the daemon.
    */

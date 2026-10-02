@@ -1,4 +1,4 @@
-import { CopyIcon, FileTextIcon, GitBranchIcon, ImageIcon, PaperclipIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, FileTextIcon, GitBranchIcon, ImageIcon, PaperclipIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Hint } from "@/components/common/states";
@@ -7,6 +7,7 @@ import { api, Unauthorized } from "@/lib/api";
 import { ago, baseName, ext, IMAGE_EXT, plural, took, VISUAL_EXT } from "@/lib/format";
 import { errText } from "@/lib/load";
 import { useStore } from "@/lib/store";
+import { groupThreads, threadGroup } from "@/lib/threads";
 import { cn } from "@/lib/utils";
 import type { LibraryEntry, LibraryKind, ProjectOverview, ThreadView } from "@agora/overview";
 import { Block } from "./Block";
@@ -19,12 +20,7 @@ import { Block } from "./Block";
 
 export type Overview = ProjectOverview & { rawBase: Record<string, string> };
 
-const COLUMNS: Array<{ id: string; head: string; has: (thread: ThreadView) => boolean }> = [
-  { id: "working", head: "Working", has: (thread) => thread.running },
-  { id: "reported", head: "Reported back", has: (thread) => !thread.running && thread.report?.reason === "quiet" },
-  { id: "stopped", head: "Stopped", has: (thread) => !thread.running && (thread.report?.reason === "budget" || thread.report?.reason === "stopped") },
-  { id: "waiting", head: "Not reported yet", has: (thread) => !thread.running && !thread.report },
-];
+const groupOf = (thread: ThreadView) => threadGroup({ running: thread.running, resolved: thread.resolved, spoke: Boolean(thread.report) });
 
 function ThreadTile({ thread }: { thread: ThreadView }) {
   const go = useStore((s) => s.go);
@@ -71,13 +67,18 @@ function ThreadTile({ thread }: { thread: ThreadView }) {
             <span className="text-foreground/80">{report.last.by}:</span> {report.last.text}
           </span>
         ) : null}
+        {thread.resolved ? (
+          <span className="flex items-center gap-1 text-meta text-faint">
+            <CheckIcon className="size-3 shrink-0" /> Resolved by {thread.resolved.by} {ago(thread.resolved.at)}
+          </span>
+        ) : null}
       </button>
     </li>
   );
 }
 
 export function Threads({ threads }: { threads: ThreadView[] }) {
-  const columns = COLUMNS.map((column) => ({ ...column, threads: threads.filter(column.has) })).filter((column) => column.threads.length);
+  const columns = groupThreads(threads, groupOf);
   return (
     <Block title="Threads" aside={threads.length ? `${threads.length}` : undefined}>
       {threads.length ? (
@@ -250,7 +251,7 @@ export function useOverview(hash: string): { overview: Overview | null; error: s
   const tick = useStore((s) =>
     s.rooms
       .filter((room) => room.projectHash === hash)
-      .map((room) => `${room.id}:${room.messages}:${room.running}`)
+      .map((room) => `${room.id}:${room.messages}:${room.running}:${room.resolved?.at ?? ""}`)
       .join(","),
   );
   const [overview, setOverview] = useState<Overview | null>(null);

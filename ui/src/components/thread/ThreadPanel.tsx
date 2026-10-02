@@ -1,4 +1,4 @@
-import { ChevronRightIcon, GitBranchIcon, SquareArrowOutUpRightIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon, GitBranchIcon, SquareArrowOutUpRightIcon, Undo2Icon } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { EmptyState, Hint, Loading } from "@/components/common/states";
@@ -12,6 +12,7 @@ import { errText } from "@/lib/load";
 import { participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { sysLine } from "@/lib/system";
+import { groupThreads, threadGroup } from "@/lib/threads";
 import type { RoomState, RoomSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -20,10 +21,29 @@ import { cn } from "@/lib/utils";
  * the thread as the human's message). "Threads" lists this room's threads; the whole room opens on its own.
  */
 
+/** A thread has spoken when its agent wrote last: it waits for the human. */
+const groupOf = (thread: RoomSummary) =>
+  threadGroup({ running: thread.running, resolved: thread.resolved, spoke: Boolean(thread.lastMessage?.label && !thread.lastMessage.sys) });
+
 function ThreadList({ threads, onPick }: { threads: RoomSummary[]; onPick: (id: string) => void }) {
   if (!threads.length) return <Hint className="p-4">No threads yet. An agent starts one with `agoryx new --from here`.</Hint>;
   return (
-    <ul className="flex flex-col gap-1 p-2">
+    <div className="flex flex-col gap-3 p-2">
+      {groupThreads(threads, groupOf).map((group) => (
+        <section key={group.id} className="flex flex-col gap-1">
+          <h3 className="px-2.5 text-micro font-medium text-faint">
+            {group.head} {group.threads.length}
+          </h3>
+          <ThreadRows threads={group.threads} onPick={onPick} />
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function ThreadRows({ threads, onPick }: { threads: RoomSummary[]; onPick: (id: string) => void }) {
+  return (
+    <ul className="flex flex-col gap-1">
       {threads.map((thread) => (
         <li key={thread.id}>
           <button type="button" onClick={() => onPick(thread.id)} className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left hover:bg-accent">
@@ -127,6 +147,39 @@ function Steer({ id, running }: { id: string; running: boolean }) {
   );
 }
 
+/**
+ * The human's ✓: the thread moves to Resolved on the board. Its agents are not told and nothing stops; while it
+ * works again it shows as Working, and Reopen brings it back for good.
+ */
+function Resolve({ id, resolved }: { id: string; resolved?: { by: string; at: string } }) {
+  const loadRooms = useStore((s) => s.loadRooms);
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    setBusy(true);
+    try {
+      await api("POST", `${roomPath(id)}/resolve`, { resolved: !resolved });
+      await loadRooms();
+    } catch (err) {
+      if (!(err instanceof Unauthorized)) toast.error(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={busy}
+      className={cn("ml-auto h-7 shrink-0 gap-1 px-2 text-meta", resolved && "text-muted-foreground")}
+      onClick={() => void send()}
+      title={resolved ? `Resolved by ${resolved.by} ${ago(resolved.at)}: open it again` : "Mark it resolved: it moves to Resolved; its agents are not told"}
+    >
+      {resolved ? <Undo2Icon className="size-3.5" /> : <CheckIcon className="size-3.5" />}
+      {resolved ? "Reopen" : "Resolve"}
+    </Button>
+  );
+}
+
 export function ThreadPanel() {
   const id = useStore((s) => s.thread);
   const here = useStore((s) => s.snap?.state.id);
@@ -140,7 +193,7 @@ export function ThreadPanel() {
   // not read while the tab is hidden): not on a timer.
   const changed = useStore((s) => {
     const room = s.rooms.find((entry) => entry.id === id);
-    return room ? `${room.messages}:${room.running}` : "";
+    return room ? `${room.messages}:${room.running}:${room.resolved?.at ?? ""}` : "";
   });
 
   useEffect(() => {
@@ -177,7 +230,8 @@ export function ThreadPanel() {
             <ChevronRightIcon className="size-3.5 shrink-0 text-faint" />
             <span className="min-w-0 truncate font-medium">{state?.name ?? summary?.name}</span>
             {running ? <span className="ml-1 size-1.5 shrink-0 animate-breathe rounded-full bg-foreground" title="Working" /> : null}
-            <Button variant="ghost" size="sm" className="ml-auto h-7 shrink-0 gap-1 px-2 text-meta" onClick={() => id && go({ kind: "room", id })} title="Open the thread as a room of its own">
+            {id ? <Resolve id={id} resolved={state?.resolved ?? summary?.resolved} /> : null}
+            <Button variant="ghost" size="sm" className="h-7 shrink-0 gap-1 px-2 text-meta" onClick={() => id && go({ kind: "room", id })} title="Open the thread as a room of its own">
               <SquareArrowOutUpRightIcon className="size-3.5" />
               Open as room
             </Button>

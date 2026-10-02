@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { extname, join, sep } from "node:path";
 import { fileRefs, MEDIA_EXTS } from "./media.js";
 import type { ThreadNote } from "./threads.js";
-import type { RoomEvent, RoomState } from "./types.js";
+import type { RoomEvent, RoomState, ThreadResolution } from "./types.js";
 import { emptyTotals, roomUsage, type UsageTotals } from "./usage.js";
 
 /**
@@ -40,6 +40,8 @@ export interface ThreadView {
   base?: string;
   running: boolean;
   updatedAt: string;
+  /** The human marked it resolved. */
+  resolved?: ThreadResolution;
   /** Its last report in its parent, as posted. */
   report?: Pick<ThreadNote, "reason" | "files" | "more" | "uncommitted" | "open" | "last"> & { at: string };
 }
@@ -137,6 +139,7 @@ export const projectOverview = (rooms: OverviewRoom[], uploads: string, all: Map
         ...(state.worktree ? { branch: state.worktree.branch, base: state.worktree.base } : {}),
         running: state.turns.some((turn) => turn.status === "running"),
         updatedAt,
+        ...(state.resolved ? { resolved: state.resolved } : {}),
         ...(sys && report
           ? { report: { reason: sys.reason, files: sys.files, ...(sys.more ? { more: sys.more } : {}), uncommitted: sys.uncommitted, ...(sys.open ? { open: sys.open } : {}), ...(sys.last ? { last: sys.last } : {}), at: report.ts } }
           : {}),

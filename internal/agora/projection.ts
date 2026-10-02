@@ -215,6 +215,12 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
     case "room.renamed":
       state.name = event.name;
       return;
+    case "thread.resolved":
+      state.resolved = { by: event.by, at: event.ts };
+      return;
+    case "thread.reopened":
+      delete state.resolved;
+      return;
     case "agent.changed":
       state.agents = state.agents.map((agent) => {
         if (agent.id !== event.agent) return agent;

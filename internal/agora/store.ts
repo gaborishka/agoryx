@@ -30,6 +30,7 @@ import type {
   RoomState,
   RoomWorktree,
   SystemNote,
+  ThreadResolution,
 } from "./types.js";
 
 export type StoreListener = (event: RoomEvent | EphemeralEvent) => void;
@@ -49,6 +50,8 @@ export interface CreateRoomInput {
   createdBy?: ActorOrigin;
   /** A thread: the room it was started from. */
   parent?: string;
+  /** A thread the human marked resolved: by whom, when. */
+  resolved?: ThreadResolution;
 }
 
 export interface RoomSummary {
@@ -293,6 +296,7 @@ export class RoomStore {
           : { folder: this.state.workspace }),
       ...(key ? { projectHash: projectHash(key) } : {}),
       ...(this.state.parent ? { parent: this.state.parent } : {}),
+      ...(this.state.resolved ? { resolved: this.state.resolved } : {}),
     };
   }
 

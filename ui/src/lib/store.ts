@@ -412,6 +412,8 @@ type Patch = {
   agents?: Snapshot["state"]["agents"];
   former?: Snapshot["state"]["former"];
   resume?: Snapshot["resume"];
+  /** null: the thread is open again. */
+  resolved?: Snapshot["state"]["resolved"] | null;
   activity?: { turnId: string; activity: TurnState["activity"][number] };
 };
 
@@ -442,6 +444,8 @@ const applyPatch = (event: RoomEvent, patch: Patch) => {
   if (patch.repo === null) delete st.repo;
   else if (patch.repo) st.repo = patch.repo;
   if (patch.prs) st.prs = patch.prs;
+  if (patch.resolved === null) delete st.resolved;
+  else if (patch.resolved) st.resolved = patch.resolved;
   if (patch.guests) st.guests = patch.guests;
   if (patch.agents) st.agents = patch.agents;
   if (patch.former) st.former = patch.former;

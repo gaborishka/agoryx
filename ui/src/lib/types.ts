@@ -31,6 +31,8 @@ export interface RoomSummary {
   projectName?: string;
   /** A thread: the room it was started from. */
   parent?: string;
+  /** A thread the human marked resolved. */
+  resolved?: { by: string; at: string };
 }
 
 /** A project event: a name, goal or instructions written, with who wrote it. */

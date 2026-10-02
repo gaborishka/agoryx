@@ -13,6 +13,7 @@ import { useStore } from "@/lib/store";
 import type { ProjectEvent, ProjectView, RoomSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { MemorySection } from "./MemorySection";
+import { OverviewSections } from "./OverviewSections";
 
 /**
  * A project: the folder Work rooms work in, with a name, a goal and instructions that outlive one room. The agents
@@ -236,6 +237,8 @@ export function ProjectPage({ hash }: { hash: string }) {
                   <Hint>No Work room works in this folder yet.</Hint>
                 )}
               </Block>
+
+              <OverviewSections hash={hash} />
 
               {history.length ? (
                 <Block title="Changes">

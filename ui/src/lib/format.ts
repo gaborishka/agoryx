@@ -1,4 +1,5 @@
 // Small formatting helpers shared by the whole UI (English copy).
+import type { UsageTotals } from "@agora/usage";
 
 import { decisionOf, sysLine } from "./system";
 import type { SystemNote } from "./types";
@@ -125,3 +126,16 @@ export const preview = (text: string) =>
   )
     .replace(/\s+/g, " ")
     .trim();
+
+/**
+ * "12s · ≈$0.041 · 3.2k/410 tok." — what a set of turns took, with only what the CLIs reported. The $ is Claude
+ * Code's estimate at API prices, not a charge: on a subscription nothing is billed per turn.
+ */
+export const took = (totals: UsageTotals) => {
+  if (!totals.turns) return "—";
+  const parts = [secs(totals.ms)];
+  if (totals.costTurns) parts.push(`≈${cost(totals.costUsd)}`);
+  if (totals.inputTokens || totals.outputTokens) parts.push(`${tokens(totals.inputTokens)}/${tokens(totals.outputTokens)} tok.`);
+  return parts.join(" · ");
+};
+export const tokens = (n: number) => (n < 1000 ? String(n) : `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`);

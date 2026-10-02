@@ -18,7 +18,8 @@ import { planStepCommit, StepCommitError } from "./step-commit.js";
 import { deviceLabel, DeviceRegistry, formatCode, isDeviceToken, PairingError, type DeviceInfo } from "./devices.js";
 import { lanInterfaces, normalizeHosts, writeExposure, type Exposure } from "./exposure.js";
 import { linkedMedia, markdownTexts } from "./media.js";
-import { MAX_UPLOAD, saveUpload, UploadError } from "./uploads.js";
+import { MAX_UPLOAD, saveUpload, UploadError, uploadsDir } from "./uploads.js";
+import { projectOverview } from "./overview.js";
 import { agentModels } from "./models.js";
 import { locateNativeSession } from "./native.js";
 import { readLimits, recordLimits } from "./limits-store.js";
@@ -1120,7 +1121,8 @@ export class AgoraDaemon {
   /**
    * Projects: the folders Work rooms work in, with a name, a goal, instructions and memory that outlive one room.
    * `GET /api/projects`, `GET|PATCH /api/projects/<hash>` (a folder nothing was written for yet is named by
-   * `key`, its path), `POST /api/projects/<hash>/memory` (`note` or `promote`), `PATCH|DELETE …/memory/<id>`.
+   * `key`, its path), `POST /api/projects/<hash>/memory` (`note` or `promote`), `PATCH|DELETE …/memory/<id>`,
+   * `GET /api/projects/<hash>/overview` (its library, threads and usage, read from its rooms).
    * Agents write with their own key, and every write says who made it.
    */
   private async projectsApi(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[], method: string, caller: Caller): Promise<void> {
@@ -1151,7 +1153,8 @@ export class AgoraDaemon {
       return;
     }
     const memory = parts[1] === "memory";
-    if (parts.length !== 1 && !(memory && parts.length <= 3)) throw new HttpError(404, "unknown endpoint");
+    const overview = parts[1] === "overview" && parts.length === 2;
+    if (parts.length !== 1 && !(memory && parts.length <= 3) && !overview) throw new HttpError(404, "unknown endpoint");
     const hash = parts[0]!;
     const body = method === "GET" || method === "DELETE" ? {} : (((await readBody(req)) ?? {}) as Record<string, unknown>);
     const asked = typeof body.key === "string" ? body.key : url.searchParams.get("key");
@@ -1176,6 +1179,38 @@ export class AgoraDaemon {
       if (typeof value !== "string") throw new HttpError(400, `${field} must be a string`);
       return value;
     };
+    if (overview) {
+      if (method !== "GET") throw new HttpError(405, "GET");
+      const stateOf = (id: string): { state: RoomState; events: readonly RoomEvent[] } | null => {
+        const handle = this.rooms.get(id);
+        if (handle) return { state: handle.store.state, events: handle.store.since(0) };
+        try {
+          const store = RoomStore.open(roomsDir(this.env), id);
+          return { state: store.state, events: store.since(0) };
+        } catch {
+          return null;
+        }
+      };
+      const members = rooms.filter((room) => room.projectHash === hash);
+      const read = members.flatMap((room) => {
+        const got = stateOf(room.id);
+        return got ? [{ ...got, updatedAt: room.updatedAt }] : [];
+      });
+      const all = new Map(read.map(({ state }) => [state.id, state]));
+      for (const { state } of read) {
+        if (state.parent && !all.has(state.parent)) {
+          const parent = stateOf(state.parent);
+          if (parent) all.set(parent.state.id, parent.state);
+        }
+      }
+      const device = caller.agent ? undefined : caller.device;
+      sendJson(res, 200, {
+        ...projectOverview(read, uploadsDir(this.env), all),
+        // Where each room serves its files from, for this page: a library entry opens through the room that links it.
+        rawBase: Object.fromEntries(read.map(({ state }) => [state.id, this.rawBase(state.id, device)])),
+      });
+      return;
+    }
     if (memory && parts.length === 2) {
       if (method !== "POST") throw new HttpError(405, "POST");
       const note = body.note as Record<string, unknown> | undefined;

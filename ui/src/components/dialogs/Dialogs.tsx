@@ -1,4 +1,4 @@
-import type { AgentUsage, RoomUsage, UsageTotals } from "@agora/usage";
+import type { AgentUsage, RoomUsage } from "@agora/usage";
 import { ReceiptIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
@@ -18,7 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, roomPath, Unauthorized } from "@/lib/api";
 import { keyLabel, SHORTCUTS, withMod } from "@/lib/keys";
-import { cost, fullDate, names, plural, secs } from "@/lib/format";
+import { fullDate, names, plural, took } from "@/lib/format";
 import { errText, useLoad } from "@/lib/load";
 import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { type DialogState, type TableFormOp, useStore } from "@/lib/store";
@@ -594,19 +594,6 @@ const ERROR_LABEL: Record<string, string> = {
   session: "session",
   unknown: "other",
 };
-
-/**
- * "12s · ≈$0.041 · 3.2k/410 tok." — what a set of turns took, with only what the CLIs reported. The $ is Claude
- * Code's estimate at API prices, not a charge: on a subscription nothing is billed per turn.
- */
-const took = (totals: UsageTotals) => {
-  if (!totals.turns) return "—";
-  const parts = [secs(totals.ms)];
-  if (totals.costTurns) parts.push(`≈${cost(totals.costUsd)}`);
-  if (totals.inputTokens || totals.outputTokens) parts.push(`${tokens(totals.inputTokens)}/${tokens(totals.outputTokens)} tok.`);
-  return parts.join(" · ");
-};
-const tokens = (n: number) => (n < 1000 ? String(n) : `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`);
 
 function UsageDialog() {
   const room = useStore((s) => s.snap?.state);

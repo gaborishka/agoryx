@@ -17,11 +17,14 @@ let url: string;
 let env: NodeJS.ProcessEnv;
 
 const call = async (method: string, path: string, body?: unknown) => {
-  const res = await fetch(`${url}${path}`, {
-    method,
-    headers: { "x-agoryx-token": daemon.token, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
+  const send = () =>
+    fetch(`${url}${path}`, {
+      method,
+      headers: { "x-agoryx-token": daemon.token, "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  // A read that loses a reused keep-alive socket under load is sent again; a write is not.
+  const res = await send().catch((error) => (method === "GET" ? send() : Promise.reject(error)));
   return { status: res.status, body: (await res.json()) as any };
 };
 
@@ -30,7 +33,8 @@ const snapshot = async (room: string) => (await call("GET", `/api/rooms/${room}`
 const waitFor = async <T>(check: () => Promise<T | undefined | null | false>, ms = 30_000): Promise<T> => {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
-    const got = await check();
+    // A poll that loses its connection (a reused keep-alive socket, under load) is read again, not a failure.
+    const got = await check().catch(() => undefined);
     if (got) return got;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }

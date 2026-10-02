@@ -36,17 +36,17 @@ const refsCache = new Map<string, string[]>();
 const HTML_URL = /<(?:img|video|audio|source|a)\b[^>]*?\s(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
 /**
- * Absolute media paths a text links or embeds, in order — read with a markdown lexer, as the
+ * Absolute paths a text links or embeds, of any kind, in order — read with a markdown lexer, as the
  * UI renders it: reference-style links count, examples inside code spans and fences do not.
  */
-export const mediaRefs = (text: string): string[] => {
+export const fileRefs = (text: string): string[] => {
   const cached = refsCache.get(text);
   if (cached) return cached;
   const found: string[] = [];
   const add = (href: string) => {
     if (!/^(file:\/\/|~\/|\/)/.test(href) || href.startsWith("//")) return;
     const path = nativePath(linkPath(href));
-    if (isAbsolute(path) && MEDIA_EXTS.has(extname(path).toLowerCase()) && !found.includes(path)) found.push(path);
+    if (isAbsolute(path) && !found.includes(path)) found.push(path);
   };
   marked.walkTokens(marked.lexer(text), (token) => {
     if (token.type === "image" || token.type === "link") add((token as Tokens.Image | Tokens.Link).href);
@@ -57,6 +57,9 @@ export const mediaRefs = (text: string): string[] => {
   refsCache.set(text, found);
   return found;
 };
+
+/** Absolute media paths a text links or embeds, in order (see fileRefs). */
+export const mediaRefs = (text: string): string[] => fileRefs(text).filter((path) => MEDIA_EXTS.has(extname(path).toLowerCase()));
 
 /** An embed for a file wherever it is, escaped so the markdown link holds and the name survives as written. */
 export const embed = (path: string): string =>

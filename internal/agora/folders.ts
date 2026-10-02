@@ -8,7 +8,7 @@ import type { RoomWorktree } from "./types.js";
 
 const git = (cwd: string, args: string[], timeout = 10_000): string | null => {
   try {
-    return execFileSync("git", args, { cwd, encoding: "utf8", timeout, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 4 * 1024 * 1024 });
+    return execFileSync("git", args, { cwd, encoding: "utf8", timeout, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 4 * 1024 * 1024 });
   } catch {
     return null;
   }

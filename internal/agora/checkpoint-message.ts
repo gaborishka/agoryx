@@ -1,7 +1,7 @@
 import type { RoomEvent, TableItem, TurnState } from "./types.js";
 
 /** A step a run worked on: finished during it, or put on the table during it and still to do. */
-export type RunStep = Pick<TableItem, "id" | "text" | "by" | "done" | "doneBy">;
+export type RunStep = Pick<TableItem, "id" | "text" | "by" | "done" | "doneBy" | "commit">;
 
 /** What a line of a commit message must not carry: control characters, line breaks, bidi overrides and isolates. */
 const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
@@ -36,7 +36,7 @@ export const stepsInSubject = (subject: string): string[] => {
  * The steps a run worked on, in the order the run met them, as the table holds them now: those marked done
  * during the run, and those put on it during the run that are still to do. A deleted step is gone from both.
  */
-export const runSteps = (events: readonly RoomEvent[], next: readonly TableItem[], since: number): RunStep[] => {
+export const runSteps = (events: readonly RoomEvent[], next: readonly TableItem[], since: number): TableItem[] => {
   const ids: string[] = [];
   for (const event of events) {
     if (event.seq <= since || event.type !== "table.op") continue;
@@ -73,22 +73,36 @@ export const checkpointBody = (
   files: readonly string[],
   turns: readonly Pick<TurnState, "id" | "agent" | "files">[],
   committed: ReadonlyMap<string, string> = new Map(),
-): string => {
-  const step = (entry: RunStep) => {
-    const sha = committed.get(entry.id);
-    return `- ${stepName(entry, 100)} (${entry.done ? `done by ${entry.doneBy ?? entry.by}` : entry.by}${sha ? `; committed as ${sha.slice(0, 8)}` : ""})`;
-  };
-  const file = (path: string) => {
-    const by = turns.filter((turn) => turn.files?.includes(path)).map((turn) => `${turn.id} ${turn.agent}`);
-    return `- ${path} (${by.length ? by.join(", ") : "no turn of this run"})`;
-  };
-  const sections: [string, string[]][] = [
-    ["Steps done:", steps.filter((entry) => entry.done).map(step)],
-    ["Steps still to do:", steps.filter((entry) => !entry.done).map(step)],
-    ["Files:", [...files.slice(0, MAX_LISTED).map(file), ...(files.length > MAX_LISTED ? [`- … and ${files.length - MAX_LISTED} more`] : [])]],
-  ];
-  return sections
+): string =>
+  sections([
+    ["Steps done:", steps.filter((entry) => entry.done).map((entry) => stepLine(entry, committed.get(entry.id)))],
+    ["Steps still to do:", steps.filter((entry) => !entry.done).map((entry) => stepLine(entry))],
+    ["Files:", listed(files, (path) => fileLine(path, turns, "no turn of this run"))],
+  ]);
+
+/** The body of a step's own commit (the human's button): the step, and every file with the step's turns that changed it. */
+export const stepCommitBody = (step: RunStep, files: readonly string[], turns: readonly Pick<TurnState, "id" | "agent" | "files">[]): string =>
+  sections([
+    ["Step:", [stepLine(step)]],
+    ["Files:", listed(files, (path) => fileLine(path, turns, "no turn of this step"))],
+  ]);
+
+const stepLine = (entry: RunStep, sha?: string): string =>
+  `- ${stepName(entry, 100)} (${entry.done ? `done by ${entry.doneBy ?? entry.by}` : entry.by}${sha ? `; committed as ${sha.slice(0, 8)}` : ""})`;
+
+const fileLine = (path: string, turns: readonly Pick<TurnState, "id" | "agent" | "files">[], none: string): string => {
+  const by = turns.filter((turn) => turn.files?.includes(path)).map((turn) => `${turn.id} ${turn.agent}`);
+  return `- ${path} (${by.length ? by.join(", ") : none})`;
+};
+
+/** The first 200 files, each as `line` says, and how many more. */
+const listed = (files: readonly string[], line: (path: string) => string): string[] => [
+  ...files.slice(0, MAX_LISTED).map(line),
+  ...(files.length > MAX_LISTED ? [`- … and ${files.length - MAX_LISTED} more`] : []),
+];
+
+const sections = (list: [string, string[]][]): string =>
+  list
     .filter(([, lines]) => lines.length)
     .map(([title, lines]) => [title, ...lines].join("\n"))
     .join("\n\n");
-};

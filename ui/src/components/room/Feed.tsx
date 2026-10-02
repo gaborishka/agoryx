@@ -12,7 +12,7 @@ import { useStore } from "@/lib/store";
 import type { TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Name, Tip } from "./bits";
-import { AgentMessage, CommitLine, DecisionLine, DocLine, Fresh, HumanMessage, PassLine, RevertLine, StandaloneOp, SystemLine, UpdateLine } from "./Messages";
+import { AgentMessage, CommitLine, DecisionLine, DocLine, Fresh, HumanMessage, PassLine, RevertLine, StandaloneOp, StepCommitLine, SystemLine, UpdateLine } from "./Messages";
 import { ActivityList } from "./Trace";
 import { QuoteSelection } from "./QuoteSelection";
 
@@ -75,6 +75,7 @@ function LiveTurn({ turn, ops }: { turn: TurnState; ops?: TableOp[] }) {
 
 function Item({ item, model, fresh, card, clamp }: { item: FeedItem; model: FeedModel; fresh: boolean; card?: boolean; clamp?: number }) {
   if (item.type === "commit") return <CommitLine c={item.c} />;
+  if (item.type === "step") return <StepCommitLine sha={item.sha} by={item.by} steps={item.steps} />;
   if (item.type === "revert") return <RevertLine r={item.r} />;
   if (item.type === "doc") return <DocLine r={item.r} />;
   if (item.type === "op") return <StandaloneOp op={item.op} />;

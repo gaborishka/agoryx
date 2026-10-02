@@ -72,16 +72,16 @@ test("the briefing: a step is checked by another agent, then committed by its au
     const briefing = (tracking: "git" | "shadow" | "none", agents = state.agents) =>
       buildBriefing({ state: { ...state, agents }, agent: claude!, agentCli: { command: "agoryx" }, tracking });
     const git = briefing("git");
-    assert.match(git, /@mention another agent to check it\. Say "done", "ready" or "verified" only after that check has passed/);
+    assert.match(git, /Ask for its check \(`table review X1`\) and @mention another agent\. Say "done", "ready" or "verified" only after that check has passed/);
     assert.match(git, /Once it is checked, its author commits it, before the next step goes on top: only that step's files, its id first in the message \(`git add <them> && git commit -m "X1 <the step>" -- <them>`\)/);
     // A commit made as the briefing says is one the room reads as that step's.
     const example = /git commit -m "([^"]+)"/.exec(git)![1]!.replace("<the step>", "Quote chips");
     assert.deepEqual(stepsInSubject(example), ["X1"]);
     assert.match(git, /Don't wait inside your turn for a reply or a check: no sleeping, no polling\./);
-    assert.match(git, /settle is for what the room has concluded, not for work: who does what is next, and a finished step is done X1/);
+    assert.match(git, /settle is for what the room has concluded, not for work: work is steps/);
     // No git of the folder's own: nothing to commit. Alone: the agent checks its own step.
     assert.doesNotMatch(briefing("shadow"), /its author commits it/);
-    assert.match(briefing("git", [claude!]), /Check it yourself \(run it, test it\) and say how/);
+    assert.match(briefing("git", [claude!]), /Check it yourself \(run it, test it\), say how, then `table done X1`/);
     assert.doesNotMatch(briefing("git", [claude!]), /someone else's to check/);
     // Writes off in the room: nobody commits.
     const readonly = buildBriefing({ state: { ...state, settings: { ...state.settings, access: "readonly" } }, agent: claude!, agentCli: { command: "agoryx" }, tracking: "git" });

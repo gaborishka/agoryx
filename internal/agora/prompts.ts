@@ -299,9 +299,13 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     `- Address someone with @name. ${state.human} is a participant, not a gatekeeper: you don't need permission to do the work being discussed.`,
     `  When ${state.human} addresses only you, your reply goes back to them: the others read it in their next turn, and it wakes one of them only if you @mention them.`,
     others.length ? "- Work goes in steps, and a step is someone else's to check:" : "- Work goes in steps, each checked before it is called done:",
-    others.length
-      ? "  - Built one? Say so and @mention another agent to check it. Say \"done\", \"ready\" or \"verified\" only after that check has passed, with the fixes it asked for in."
-      : "  - Built one? Check it yourself (run it, test it) and say how. Say \"done\", \"ready\" or \"verified\" only after that.",
+    "  - A step goes on the table (`table next`, on the route option it carries out), so the human sees where it stands.",
+    ...(others.length
+      ? [
+          "  - Built one? Ask for its check (`table review X1`) and @mention another agent. Say \"done\", \"ready\" or \"verified\" only after that check has passed, with the fixes it asked for in.",
+          "  - Checking one? What fails goes on the step (`table object X1 \"what fails\"`); once it passes, `table done X1`.",
+        ]
+      : ["  - Built one? Check it yourself (run it, test it), say how, then `table done X1`. Say \"done\", \"ready\" or \"verified\" only after that."]),
     ...(tracking === "git" && state.settings.access !== "readonly"
       ? ["  - Once it is checked, its author commits it, before the next step goes on top: only that step's files, its id first in the message (`git add <them> && git commit -m \"X1 <the step>\" -- <them>`), so the room sees it went in and each step can be read and taken back on its own."]
       : []),
@@ -341,12 +345,15 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     `  ${agentCli} table propose "short title" --body "what and why (markdown)" [--file path/in/workspace] [--q Q1]`,
     "    (a long body with a diagram: write it to a file and pass --body-file notes.md, or pipe it with --body -)",
     `  ${agentCli} table object P1 "reason"   |   support P1 "reason"   |   evidence P1 "finding" --source <url|path>`,
-    "    (object, support and evidence also take a settled point or a fact: object S1 \"why it is not settled\" when someone settled what you still dispute)",
-    `  ${agentCli} table settle "what is now established" [--q Q1]   |   fact "a checked fact"   |   next "concrete next step"   |   done X1`,
+    "    (object, support and evidence also take a settled point, a fact or a step: object S1 \"why it is not settled\" when someone settled what you still dispute;",
+    "    object X1 \"what fails\" when checking a step finds something)",
+    `  ${agentCli} table settle "what is now established" [--q Q1]   |   fact "a checked fact"`,
     "    (settle --q Q1 when the conclusion answers an open question: it closes Q1 with that answer; on a --many question",
     "    it is the room's recommendation shown on the question, and the options stay open for the human to choose.",
-    "    settle is for what the room has concluded, not for work: who does what is next, and a finished step is done X1,",
-    "    once it is checked)",
+    "    settle is for what the room has concluded, not for work: work is steps)",
+    `  ${agentCli} table next "a concrete step" [--on P1]   |   review X1   |   done X1`,
+    "    (next: a step, --on the route option it carries out; review X1: built, waiting for its check;",
+    "    done X1: its check passed)",
     `  ${agentCli} table concede "what I no longer hold, and why" [--on P1]   (an argument changed your mind: record it, don't just agree in prose)`,
     `  ${agentCli} table decide P1 --note "why"   (when the room has actually converged, or the human asked you to decide)`,
     `  ${agentCli} table withdraw P1|F1   (take back your own option, or a fact of yours that turned out wrong — it stays, struck out)`,
@@ -542,6 +549,9 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
       blocks.push(lines.join("\n"));
     } else if (event.type === "commit.created") {
       blocks.push(`── Agoryx · ${clock(event.ts)}\nworkspace checkpoint ${event.sha.slice(0, 8)}: ${event.subject}`);
+    } else if (event.type === "step.committed" && event.by !== "agoryx" && event.by !== agent.id) {
+      // A checkpoint's steps are in its line above; an agent's own commit, it made.
+      blocks.push(`── ${displayName(state, event.by)} · ${clock(event.ts)}\ncommitted ${event.steps.join(", ")} as ${event.sha.slice(0, 8)}: ${event.subject}`);
     } else if (event.type === "workspace.reverted") {
       // Files under the agent's feet changed without a turn: it must know before it builds on them.
       kept.add(blocks.length);

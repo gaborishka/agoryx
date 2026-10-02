@@ -9,9 +9,11 @@ export const TABLE_USAGE = [
   "agoryx table [show]",
   'agoryx table ask "question" [--many]   (--many: its options don\'t exclude each other; any number can be chosen)',
   'agoryx table propose "short title" [--body "what and why" | --body-file notes.md] [--file path] [--q Q1]',
-  'agoryx table object|support P1|S1|F1 "reason"',
-  'agoryx table evidence P1|S1|F1 "finding" [--source url-or-path]',
-  'agoryx table fact|next "text"',
+  'agoryx table object|support P1|X1|S1|F1 "reason"   (on a step X1: a finding of its check, or that the check passed)',
+  'agoryx table evidence P1|X1|S1|F1 "finding" [--source url-or-path]',
+  'agoryx table fact "text"',
+  'agoryx table next "a step" [--on P1]   (--on: the option, a route, it carries out)',
+  "agoryx table review X1   (the step is built: it waits for someone else's check)",
   'agoryx table settle "what is now established" [--q Q1]',
   'agoryx table concede "what I no longer hold, and why" [--on P1]',
   "agoryx table done X1 | withdraw P1|F1 | reopen Q1|P1",
@@ -34,6 +36,7 @@ export const TABLE_FLAGS: Record<string, string[]> = {
   decide: ["note"],
   settle: ["q"],
   concede: ["on"],
+  next: ["on"],
 };
 
 /** Flags that take no value: the next argument stays positional. */
@@ -71,9 +74,11 @@ export const parseTableCommand = (verb: string, argv: string[]): Record<string, 
       if (!rest) throw new TableCommandError("'ask' needs text");
       return { op: "ask", text: rest, ...(flags.many ? { many: true } : {}) };
     case "fact":
-    case "next":
-      if (!rest) throw new TableCommandError(`'${verb}' needs text`);
+      if (!rest) throw new TableCommandError("'fact' needs text");
       return { op: verb, text: rest };
+    case "next":
+      if (!rest) throw new TableCommandError("'next' needs text");
+      return clean({ op: verb, text: rest, target: flags.on });
     case "settle":
       if (!rest) throw new TableCommandError("'settle' needs text");
       return clean({ op: "settle", text: rest, q: flags.q });
@@ -97,6 +102,7 @@ export const parseTableCommand = (verb: string, argv: string[]): Record<string, 
       return clean({ op: verb, target, text: text.join(" "), source: flags.source });
     }
     case "done":
+    case "review":
     case "withdraw":
     case "reopen":
       if (!positional[0]) throw new TableCommandError(`'${verb}' needs an id`);

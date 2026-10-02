@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import { type AgentLook, agentLook } from "../../../internal/agora/look";
 import { unquoted } from "../../../internal/agora/quote";
 import { names as nameList } from "./format";
-import type { ActorOrigin, DocRevision, MessageEntry, RoomAgent, RoomState, RoomSummary, TableOp, TurnState } from "./types";
+import type { ActorOrigin, DocRevision, MessageEntry, RoomAgent, RoomState, RoomSummary, TableItem, TableOp, TurnState } from "./types";
 import type { OpEntry } from "./types";
 
 export type Tone = "claude" | "codex" | "human" | "sys";
@@ -113,6 +113,8 @@ export const toneText: Record<Tone, string> = {
 export type FeedItem =
   | { key: string; seq: number; type: "msg"; m: MessageEntry }
   | { key: string; seq: number; type: "commit"; c: RoomState["commits"][number] }
+  /** Steps their author or the human committed: one line per commit. */
+  | { key: string; seq: number; type: "step"; sha: string; by: string; steps: TableItem[] }
   | { key: string; seq: number; type: "revert"; r: RoomState["reverts"][number] }
   | { key: string; seq: number; type: "op"; op: TableOp }
   | { key: string; seq: number; type: "doc"; r: DocRevision };
@@ -163,6 +165,15 @@ export const buildFeed = (st: RoomState, ops: OpEntry[]): FeedModel => {
   }
   for (const m of st.messages) items.push({ key: `m-${m.id}`, seq: m.seq, type: "msg", m });
   for (const c of st.commits) items.push({ key: `c-${c.sha}`, seq: c.seq, type: "commit", c });
+  // A checkpoint names the steps it took on its own line.
+  const stepCommits = new Map<string, Extract<FeedItem, { type: "step" }>>();
+  for (const n of st.table.next) {
+    if (!n.commit || n.commit.by === "agoryx") continue;
+    const line = stepCommits.get(n.commit.sha) ?? { key: `s-${n.commit.sha}`, seq: n.commit.seq, type: "step", sha: n.commit.sha, by: n.commit.by, steps: [] };
+    line.steps.push(n);
+    stepCommits.set(n.commit.sha, line);
+  }
+  items.push(...stepCommits.values());
   for (const r of st.reverts ?? []) items.push({ key: `v-${r.seq}`, seq: r.seq, type: "revert", r });
   items.sort((a, b) => a.seq - b.seq);
 

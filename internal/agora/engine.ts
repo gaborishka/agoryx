@@ -2,7 +2,7 @@ import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openS
 import { dirname, join, resolve } from "node:path";
 import { clearTurnContext, TURN_FILE_ENV, turnContextPath, writeTurnContext } from "./turn-context.js";
 import { actorFields, actorLabel, AGENT_KEY_ENV, describeSettings, originName } from "./actor.js";
-import { checkpointBody, checkpointSubject, roomLine, runSteps } from "./checkpoint-message.js";
+import { checkpointBody, checkpointSubject, roomLine, runSteps, stepCommitBody, stepsInSubject } from "./checkpoint-message.js";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
 import { embed, mediaRefs } from "./media.js";
 import { locateNativeSession, scanNativeSession, type NativeCompaction, type NativeExchange } from "./native.js";
@@ -17,7 +17,8 @@ import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type Tu
 import { MAX_REVERT_CHANGES, REVERT_FAILURE, RevertError, revertTarget, type RevertRequest } from "./revert.js";
 import { RoomStore } from "./store.js";
 import { fromWorkspace, namesFile, shellWriteTargets, shellWrites, type ShellCwd } from "./shell-writes.js";
-import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, TableOpError } from "./table.js";
+import { planStepCommit, stepOf, StepCommitError, stepTurns } from "./step-commit.js";
+import { describeTableOp, openOnTable, prepareTableOp, renderTableMarkdown, stepBuilder, TableOpError } from "./table.js";
 import type {
   Activity,
   Actor,
@@ -41,6 +42,10 @@ import type {
 } from "./types.js";
 import {
   checkpointCommit,
+  commitFiles,
+  commitFilesOf,
+  commitsSince,
+  headCommit,
   type CheckpointBody,
   checkpointFolder,
   checkpointRef,
@@ -193,6 +198,8 @@ interface RunningTurn {
   snapshot: ChangeSnapshot | null;
   /** The workspace as a git tree when the turn started (null without git, or too dirty to snapshot). */
   tree: string | null;
+  /** HEAD of the workspace's repository when the turn started: the commits it gains after are the turn's to name steps. */
+  head: string | null;
   startedAt: number;
   done: Promise<void>;
   /** Hash of the canonical file as the human last saved it while this turn ran (not the turn's work). */
@@ -205,6 +212,8 @@ const LOCK_FILE = "engine.lock";
 
 /** Past this, the canonical file's diff in a turn prompt is cut; the agent reads the file for the rest. */
 const MAX_DOC_DELTA_CHARS = 6_000;
+/** A shell command that commits: `git commit`, with options or `-C dir` before it, not past a pipe or another command. */
+const GIT_COMMIT = /\bgit\b[^\n;&|]*?\scommit\b/;
 
 interface LockSnapshot {
   ino: number;
@@ -918,6 +927,34 @@ export class RoomEngine {
   }
 
   /**
+   * The human commits a step with its button: only the files they chose, as the folder holds them now, under the
+   * folder's own git identity, named by the step (`X3 Quote chips`) with its turns in the body. Agents commit with
+   * git themselves.
+   */
+  commitStep(id: string, files: string[], by?: string | Actor): { sha: string; subject: string; files: number } {
+    const actor = this.actor(by);
+    if (!this.byHuman(actor)) throw new StepCommitError("an agent commits a step with git itself, naming it: git commit -m \"X1 <the step>\"", 403);
+    const step = stepOf(this.state, id);
+    if (step.commit) throw new StepCommitError(`${step.id} is already committed as ${step.commit.sha.slice(0, 7)}`, 409);
+    // A running turn may still be changing the files: what goes in would not be what the human looked at.
+    if (this.running.size) throw new StepCommitError("a turn is running; commit the step once it has ended", 409);
+    const foreign = otherRoomTurns(this.state.workspace, this.state.id, Date.now()).filter((turn) => turn.endedAt === undefined);
+    if (foreign.length) throw new StepCommitError(`a turn of ${this.roomHandles(foreign).join(", ")} is running in this folder; commit the step once it has ended`, 409);
+    const plan = planStepCommit(this.state, this.store.events, id);
+    const chosen = [...new Set(files)];
+    if (!chosen.length) throw new StepCommitError("no files chosen");
+    const unknown = chosen.filter((file) => !plan.files.some((entry) => entry.path === file));
+    if (unknown.length) throw new StepCommitError(`not uncommitted in the folder: ${unknown.join(", ")}`, 409);
+    const turns = stepTurns(this.state, this.store.events, step);
+    let why = "";
+    const commit = commitFiles(this.state.workspace, plan.subject, (committed) => stepCommitBody(step, committed, turns), chosen, (reason) => (why = reason));
+    if (!commit) throw new StepCommitError(`git could not commit these files${why ? `: ${why}` : ""}`, 409);
+    this.store.append({ type: "step.committed", steps: [step.id], sha: commit.sha, subject: plan.subject, by: actor.by });
+    this.writeTableFile();
+    return { sha: commit.sha, subject: plan.subject, files: commit.files };
+  }
+
+  /**
    * The human returns the folder to one of the room's checkpoints, or undoes such a return. Only files
    * change: the folder as it is is kept first (a commit under refs/agoryx/revert/…, never a stash), and
    * the messages and the table stay, since they are what was said. Nobody is woken; the agents read it
@@ -1431,6 +1468,8 @@ export class RoomEngine {
   private shellPending = new Map<string, { turnId: string; command: string; detached?: boolean }>();
   /** The workspace as a command may spell it: its path and its real path. */
   private roots?: string[];
+  /** The `git commit` commands each running turn ran: a commit made while it ran is its own when one of them says its subject. */
+  private commitCommands = new Map<string, string[]>();
 
   /** A turn's next try is a new process: its shell starts at the workspace, and its commands' ids may repeat the last one's. */
   private freshShell(turnId: string): void {
@@ -1597,6 +1636,8 @@ export class RoomEngine {
     markTurnLive(this.state.workspace, { room: this.state.id, turn: turnId, pid: process.pid, startedAt });
     const snapshot = snapshotChanges(this.state.workspace);
     const tree = snapshot && snapshot.size <= MAX_TREE_SNAPSHOT_DIRTY ? snapshotTree(this.state.workspace) : null;
+    // The commits the turn makes are those HEAD gains after this.
+    const head = headCommit(this.state.workspace);
     const env = this.agentEnv(agent, turnId);
 
     const callbacks = {
@@ -1610,7 +1651,11 @@ export class RoomEngine {
       },
       onShellLost: () => this.shellCwds.set(turnId, null),
       onActivity: (activity: Activity) => {
-        if (activity.kind === "command") this.noteShellWrites(turnId, activity, agent.kind === "claude");
+        if (activity.kind === "command") {
+          this.noteShellWrites(turnId, activity, agent.kind === "claude");
+          const command = activity.command ?? activity.label;
+          if (GIT_COMMIT.test(command)) this.commitCommands.set(turnId, [...(this.commitCommands.get(turnId) ?? []), command]);
+        }
         this.store.append({ type: "turn.activity", turnId, agent: agent.id, activity: this.tidyActivity(activity) });
       },
       onLimits: (report: LimitReport, source: LimitSnapshot["source"]) => {
@@ -1667,7 +1712,7 @@ export class RoomEngine {
       }))
       .then((result) => this.finishTurn(agent, turnId, run.id, result, snapshot, tree, startedAt));
 
-    this.running.set(agent.id, { turnId, agent, controller, snapshot, tree, startedAt, done });
+    this.running.set(agent.id, { turnId, agent, controller, snapshot, tree, head, startedAt, done });
     this.notePresence();
     this.ensureOpsPolling();
     this.log(`${agent.id} ${turnId} started (${sessionId ? "resume" : "fresh"}, ${prompt.length} chars)`);
@@ -1685,7 +1730,7 @@ export class RoomEngine {
     // Sweep the inbox while this turn still counts as running, so its ops are attributed to it.
     this.ingestOps();
     this.flushShell(turnId);
-    const { outsideDoc, handoff } = this.running.get(agent.id) ?? {};
+    const { outsideDoc, handoff, head } = this.running.get(agent.id) ?? {};
     this.running.delete(agent.id);
     this.notePresence();
     markTurnLive(this.state.workspace, { room: this.state.id, turn: turnId, pid: process.pid, startedAt, endedAt: Date.now() });
@@ -1801,6 +1846,7 @@ export class RoomEngine {
       ...(files.length > 0 ? { files } : {}),
       ...(changed && changed.changes.length > 0 ? changed : {}),
     });
+    if (head !== undefined) this.noteStepCommits(agent.id, turnId, head, startedAt, foreign.length > 0 || this.overlapping(turnId).length > 0);
     this.log(`${agent.id} ${turnId} ${status}`);
     // With native sync on, the inbox stays watched between turns (ops from the agents' own sessions).
     if (this.running.size === 0 && this.opsTimer && this.nativePollMs <= 0) {
@@ -1881,6 +1927,49 @@ export class RoomEngine {
       [...(this.shellWrites.get(entry.id) ?? []), ...this.pendingWrites(entry.id)].some((target) => namesFile(target, file)) ||
       this.state.docRevisions.some((revision) => revision.turnId === entry.id && revision.path === file)
     );
+  }
+
+  /**
+   * The commits HEAD gained during a turn whose subjects name this room's steps (`git commit -m "X3 …"`): those steps
+   * went into them. A commit is the turn's when one of its `git commit` commands says the commit's subject — or, with
+   * the message taken from a file (-F) and no other turn running beside it, when it ran one at all. The human's own
+   * commits, another turn's, Agoryx's checkpoints and those already recorded are not the turn's. A step went into
+   * one only when it holds some of the step's work or the committer's: the files of the step's turns, of this turn,
+   * or — when the step's builder is the committer, or none is on record — of the committing agent's turns since the
+   * step was put on the table (fixes after its check, a step the human closed).
+   */
+  private noteStepCommits(agent: string, turnId: string, head: string | null, startedAt: number, beside: boolean): void {
+    const commands = this.commitCommands.get(turnId) ?? [];
+    this.commitCommands.delete(turnId);
+    const steps = this.state.table.next.filter((step) => !step.withdrawn);
+    if (!commands.length || !steps.length) return;
+    const commits = commitsSince(this.state.workspace, head, startedAt);
+    if (!commits.length) return;
+    const recorded = new Set([...this.state.commits.map((commit) => commit.sha), ...steps.flatMap((step) => (step.commit ? [step.commit.sha] : []))]);
+    let noted = false;
+    // Quoting and escapes aside: `-m "X1 \"chips\""` says X1 "chips".
+    const bare = (text: string) => text.replace(/[\\'"]/g, "");
+    const said = commands.map(bare);
+    const fromFile = !beside && commands.some((command) => /\s(?:-F|--file)(?:[\s=]|$)/.test(command));
+    for (const commit of commits) {
+      if (commit.agoryx || recorded.has(commit.sha)) continue;
+      // The steps it names first, as agents are asked to (`X3 …`, `X3, X4: …`): a step mentioned later in the subject
+      // is not one it holds. A step already in a commit stays in that one.
+      if (!(fromFile || said.some((command) => command.includes(bare(commit.subject))))) continue;
+      const held = new Set(commit.files);
+      const named = [...new Set(stepsInSubject(commit.subject))].filter((id) => {
+        const step = steps.find((entry) => entry.id === id && !entry.commit);
+        if (!step) return false;
+        const builder = stepBuilder(step, this.state.human);
+        const mine = builder === undefined || builder === agent;
+        const theirs = this.state.turns.filter((turn) => turn.id === turnId || (mine && turn.agent === agent && (turn.endSeq ?? Number.POSITIVE_INFINITY) > step.seq));
+        return [...stepTurns(this.state, this.store.events, step), ...theirs].some((turn) => turn.files?.some((file) => held.has(file)));
+      });
+      if (!named.length) continue;
+      this.store.append({ type: "step.committed", steps: named, sha: commit.sha, subject: commit.subject, by: agent, turnId });
+      noted = true;
+    }
+    if (noted) this.writeTableFile();
   }
 
   /** The other turns that ran at some point while this one did. */
@@ -2476,7 +2565,34 @@ export class RoomEngine {
     const files = [...new Set(turns.flatMap((turn) => turn.files ?? []))];
     // A step its author committed during the run went in with that commit: the body says so, the subject names the rest.
     const committed = started && steps.some((step) => step.done) ? stepCommitsSince(this.state.workspace, started, files) : new Map<string, string>();
-    const subject = `agoryx: ${checkpointSubject(steps, run.id, [...new Set(turns.map((turn) => turn.agent))], committed)}`;
+    // And those the room saw go into a commit of their own (an agent's, the human's button).
+    for (const step of steps) if (step.commit && !committed.has(step.id)) committed.set(step.id, step.commit.sha);
+    // A step the run finished is in this checkpoint when its work is: the files of its builder's turns. Work built in
+    // an earlier run went into the first checkpoint after the last of those turns (the version its check passed), not
+    // a return of the folder; a step whose work no commit holds is in none (a check that changed nothing, a step built
+    // with no file).
+    const ran = new Set(files);
+    const earlier = new Map<string, { sha: string; subject: string }>();
+    const elsewhere = new Set<string>();
+    for (const step of steps) {
+      if (!step.done || committed.has(step.id)) continue;
+      const built = stepTurns(this.state, this.store.events, step);
+      const own = new Set(built.flatMap((turn) => turn.files ?? []));
+      if ([...own].some((file) => ran.has(file))) continue;
+      elsewhere.add(step.id);
+      const after = Math.max(step.seq, ...built.map((turn) => turn.endSeq ?? turn.seq));
+      const found = own.size
+        ? this.state.commits.find((commit) => commit.seq > after && !commit.subject.startsWith("agoryx(") && commitFilesOf(this.state.workspace, commit.sha).some((file) => own.has(file)))
+        : undefined;
+      if (found) {
+        earlier.set(step.id, found);
+        committed.set(step.id, found.sha);
+      }
+    }
+    for (const [id, commit] of earlier) this.store.append({ type: "step.committed", steps: [id], sha: commit.sha, subject: commit.subject, by: "agoryx" });
+    if (earlier.size) this.writeTableFile();
+    const named = steps.filter((step) => !elsewhere.has(step.id) || committed.has(step.id));
+    const subject = `agoryx: ${checkpointSubject(named, run.id, [...new Set(turns.map((turn) => turn.agent))], committed)}`;
     const expectedTrees = new Map<string, string>();
     // The last completed credited turn supplies each file's checkpoint version.
     const turnIds = new Set(turns.map((turn) => turn.id));
@@ -2489,14 +2605,21 @@ export class RoomEngine {
     }
     // Alone in the directory, and no other room's turn ran during this run: everything, as always.
     const shared = roomsSharingWorkspace(this.store).length > 1 || otherRoomTurns(this.state.workspace, this.state.id, started).length > 0;
-    this.recordCheckpoint(subject, (held) => `${checkpointBody(steps, held, turns, committed)}\n\n${roomLine(this.state.name)}`, shared ? files : undefined, shared ? expectedTrees : undefined);
+    const commit = this.recordCheckpoint(subject, (held) => `${checkpointBody(named, held, turns, committed)}\n\n${roomLine(this.state.name)}`, shared ? files : undefined, shared ? expectedTrees : undefined);
+    // The steps the run finished went into it, unless their work is in another commit or in none.
+    const finished = named.filter((step) => step.done && !committed.has(step.id)).map((step) => step.id);
+    if (commit && finished.length) {
+      this.store.append({ type: "step.committed", steps: finished, sha: commit.sha, subject, by: "agoryx" });
+      this.writeTableFile();
+    }
   }
 
   /** A checkpoint commit (all of the folder, or only `files` in a shared one), and the whole folder at it, to return to. */
-  private recordCheckpoint(subject: string, body: CheckpointBody, files?: string[], expectedTrees?: ReadonlyMap<string, string>): void {
+  private recordCheckpoint(subject: string, body: CheckpointBody, files?: string[], expectedTrees?: ReadonlyMap<string, string>): { sha: string } | null {
     const commit = checkpointCommit(this.state.workspace, subject, body, files, expectedTrees);
-    if (!commit) return;
+    if (!commit) return null;
     const folder = checkpointFolder(this.state.workspace, commit.sha, checkpointRef(this.state.id, commit.sha));
     this.store.append({ type: "commit.created", sha: commit.sha, subject, files: commit.files, ...(folder && folder !== commit.sha ? { folder } : {}) });
+    return commit;
   }
 }

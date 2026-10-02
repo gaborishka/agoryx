@@ -13,6 +13,7 @@ import { AGENT_KEY_ENV, actorIn, agentKey, isAgentKey, loadOrCreateToken, origin
 import { findLiveBlock, LIVE_LANGS } from "./blocks.js";
 import { type AgentPatch, DocConflictError, DocTooLargeError, RoomEngine, RoomLockedError, roomTurnPatch, roomWorkspaceDiff } from "./engine.js";
 import { planRevert, RevertError, type RevertRequest } from "./revert.js";
+import { planStepCommit, StepCommitError } from "./step-commit.js";
 import { deviceLabel, DeviceRegistry, formatCode, isDeviceToken, PairingError, type DeviceInfo } from "./devices.js";
 import { lanInterfaces, normalizeHosts, writeExposure, type Exposure } from "./exposure.js";
 import { linkedMedia, markdownTexts } from "./media.js";
@@ -38,7 +39,7 @@ import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
 import { TerminalError, TerminalHub } from "./terminal.js";
-import { listWorkspaceFiles, repoRoot, resolveInside, workspacePaths, workspaceTracking } from "./workspace.js";
+import { isGitRepo, listWorkspaceFiles, repoRoot, resolveInside, workspacePaths, workspaceTracking } from "./workspace.js";
 
 export interface DaemonOptions {
   env?: NodeJS.ProcessEnv;
@@ -1381,6 +1382,17 @@ export class AgoraDaemon {
       return;
     }
 
+    if (action === "step-commit" && method === "GET") {
+      // What committing a step would take, for the human to choose its files. Nothing is touched.
+      try {
+        sendJson(res, 200, planStepCommit(handle.store.state, handle.store.events, url.searchParams.get("step") ?? ""));
+      } catch (error) {
+        if (!(error instanceof StepCommitError)) throw error;
+        sendJson(res, error.status, { error: error.message });
+      }
+      return;
+    }
+
     if (action === "terminals") {
       await this.terminalsApi(req, res, handle, parts.slice(3), method, caller);
       return;
@@ -1497,6 +1509,18 @@ export class AgoraDaemon {
         }
         return;
       }
+      case "step-commit": {
+        // The human's button: an agent commits a step with git itself, naming it.
+        if (caller.agent) throw new HttpError(403, "an agent commits a step with git itself, naming it: git commit -m \"X1 <the step>\"");
+        const files = Array.isArray(body.files) ? body.files.filter((file): file is string => typeof file === "string") : [];
+        try {
+          sendJson(res, 201, engine.commitStep(typeof body.step === "string" ? body.step : "", files, actor));
+        } catch (error) {
+          if (!(error instanceof StepCommitError)) throw error;
+          sendJson(res, error.status, { error: error.message });
+        }
+        return;
+      }
       case "revert": {
         // The human's alone: an agent never rewinds the folder under the others.
         if (caller.agent) throw new HttpError(403, "only the human returns the folder to a checkpoint");
@@ -1528,6 +1552,8 @@ export class AgoraDaemon {
       rawBase: this.rawBase(handle.store.id, device),
       resume: resumeCommands(handle.store, this.runners),
       driven: Boolean(handle.engine),
+      // Whether the folder is a git repository of its own: only then can a step be committed.
+      gitRepo: isGitRepo(handle.store.state.workspace),
       ...(handle.lockedBy ? { lockedBy: handle.lockedBy } : {}),
       // Whether there is a profile at all, never what it says: the UI shows who is given it.
       profile: { path: profilePath(this.env), exists: readProfile(profilePath(this.env)) !== null },

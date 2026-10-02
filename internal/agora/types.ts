@@ -263,7 +263,10 @@ export type TableOpInput =
   | { op: "fact"; text: string }
   | { op: "settle"; text: string; q?: string }
   | { op: "concede"; text: string; target?: string }
-  | { op: "next"; text: string }
+  /** A step; `target`: the option (a route) it carries out. */
+  | { op: "next"; text: string; target?: string }
+  /** A step is built and waits for someone else's check. */
+  | { op: "review"; target: string }
   | { op: "done"; target: string }
   | { op: "withdraw"; target: string }
   | { op: "decide"; target: string; note?: string }
@@ -337,8 +340,22 @@ export interface TableItem {
   withdrawn?: boolean;
   /** A settled item that answers a question: the question's id. */
   q?: string;
-  /** A concession about a specific table item (P2, S1, Q1). */
+  /** A concession about a specific table item (P2, S1, Q1); a step's route, the option it carries out (P10). */
   target?: string;
+  /** A step built and waiting for its check: who asked for the check. */
+  review?: string;
+  /** When its check was last asked for. */
+  reviewSeq?: number;
+  /**
+   * A done step someone checked, as it stood when it was marked done: someone other than the one who asked for its
+   * check marked it or supported it since it was asked for, or the human marked it, or the room had one agent (its
+   * own check is the check).
+   */
+  checked?: boolean;
+  /** Who passed its check: the one who marked it done, or the one whose support let its builder close it. */
+  checkedBy?: string;
+  /** The commit a step went into, who made it ("agoryx": the run's checkpoint), and when it was recorded. */
+  commit?: { sha: string; by: string; seq: number };
 }
 
 export interface TableDecision {
@@ -475,6 +492,11 @@ export type RoomEventBody =
   | { type: "agent.removed"; agent: string; by?: string; from?: ActorOrigin }
   /** `folder`: the whole folder at this checkpoint, when the commit holds only the room's own files (a shared folder). */
   | { type: "commit.created"; sha: string; subject: string; files: number; folder?: string }
+  /**
+   * Steps (X3) went into a commit: one an agent made naming them, the room's checkpoint of a run that finished them,
+   * or the one the human made for a step with its button.
+   */
+  | { type: "step.committed"; steps: string[]; sha: string; subject: string; by: string; turnId?: string }
   /**
    * The human returned the room's folder to a checkpoint (`to`), or undid such a return (`undoOf`: that
    * return's seq, `to` its undo point). Only files changed: HEAD, the index, the messages and the table

@@ -3,14 +3,14 @@ import { motion } from "motion/react";
 import { memo, useState, type ReactNode } from "react";
 import { Mark } from "@/components/brand/Mark";
 import { Markdown } from "@/components/md/Markdown";
-import { OpCard, OpCards } from "@/components/table/OpCard";
+import { OpCard, OpCards, RefChip } from "@/components/table/OpCard";
 import { Button } from "@/components/ui/button";
 import { cost, passNote, plural, secs } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import { decisionOf, sysError, sysLine } from "@/lib/system";
 import { ink, nameOf, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
-import type { DocRevision, MessageEntry, RevertEntry, TableOp, TurnState } from "@/lib/types";
+import type { DocRevision, MessageEntry, RevertEntry, TableItem, TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Name, NativeBadge, NativeTag, Stats, Time, Tip } from "./bits";
 import { Clamp } from "@/components/common/Clamp";
@@ -222,10 +222,27 @@ export function DecisionLine({ m }: { m: MessageEntry }) {
   );
 }
 
+/** The steps a commit took, each a link to it on the table. */
+function CommittedSteps({ steps }: { steps: TableItem[] }) {
+  return (
+    <>
+      {steps.map((n, i) => (
+        <span key={n.id} className="inline-flex min-w-0 items-baseline gap-1">
+          {i ? "," : ""}
+          <RefChip id={n.id} />
+          <span className="max-w-[32ch] truncate text-foreground">{n.text.split("\n")[0]}</span>
+        </span>
+      ))}
+    </>
+  );
+}
+
 export function CommitLine({ c }: { c: { sha: string; subject: string; files: number } }) {
   const openChanges = useStore((s) => s.openChanges);
   const openDialog = useStore((s) => s.openDialog);
   const driven = useStore((s) => s.snap?.driven);
+  const next = useStore((s) => s.snap?.state.table.next);
+  const steps = next?.filter((n) => n.commit?.by === "agoryx" && n.commit.sha === c.sha) ?? [];
   return (
     <div className="group flex flex-wrap items-center gap-2 text-small text-muted-foreground">
       <span className="grid size-5 place-items-center rounded-md bg-add text-add-ink">
@@ -238,6 +255,11 @@ export function CommitLine({ c }: { c: { sha: string; subject: string; files: nu
         </button>{" "}
         · {plural(c.files, "file", "files")}
       </span>
+      {steps.length ? (
+        <span className="inline-flex min-w-0 flex-wrap items-baseline gap-1">
+          with <CommittedSteps steps={steps} />
+        </span>
+      ) : null}
       {driven ? (
         <Button
           variant="ghost"
@@ -249,6 +271,29 @@ export function CommitLine({ c }: { c: { sha: string; subject: string; files: nu
           Revert folder to here
         </Button>
       ) : null}
+    </div>
+  );
+}
+
+/** A step went into a commit of its author's or the human's own: the commit opens in Changes. */
+export function StepCommitLine({ sha, by, steps }: { sha: string; by: string; steps: TableItem[] }) {
+  const openChanges = useStore((s) => s.openChanges);
+  const who = useStore((s) => (s.snap ? nameOf(s.snap.state, by) : by));
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-small text-muted-foreground">
+      <span className="grid size-5 place-items-center rounded-md bg-primary text-primary-foreground">
+        <GitCommitHorizontalIcon className="size-3.5" />
+      </span>
+      <span>
+        {who} committed {steps.length > 1 ? "steps" : "step"}
+      </span>
+      <CommittedSteps steps={steps} />
+      <span>
+        as{" "}
+        <button type="button" className="font-mono text-meta text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openChanges({ scope: "commit", sha })}>
+          {sha.slice(0, 7)}
+        </button>
+      </span>
     </div>
   );
 }

@@ -171,12 +171,18 @@ test("a step marked done by someone else says who did it — the table never rea
   const table = emptyTable();
   applyTableOp(table, { op: "next", text: "write down the chosen semantics", by: "claude", id: "X1" }, 1);
   applyTableOp(table, { op: "next", text: "run the suite", by: "codex", id: "X2" }, 2);
-  applyTableOp(table, { op: "done", target: "X1", by: "codex" }, 3);
-  applyTableOp(table, { op: "done", target: "X2", by: "codex" }, 4);
+  applyTableOp(table, { op: "next", text: "note the edge cases", by: "claude", id: "X3" }, 3);
+  applyTableOp(table, { op: "review", target: "X1", by: "claude" }, 4);
+  applyTableOp(table, { op: "done", target: "X1", by: "codex" }, 5);
+  applyTableOp(table, { op: "done", target: "X2", by: "codex" }, 6);
+  applyTableOp(table, { op: "done", target: "X3", by: "codex" }, 7);
   assert.equal(table.next[0]!.doneBy, "codex");
   const md = renderTableMarkdown(table, "room");
-  assert.match(md, /- ~~X1: write down the chosen semantics~~ \(claude; done by codex\)/);
-  assert.match(md, /- ~~X2: run the suite~~ \(codex\)$/m);
+  assert.match(md, /- ~~X1: write down the chosen semantics~~ \(claude; done by codex\) — checked$/m);
+  // Its author marked it done: nobody else checked it.
+  assert.match(md, /- ~~X2: run the suite~~ \(codex\) — done without a check$/m);
+  // Someone else marked it done, but no check was asked for: it was closed, not checked.
+  assert.match(md, /- ~~X3: note the edge cases~~ \(claude; done by codex\) — done without a check$/m);
 });
 
 test("a point one agent settled can be objected to by another: contested until the objector or its author concedes on it", () => {
@@ -200,7 +206,8 @@ test("a point one agent settled can be objected to by another: contested until t
   assert.throws(() => prepareTableOp(table, { op: "object", target: "F1", text: "hm" }, "codex", false), /F1 is your own fact — withdraw F1/);
   move({ op: "support", target: "F1", text: "reran it: 208/208" }, "claude");
   assert.match(renderTableMarkdown(table, "room"), /- F1: ref passes 208\/208 \(codex\)\n  - ✓ support \(claude\): reran it/);
-  assert.throws(() => prepareTableOp(table, { op: "object", target: "X9", text: "no" }, "claude", false), /no X9 on the table to object — it takes an option \(P1\), a settled point \(S1\) or a fact \(F1\)/);
+  assert.throws(() => prepareTableOp(table, { op: "object", target: "Q9", text: "no" }, "claude", false), /no Q9 on the table to object — it takes an option \(P1\), a step \(X1\), a settled point \(S1\) or a fact \(F1\)/);
+  assert.throws(() => prepareTableOp(table, { op: "object", target: "X9", text: "no" }, "claude", false), /no step X9 on the table/);
   assert.throws(() => prepareTableOp(table, { op: "object", target: "P9", text: "no" }, "claude", false), /no option P9 on the table/);
   // The objector concedes on it: common ground again.
   move({ op: "concede", target: "S1", text: "outer scope is what Handlebars does" }, "claude");

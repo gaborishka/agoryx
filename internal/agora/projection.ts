@@ -170,7 +170,10 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       state.sessions[event.agent] = { sessionId: event.sessionId, boundAt: event.ts };
       return;
     case "table.op":
-      applyTableOp(state.table, event.op, event.seq);
+      applyTableOp(state.table, event.op, event.seq, {
+        alone: state.agents.length === 1,
+        human: !event.op.from && event.op.by === state.human,
+      });
       return;
     case "settings.changed":
       state.settings = { ...state.settings, ...event.patch };
@@ -218,6 +221,10 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
     }
     case "commit.created":
       state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq, ...(event.folder ? { folder: event.folder } : {}) });
+      return;
+    case "step.committed":
+      // The first commit a step went into is the one it is in; a later one naming it again does not move it.
+      for (const step of state.table.next) if (event.steps.includes(step.id) && !step.commit) step.commit = { sha: event.sha, by: event.by, seq: event.seq };
       return;
     case "workspace.reverted": {
       const { type: _type, seq, ts, ...rest } = event;

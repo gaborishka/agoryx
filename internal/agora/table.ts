@@ -27,6 +27,7 @@ const TABLE_OPS: ReadonlySet<TableOpName> = new Set([
   "fact",
   "settle",
   "next",
+  "review",
   "done",
   "withdraw",
   "decide",
@@ -133,6 +134,14 @@ export const prepareTableOp = (
     if (!found) throw new TableOpError(`no option ${ref} on the table`);
     return found;
   };
+  const stepOf = (ref: string) => {
+    const found = table.next.find((item) => item.id === ref);
+    if (!found) {
+      const fact = table.facts.some((item) => item.id === ref);
+      throw new TableOpError(`no next step ${ref}${fact ? ` — ${ref} is a fact; to take it back: withdraw ${ref}` : ""}`);
+    }
+    return found;
+  };
 
   switch (op) {
     case "ask":
@@ -182,8 +191,13 @@ export const prepareTableOp = (
         }
       } else if (/^P\d+$/.test(target)) {
         option(target);
+      } else if (/^X\d+$/.test(target)) {
+        // A check of a step: an objection is a finding, support says it passed.
+        const step = table.next.find((item) => item.id === target);
+        if (!step) throw new TableOpError(`no step ${target} on the table`);
+        if (op === "object" && step.review === by) throw new TableOpError(`${target} is your own step — fix it, then ask for its check again: review ${target}`);
       } else {
-        throw new TableOpError(`no ${target} on the table to ${op === "evidence" ? "add evidence to" : op} — it takes an option (P1), a settled point (S1) or a fact (F1)`);
+        throw new TableOpError(`no ${target} on the table to ${op === "evidence" ? "add evidence to" : op} — it takes an option (P1), a step (X1), a settled point (S1) or a fact (F1)`);
       }
       const source = cleanText(input.source, "source", false);
       return {
@@ -215,14 +229,29 @@ export const prepareTableOp = (
       }
       return { ...base, op, text: cleanText(input.text, "text")!, ...(target ? { target } : {}), id: nextId(table, "C", table.shifts) };
     }
-    case "next":
-      return { ...base, op, text: cleanText(input.text, "text")!, id: nextId(table, "X", table.next) };
+    case "next": {
+      // The route a step carries out: an option still standing.
+      let target: string | undefined;
+      if (input.target !== undefined && input.target !== null && input.target !== "") {
+        target = normalizeRef(input.target);
+        if (!target.startsWith("P")) throw new TableOpError(`a step is on an option (a route, like P2), not ${target}`);
+        if (option(target).status === "withdrawn") throw new TableOpError(`${target} was withdrawn`);
+      }
+      return { ...base, op, text: cleanText(input.text, "text")!, ...(target ? { target } : {}), id: nextId(table, "X", table.next) };
+    }
+    case "review": {
+      const target = normalizeRef(input.target);
+      const step = stepOf(target);
+      if (step.done) throw new TableOpError(`${target} is done`);
+      // Its builder asks for the check; one who checks it answers with what it found.
+      if (step.review && step.review !== by && !isHuman) {
+        throw new TableOpError(`${target} waits for the check ${step.review} asked for — checking it? object ${target} "what fails", or done ${target} once it passes`);
+      }
+      return { ...base, op, target };
+    }
     case "done": {
       const target = normalizeRef(input.target);
-      if (!table.next.some((item) => item.id === target)) {
-        const fact = table.facts.some((item) => item.id === target);
-        throw new TableOpError(`no next step ${target}${fact ? ` — ${target} is a fact; to take it back: withdraw ${target}` : ""}`);
-      }
+      if (stepOf(target).done) throw new TableOpError(`${target} is already done`);
       return { ...base, op, target };
     }
     case "withdraw": {
@@ -348,8 +377,11 @@ export const prepareTableOp = (
   }
 };
 
-/** Pure reducer: applies an already-prepared op. */
-export const applyTableOp = (table: TableState, op: TableOp, seq: number): void => {
+/**
+ * Pure reducer: applies an already-prepared op. `room`: who did it and how many agents the room had then, which
+ * decide whether a step marked done was checked.
+ */
+export const applyTableOp = (table: TableState, op: TableOp, seq: number, room: { alone?: boolean; human?: boolean } = {}): void => {
   const item = (text: string): TableItem => ({ id: op.id!, text, by: op.by, seq });
   if (op.id) {
     const letter = op.id[0]!;
@@ -402,13 +434,34 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
       table.shifts.push({ ...item(op.text), ...(op.target ? { target: op.target } : {}) });
       return;
     case "next":
-      table.next.push(item(op.text));
+      table.next.push({ ...item(op.text), ...(op.target ? { target: op.target } : {}) });
       return;
+    case "review": {
+      const step = table.next.find((entry) => entry.id === op.target);
+      if (step) {
+        step.review = op.by;
+        step.reviewSeq = seq;
+      }
+      return;
+    }
     case "done": {
       const step = table.next.find((entry) => entry.id === op.target);
       if (step) {
         step.done = true;
         step.doneBy = op.by;
+        // Checked: someone other than the one who asked for its check passed it (marked it done, or supported it since
+        // it was asked for and has not objected since), or the human did. With no check asked for, nobody can tell a
+        // check from its builder closing it. Alone, an agent's own check is the check.
+        const passed = (who: string) => who !== step.review;
+        const mine = table.notes.filter((note) => note.target === step.id && note.seq > (step.reviewSeq ?? 0));
+        const support = mine.filter((note) => note.kind === "support" && passed(note.by) && !mine.some((later) => later.kind === "object" && later.by === note.by && later.seq > note.seq)).at(-1);
+        if (room.human || (step.review && passed(op.by))) {
+          step.checked = true;
+          step.checkedBy = op.by;
+        } else if (step.review && support) {
+          step.checked = true;
+          step.checkedBy = support.by;
+        } else if (room.alone) step.checked = true;
       }
       return;
     }
@@ -493,6 +546,7 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number): void 
       table.notes = table.notes.filter((note) => note.target !== op.target);
       for (const option of table.options) if (option.q === op.target) option.q = null;
       for (const point of table.settled) if (point.q === op.target) delete point.q;
+      for (const step of table.next) if (step.target === op.target) delete step.target;
       for (const question of table.questions) {
         if (question.answer === op.target) {
           question.status = "open";
@@ -519,7 +573,7 @@ export const describeTableOp = (op: TableOp, table?: TableState, options: { whol
   const titleOf = (ref: string) => {
     const option = table?.options.find((entry) => entry.id === ref);
     if (option) return ` ${quote(option.title, 60)}`;
-    const point = table?.settled.find((entry) => entry.id === ref) ?? table?.facts.find((entry) => entry.id === ref);
+    const point = table?.settled.find((entry) => entry.id === ref) ?? table?.facts.find((entry) => entry.id === ref) ?? table?.next.find((entry) => entry.id === ref);
     return point ? ` ${quote(point.text, 60)}` : "";
   };
   switch (op.op) {
@@ -541,7 +595,9 @@ export const describeTableOp = (op: TableOp, table?: TableState, options: { whol
     case "concede":
       return `conceded${op.target ? ` on ${op.target}` : ""} (${op.id}): ${dissent(op.text)}`;
     case "next":
-      return `added next step ${op.id}: ${quote(op.text)}`;
+      return `added next step ${op.id}${op.target ? ` on ${op.target}` : ""}: ${quote(op.text)}`;
+    case "review":
+      return `asked for a check of ${op.target}${titleOf(op.target)}`;
     case "done":
       return `marked ${op.target} done`;
     case "withdraw": {
@@ -634,7 +690,8 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
       const about = entry.q ? ` [${many ? "recommends for" : "answers"} ${entry.q}]` : entry.target ? ` [on ${entry.target}]` : "";
       const struck = entry.done || entry.withdrawn ? "~~" : "";
       const disputed = disputes ? disputeOf(table, entry) : [];
-      lines.push(`- ${struck}${entry.id}: ${entry.text}${struck}${about} (${entry.by}${entry.doneBy && entry.doneBy !== entry.by ? `; done by ${entry.doneBy}` : ""}${entry.withdrawn ? "; withdrawn" : ""})${disputed.length ? ` — contested by ${disputed.join(", ")}` : ""}`);
+      const stage = entry.id.startsWith("X") ? stepStage(table, entry) : "";
+      lines.push(`- ${struck}${entry.id}: ${entry.text}${struck}${about} (${entry.by}${entry.doneBy && entry.doneBy !== entry.by ? `; done by ${entry.doneBy}` : ""}${entry.withdrawn ? "; withdrawn" : ""})${stage ? ` — ${stage}` : ""}${disputed.length ? ` — contested by ${disputed.join(", ")}` : ""}`);
       renderNotes(entry.id);
     }
     lines.push("");
@@ -644,6 +701,34 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
   section("Changed minds", table.shifts);
   section("Next", table.next);
   return `${lines.join("\n")}\n`;
+};
+
+/** Objections to a step: what its checks found. */
+export const findingsOf = (table: Pick<TableState, "notes">, step: string): number =>
+  table.notes.filter((note) => note.target === step && note.kind === "object").length;
+
+/**
+ * Who built a step, by the step's own record: the agent that asked for its check; with none asked for, the agent
+ * that marked it done. Undefined when no agent did either (it is open, or the human closed it): putting a step on
+ * the table is planning, often for another agent.
+ */
+export const stepBuilder = (step: Pick<TableItem, "review" | "doneBy">, human?: string): string | undefined => {
+  const agent = (who: string | undefined) => (who && who !== human ? who : undefined);
+  return agent(step.review) ?? agent(step.doneBy);
+};
+
+/** A done step someone checked (see `checked`): not one its builder closed with no check asked for. */
+export const stepChecked = (step: Pick<TableItem, "done" | "checked">): boolean => Boolean(step.done && step.checked);
+
+/** Where a step stands, in words, once it is past being built: on its check (with what it found), checked, committed. */
+const stepStage = (table: TableState, step: TableItem): string => {
+  const found = findingsOf(table, step.id);
+  const findings = found ? `, ${found} finding${found > 1 ? "s" : ""}` : "";
+  const checked = stepChecked(step);
+  if (step.commit) return `committed ${step.commit.sha.slice(0, 7)}${step.done && !checked ? " without a check" : ""}${findings}`;
+  if (step.done) return checked ? `checked${findings}` : `done without a check${findings}`;
+  if (step.review) return `waiting for its check${findings}`;
+  return found ? `${found} finding${found > 1 ? "s" : ""}` : "";
 };
 
 /**
@@ -737,6 +822,11 @@ export const summarizeTable = (table: TableState): string | null => {
     const shifts = table.shifts.slice(-3).map((item) => `${item.id} ${item.by}${item.target ? ` on ${item.target}` : ""} ${quote(item.text, 70)}`);
     lines.push(`  changed minds: ${shifts.join("; ")}`);
   }
-  if (pending.length > 0) lines.push(`  to do: ${pending.map((step) => `${step.id} ${quote(step.text, 70)}`).join("; ")}`);
+  if (pending.length > 0) {
+    lines.push(`  to do: ${pending.map((step) => {
+      const stage = stepStage(table, step);
+      return `${step.id}${step.target ? ` on ${step.target}` : ""} ${quote(step.text, 70)}${stage ? ` (${stage})` : ""}`;
+    }).join("; ")}`);
+  }
   return lines.join("\n");
 };

@@ -59,13 +59,15 @@ const USAGE = `agoryx — room tools for agents
   agoryx table object  P1 "reason"
   agoryx table support P1 "reason"
   agoryx table evidence P1 "finding" [--source url-or-path]
-                   these also take a settled point or a fact (S1, F1): object S1 when you still dispute it
+                   these also take a settled point or a fact (S1, F1): object S1 when you still dispute it,
+                   and a step (X1): when you check one, object X1 for each finding, support X1 when it passed
   agoryx table fact "a fact everyone should rely on"
   agoryx table settle "what is now established" [--q Q1]   (--q: this answers Q1 and closes it)
   agoryx table concede "what I no longer hold, and why" [--on P1]
                    an argument changed your mind: say so on the table
-  agoryx table next "concrete next step"
-  agoryx table done X1
+  agoryx table next "concrete next step" [--on P1]   (--on: the option, a route, it carries out)
+  agoryx table review X1   built it: it waits for someone else's check (again after fixing what a check found)
+  agoryx table done X1     its check passed
   agoryx table withdraw P1
   agoryx table decide P1 [--note "why"]
   agoryx table reopen Q1|P1
@@ -216,12 +218,13 @@ const TABLE_FLAGS = {
   decide: ["note"],
   settle: ["q"],
   concede: ["on"],
+  next: ["on"],
 };
 
 const buildOp = (verb, positional, flags) => {
   const allowed = TABLE_FLAGS[verb] ?? [];
   const unknown = Object.keys(flags).filter((flag) => !allowed.includes(flag));
-  if (unknown.length > 0 && ["ask", "fact", "settle", "concede", "next", "propose", "object", "support", "evidence", "done", "withdraw", "reopen", "decide", "edit", "delete"].includes(verb)) {
+  if (unknown.length > 0 && ["ask", "fact", "settle", "concede", "next", "propose", "object", "support", "evidence", "review", "done", "withdraw", "reopen", "decide", "edit", "delete"].includes(verb)) {
     fail(`'${verb}' does not take ${unknown.map((flag) => `--${flag}`).join(", ")}${allowed.length ? ` (it takes ${allowed.map((flag) => `--${flag}`).join(", ")})` : ""}`);
   }
   const rest = positional.join(" ").trim();
@@ -230,9 +233,11 @@ const buildOp = (verb, positional, flags) => {
       if (!rest) fail("'ask' needs text");
       return { op: "ask", text: rest, many: flags.many ? true : undefined };
     case "fact":
-    case "next":
-      if (!rest) fail(`'${verb}' needs text`);
+      if (!rest) fail("'fact' needs text");
       return { op: verb, text: rest };
+    case "next":
+      if (!rest) fail("'next' needs text");
+      return { op: verb, text: rest, target: flags.on };
     case "settle":
       if (!rest) fail("'settle' needs text");
       return { op: "settle", text: rest, q: flags.q };
@@ -256,6 +261,7 @@ const buildOp = (verb, positional, flags) => {
       return { op: verb, target, text: text.join(" "), source: flags.source };
     }
     case "done":
+    case "review":
     case "withdraw":
     case "reopen":
       if (!positional[0]) fail(`'${verb}' needs an id`);

@@ -55,6 +55,7 @@ export const eventPatch = (state: RoomState, event: RoomEvent): Record<string, u
     case "session.bound":
       return { ...base, sessions: state.sessions };
     case "table.op":
+    case "step.committed":
       return { ...base, table: state.table };
     case "settings.changed":
       return { ...base, settings: state.settings };

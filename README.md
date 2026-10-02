@@ -31,6 +31,15 @@ orchestrator and assigns no roles. Every new message wakes the agents that haven
 ends when the room goes quiet. Use it headless (`agoryx new`, `say`, `tail -f`, `table`) or through the
 local web UI (`agoryx up -d && agoryx open`). See [docs/AGORA.md](docs/AGORA.md).
 
+Start in **Chat** to ask questions without selecting a project. **Work** connects a folder or a
+shared worktree. Switch between them from the room header; the conversation, participants and
+project files are preserved. With the CLI, `agoryx new "Question"` starts a chat;
+`agoryx new "Task" --mode work` creates a project, and `--dir PATH` uses an existing one.
+
+Agoryx does not require agents to commit steps and does not commit automatically to the working
+branch. Native agent settings, project instructions and your requests govern their Git work.
+Private recovery snapshots preserve file changes without changing HEAD or staged files.
+
 ## macOS app
 
 `Agoryx.app` is the daemon and its room UI in one window, and it works like `agoryx up -d && agoryx open`

@@ -10,6 +10,26 @@ you ──┐                     ┌── Claude  (native session, your settin
 table ┘   (JSONL, replayable)└── Codex   (native session, its own workspace-write sandbox)
 ```
 
+## Chat and Work
+
+A new conversation without a project starts in Chat. It uses a private materials folder under the
+room's state directory for attachments and requested artifacts, without making a project in
+`~/agoryx` or initializing a project repository. Native tools and settings remain available.
+The Chat briefing only supplies room context and the fact that no project is connected; it does
+not require task planning, reviews, or commits for ordinary conversation.
+
+Work is the project workflow: choose a folder, a new folder, or a worktree. Existing rooms remain
+Work. The room header switches modes between agent turns. Chat → Work connects a project;
+Work → Chat preserves its folder and changes; returning to Work resumes that same project.
+History, agents and table remain in the same room. Native sessions restart with the conversation
+history when the working directory changes. Older sessions also refresh once to discard the
+retired instruction requiring step commits. Historical file previews retain their original root.
+Open room terminals must be closed before changing the working directory.
+
+HTTP: `POST /api/rooms` accepts `mode: "chat" | "work"` (without one, a supplied `dir` implies Work,
+otherwise Chat). `POST /api/rooms/:id/mode` accepts `mode` and, for the first transition to Work,
+optional `dir`, `worktree` and `base`. Only the human can switch modes; active runs are refused.
+
 ## How a room runs
 
 - **No orchestrator.** Every new message wakes the agents that have not seen it yet. Each gets only the
@@ -84,7 +104,7 @@ table ┘   (JSONL, replayable)└── Codex   (native session, its own worksp
   it misses is left to `@names` as before, and a failed call changes nothing. About 0.3–0.7 s and 450–750 tokens
   a message; each reading is kept as a `message.read` event and in the daemon log.
 - **Work is attributed.** Files changed during a turn are credited to that turn; at run end Agoryx makes a
-  checkpoint commit (in workspaces it created, or when `autocommit` is on).
+  private recovery snapshot, without moving HEAD or changing staged files.
 - **So are actions.** Each agent's turn carries its own key to the daemon (`AGORYX_AGENT_KEY`). The human's own
   `agoryx` in an agent's shell works as usual — `more`, `stop`, `settings`, `new`, `down`, room messages —
   but the daemon records what it does as that agent's: `run.extended`, `run.ended` (a stop),
@@ -173,12 +193,11 @@ in `.agoryx/messages/<room>/`.
   A marker left by a dead process counts as ended when a room first sees it dead. A canonical-file
   change seen between turns, when another room's turn ran since the file was last seen, is recorded as
   "Ivan or room "B"" (whose is not known), never as the human's alone.
-- **The checkpoint commit**, for a room alone in its directory, is everything there as before. A room
-  that shares the directory (or saw another room's turn during the run) commits through a temporary index and only files credited to that run's turns.
-  Files changed since their last credited tree snapshot, files without a tree snapshot, and files
-  with existing staged changes are skipped. Uncredited work stays uncommitted; foreign staged entries
-  are preserved. Index-lock contention skips the checkpoint; a HEAD compare-and-swap prevents overwriting
-  a concurrent commit.
+- **Recovery snapshots** preserve the whole folder after a run changes files, including shared-folder
+  state. They are kept under private `refs/agoryx/checkpoint/…`, never on the working branch, and
+  leave staged and unstaged files intact. Per-turn diffs still attribute only that turn's work.
+  A completed or reviewed step is independent of committing it; Agoryx adds no commit policy to
+  the native agents. Legacy `autoCommit` values no longer enable automatic branch commits.
 
 ## The canonical file (Документ)
 
@@ -239,7 +258,7 @@ So Agoryx keeps **the exact change of every turn**, and the other agents see it.
   are dirty. The turn then lists its files without counts.
 - **A folder that is not a git repository** (one you pass with `--dir`) is tracked the same way through
   Agoryx's own repository in `.agoryx/shadow.git`, with your folder as its work tree. Your folder gains
-  no `.git`, nothing is committed for it, and your `.gitignore` still applies. There the rest of a cut
+  no `.git`; recovery points stay in the shadow store, and your `.gitignore` still applies. There the rest of a cut
   patch is `git --git-dir=.agoryx/shadow.git --work-tree=. diff <before> <after>`. A folder of more than
   20,000 files (a home directory) is left untracked. Once the folder becomes a repository of its own,
   that repository is used. The agents' briefing says which of these the folder is: in a git repository

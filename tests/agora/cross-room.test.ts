@@ -61,6 +61,7 @@ const twoRooms = (rules: { a: unknown[]; b: unknown[] }, docA?: string) => {
   const b = open("Room B", { id: "codex", kind: "codex", label: "Codex" }, rules.b);
   b.store.subscribe((event) => {
     if (event.type === "turn.ended") writeFileSync(join(home, "b-ended"), "");
+    if (event.type === "commit.created") writeFileSync(join(home, "b-snapshotted"), "");
   });
   return {
     workspace,
@@ -87,8 +88,8 @@ const commitOf = (engine: RoomEngine) => engine.store.events.find((event) => eve
 
 test("a file another room's agent edits during this room's turn is not this room's", async () => {
   const rooms = twoRooms({
-    // Claude (room A) thinks until room B's turn is over, then writes its own file with its edit tool.
-    a: [{ agent: "claude", match: "go", mark: "a-started", waitForMark: "b-ended", write: { path: "a.txt", content: "from room A\n" }, reply: "Wrote a.", once: true }],
+    // Wait for B's recovery snapshot too, so the two snapshots have deterministic contents.
+    a: [{ agent: "claude", match: "go", mark: "a-started", waitForMark: "b-snapshotted", write: { path: "a.txt", content: "from room A\n" }, reply: "Wrote a.", once: true }],
     // Codex (room B) writes its file while Claude's turn in room A is running.
     b: [{ agent: "codex", match: "go", waitForMark: "a-started", write: { path: "b.txt", content: "from room B\n" }, reply: "Wrote b.", once: true }],
   });
@@ -101,11 +102,11 @@ test("a file another room's agent edits during this room's turn is not this room
     assert.doesNotMatch(rooms.a.turnPatch(a.id)!.patch, /b\.txt/, "nor in room A's patch");
     assert.deepEqual(b.files, ["b.txt"]);
 
-    // Each room's checkpoint holds its own work and nothing of the other's.
+    // Recovery snapshots capture the whole folder at their respective times.
     const commitA = commitOf(rooms.a);
     const commitB = commitOf(rooms.b);
     assert.ok(commitA?.type === "commit.created" && commitB?.type === "commit.created");
-    assert.deepEqual(committedFiles(rooms.workspace, commitA.sha), ["a.txt"]);
+    assert.deepEqual(committedFiles(rooms.workspace, commitA.sha), ["a.txt", "b.txt"], "recovery preserves the whole folder, without crediting foreign changes to the turn");
     assert.deepEqual(committedFiles(rooms.workspace, commitB.sha), ["b.txt"]);
   } finally {
     await rooms.cleanup();
@@ -157,7 +158,7 @@ test("a room in another process running a turn here counts as a parallel turn", 
     assert.deepEqual(turnOf(rooms.a).files, ["a.txt"], "the shell change could be the other process's agent: not credited");
     const commit = commitOf(rooms.a);
     assert.ok(commit?.type === "commit.created");
-    assert.deepEqual(committedFiles(rooms.workspace, commit.sha), ["a.txt"]);
+    assert.deepEqual(committedFiles(rooms.workspace, commit.sha), ["a.txt", "c.txt"]);
   } finally {
     await rooms.cleanup();
   }
@@ -180,7 +181,7 @@ test("one room alone in the workspace credits and commits a shell change as befo
   }
 });
 
-test("a room alone in its directory checkpoints everything, as before; sharing it, only what its turns were credited", async () => {
+test("recovery snapshots preserve all files in both private and shared directories without committing them", async () => {
   const alone = createTestRoom({
     rules: [{ agent: "claude", match: "go", write: { path: "a.txt", content: "agent\n" }, reply: "Done.", once: true }],
     agents: [{ id: "claude", kind: "claude", label: "Claude" }],
@@ -206,7 +207,7 @@ test("a room alone in its directory checkpoints everything, as before; sharing i
     const commit = commitOf(rooms.a);
     assert.ok(commit?.type === "commit.created");
     // Room B may own it: a room sharing the directory leaves what it was not credited with alone.
-    assert.deepEqual(committedFiles(rooms.workspace, commit.sha), ["a.txt"]);
+    assert.deepEqual(committedFiles(rooms.workspace, commit.sha), ["a.txt", "notes.txt"]);
     assert.match(git(rooms.workspace, ["status", "--porcelain"]), /notes\.txt/);
   } finally {
     await rooms.cleanup();

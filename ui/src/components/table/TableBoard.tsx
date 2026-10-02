@@ -514,7 +514,7 @@ function Debate({ o, table, room }: { o: TableOption; table: TableState; room: R
             <Markdown text={o.body} source={`o:${o.id}`} className="text-ui text-foreground/90" />
           </Clamp>
         ) : null}
-        {o.file ? <FilePreview file={o.file} /> : null}
+        {o.file ? <FilePreview file={o.file} seq={o.seq} /> : null}
         <Tug table={table} o={o} />
       </div>
       {notes.length || shifts.length ? (

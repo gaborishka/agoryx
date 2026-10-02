@@ -238,7 +238,7 @@ test("a run's checkpoint takes the steps it finished, unless their author commit
     await withTimeout(room.engine.waitIdle());
     const [x1, x2, x3] = room.store.state.table.next;
     const checkpoint = room.store.state.commits.at(-1)!;
-    assert.deepEqual(x1!.commit && [x1!.commit.sha, x1!.commit.by], [checkpoint.sha, "agoryx"]);
+    assert.equal(x1!.commit, undefined, "a finished step is not automatically committed");
     assert.equal(x2!.commit?.by, "codex", "its author committed it");
     assert.notEqual(x2!.commit?.sha, checkpoint.sha);
     assert.equal(x3!.commit, undefined, "a step still to do is not in it");
@@ -273,11 +273,11 @@ test("a step is in the checkpoint that holds its work: built in one run, passed 
     assert.ok(build1 && build2 && pass2);
     assert.equal(pass1, "", "the check changed nothing");
     const [x1, x2] = room.store.state.table.next;
-    assert.deepEqual(x1!.commit && [x1!.commit.sha, x1!.commit.by], [build1, "agoryx"]);
-    assert.deepEqual(x2!.commit && [x2!.commit.sha, x2!.commit.by], [build2, "agoryx"]);
-    // Named by the steps whose work it holds: the check's checkpoint holds none of X2's.
-    assert.match(git(ws, "log", "-1", "--format=%s", pass2!).trim(), /^agoryx: run r\d+ by claude$/);
-    assert.match(git(ws, "log", "-1", "--format=%b", pass2!), new RegExp(`- X2 Write b \\(done by claude; committed as ${build2!.slice(0, 8)}\\)`));
+    assert.equal(x1!.commit, undefined);
+    assert.equal(x2!.commit, undefined);
+    assert.equal(git(ws, "show", `${build1}:q.ts`).trim(), "q");
+    assert.equal(git(ws, "show", `${build2}:b.ts`).trim(), "b");
+    assert.equal(room.store.state.commits.every((snapshot) => snapshot.internal), true);
   } finally {
     await room.cleanup();
   }
@@ -427,7 +427,8 @@ test("a step fixed after its check found something is in the checkpoint of the f
     const [build, object, fix, pass] = checkpoints;
     assert.ok(build && fix);
     assert.deepEqual([object, pass], ["", ""], "the checks changed nothing");
-    assert.deepEqual(room.store.state.table.next[0]!.commit && [room.store.state.table.next[0]!.commit.sha, room.store.state.table.next[0]!.commit.by], [fix, "agoryx"]);
+    assert.equal(room.store.state.table.next[0]!.commit, undefined);
+    assert.equal(git(room.store.state.workspace, "show", `${fix}:q.ts`).trim(), "q2");
   } finally {
     await room.cleanup();
   }
@@ -577,7 +578,7 @@ test("over HTTP: the human sees what committing a step would take and commits it
       req.end();
     });
   try {
-    const room = (await call("POST", "/api/rooms", { name: "Steps" })).json.room as { id: string };
+    const room = (await call("POST", "/api/rooms", { name: "Steps", mode: "work" })).json.room as { id: string };
     const workspace = (await call("GET", `/api/rooms/${room.id}`)).json.state.workspace as string;
     git(workspace, "config", "user.name", "Ivan Test");
     git(workspace, "config", "user.email", "ivan@test");

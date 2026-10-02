@@ -341,7 +341,8 @@ test("a folder that is not a git repository still has each turn's changes tracke
     assert.match(readFileSync(join(workspace, ".agoryx", "rooms", room.store.state.id, "turns", `${turn.id}.patch`), "utf8"), /\+export const fixed = true;/);
     assert.equal(existsSync(join(workspace, ".git")), false, "the human's folder is not made a repository");
     assert.ok(existsSync(join(workspace, ".agoryx", "shadow.git", "HEAD")));
-    assert.equal(room.store.state.commits?.length ?? 0, 0, "nothing is committed for a folder Agoryx did not create");
+    assert.equal(room.store.state.commits?.length ?? 0, 1, "private recovery also covers non-git folders");
+    assert.equal(room.store.state.commits[0]!.internal, true);
   } finally {
     await room.cleanup();
   }

@@ -12,7 +12,7 @@ import { createCodexRunner } from "./runners/codex.js";
 import type { AgentRunner } from "./runners/types.js";
 import { defaultRoster, parseAgents } from "./roster.js";
 import { newRoomId, RoomStore, slugify } from "./store.js";
-import { DEFAULT_SETTINGS, type ActorOrigin, type AgentKind, type LimitSnapshot, type RoomAgent, type RoomSettings, type RoomWorktree } from "./types.js";
+import { DEFAULT_SETTINGS, type ActorOrigin, type AgentKind, type LimitSnapshot, type RoomAgent, type RoomMode, type RoomProject, type RoomSettings, type RoomWorktree } from "./types.js";
 import { ensureAgentShim, prepareWorkspace } from "./workspace.js";
 import { jevReadMessage, jevSecondLook, jevThreshold } from "./jev.js";
 import { recordLimits } from "./limits-store.js";
@@ -37,6 +37,7 @@ export const defaultHumanName = (env: NodeJS.ProcessEnv = process.env): string =
 
 export interface CreateRoomOptions {
   name: string;
+  mode?: RoomMode;
   dir?: string;
   /** Work in a new git worktree of `dir` (its own branch), shared by every agent in the room. */
   worktree?: boolean;
@@ -48,6 +49,7 @@ export interface CreateRoomOptions {
   /** Agent turns per run; null (the default) for no limit. */
   budget?: number | null;
   network?: boolean;
+  /** Legacy option, ignored: automatic branch commits have been removed. */
   autoCommit?: boolean;
   access?: RoomSettings["access"];
   /** The canonical file (relative to the workspace). Default: none; the room names one when it starts writing one text (`agoryx settings --doc`). */
@@ -98,12 +100,18 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     if (!doc) throw new Error(`the canonical file must be a path inside the workspace: ${options.doc}`);
   }
   const id = newRoomId(name);
+  if (options.mode !== undefined && options.mode !== "chat" && options.mode !== "work") throw new Error("mode must be chat or work");
+  const mode = options.mode ?? (options.dir || options.worktree ? "work" : "chat");
+  if (mode === "chat" && (options.dir || options.worktree || options.base)) throw new Error("Chat has no project; choose Work to connect a folder");
   let workspace: string;
   // True only when Agoryx picked the directory. One the human names stays theirs even if it is empty:
   // no git init, no default document, no automatic commits unless asked.
   let createdWorkspace: boolean;
   if (options.worktree && !options.dir) throw new Error("a worktree needs a folder in a git repository");
-  if (options.dir) {
+  if (mode === "chat") {
+    workspace = join(roomsDir(env), id, "materials");
+    createdWorkspace = false;
+  } else if (options.dir) {
     workspace = resolve(options.dir);
     createdWorkspace = false;
   } else {
@@ -126,7 +134,7 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     ...(options.network !== undefined ? { network: options.network } : {}),
     ...(options.access ? { access: options.access } : {}),
     // Never auto-commit into a directory the human brought unless asked.
-    autoCommit: options.autoCommit ?? createdWorkspace,
+    autoCommit: false,
     doc,
   };
   // Last, after everything that can refuse the room: a refused room leaves no branch behind.
@@ -135,11 +143,11 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
     const made = createRoomWorktree(workspace, { name, id, ...(options.base ? { base: options.base } : {}), env });
     workspace = made.workspace;
     worktree = made.worktree;
-    // The branch is the room's own: checkpoints there touch nothing the human is working on.
-    if (options.autoCommit === undefined) settings.autoCommit = true;
+    // Even an isolated branch gets no automatic commits.
+    settings.autoCommit = false;
   }
   try {
-    return finishRoom({ id, name, workspace, createdWorkspace, worktree, human, agents, settings, doc, env, createdBy: options.createdBy });
+    return finishRoom({ id, name, mode, workspace, createdWorkspace, worktree, human, agents, settings, doc, env, createdBy: options.createdBy });
   } catch (error) {
     if (worktree) removeRoomWorktree(worktree);
     throw error;
@@ -149,6 +157,7 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
 const finishRoom = ({
   id,
   name,
+  mode,
   workspace,
   createdWorkspace,
   worktree,
@@ -161,6 +170,7 @@ const finishRoom = ({
 }: {
   id: string;
   name: string;
+  mode: RoomMode;
   workspace: string;
   createdWorkspace: boolean;
   worktree: RoomWorktree | undefined;
@@ -183,6 +193,7 @@ const finishRoom = ({
     id,
     name,
     workspace,
+    mode,
     createdWorkspace,
     ...(worktree ? { worktree } : {}),
     human,
@@ -257,4 +268,44 @@ export const resumeCommands = (
     if (session && runner) commands[agent.id] = runner.resumeCommand(session.sessionId, store.state.workspace, agent.model, agent.effort);
   }
   return commands;
+};
+
+export interface ChangeRoomModeOptions {
+  mode: RoomMode;
+  dir?: string;
+  worktree?: boolean;
+  base?: string;
+}
+
+/** Caller holds the room's lock, with no running turns or native process. */
+export const changeRoomMode = (store: RoomStore, options: ChangeRoomModeOptions, env: NodeJS.ProcessEnv = process.env): void => {
+  if (options.mode !== "chat" && options.mode !== "work") throw new Error("mode must be chat or work");
+  const state = store.state;
+  if (state.runs.at(-1)?.status === "active" || state.turns.some((turn) => turn.status === "running")) throw new Error("Wait for the agents to finish before switching modes");
+  if (options.mode === (state.mode ?? "work")) return;
+  if (options.mode === "chat" && (options.dir || options.worktree || options.base)) throw new Error("Chat has no project folder");
+  let project: RoomProject | undefined = state.project;
+  let made: RoomWorktree | undefined;
+  if ((state.mode ?? "work") === "work") project = { workspace: state.workspace, createdWorkspace: state.createdWorkspace, worktree: state.worktree, doc: state.settings.doc };
+  if (options.mode === "work" && project && (options.dir || options.worktree || options.base)) throw new Error("This conversation already has a project; resume it without choosing another folder");
+  try {
+    if (options.mode === "work" && !project) {
+      if (options.worktree && !options.dir) throw new Error("a worktree needs a folder in a git repository");
+      let workspace = options.dir ? resolve(options.dir) : join(defaultWorkspaceRoot(env), state.id);
+      if (options.worktree) {
+        const result = createRoomWorktree(workspace, { name: state.name, id: state.id, base: options.base, env });
+        workspace = result.workspace;
+        made = result.worktree;
+      }
+      project = { workspace, createdWorkspace: !options.dir, ...(made ? { worktree: made } : {}) };
+      prepareWorkspace(workspace, { initGit: project.createdWorkspace });
+    }
+    const workspace = options.mode === "work" ? project!.workspace : join(store.dir, "materials");
+    prepareWorkspace(workspace, { initGit: false });
+    store.append({ type: "room.mode.changed", mode: options.mode, workspace, project, by: state.human });
+    store.append({ type: "message.posted", message: { id: `m${(state.counters.m ?? 0) + 1}`, author: "agoryx", kind: "system", mentions: [], wakes: false, text: options.mode === "chat" ? "Switched to Chat. No project is connected; the project's files are preserved." : `Switched to Work. Project: ${workspace}` } });
+  } catch (error) {
+    if (made) removeRoomWorktree(made);
+    throw error;
+  }
 };

@@ -110,7 +110,7 @@ const waitFor = async (check: () => Promise<boolean>, ms = 15_000) => {
 };
 
 const newRoom = async (name: string, extra: Record<string, unknown> = {}) => {
-  const reply = await call("POST", "/api/rooms", { body: { name, ...extra } });
+  const reply = await call("POST", "/api/rooms", { body: { name, mode: "work", ...extra } });
   assert.equal(reply.status, 201, reply.body);
   return reply.json<{ room: { id: string; workspace: string } }>().room;
 };
@@ -588,7 +588,7 @@ test("a room can work in its own git worktree, shared by both agents", async () 
   assert.equal(git.git.linked, true);
   assert.equal(git.worktree.base, "feature");
   const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ state: { settings: { autoCommit: boolean } } }>();
-  assert.equal(snap.state.settings.autoCommit, true);
+  assert.equal(snap.state.settings.autoCommit, false);
   const folders = (await call("GET", "/api/folders")).json<{ recent: Array<{ path: string; git: boolean }> }>();
   assert.ok(folders.recent.some((f) => f.path === repo && f.git));
 });

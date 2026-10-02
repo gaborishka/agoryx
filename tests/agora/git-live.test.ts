@@ -127,6 +127,21 @@ test("git init in a room's folder reaches the open page at once: a step can then
   assert.equal((await call("GET", `/api/rooms/${room.id}`)).json().gitRepo, true);
 });
 
+test("the open page watches the new workspace after switching from Chat to Work", async () => {
+  const folder = join(home, "after-mode-switch");
+  mkdirSync(folder);
+  const created = await call("POST", "/api/rooms", { name: "Chat to Work", mode: "chat" });
+  assert.equal(created.status, 201);
+  const room = created.json().room as { id: string };
+  const stream = frames(`/api/rooms/${room.id}/events`, (frame) => frame.event === "git" && frame.data.gitRepo === true);
+  while (!stream.seen.some((frame) => frame.event === "presence")) await new Promise((resolve) => setTimeout(resolve, 20));
+  const switched = await call("POST", `/api/rooms/${room.id}/mode`, { mode: "work", dir: folder });
+  assert.equal(switched.status, 200, JSON.stringify(switched.json()));
+  assert.equal(switched.json().gitRepo, false);
+  execFileSync("git", ["init", "-q"], { cwd: folder, env });
+  assert.deepEqual((await stream.until).at(-1), { event: "git", data: { gitRepo: true } });
+});
+
 test("a repository an agent makes around the folder during its turn is seen when the turn ends", async () => {
   const outer = join(home, "outer");
   const folder = join(outer, "app");

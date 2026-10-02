@@ -35,6 +35,7 @@ export type RoomView = "chat" | "table";
 export type DialogState =
   /** Return the folder: to checkpoint `sha`, undo return `undo` (its seq), or neither: pick a checkpoint. */
   | { kind: "revert"; sha?: string; undo?: number }
+  | { kind: "mode" }
   | { kind: "settings" }
   /** Who sits in the room: seat, send out, roles; `agent`: the one to show first. */
   | { kind: "agents"; agent?: string }
@@ -96,6 +97,8 @@ interface Store {
   navWidth: number | null;
   panelWidth: number | null;
   navOpen: boolean;
+  /** Desktop room list visibility, independent of the mobile drawer. */
+  navCollapsed: boolean;
   dialog: DialogState | null;
   /** Doc panel: bumped when the canonical file changed, so the panel refetches. */
   docTick: number;
@@ -135,6 +138,7 @@ interface Store {
   setNavWidth: (width: number | null) => void;
   setPanelWidth: (width: number | null) => void;
   setNavOpen: (open: boolean) => void;
+  setNavCollapsed: (collapsed: boolean) => void;
   openDialog: (dialog: DialogState | null) => void;
   goToRef: (ref: string) => void;
   /** Put a draft into the composer for the human to edit and send; nothing is sent. */
@@ -179,6 +183,7 @@ export const useStore = create<Store>((set, get) => ({
   navWidth: Number(local.get("navWidth")) || null,
   panelWidth: Number(local.get("panelWidth")) || null,
   navOpen: false,
+  navCollapsed: local.get("navCollapsed") === "1",
   dialog: null,
   docTick: 0,
   docReset: 0,
@@ -316,6 +321,10 @@ export const useStore = create<Store>((set, get) => ({
     local.set("panelWidth", panelWidth ? String(panelWidth) : null);
     set({ panelWidth });
   },
+  setNavCollapsed(navCollapsed) {
+    local.set("navCollapsed", navCollapsed ? "1" : null);
+    set({ navCollapsed });
+  },
   setNavOpen(navOpen) {
     set({ navOpen });
   },
@@ -382,6 +391,13 @@ type Patch = {
 };
 
 const applyPatch = (event: RoomEvent, patch: Patch) => {
+  if (event.type === "room.mode.changed") {
+    const s = useStore.getState();
+    useStore.setState({ panel: null, terminalOpen: false, docFocus: null, docReset: s.docReset + 1 });
+    if (s.route.kind === "room") void s.openRoom(s.route.id, true);
+    void s.loadRooms();
+    return;
+  }
   const { snap, rooms } = useStore.getState();
   if (!snap || event.seq <= snap.state.seq) return;
   const st = { ...snap.state, seq: event.seq };

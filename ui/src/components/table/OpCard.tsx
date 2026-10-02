@@ -1,3 +1,4 @@
+import { workspaceAt } from "@agora/room-mode";
 import {
   BadgeCheckIcon,
   CheckIcon,
@@ -150,21 +151,25 @@ export function Standing({ table, o }: { table: TableState; o: TableOption }) {
   );
 }
 
-export function FilePreview({ file }: { file: string }) {
+export function FilePreview({ file, seq }: { file: string; seq?: number }) {
   const rawBase = useStore((s) => s.snap?.rawBase);
   const openFile = useStore((s) => s.openFile);
+  const room = useStore((s) => s.snap?.state);
+  const historical = Boolean(room && seq && workspaceAt(room, seq) !== room.workspace);
+  const url = rawBase ? rawUrl(rawBase, historical ? `~at/${seq}/${file}` : file) : "";
+  const open = () => historical ? window.open(url, "_blank", "noopener") : openFile(file);
   const kind = ext(file);
   if (rawBase && IMAGE_EXT.has(kind)) {
     return (
-      <button type="button" className="mt-2 block overflow-hidden rounded-lg border border-border bg-paper" onClick={() => openFile(file)} title={file}>
-        <img src={rawUrl(rawBase, file)} alt={file} loading="lazy" className="max-h-72 max-w-full object-contain" />
+      <button type="button" className="mt-2 block overflow-hidden rounded-lg border border-border bg-paper" onClick={open} title={file}>
+        <img src={url} alt={file} loading="lazy" className="max-h-72 max-w-full object-contain" />
       </button>
     );
   }
   return (
     <div className="mt-2 overflow-hidden rounded-lg border border-border bg-paper">
-      {rawBase && FRAME_EXT.has(kind) ? <LiveFrame src={rawUrl(rawBase, file)} title={file} initial={280} max={640} /> : null}
-      <button type="button" onClick={() => openFile(file)} className="flex w-full items-center gap-2 border-t border-border px-2.5 py-1.5 text-left text-xs first:border-t-0 hover:bg-accent">
+      {rawBase && FRAME_EXT.has(kind) ? <LiveFrame src={url} title={file} initial={280} max={640} /> : null}
+      <button type="button" onClick={open} className="flex w-full items-center gap-2 border-t border-border px-2.5 py-1.5 text-left text-xs first:border-t-0 hover:bg-accent">
         <FileIcon className="size-3.5 text-muted-foreground" />
         <span className="truncate font-mono">{file}</span>
         <span className="ml-auto text-muted-foreground">view</span>
@@ -269,7 +274,7 @@ export function OpCard({ o }: { o: TableOp }) {
               <Markdown text={opt.body} source={`o:${opt.id}`} className="text-ui" />
             </Clamp>
           ) : null}
-          {opt.file ? <FilePreview file={opt.file} /> : null}
+          {opt.file ? <FilePreview file={opt.file} seq={opt.seq} /> : null}
           {open ? <OptionActions id={opt.id} /> : null}
         </div>
       );

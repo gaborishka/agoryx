@@ -4,6 +4,7 @@ import type { AgentPresence, AttentionItem, LimitSnapshot, RoomAgent, RoomState,
 export type * from "@agora/types";
 
 export interface RoomSummary {
+  mode?: "chat" | "work";
   id: string;
   name: string;
   workspace: string;

@@ -1005,7 +1005,7 @@ test("over HTTP: the human sees what Open PR would push, then opens it through g
       req.end();
     });
   try {
-    const room = (await call("POST", "/api/rooms", { name: "Widgets" })).json.room as { id: string };
+    const room = (await call("POST", "/api/rooms", { name: "Widgets", mode: "work" })).json.room as { id: string };
     const workspace = (await call("GET", `/api/rooms/${room.id}`)).json.state.workspace as string;
     const noRemote = await call("GET", `/api/rooms/${room.id}/pr`);
     assert.equal(noRemote.status, 409);

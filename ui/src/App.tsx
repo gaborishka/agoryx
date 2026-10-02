@@ -5,7 +5,7 @@ import { Mark } from "@/components/brand/Mark";
 import { NAV, navWidthOf, PANEL_MIN, ResizeHandle, ROOM_MIN, useViewportWidth } from "@/components/common/ResizeHandle";
 import { Composer, StatusBar } from "@/components/room/Composer";
 import { Feed } from "@/components/room/Feed";
-import { RoomHeader } from "@/components/room/RoomHeader";
+import { NavButton, RoomHeader } from "@/components/room/RoomHeader";
 import { Sidebar } from "@/components/Sidebar";
 import { StartScreen } from "@/components/StartScreen";
 import { TableBoard } from "@/components/table/TableBoard";
@@ -97,6 +97,7 @@ function RoomLoading() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-14 items-center gap-3 border-b border-border/70 px-4">
+        <NavButton />
         <Skeleton className="h-4 w-48" />
         <Skeleton className="ml-auto h-7 w-40 rounded-full" />
       </div>
@@ -118,7 +119,7 @@ function RoomLoading() {
 function Room() {
   const loaded = useStore((s) => Boolean(s.snap));
   const view = useStore((s) => s.view);
-  const terminal = useStore((s) => s.terminalOpen);
+  const terminal = useStore((s) => s.terminalOpen && s.snap?.state.mode !== "chat");
   const roomId = useStore((s) => s.snap?.state.id);
   if (!loaded) return <RoomLoading />;
   return (
@@ -143,6 +144,7 @@ function Room() {
 function Shell() {
   const route = useStore((s) => s.route);
   const navOpen = useStore((s) => s.navOpen);
+  const navCollapsed = useStore((s) => s.navCollapsed);
   const setNavOpen = useStore((s) => s.setNavOpen);
   const desktop = useWideScreen("(min-width: 1024px)");
   const roomy = useWideScreen("(min-width: 1181px)");
@@ -153,16 +155,16 @@ function Shell() {
   const panelOpen = useStore((s) => s.panel !== null);
   // Docked only where the room list, the panel and a readable conversation all fit; while it is docked,
   // the room list is not dragged so wide that it would push the panel over the conversation.
-  const docked = roomy && viewport - nav >= PANEL_MIN + ROOM_MIN;
+  const docked = roomy && viewport - (desktop && !navCollapsed ? nav : 0) >= PANEL_MIN + ROOM_MIN;
   const navMax = docked && panelOpen ? Math.max(nav, Math.min(NAV.max, viewport - PANEL_MIN - ROOM_MIN)) : NAV.max;
   return (
     <div className="flex h-full min-h-0 bg-background">
-      {desktop ? (
+      {desktop && !navCollapsed ? (
         <div className="relative shrink-0 border-r border-border/70" style={{ width: nav }}>
           <Sidebar />
           <ResizeHandle label="Room list width" value={nav} min={NAV.min} max={navMax} grows="left" onChange={setNavWidth} onReset={() => setNavWidth(null)} />
         </div>
-      ) : navOpen ? (
+      ) : !desktop && navOpen ? (
         <>
           <button type="button" aria-label="Close menu" className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px]" onClick={() => setNavOpen(false)} />
           <div className="fixed inset-y-0 left-0 z-50 w-[min(300px,86vw)] shadow-lift">

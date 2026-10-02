@@ -461,7 +461,7 @@ test("a CLI without a live mode falls back to a process per turn, silently", asy
 test("a lost session is rejoined in a live process too", async () => {
   const room = createTestRoom({ agents: CLAUDE_ONLY, live: true, rules: [] });
   try {
-    room.store.append({ type: "session.bound", agent: "claude", sessionId: "00000000-0000-4000-8000-000000000000" });
+    room.store.append({ type: "session.bound", briefingVersion: 2, agent: "claude", sessionId: "00000000-0000-4000-8000-000000000000" });
     await say(room, "hello again");
     const calls = room.invocations("claude");
     assert.ok(turnsOf(room, "claude").every((turn) => turn.status !== "error"));

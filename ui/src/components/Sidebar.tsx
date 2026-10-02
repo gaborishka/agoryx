@@ -1,4 +1,4 @@
-import { ChevronRightIcon, CircleHelpIcon, Settings2Icon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
+import { PanelLeftIcon, ChevronRightIcon, CircleHelpIcon, Settings2Icon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { MarkMono, Wordmark } from "@/components/brand/Mark";
 import { Avatar, Tip } from "@/components/room/bits";
@@ -30,6 +30,8 @@ const FILTERS: Array<{ id: Filter; label: string }> = [
 
 /** Rooms in a folder Agoryx made for them (no folder of the human's) are grouped together. */
 const OWN = "";
+const CHATS = "::chats";
+const groupKey = (room: RoomSummary) => room.mode === "chat" ? CHATS : room.folder ?? OWN;
 
 const readFolded = (): Set<string> => {
   try {
@@ -149,7 +151,7 @@ function RoomRow({ room, on }: { room: RoomSummary; on: boolean }) {
   return (
     <button
       type="button"
-      title={room.workspace}
+      title={room.mode === "chat" ? "Chat · no project" : room.workspace}
       data-on={on}
       aria-current={on ? "page" : undefined}
       onClick={() => go({ kind: "room", id: room.id })}
@@ -200,10 +202,10 @@ interface Group {
 const groupRooms = (rooms: RoomSummary[]): Group[] => {
   const groups = new Map<string, Group>();
   for (const room of rooms) {
-    const key = room.folder ?? OWN;
+    const key = groupKey(room);
     let group = groups.get(key);
     if (!group) {
-      group = { key, rooms: [], ...(key === OWN ? { label: "New folders", title: "Folders Agoryx created for rooms" } : { label: baseName(key), title: key }) };
+      group = { key, rooms: [], ...(key === CHATS ? { label: "Chats", title: "Conversations without a project" } : key === OWN ? { label: "New folders", title: "Folders Agoryx created for rooms" } : { label: baseName(key), title: key }) };
       groups.set(key, group);
     }
     group.rooms.push(room);
@@ -211,7 +213,7 @@ const groupRooms = (rooms: RoomSummary[]): Group[] => {
   const list = [...groups.values()];
   // Two folders of one name: say which is which.
   for (const group of list) {
-    if (group.key !== OWN && list.some((other) => other !== group && other.label === group.label)) group.label = shortPath(group.key);
+    if (group.key !== OWN && group.key !== CHATS && list.some((other) => other !== group && other.label === group.label)) group.label = shortPath(group.key);
   }
   return list;
 };
@@ -221,7 +223,7 @@ const passes = (room: RoomSummary, filter: Filter, current: string | null) =>
   filter === "waiting" ? Boolean(room.waiting) && room.id !== current : filter === "working" ? room.running : true;
 
 /** Grouped only when the rooms work in more than one folder; decided on all rooms, so a filter does not reshape the list. */
-const isGrouped = (rooms: RoomSummary[]) => new Set(rooms.map((r) => r.folder ?? OWN)).size > 1;
+const isGrouped = (rooms: RoomSummary[]) => new Set(rooms.map(groupKey)).size > 1;
 
 /** The rooms as the list shows them, top to bottom (filtered, folded folders left out): what ⌥↑/⌥↓ step through. */
 export const sidebarOrder = (rooms: RoomSummary[], current: string | null): RoomSummary[] => {
@@ -265,6 +267,8 @@ export function Sidebar() {
   const openDialog = useStore((s) => s.openDialog);
   const setPaletteOpen = useStore((s) => s.setPaletteOpen);
   const device = useStore((s) => s.device);
+  const setNavCollapsed = useStore((s) => s.setNavCollapsed);
+  const setNavOpen = useStore((s) => s.setNavOpen);
   const { pref, cycle } = useTheme();
   const ThemeIcon = pref === "dark" ? MoonIcon : pref === "light" ? SunIcon : MonitorIcon;
   const [filter, setFilterState] = useState<Filter>(readFilter);
@@ -297,6 +301,20 @@ export function Sidebar() {
         <button type="button" className="rounded-md" aria-label="Agoryx — new room" onClick={() => go({ kind: "new" })}>
           <Wordmark className="text-[21px]" />
         </button>
+        <Tip tip="Hide sidebar">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="ml-auto size-8 text-muted-foreground"
+            aria-label="Hide sidebar"
+            onClick={() => {
+              if (window.matchMedia("(min-width: 1024px)").matches) setNavCollapsed(true);
+              else setNavOpen(false);
+            }}
+          >
+            <PanelLeftIcon className="size-4.5" />
+          </Button>
+        </Tip>
       </div>
       <div className="flex gap-1.5 px-3 pb-3">
         <Button

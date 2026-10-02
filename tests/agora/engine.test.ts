@@ -431,8 +431,8 @@ test("stop interrupts running turns and ends the run", async () => {
 test("a lost native session is rejoined with the full context", async () => {
   const room = createTestRoom({ rules: [] });
   try {
-    room.store.append({ type: "session.bound", agent: "claude", sessionId: "00000000-0000-4000-8000-000000000000" });
-    room.store.append({ type: "session.bound", agent: "codex", sessionId: "11111111-1111-4111-8111-111111111111" });
+    room.store.append({ type: "session.bound", briefingVersion: 2, agent: "claude", sessionId: "00000000-0000-4000-8000-000000000000" });
+    room.store.append({ type: "session.bound", briefingVersion: 2, agent: "codex", sessionId: "11111111-1111-4111-8111-111111111111" });
     room.engine.postHuman("hello again");
     await withTimeout(room.engine.waitIdle());
     for (const kind of ["claude", "codex"]) {

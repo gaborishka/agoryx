@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { ErrorNote, Hint, Loading } from "@/components/common/states";
 import { Avatar, Stats } from "@/components/room/bits";
 import { AgentsDialog } from "@/components/dialogs/AgentsDialog";
+import { FolderBar, useFolderGit } from "@/components/FolderPicker";
 import { PhoneDialog } from "@/components/dialogs/PhoneDialog";
 import { RefChip } from "@/components/table/OpCard";
 import { Button } from "@/components/ui/button";
@@ -23,7 +24,6 @@ import { DEFAULT_AGENTS, ink, participant } from "@/lib/room";
 import { type DialogState, type TableFormOp, useStore } from "@/lib/store";
 import type { FileChange, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { t } from "@/lib/i18n";
 
 export const fail = (error: unknown) => {
   if (!(error instanceof Unauthorized)) toast.error(errText(error));
@@ -202,19 +202,10 @@ function RevertDialog({ sha, undo }: { sha?: string; undo?: number }) {
 /** No checkpoint picked: the room's checkpoints to pick from, or how to get them. */
 function CheckpointsDialog() {
   const room = useStore((s) => s.snap?.state);
-  const post = useStore((s) => s.post);
   const openDialog = useStore((s) => s.openDialog);
   const roomId = room?.id ?? "";
-  const commits = [...(room?.commits ?? [])].reverse();
+  const commits = [...(room?.commits ?? [])].filter((c) => !c.workspace || c.workspace === room?.workspace).reverse();
   const status = useLoad(commits.length ? null : `${roomId}:revert-status`, () => api<{ tracking: "git" | "shadow" | "none" }>("GET", roomPath(roomId, "/revert")));
-  const turnOn = async () => {
-    try {
-      await post("/settings", { autoCommit: true });
-      toast.success("Checkpoints turned on");
-    } catch (error) {
-      fail(error);
-    }
-  };
   let body: ReactNode;
   if (commits.length) {
     body = (
@@ -232,25 +223,8 @@ function CheckpointsDialog() {
     );
   } else if (status.error) body = <ErrorNote>{status.error}</ErrorNote>;
   else if (!status.data) body = <Loading />;
-  else if (status.data.tracking !== "git") {
-    body = (
-      <Hint>
-        A checkpoint is a git commit, and this folder isn’t a git repository, so the room doesn’t make them. Run <code className="font-mono">git init</code> in the
-        folder and turn checkpoints on in the room settings.
-      </Hint>
-    );
-  } else if (!room?.settings.autoCommit) {
-    body = (
-      <>
-        <Hint>No checkpoints. Turn them on and the room makes a git commit after every round, so you can revert the folder to it.</Hint>
-        <Button className="w-fit" size="sm" onClick={turnOn}>
-          Turn on checkpoints
-        </Button>
-      </>
-    );
-  } else {
-    body = <Hint>No checkpoints yet. The first one appears when agents finish a round in which they changed files.</Hint>;
-  }
+  else if (status.data.tracking === "none") body = <Hint>This folder is too large to snapshot automatically.</Hint>;
+  else body = <Hint>No recovery snapshots yet. One appears after agents change files. Snapshots leave the branch and staged changes untouched.</Hint>;
   return (
     <Shell title="Revert folder" sub={room?.workspace} size="md">
       {body}
@@ -258,6 +232,35 @@ function CheckpointsDialog() {
   );
 }
 
+
+function ModeDialog() {
+  const room = useStore((s) => s.snap?.state);
+  const openDialog = useStore((s) => s.openDialog);
+  const [folder, setFolder] = useState<string | null>(null);
+  const [worktree, setWorktree] = useState(false);
+  const [base, setBase] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const git = useFolderGit(folder, () => setFolder(null));
+  if (!room) return null;
+  const mode = room.mode === "chat" ? "work" : "chat";
+  const running = room.runs.at(-1)?.status === "active";
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await api("POST", roomPath(room.id, "/mode"), { mode, ...(mode === "work" && !room.project ? { ...(folder ? { dir: folder } : {}), ...(folder && git?.head && worktree ? { worktree: true, ...(base ? { base } : {}) } : {}) } : {}) });
+      await useStore.getState().openRoom(room.id, true);
+      await useStore.getState().loadRooms();
+      openDialog(null);
+    } catch (error) { fail(error); }
+    finally { setBusy(false); }
+  };
+  return <Shell title={mode === "work" ? "Switch to Work" : "Switch to Chat"} sub={room.name}>
+    <p className="text-small text-muted-foreground">{mode === "work" ? "Continue this conversation in a project. The history, participants and table stay here." : "Continue chatting without an active project. Your project and its changes stay available when you return to Work."}</p>
+    {mode === "work" && room.project ? <p className="break-all font-mono text-small">{room.project.workspace}</p> : mode === "work" ? <FolderBar folder={folder} onFolder={(next) => { setFolder(next); setBase(null); setWorktree(false); }} git={git} worktree={worktree} onWorktree={setWorktree} base={base} onBase={setBase} /> : null}
+    {running ? <Hint>Wait for the agents to finish, or stop them before switching.</Hint> : null}
+    <DialogFooter><Button variant="ghost" onClick={() => openDialog(null)}>Cancel</Button><Button disabled={busy || running} onClick={submit}>{mode === "work" ? "Continue in Work" : "Continue in Chat"}</Button></DialogFooter>
+  </Shell>;
+}
 
 // --- room settings -----------------------------------------------------------------------
 
@@ -270,7 +273,6 @@ function SettingsDialog() {
   const [budget, setBudget] = useState(String(s?.budget ?? 8));
   const [access, setAccess] = useState<string>(s?.access ?? "workspace");
   const [network, setNetwork] = useState(s?.network ?? true);
-  const [autoCommit, setAutoCommit] = useState(s?.autoCommit ?? true);
   const [doc, setDoc] = useState(s?.doc ?? "");
   const [busy, setBusy] = useState(false);
   if (!room || !s) return null;
@@ -286,7 +288,6 @@ function SettingsDialog() {
               budget: limited ? Math.min(100, Math.max(1, Number.parseInt(budget, 10) || s.budget || 8)) : null,
               access,
               network,
-              autoCommit,
               doc: doc.trim() || null,
             });
             openDialog(null);
@@ -328,10 +329,7 @@ function SettingsDialog() {
           Network for agent commands
           <Switch checked={network} onCheckedChange={setNetwork} />
         </label>
-        <label className="flex items-center justify-between gap-3 text-sm">
-          {t.checkpoint.setting}
-          <Switch checked={autoCommit} onCheckedChange={setAutoCommit} />
-        </label>
+
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="s-doc">Shared document</Label>
           <Input id="s-doc" value={doc} onChange={(e) => setDoc(e.target.value)} placeholder="README.md" spellCheck={false} className="font-mono text-small" />
@@ -728,6 +726,8 @@ const render = (d: DialogState) => {
   switch (d.kind) {
     case "revert":
       return <RevertDialog sha={d.sha} undo={d.undo} />;
+    case "mode":
+      return <ModeDialog />;
     case "settings":
       return <SettingsDialog />;
     case "agents":

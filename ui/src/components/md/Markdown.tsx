@@ -1,8 +1,9 @@
+import { workspaceAt } from "@agora/room-mode";
 import { liveBlocks } from "@agora/blocks";
 import { createCodePlugin } from "@streamdown/code";
 import type { DiagramPlugin, MermaidConfig } from "@streamdown/mermaid";
 import { Code2Icon, ExternalLinkIcon, FileIcon, FileXIcon, Maximize2Icon } from "lucide-react";
-import { type ComponentProps, memo, type ReactNode, useMemo, useState } from "react";
+import { type ComponentProps, createContext, useContext, memo, type ReactNode, useMemo, useState } from "react";
 import { type Components, type CustomRendererProps, defaultRemarkPlugins, parseMarkdownIntoBlocks, Streamdown, type StreamdownTranslations } from "streamdown";
 import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, hashBlock, IMAGE_EXT, TABLE_EXT, VIDEO_EXT, VISUAL_EXT, workspaceRel } from "@/lib/format";
 import { ink, participant, refExists, toneText } from "@/lib/room";
@@ -94,6 +95,7 @@ function Gone({ path }: { path: string }) {
 
 /** Where a fence lives, so the daemon can serve it as its own page: m:<message id> or o:<option id>. */
 type Source = string | undefined;
+const FileSource = createContext<number | undefined>(undefined);
 
 function Source({ code: text, lang }: { code: string; lang: string }) {
   return (
@@ -227,7 +229,9 @@ function FileLink({ path, children }: { path: string; children: ReactNode }) {
 }
 
 function Link({ href, children }: ComponentProps<"a">) {
-  const workspace = useStore((s) => s.snap?.state.workspace);
+  const seq = useContext(FileSource);
+  const room = useStore((s) => s.snap?.state);
+  const workspace = room && seq ? workspaceAt(room, seq) : room?.workspace;
   const rawBase = useStore((s) => s.snap?.rawBase);
   if (href?.startsWith("#@")) return <Mention handle={href.slice(2)}>{children}</Mention>;
   if (href?.startsWith("#~")) return <Ref id={href.slice(2)} />;
@@ -237,6 +241,7 @@ function Link({ href, children }: ComponentProps<"a">) {
   if (turnRef) return <TurnRef turn={turnRef[1]!} path={turnRef[2]!}>{children}</TurnRef>;
   const local = localPath(href);
   const rel = workspaceRel(local ?? href, workspace);
+  if (rel && rawBase && seq && workspace !== room?.workspace) return <a href={rawUrl(rawBase, `~at/${seq}/${rel}`)} target="_blank" rel="noopener noreferrer" className="text-primary underline">{children}</a>;
   if (rel) return <FileLink path={rel}>{children}</FileLink>;
   if (local !== null && !(rawBase && isAbsPath(local) && VISUAL_EXT.has(ext(local)))) return <span title={local}>{children}</span>;
   if (local !== null) href = outsideUrl(rawBase!, local);
@@ -248,7 +253,9 @@ function Link({ href, children }: ComponentProps<"a">) {
 }
 
 function Embed({ src, alt }: ComponentProps<"img">) {
-  const workspace = useStore((s) => s.snap?.state.workspace);
+  const seq = useContext(FileSource);
+  const room = useStore((s) => s.snap?.state);
+  const workspace = room && seq ? workspaceAt(room, seq) : room?.workspace;
   const rawBase = useStore((s) => s.snap?.rawBase);
   const openFile = useStore((s) => s.openFile);
   const [gone, setGone] = useState(false);
@@ -267,8 +274,9 @@ function Embed({ src, alt }: ComponentProps<"img">) {
   const path = rel ?? abs;
   if (!path || !rawBase) return <span className="text-muted-foreground">[{alt || url}]</span>;
   if (gone) return <Gone path={path} />;
-  const file = rel ? rawUrl(rawBase, rel) : outsideUrl(rawBase, path);
-  const open = () => (rel ? openFile(rel) : window.open(file, "_blank", "noopener"));
+  const historical = seq !== undefined && workspace !== room?.workspace;
+  const file = rel ? rawUrl(rawBase, historical ? `~at/${seq}/${rel}` : rel) : outsideUrl(rawBase, path);
+  const open = () => (rel && !historical ? openFile(rel) : window.open(file, "_blank", "noopener"));
   const caption = alt || baseName(path);
   const e = ext(path);
   if (IMAGE_EXT.has(e)) {
@@ -350,6 +358,7 @@ export interface MarkdownProps {
 
 export const Markdown = memo(function Markdown({ text, source, variant = "chat", streaming = false, className }: MarkdownProps) {
   const dark = useTheme((s) => s.dark);
+  const seq = useStore((s) => source?.startsWith("m:") ? s.snap?.state.messages.find((m) => m.id === source.slice(2))?.seq : source?.startsWith("o:") ? s.snap?.state.table.options.find((o) => o.id === source.slice(2))?.seq : undefined);
   const plugins = useMemo(() => {
     const Live = makeLiveRenderer(source, text);
     return { code, mermaid: dark ? mermaidDark : mermaidLight, renderers: [{ language: ["html", "htm", "svg"], component: Live }] };
@@ -365,6 +374,7 @@ export const Markdown = memo(function Markdown({ text, source, variant = "chat",
     [variant],
   );
   return (
+    <FileSource.Provider value={seq}>
     <Streamdown
       className={cn(variant === "chat" ? "prose-chat" : "prose-chat prose-doc", "min-w-0", className)}
       mode={streaming ? "streaming" : "static"}
@@ -384,5 +394,6 @@ export const Markdown = memo(function Markdown({ text, source, variant = "chat",
     >
       {text}
     </Streamdown>
+    </FileSource.Provider>
   );
 });

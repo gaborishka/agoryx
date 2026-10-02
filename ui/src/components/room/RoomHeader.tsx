@@ -5,7 +5,7 @@ import {
   GitCompareArrowsIcon,
   HourglassIcon,
   LayoutPanelLeftIcon,
-  MenuIcon,
+  PanelLeftIcon,
   MessagesSquareIcon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
@@ -207,15 +207,21 @@ function Title() {
 
 export function NavButton() {
   const setNavOpen = useStore((s) => s.setNavOpen);
+  const navCollapsed = useStore((s) => s.navCollapsed);
+  const setNavCollapsed = useStore((s) => s.setNavCollapsed);
   return (
     <Button
       variant="ghost"
       size="icon"
-      className="size-8 lg:hidden"
-      aria-label="Rooms"
-      onClick={() => setNavOpen(true)}
+      className={cn("size-8 text-muted-foreground", !navCollapsed && "lg:hidden")}
+      aria-label="Show sidebar"
+      title="Show sidebar"
+      onClick={() => {
+        if (window.matchMedia("(min-width: 1024px)").matches) setNavCollapsed(false);
+        else setNavOpen(true);
+      }}
     >
-      <MenuIcon className="size-4.5" />
+      <PanelLeftIcon className="size-4.5" />
     </Button>
   );
 }
@@ -303,9 +309,10 @@ function useBranch(roomId: string, turns: number): string | null {
 function Place() {
   const room = useStore((s) => s.snap?.state);
   const openFile = useStore((s) => s.openFile);
-  const asked = useBranch(room?.id ?? "", room?.turns.length ?? 0);
+  const asked = useBranch(room?.id ?? "", (room?.turns.length ?? 0) + (room?.modeSince ?? 0));
   const branch = room?.repo ? (room.repo.branch ?? asked) : asked;
   if (!room) return null;
+  if (room.mode === "chat") return <span className="text-micro text-faint">Chat · no project</span>;
   const wt = room.worktree;
   const folder = wt ? wt.source : room.workspace;
   const tip = wt
@@ -420,9 +427,12 @@ export function RoomHeader() {
           <Presence key={a.id} a={a} />
         ))}
       </div>
-      <OpenPr />
+      <Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground" onClick={() => openDialog({ kind: "mode" })} aria-label="Change conversation mode">
+        {room.mode === "chat" ? "Chat" : "Work"}
+      </Button>
+      {room.mode !== "chat" ? <OpenPr /> : null}
       <span className="mx-0.5 hidden h-5 w-px bg-border @min-[36rem]:block" />
-      <TerminalToggle />
+      {room.mode !== "chat" ? <TerminalToggle /> : null}
       <PanelToggle />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -448,13 +458,13 @@ export function RoomHeader() {
               </small>
             </span>
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => openChanges({ scope: "room" })}>
+          {room.mode !== "chat" ? <DropdownMenuItem onSelect={() => openChanges({ scope: "room" })}>
             <GitCompareArrowsIcon />
             All room changes
-          </DropdownMenuItem>
+          </DropdownMenuItem> : null}
           <DropdownMenuItem onSelect={() => openFile(null)}>
             <FolderIcon />
-            Working folder files
+            {room.mode === "chat" ? "Conversation files" : "Working folder files"}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openDialog({ kind: "revert" })}>
             <RotateCcwIcon />

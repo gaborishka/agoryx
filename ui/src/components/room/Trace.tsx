@@ -1,3 +1,4 @@
+import { workspaceAt } from "@agora/room-mode";
 import {
   AlertTriangleIcon,
   AppWindowIcon,
@@ -139,6 +140,8 @@ const CARD_KIND: Array<[Set<string>, LucideIcon, string]> = [
  */
 function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact?: boolean }) {
   const rawBase = useStore((s) => s.snap?.rawBase);
+  const room = useStore((s) => s.snap?.state);
+  const historical = room && workspaceAt(room, turn.seq) !== room.workspace;
   const openFile = useStore((s) => s.openFile);
   const [broken, setBroken] = useState<Set<string>>(new Set());
   const [more, setMore] = useState(false);
@@ -154,10 +157,10 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
     <div className="mt-2.5 flex flex-wrap items-start gap-2">
       {shown.map((f) => {
         const e = ext(f);
-        const url = rawUrl(rawBase, f);
+        const url = rawUrl(rawBase, historical ? `~at/${turn.seq}/${f}` : f);
         if (IMAGE_EXT.has(e)) {
           return (
-            <button key={f} type="button" title={f} onClick={() => openFile(f)} className="group flex max-w-[260px] flex-col gap-1 text-left">
+            <button key={f} type="button" title={f} onClick={() => historical ? window.open(rawUrl(rawBase, `~at/${turn.seq}/${f}`), "_blank", "noopener") : openFile(f)} className="group flex max-w-[260px] flex-col gap-1 text-left">
               <img
                 src={url}
                 alt={f}
@@ -183,7 +186,7 @@ function Made({ turn, text, compact }: { turn: TurnState; text?: string; compact
             key={f}
             type="button"
             title={f}
-            onClick={() => openFile(f)}
+            onClick={() => historical ? window.open(rawUrl(rawBase, `~at/${turn.seq}/${f}`), "_blank", "noopener") : openFile(f)}
             className="flex max-w-[260px] items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2 text-left transition hover:border-input hover:bg-accent hover:shadow-soft"
           >
             <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-secondary text-primary">

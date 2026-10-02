@@ -601,7 +601,9 @@ export type EphemeralEvent =
   | { type: "turn.stream"; turnId: string; agent: string; text: string; reset?: boolean }
   | { type: "presence"; agents: Record<string, AgentPresence> }
   /** What the agents' CLIs last said about their subscriptions (every kind and account). */
-  | { type: "limits"; limits: LimitSnapshot[] };
+  | { type: "limits"; limits: LimitSnapshot[] }
+  /** Whether the room's folder is a git repository now (it became one, or stopped being one). */
+  | { type: "git"; gitRepo: boolean };
 
 /** "native": someone is mid-exchange with the agent in its own session, outside the room. */
 export type AgentPresence = "idle" | "working" | "queued" | "native";

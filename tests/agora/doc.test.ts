@@ -214,8 +214,8 @@ test("an edit made after the parallel turn ended is the remaining turn's, whatev
     settings: { doc: "README.md" },
     rules: [
       { agent: "claude", match: "essay", write: { path: "README.md", content: "# Time\n\nA first draft.\n" }, reply: "Drafted it.", once: true },
-      // Codex reworks the draft with a script once Claude's turn is over, as a shell command would.
-      { agent: "codex", match: "essay", sleepMs: 1200, write: { path: "README.md", content: "# Time\n\nA sharper draft.\n", via: "shell" }, reply: "Tightened it.", once: true },
+      // Codex reworks the draft with a script once Claude's turn is over (its reply is in the room), as a shell command would.
+      { agent: "codex", match: "essay", waitForText: "Drafted it.", write: { path: "README.md", content: "# Time\n\nA sharper draft.\n", via: "shell" }, reply: "Tightened it.", once: true },
     ],
   });
   try {

@@ -16,6 +16,7 @@ import {
   rmdirSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -294,6 +295,19 @@ export const otherRoomTurns = (root: string, room: string, since: number, now = 
   return found;
 };
 
+/**
+ * A copy of a git index that keeps the original's mtime. git trusts an entry's stat only when the entry is
+ * older than the index file; an entry from the index's own second is checked by content. A copy stamped
+ * "now" would make such an entry look settled, and an edit made in that second that kept the file's size
+ * would be missed.
+ */
+const copyIndex = (from: string, to: string): void => {
+  // Stamped before copying: an index rewritten in between gives the copy an older time, never a newer one.
+  const { atime, mtime } = statSync(from);
+  copyFileSync(from, to);
+  utimesSync(to, atime, mtime);
+};
+
 /** Past this many dirty files (a fresh `npm install` without .gitignore…) turns are not snapshotted as trees. */
 export const MAX_TREE_SNAPSHOT_DIRTY = 3000;
 
@@ -309,7 +323,7 @@ export const snapshotTree = (root: string): string | null => {
   const index = isAbsolute(indexRel) ? indexRel : join(root, indexRel);
   const scratch = join(tmpdir(), `agoryx-index-${process.pid}-${randomBytes(4).toString("hex")}`);
   try {
-    if (existsSync(index)) copyFileSync(index, scratch);
+    if (existsSync(index)) copyIndex(index, scratch);
     const env = { ...process.env, GIT_INDEX_FILE: scratch };
     if (track(root, ["add", "-A", "--", "."], 30_000, env) === null) return null;
     return track(root, ["write-tree"], 15_000, env)?.trim() || null;
@@ -617,10 +631,10 @@ export const checkpointCommit = (root: string, subject: string, body: string, fi
     if (!sha) return null;
     // Prepare the real index's update before moving HEAD. Only the selected, previously unstaged
     // entries change; all foreign staged blobs (including partial staging) remain intact.
-    if (existsSync(index)) copyFileSync(index, preserved);
+    if (existsSync(index)) copyIndex(index, preserved);
     const keptEnv = { ...process.env, GIT_INDEX_FILE: preserved };
     if (git(root, ["reset", "-q", sha, "--", ...specs], 15_000, keptEnv) === null) return null;
-    copyFileSync(preserved, lock);
+    copyIndex(preserved, lock);
     // Compare-and-swap: another writer moving HEAD cannot make us overwrite its commit.
     if (git(root, ["update-ref", "-m", subject, "HEAD", sha, head ?? "0".repeat(sha.length)]) === null) return null;
     renameSync(lock, index);
@@ -908,7 +922,13 @@ export interface InboxOp {
   raw: Record<string, unknown>;
 }
 
-const TAKING = /^(.+)\.jsonl\.(\d+)\.\d+\.taking$/;
+/** An op the agent tool queued: `<ms>-<ns>-<nonce>.<agent>.op`, one per file, so it sorts by when it was sent. */
+const OP = /^\d+-\d+-[^.]*\.(.+)\.op$/;
+/** A file taken by a drain: an op (or a whole `<agent>.jsonl` from an agent tool before ops had files of their own), its taker and when. */
+const TAKING = /^(.+\.(?:jsonl|op))\.(\d+)\.\d+\.taking$/;
+
+/** Who queued what a file in the inbox holds, by its name; undefined for one that is not an op. */
+const inboxAgent = (name: string): string | undefined => (name.endsWith(".jsonl") ? name.slice(0, -".jsonl".length) : OP.exec(name)?.[1]);
 
 const processAlive = (pid: number): boolean => {
   try {
@@ -919,35 +939,78 @@ const processAlive = (pid: number): boolean => {
   }
 };
 
+/** An op the agent tool began to write and never renamed into place (killed, or the disk full) is gone after this. */
+const STALE_OP_MS = 60_000;
+
 /**
- * Take every ops file (one per agent) out of the inbox and hand each op to `apply`.
- * A file is renamed aside first (atomic; agents keep appending to a fresh file)
- * and deleted only after all its ops were applied. A taken file left behind by a
- * process that died mid-way (or by this one, if `apply` threw) is picked up again.
+ * Take every op out of the inbox, oldest first, and hand each to `apply`. An op is
+ * a file of its own, renamed in whole by the agent tool; a drain renames it aside
+ * first (atomic: two drains never both take it) and deletes it only after applying
+ * it. A taken file left behind by a process that died mid-way (or by this one, if
+ * `apply` threw) is taken again the same way, by a rename of its own. A
+ * `<agent>.jsonl` from an agent tool before ops had files of their own is taken
+ * the same way.
  */
 export const drainOpsInbox = (paths: WorkspacePaths, apply: (op: InboxOp) => void): void => {
   if (!existsSync(paths.opsDir)) return;
   const names = readdirSync(paths.opsDir).sort();
   const taken: Array<{ agent: string; file: string }> = [];
   for (const name of names) {
+    if (name.endsWith(".op.tmp")) {
+      try {
+        if (Date.now() - statSync(join(paths.opsDir, name)).mtimeMs > STALE_OP_MS) rmSync(join(paths.opsDir, name), { force: true });
+      } catch {
+        // gone already: renamed into place, or taken by another drain
+      }
+      continue;
+    }
     const orphan = TAKING.exec(name);
-    if (!orphan) continue;
+    const agent = orphan && inboxAgent(orphan[1]!);
+    if (!agent) continue;
     const owner = Number(orphan[2]);
     // Draining is synchronous, so a file of this process found here is one it failed to finish.
     if (owner !== process.pid && processAlive(owner)) continue;
-    taken.push({ agent: orphan[1]!, file: join(paths.opsDir, name) });
+    // Claimed first, as a fresh op is: another drain that listed it too finds it gone and leaves it.
+    const file = join(paths.opsDir, `${orphan[1]}.${process.pid}.${Date.now()}.taking`);
+    try {
+      renameSync(join(paths.opsDir, name), file);
+    } catch {
+      continue;
+    }
+    taken.push({ agent, file });
   }
-  for (const name of names) {
-    if (!name.endsWith(".jsonl")) continue;
+  const take = (name: string): { name: string; agent: string; file: string } | undefined => {
+    const agent = inboxAgent(name);
+    if (!agent) return undefined;
     const source = join(paths.opsDir, name);
     const file = `${source}.${process.pid}.${Date.now()}.taking`;
     try {
       renameSync(source, file);
     } catch {
-      continue;
+      return undefined;
     }
-    taken.push({ agent: name.slice(0, -".jsonl".length), file });
+    return { name, agent, file };
+  };
+  // Those from before ops had files of their own first: they are older.
+  for (const name of names) if (name.endsWith(".jsonl")) taken.push(...[take(name)].filter((entry) => entry !== undefined));
+  // A folder read while files come into it lists them in the order of its own index (a hash of the name, on APFS and
+  // ext4 alike), not by name: an op sent during the read may be listed while one sent just before it is not. Read it
+  // again for an op older than one taken of the same agent (a few times at most), so one sent earlier is not applied
+  // after a later one; those sent since wait for the next drain.
+  const ops: Array<{ name: string; agent: string; file: string }> = [];
+  let listed = names;
+  for (let pass = 0; pass < 5; pass += 1) {
+    const newest = new Map<string, string>();
+    for (const op of ops) if (op.name > (newest.get(op.agent) ?? "")) newest.set(op.agent, op.name);
+    const found = listed
+      .filter((name) => name.endsWith(".op") && (pass === 0 || name < (newest.get(inboxAgent(name) ?? "") ?? "")))
+      .map(take)
+      .filter((entry) => entry !== undefined);
+    if (found.length === 0) break;
+    ops.push(...found);
+    listed = readdirSync(paths.opsDir);
   }
+  taken.push(...ops.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)));
   for (const { agent, file } of taken) {
     let text: string;
     try {

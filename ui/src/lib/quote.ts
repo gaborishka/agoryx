@@ -56,6 +56,57 @@ export const quoteMarkdown = (q: Quote) => {
   return [source, ...body.filter((line) => line.trim())].map(under).join("\n>\n");
 };
 
+/**
+ * Who a quote goes to when the draft names no one yet, the same for words of a message and lines of a diff:
+ * the agent who wrote them. Nobody for the human's own words, or for lines of a file several agents changed.
+ */
+export const quoteAddressee = (q: Quote, agents: readonly string[], shared = false): string | undefined =>
+  !shared && agents.includes(q.author) ? q.author : undefined;
+
+/** A quote block as quoteMarkdown wrote it, read back; null for anything it would not write exactly so. */
+export const readQuote = (block: string, authorOf: (id: string) => string | undefined): Quote | null => {
+  const rows: string[] = [];
+  for (const line of block.split("\n")) {
+    if (line === ">") rows.push("");
+    else if (line.startsWith("> ")) rows.push(line.slice(2));
+    else return null;
+  }
+  const source = /^\[(.*)\]\((#[^)]*)\)$/.exec(rows[0] ?? "");
+  if (!source) return null;
+  const [, title, href] = source as unknown as [string, string, string];
+  const fenced = (from: number) => {
+    const marks = rows[from];
+    if (rows[from - 1] !== "" || !marks || !/^`{3,}(diff)?$/.test(marks) || rows.at(-1) !== marks.replace(/diff$/, "") || rows.length < from + 2) return null;
+    return rows.slice(from + 1, -1).join("\n");
+  };
+  let q: Quote | null = null;
+  const diff = /^#(t[^/]+)\/(.*)$/.exec(href);
+  if (diff) {
+    const [, id, encoded] = diff as unknown as [string, string, string];
+    let path: string;
+    try {
+      path = decodeURIComponent(encoded);
+    } catch {
+      return null;
+    }
+    const at = title.indexOf(` · ${id} · `);
+    const shown = path.replace(/[\r\n]+/g, " ").replace(/[\\[\]]/g, "\\$&");
+    const rest = at < 0 ? "" : title.slice(at + id.length + 6);
+    const text = fenced(2);
+    const author = authorOf(id);
+    if (at < 0 || !rest.startsWith(`${shown} `) || text === null || !author) return null;
+    q = { id, author, label: title.slice(0, at), text, file: { path, lines: rest.slice(shown.length + 1) } };
+  } else {
+    const id = href.slice(1);
+    const author = authorOf(id);
+    if (!id || !author || !title.endsWith(` · ${id}`)) return null;
+    const text = rows[1] === "" && /^`{3,}$/.test(rows[2] ?? "") ? fenced(2) : rows.slice(1).filter(Boolean).join("\n");
+    if (text === null) return null;
+    q = { id, author, label: title.slice(0, -(id.length + 3)), text };
+  }
+  return quoteMarkdown(q) === block ? q : null;
+};
+
 /** One quote is its source and its words: the same code from two files of one turn is two quotes. */
 export const quoteKey = (q: Quote) => JSON.stringify([q.file ? "diff" : "message", q.id, q.file?.path ?? "", q.file?.lines ?? "", q.text]);
 

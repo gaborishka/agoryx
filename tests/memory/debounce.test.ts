@@ -122,7 +122,32 @@ test("dispose waits for in-flight debounced render before store close", async ()
     await service.dispose();
     const elapsed = Date.now() - startedAt;
     assert.ok(elapsed >= 50, `dispose should wait for in-flight render lock, elapsed=${elapsed}`);
-    assert.equal(writes, 0);
+    assert.equal(writes, 1, "the render waiting for the lock still runs: the last change is not dropped");
+  } finally {
+    store.close();
+  }
+});
+
+test("a change still inside its debounce window is written when the service is disposed, not dropped", async () => {
+  const store = makeStore();
+  const writes: string[] = [];
+  try {
+    const room = store.createRoom("debounce-quit", ["user"], ROOM_CONFIG);
+    const service = new MemoryService(store, {
+      rootDir: "/tmp/agoryx-memory",
+      debounceMs: 60_000,
+      writer: (_root, content) => {
+        writes.push(content);
+        return "/tmp/agoryx-memory/.agoryx/memory.md";
+      },
+    });
+    service.recordDecision(room.id, "Made just before quit");
+    await service.dispose();
+    assert.equal(writes.length, 1);
+    assert.match(writes[0]!, /Made just before quit/);
+    service.recordNote(room.id, "After dispose");
+    await wait(20);
+    assert.equal(writes.length, 1, "nothing is scheduled after dispose");
   } finally {
     store.close();
   }

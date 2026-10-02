@@ -19,7 +19,7 @@ test("an agent says what it is doing while it works: posted at once, not a turn,
         reply: "claude done",
       },
       // Codex looks at what was said while both were working, before it touches anything.
-      { agent: "codex", once: true, sleepMs: 1500, table: [["read", "new"], ["say", "then I take the CLI"]], reply: "codex done" },
+      { agent: "codex", once: true, waitForText: "writing it up", table: [["read", "new"], ["say", "then I take the CLI"]], reply: "codex done" },
     ],
     settings: { budget: 4 },
   });
@@ -97,7 +97,7 @@ test("say needs a room turn; outside one it is refused, not posted", async () =>
     await withTimeout(room.engine.waitIdle());
     const before = room.store.state.messages.length;
     const env = { ...room.env, PATH: process.env.PATH };
-    for (const key of Object.keys(env)) if (key.startsWith("AGORYX_") || key === "CLAUDECODE") delete env[key];
+    for (const key of Object.keys(env)) if ((key.startsWith("AGORYX_") && key !== "AGORYX_ACK_MS") || key === "CLAUDECODE") delete env[key];
     const refused = await run(process.execPath, [agentCliScript(), "say", "--as", "claude", "just a note"], { cwd: room.store.state.workspace, env }).catch(
       (error: { stderr: string; code: number }) => error,
     );

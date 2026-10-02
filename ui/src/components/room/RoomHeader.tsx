@@ -68,7 +68,7 @@ function Presence({ a }: { a: RoomAgent }) {
         aria-label={`${a.label}: ${short}. Open session`}
         style={ink(who)}
         className={cn(
-          "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-small transition",
+          "inline-flex h-7 min-w-0 shrink items-center gap-1.5 rounded-full border px-2.5 text-small transition",
           now === "idle"
             ? "border-border text-muted-foreground hover:bg-accent"
             : tone === "codex"
@@ -78,7 +78,7 @@ function Presence({ a }: { a: RoomAgent }) {
       >
         <span
           className={cn(
-            "size-2 rounded-full",
+            "size-2 shrink-0 rounded-full",
             now === "idle"
               ? tone === "codex"
                 ? "bg-codex/50"
@@ -89,17 +89,17 @@ function Presence({ a }: { a: RoomAgent }) {
             now !== "idle" && "animate-breathe",
           )}
         />
-        <b className="font-semibold">{a.label}</b>
+        <b className="truncate font-semibold">{a.label}</b>
         {working ? (
-          <span className="tabular hidden opacity-80 md:inline">
+          <span className="tabular hidden shrink-0 opacity-80 @min-[52rem]:inline">
             working · {secs(tick - new Date(turn.startedAt).getTime())}
           </span>
         ) : null}
         {now === "native" ? (
-          <span className="hidden opacity-80 md:inline">in own session</span>
+          <span className="hidden shrink-0 opacity-80 @min-[52rem]:inline">in own session</span>
         ) : null}
         {now === "queued" ? (
-          <span className="hidden opacity-80 md:inline">queued</span>
+          <span className="hidden shrink-0 opacity-80 @min-[52rem]:inline">queued</span>
         ) : null}
       </button>
     </Tip>
@@ -361,12 +361,13 @@ export function RoomHeader() {
   return (
     <header className="@container flex h-14 shrink-0 items-center gap-2 border-b border-border/70 bg-background/85 px-3 backdrop-blur sm:px-4">
       <NavButton />
-      <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight">
+      {/* The name keeps its room when a side panel narrows the header: the agents' chips give way first. */}
+      <div className="flex min-w-[min(10rem,40cqw)] flex-1 flex-col justify-center leading-tight">
         <Title />
         <Place />
       </div>
       <ViewSwitch />
-      <div className="hidden items-center gap-1.5 @min-[36rem]:flex">
+      <div className="hidden min-w-0 shrink items-center gap-1.5 @min-[36rem]:flex">
         {room.agents.map((a) => (
           <Presence key={a.id} a={a} />
         ))}

@@ -187,8 +187,8 @@ test("read new in a live process's later turn shows what was said since that tur
     rules: [
       { agent: "codex", match: "BETA-Q", reply: "CODEX-SAYS-BETA" },
       { agent: "codex", match: "ALPHA-Q", reply: "CODEX-SAYS-ALPHA" },
-      { agent: "claude", match: "BETA-Q", once: true, sleepMs: 1500, table: [["read", "new"]], reply: "claude beta" },
-      { agent: "claude", match: "ALPHA-Q", once: true, sleepMs: 1500, table: [["read", "new"]], reply: "claude alpha" },
+      { agent: "claude", match: "BETA-Q", once: true, waitForText: "CODEX-SAYS-BETA", table: [["read", "new"]], reply: "claude beta" },
+      { agent: "claude", match: "ALPHA-Q", once: true, waitForText: "CODEX-SAYS-ALPHA", table: [["read", "new"]], reply: "claude alpha" },
     ],
   });
   try {

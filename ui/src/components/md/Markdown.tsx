@@ -3,7 +3,7 @@ import { createCodePlugin } from "@streamdown/code";
 import type { DiagramPlugin, MermaidConfig } from "@streamdown/mermaid";
 import { Code2Icon, ExternalLinkIcon, FileIcon, FileXIcon, Maximize2Icon } from "lucide-react";
 import { type ComponentProps, memo, type ReactNode, useMemo, useState } from "react";
-import { type Components, type CustomRendererProps, defaultRemarkPlugins, Streamdown, type StreamdownTranslations } from "streamdown";
+import { type Components, type CustomRendererProps, defaultRemarkPlugins, parseMarkdownIntoBlocks, Streamdown, type StreamdownTranslations } from "streamdown";
 import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, hashBlock, IMAGE_EXT, TABLE_EXT, VIDEO_EXT, VISUAL_EXT, workspaceRel } from "@/lib/format";
 import { ink, participant, refExists, toneText } from "@/lib/room";
 import { useStore } from "@/lib/store";
@@ -11,7 +11,7 @@ import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { LiveFrame } from "./LiveFrame";
 import { CsvFile, Player, useRawText } from "./Media";
-import { localPath, remarkAgora } from "./remark-agora";
+import { localPath, messageRefId, remarkAgora, wholeBlocks } from "./remark-agora";
 
 const code = createCodePlugin({ themes: ["vitesse-light", "vitesse-dark"] });
 /**
@@ -73,6 +73,7 @@ const translations: Partial<StreamdownTranslations> = {
 };
 
 const defaultRemark = Object.values(defaultRemarkPlugins);
+const blocks = wholeBlocks(parseMarkdownIntoBlocks);
 
 export const rawUrl = (rawBase: string, path: string) => rawBase + path.split("/").map(encodeURIComponent).join("/");
 
@@ -230,7 +231,8 @@ function Link({ href, children }: ComponentProps<"a">) {
   const rawBase = useStore((s) => s.snap?.rawBase);
   if (href?.startsWith("#@")) return <Mention handle={href.slice(2)}>{children}</Mention>;
   if (href?.startsWith("#~")) return <Ref id={href.slice(2)} />;
-  if (href && /^#m[0-9a-z]+$/.test(href)) return <MessageRef id={href.slice(1)}>{children}</MessageRef>;
+  const messageId = messageRefId(href);
+  if (messageId) return <MessageRef id={messageId}>{children}</MessageRef>;
   const turnRef = href?.match(/^#(t[0-9a-z]+)\/(.+)$/);
   if (turnRef) return <TurnRef turn={turnRef[1]!} path={turnRef[2]!}>{children}</TurnRef>;
   const local = localPath(href);
@@ -371,6 +373,7 @@ export const Markdown = memo(function Markdown({ text, source, variant = "chat",
       plugins={plugins}
       components={components}
       remarkPlugins={[...defaultRemark, remarkAgora]}
+      parseMarkdownIntoBlocksFn={blocks}
       translations={translations}
       linkSafety={{ enabled: false }}
       lineNumbers={false}

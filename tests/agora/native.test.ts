@@ -351,7 +351,8 @@ const agentTool = (room: TestRoom, args: string[], env: Record<string, string> =
     ) as Record<string, string>;
     const child = spawn(process.execPath, [agentCliScript(), "table", ...args], {
       cwd: room.store.state.workspace,
-      env: { ...base, ...env },
+      // Not who it is, only how long it waits for the room: past the default 5 s it says "queued" and the move is not yet on the table.
+      env: { ...base, ...(room.env.AGORYX_ACK_MS ? { AGORYX_ACK_MS: room.env.AGORYX_ACK_MS } : {}), ...env },
     });
     let out = "";
     let err = "";

@@ -58,8 +58,11 @@ const call = (
     req.end();
   });
 
-/** Reads SSE frames until `until` matches one, then closes. */
-const readEvents = (path: string, until: (frame: { event: string; data: any }) => boolean, ms = 10_000) =>
+/**
+ * Reads SSE frames until `until` matches one, then closes. The bound is generous: alone a fake turn takes a
+ * fraction of a second, under the whole suite's load it takes seconds, and a run can hold four of them.
+ */
+const readEvents = (path: string, until: (frame: { event: string; data: any }) => boolean, ms = 30_000) =>
   new Promise<Array<{ event: string; data: any }>>((resolve, reject) => {
     const frames: Array<{ event: string; data: any }> = [];
     const timer = setTimeout(() => {

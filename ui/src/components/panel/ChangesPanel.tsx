@@ -14,6 +14,7 @@ import { type ChangeScope, type ChangesFocus, useStore } from "@/lib/store";
 import type { FileChange, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
+import { type Quote, quoteAddressee } from "@/lib/quote";
 
 // What the room's turns did to the workspace, in the side panel: one turn's change, the whole room's
 // against where it began, or one checkpoint commit. Only shown; nothing here keeps, reverts or applies.
@@ -160,8 +161,9 @@ function TurnChanges({ focus }: { focus: ChangesFocus }) {
     const by = participant(room, turn.agent);
     // The lines go to the turn's agent, unless other agents' parallel turns also edited the file: then we don't know whose lines they are.
     const pick: PickLines = (path, picked) => {
-      const shared = turn.changes?.find((c) => c.path === path)?.with?.length;
-      quote({ id: turn.id, author: turn.agent, label: by.label, text: picked.text, file: { path, lines: picked.lines } }, shared ? undefined : turn.agent);
+      const shared = Boolean(turn.changes?.find((c) => c.path === path)?.with?.length);
+      const q: Quote = { id: turn.id, author: turn.agent, label: by.label, text: picked.text, file: { path, lines: picked.lines } };
+      quote(q, quoteAddressee(q, room.agents.map((a) => a.id), shared));
     };
     body = (
       <Shown

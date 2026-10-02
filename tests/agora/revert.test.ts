@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,6 +19,7 @@ import {
   restoreWorkspace,
   revertPreview,
   revertRef,
+  snapshotTree,
 } from "../../internal/agora/workspace.js";
 import { createTestRoom, withTimeout, writeFakeBins } from "./helpers.js";
 
@@ -247,6 +248,34 @@ test("in a shared folder a checkpoint keeps the whole folder, so returning to it
     writeFileSync(join(root, "c.txt"), "c\n");
     const whole = checkpointCommit(root, "cp2", "")!;
     assert.equal(checkpointFolder(root, whole.sha, checkpointRef("room-a", whole.sha)), whole.sha);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an edit in the same second as git's index, keeping the file's size, is still seen by a snapshot and undone by a return", () => {
+  const root = mkdtempSync(join(tmpdir(), "agora-revert-"));
+  try {
+    prepareWorkspace(root, { initGit: true });
+    // The same second, pinned: the file and the index share one mtime and the edit keeps size and inode.
+    // ctime cannot be pinned, so git is told not to look at it, as on a fast machine where it matches too.
+    git(root, "config", "core.trustctime", "false");
+    const then = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000);
+    writeFileSync(join(root, "hello.txt"), "v1\n");
+    utimesSync(join(root, "hello.txt"), then, then);
+    const first = commitAll(root, "first");
+    writeFileSync(join(root, "hello.txt"), "v2\n");
+    utimesSync(join(root, "hello.txt"), then, then);
+    utimesSync(join(root, ".git", "index"), then, then);
+    // --no-optional-locks: status must not rewrite the index (that would smudge the entry and hide the race).
+    assert.equal(git(root, "--no-optional-locks", "status", "--porcelain").trim(), "M hello.txt", "git itself sees the edit");
+
+    const tree = snapshotTree(root);
+    assert.equal(git(root, "show", `${tree}:hello.txt`), "v2\n", "the snapshot has the edit, not the stale stat");
+    const back = restoreWorkspace(root, first, revertRef("r", 1), "before");
+    assert.ok(!("error" in back));
+    assert.deepEqual(back.changes.map((change) => change.path), ["hello.txt"]);
+    assert.equal(read(root, "hello.txt"), "v1\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -304,10 +304,15 @@ export class MemoryService {
       clearInterval(this.consolidationTimer);
       this.consolidationTimer = null;
     }
+    // A change still inside its debounce window is written now: a note made just before quit belongs in memory.md.
+    const pending = [...this.renderTimers.keys()];
     for (const timer of this.renderTimers.values()) {
       clearTimeout(timer);
     }
     this.renderTimers.clear();
+    for (const roomId of pending) {
+      this.startRender(roomId);
+    }
     if (this.inFlightRenders.size > 0) {
       await Promise.allSettled(this.inFlightRenders);
     }
@@ -423,26 +428,27 @@ export class MemoryService {
       if (this.disposed) {
         return;
       }
-
-      const renderPromise = this.withRoomLock(roomId, () => {
-        if (this.disposed) {
-          return;
-        }
-        this.renderToFile(roomId);
-      }).catch((error: unknown) => {
-        if (this.onRenderError) {
-          this.onRenderError(roomId, error);
-          return;
-        }
-        const reason = error instanceof Error ? error.message : String(error);
-        console.error(`[memory] Failed to auto-render memory file for ${roomId}: ${reason}`);
-      });
-      this.inFlightRenders.add(renderPromise);
-      void renderPromise.finally(() => {
-        this.inFlightRenders.delete(renderPromise);
-      });
+      this.startRender(roomId);
     }, this.debounceMs);
 
     this.renderTimers.set(roomId, timer);
+  }
+
+  /** Render under the room's lock. A render already started still runs after dispose, which waits for it. */
+  private startRender(roomId: string): void {
+    const renderPromise = this.withRoomLock(roomId, () => {
+      this.renderToFile(roomId);
+    }).catch((error: unknown) => {
+      if (this.onRenderError) {
+        this.onRenderError(roomId, error);
+        return;
+      }
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`[memory] Failed to auto-render memory file for ${roomId}: ${reason}`);
+    });
+    this.inFlightRenders.add(renderPromise);
+    void renderPromise.finally(() => {
+      this.inFlightRenders.delete(renderPromise);
+    });
   }
 }

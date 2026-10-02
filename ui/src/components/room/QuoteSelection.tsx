@@ -2,15 +2,27 @@ import { QuoteIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Kbd } from "@/components/ui/kbd";
-import { clipQuote, type Quote } from "@/lib/quote";
+import { clipQuote, type Quote, quoteAddressee } from "@/lib/quote";
 import { participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 
 /** The message a node sits in, when it is quotable text (`data-quote` on the message's words). */
 const hostOf = (node: Node | null) => (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>("[data-quote]") ?? null;
 
+/** The part of the screen a message is seen through: its scrolling feed, or the window. */
+function viewOf(el: HTMLElement): { top: number; bottom: number } {
+  for (let at = el.parentElement; at; at = at.parentElement) {
+    if (/(auto|scroll)/.test(getComputedStyle(at).overflowY)) {
+      const box = at.getBoundingClientRect();
+      return { top: Math.max(box.top, 0), bottom: Math.min(box.bottom, window.innerHeight) };
+    }
+  }
+  return { top: 0, bottom: window.innerHeight };
+}
+const BUTTON = 36;
+
 /**
- * Select words in a message and a «Quote» button appears over them: it puts the passage above the
+ * Select words in a message and a «Quote» button appears under them: it puts the passage above the
  * composer, with the message it came from. A selection across two messages quotes nothing.
  */
 export function QuoteSelection() {
@@ -36,12 +48,16 @@ export function QuoteSelection() {
       if (!text || !id || !author) return setShown(null);
       const rect = range.getBoundingClientRect();
       if (!rect.width && !rect.height) return setShown(null);
+      // Scrolled out of sight, the selection has no button: Q then quotes nothing unseen.
+      const view = viewOf(host);
+      if (rect.bottom < view.top || rect.top > view.bottom) return setShown(null);
       const p = participant(roomRef.current, author);
-      const below = rect.top < 56;
+      // Under the selection, where the message's author and time never are; over it only when there is no room below.
+      const below = rect.bottom + 8 + BUTTON <= view.bottom || rect.top - 8 - BUTTON < view.top;
       setShown({
         quote: { id, author, label: p.agent ? p.label : author, text },
         x: Math.min(Math.max(rect.left + rect.width / 2, 60), window.innerWidth - 60),
-        y: below ? rect.bottom + 8 : rect.top - 8,
+        y: below ? Math.min(rect.bottom + 8, view.bottom - BUTTON) : rect.top - 8,
         below,
       });
     };
@@ -50,21 +66,36 @@ export function QuoteSelection() {
       frame = requestAnimationFrame(read);
     };
     // Shown once the selection is made (not while the mouse still drags it); gone the moment it collapses.
+    // A finger ends a long press with pointercancel and moves the handles with no pointer events at all,
+    // so on touch the button comes once the selection rests.
+    let touch = false;
+    let rest = 0;
+    const onDown = (event: PointerEvent) => {
+      touch = event.pointerType !== "mouse";
+    };
     const onChange = () => {
       const sel = document.getSelection();
       if (!sel || sel.isCollapsed) setShown(null);
+      if (!touch) return;
+      clearTimeout(rest);
+      rest = window.setTimeout(later, 300);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.shiftKey || event.key === "Shift") later();
     };
+    document.addEventListener("pointerdown", onDown, true);
     document.addEventListener("pointerup", later);
+    document.addEventListener("pointercancel", later);
     document.addEventListener("keyup", onKey);
     document.addEventListener("selectionchange", onChange);
     window.addEventListener("scroll", later, true);
     window.addEventListener("resize", later);
     return () => {
       cancelAnimationFrame(frame);
+      clearTimeout(rest);
+      document.removeEventListener("pointerdown", onDown, true);
       document.removeEventListener("pointerup", later);
+      document.removeEventListener("pointercancel", later);
       document.removeEventListener("keyup", onKey);
       document.removeEventListener("selectionchange", onChange);
       window.removeEventListener("scroll", later, true);
@@ -73,7 +104,8 @@ export function QuoteSelection() {
   }, [driven]);
 
   const take = (q: Quote) => {
-    quote(q);
+    // As lines of a diff do: to the agent who wrote them, unless the draft already names someone.
+    quote(q, quoteAddressee(q, roomRef.current?.agents.map((a) => a.id) ?? []));
     document.getSelection()?.removeAllRanges();
     setShown(null);
   };

@@ -181,9 +181,9 @@ const say = async (room: string, text: string, wait = true) => {
   });
 };
 
-/** A follower and what it told. */
+/** A follower and what it told. Its daemon may take seconds to answer on a loaded machine: 3 s is the app's wait, not the test's. */
 const follow = (options: ConstructorParameters<typeof AttentionFollower>[0] = {}) => {
-  const follower = new AttentionFollower(options);
+  const follower = new AttentionFollower({ timeoutMs: 30_000, ...options });
   const states: Array<{ items: AttentionItem[]; connected: boolean }> = [];
   const arrived: AttentionItem[] = [];
   follower.on("state", (items, connected) => states.push({ items, connected }));
@@ -369,7 +369,7 @@ test("AttentionFollower: a daemon without /api/attention (404) or one that does 
 
   // A listener that throws is logged, never thrown into the call.
   const thrown: string[] = [];
-  const touchy = new AttentionFollower({ log: (message) => thrown.push(message) });
+  const touchy = new AttentionFollower({ log: (message) => thrown.push(message), timeoutMs: 30_000 });
   touchy.on("state", () => {
     throw new Error("boom");
   });

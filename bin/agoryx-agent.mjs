@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The `agoryx` command agents see inside a room. Zero dependencies on purpose:
 // it runs inside the agents' sandboxes, writes table ops into the workspace
-// inbox (.agoryx/rooms/<room>/ops/<agent>.jsonl) and waits briefly for the room to ack.
+// inbox (.agoryx/rooms/<room>/ops/, one file per op) and waits briefly for the room to ack.
 // It also works outside a room turn, when someone talks to the agent directly
 // in its own session: the op is signed with --as, or with a hint from the
 // agent's environment, and the room reads it from the same inbox.
@@ -10,7 +10,7 @@
 // `agoryx say` posts what the agent is doing while it works, through the same inbox as table ops.
 // Every other command is the human's own `agoryx` (bin/agoryx.js), run as is: in a turn it carries the
 // agent's key, so what it does is recorded as the agent's — the same commands, no fewer.
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -511,10 +511,17 @@ const send = async (room, agent, op) => {
   const nonce = randomBytes(6).toString("hex");
   const opsDir = join(room, "ops");
   mkdirSync(opsDir, { recursive: true });
-  appendFileSync(join(opsDir, `${agent}.jsonl`), `${JSON.stringify({ ...op, nonce })}\n`);
+  // One file per op, written aside and renamed in whole: the room takes an op entirely or not yet. A line appended
+  // to a shared file could land in it just after the room had taken it and read it, and be lost.
+  const stamp = `${String(Date.now()).padStart(15, "0")}-${String(process.hrtime.bigint()).padStart(20, "0")}`;
+  const file = join(opsDir, `${stamp}-${nonce}.${agent}.op`);
+  writeFileSync(`${file}.tmp`, `${JSON.stringify({ ...op, nonce })}\n`);
+  renameSync(`${file}.tmp`, file);
 
   const ackFile = join(opsDir, "acks", `${nonce}.json`);
-  const deadline = Date.now() + 5000;
+  // The room answers within its poll; AGORYX_ACK_MS gives a loaded machine (a test suite) longer.
+  const wait = Number(process.env.AGORYX_ACK_MS);
+  const deadline = Date.now() + (Number.isFinite(wait) && wait > 0 ? wait : 5000);
   while (Date.now() < deadline) {
     if (existsSync(ackFile)) {
       let ack;

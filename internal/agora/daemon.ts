@@ -22,7 +22,7 @@ import { locateNativeSession } from "./native.js";
 import { readLimits, recordLimits } from "./limits-store.js";
 import { roomUsage } from "./usage.js";
 import { readTranscript } from "./transcript.js";
-import { turnActivityEntries, turnSession } from "./turn-activity.js";
+import { readTurnActivity, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
@@ -1582,8 +1582,7 @@ export class AgoraDaemon {
     if (!file) return empty;
     const endParam = params.get("end");
     if (endParam !== null && !/^\d{1,15}$/.test(endParam)) throw new HttpError(400, "invalid session page");
-    const page = readTranscript(agent.kind, file, endParam === null ? {} : { end: Number(endParam) });
-    return { turn: turn.id, sessionId, entries: turnActivityEntries(turn, page.entries), start: page.start, size: page.size };
+    return { turn: turn.id, sessionId, ...readTurnActivity(agent.kind, file, turn, endParam === null ? {} : { end: Number(endParam) }) };
   }
 
   /** The canonical file as it is on disk now. */

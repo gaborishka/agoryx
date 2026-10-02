@@ -217,6 +217,20 @@ const runTurn = async ({ prompt, sessionId, resumed, live }) => {
     }
   }
   if (rule?.sleepMs) await sleep(rule.sleepMs);
+  // Until `agoryx read new` shows this text: an order between agents that holds under any load, as a sleep does not.
+  if (rule?.waitForText) {
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      let seen = "";
+      try {
+        seen = execFileSync("agoryx", ["read", "new"], { encoding: "utf8", env: process.env });
+      } catch {
+        // not yet
+      }
+      if (seen.includes(rule.waitForText) || Date.now() > deadline) break;
+      await sleep(50);
+    }
+  }
 
   const tableOutputs = [];
   for (const argv of rule?.table ?? []) {

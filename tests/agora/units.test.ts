@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { passNote } from "../../internal/agora/prompts.js";
 import { unwrapShellCommand } from "../../internal/agora/runners/codex.js";
 import { parseTableCommand, TableCommandError } from "../../internal/agora/table-cli.js";
@@ -86,13 +87,23 @@ test("table ops taken by a process that died before applying them are picked up 
     // Another live process is still working on this one: left alone.
     writeFileSync(join(paths.opsDir, `claude.jsonl.${process.ppid}.1.taking`), `${JSON.stringify({ op: "ask", text: "busy" })}\n`);
     writeFileSync(join(paths.opsDir, "claude.jsonl"), `${JSON.stringify({ op: "ask", text: "fresh" })}\n`);
+    // An op the agent tool never finished writing: one long left is gone, one being written now is left to it.
+    writeFileSync(join(paths.opsDir, "1-1-old.codex.op.tmp"), "{");
+    utimesSync(join(paths.opsDir, "1-1-old.codex.op.tmp"), new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+    writeFileSync(join(paths.opsDir, "2-2-new.codex.op.tmp"), "{");
     const seen: InboxOp[] = [];
-    drainOpsInbox(paths, (op) => seen.push(op));
+    // The dead process's file is claimed (renamed) before it is applied, so a drain beside this one cannot take it too.
+    const claimed: boolean[] = [];
+    drainOpsInbox(paths, (op) => {
+      seen.push(op);
+      claimed.push(!existsSync(join(paths.opsDir, `codex.jsonl.${dead}.1.taking`)));
+    });
     assert.deepEqual(
       seen.map((op) => `${op.agent}:${op.raw.text}`),
       ["codex:orphaned", "claude:fresh"],
     );
-    assert.deepEqual(readdirSync(paths.opsDir), [`claude.jsonl.${process.ppid}.1.taking`]);
+    assert.deepEqual(claimed, [true, true]);
+    assert.deepEqual(readdirSync(paths.opsDir).sort(), ["2-2-new.codex.op.tmp", `claude.jsonl.${process.ppid}.1.taking`]);
 
     // A file whose ops could not all be applied stays, and is applied on the next drain.
     writeFileSync(join(paths.opsDir, "codex.jsonl"), `${JSON.stringify({ op: "ask", text: "retry" })}\n`);
@@ -100,6 +111,41 @@ test("table ops taken by a process that died before applying them are picked up 
     const again: InboxOp[] = [];
     drainOpsInbox(paths, (op) => again.push(op));
     assert.deepEqual(again.map((op) => op.raw.text), ["retry"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ops many agents send while the room drains its inbox all reach it, each once, in the order each agent sent them", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agora-ops-"));
+  try {
+    const paths = workspacePaths(root);
+    const agentTool = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "agoryx-agent.mjs");
+    const writers = 6;
+    const each = 12;
+    // Each agent sends its ops one after another; nobody acks, so the tool says "queued" right away.
+    const sender = `const { execFileSync } = require("node:child_process"); for (let i = 0; i < ${each}; i++) execFileSync(process.execPath, [${JSON.stringify(agentTool)}, "table", "fact", process.argv[1] + "-" + i]);`;
+    let running = writers;
+    for (let w = 0; w < writers; w++) {
+      const child = spawn(process.execPath, ["-e", sender, String(w)], {
+        cwd: root,
+        env: { PATH: process.env.PATH, AGORYX_AGENT: `w${w}`, AGORYX_OPS_DIR: paths.opsDir, AGORYX_ACK_MS: "1" },
+        stdio: "ignore",
+      });
+      child.on("exit", () => (running -= 1));
+    }
+    const seen: string[] = [];
+    const take = () => drainOpsInbox(paths, ({ agent, raw }) => seen.push(`${agent} ${String(raw.text)}`));
+    while (running > 0) {
+      take();
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    take();
+    assert.equal(seen.length, writers * each);
+    for (let w = 0; w < writers; w++) {
+      assert.deepEqual(seen.filter((entry) => entry.startsWith(`w${w} `)), Array.from({ length: each }, (_, i) => `w${w} ${w}-${i}`));
+    }
+    assert.deepEqual(readdirSync(paths.opsDir).filter((name) => name !== "acks"), []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

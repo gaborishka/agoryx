@@ -2214,7 +2214,7 @@ export class RoomEngine {
     // where an op waits that was queued before this room first opened with them). It is this room's
     // only when no other room lives in the workspace; otherwise nobody can tell whose an op is.
     const legacy = workspacePaths(this.state.workspace);
-    if (!existsSync(legacy.opsDir) || !readdirSync(legacy.opsDir).some((name) => /\.jsonl(\.\d+\.\d+\.taking)?$/.test(name))) return;
+    if (!existsSync(legacy.opsDir) || !readdirSync(legacy.opsDir).some((name) => /\.(?:jsonl|op)(\.\d+\.\d+\.taking)?$/.test(name))) return;
     const rooms = roomsSharingWorkspace(this.store);
     if (rooms.length === 1) {
       this.drainInbox(legacy);

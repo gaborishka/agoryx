@@ -3,7 +3,8 @@ import { test } from "node:test";
 import { marked } from "marked";
 import { parseMentions } from "../../internal/agora/mentions.js";
 import { unquoted } from "../../internal/agora/quote.js";
-import { clearSentComposerDraft, composerChoices, composerCommand, composerDraftSnapshot, composerHistory, composerTrigger, historyBoundary, historyStep, replaceComposerToken, savedContextFiles, withContextFiles } from "../../ui/src/lib/composer-context.js";
+import { clearSentComposerDraft, composerChoices, composerCommand, composerDraftSnapshot, composerHistory, composerTrigger, historyBoundary, historyStep, recallSent, replaceComposerToken, savedContextFiles, withContextFiles } from "../../ui/src/lib/composer-context.js";
+import { quoteAddressee, withQuotes, type Quote } from "../../ui/src/lib/quote.js";
 import { localPath, remarkAgora } from "../../ui/src/components/md/remark-agora.js";
 import type { RoomMessage } from "../../ui/src/lib/types.js";
 
@@ -109,4 +110,36 @@ test("history arrows leave multiline messages only at the relevant outer line", 
   assert.equal(historyBoundary(text, 8, 8, "newer"), false);
   assert.equal(historyBoundary(text, 15, 15, "newer"), true);
   assert.equal(historyBoundary(text, 0, 3, "older"), false);
+});
+
+test("↑ brings a sent message back as it was composed: its quotes and files as chips, its words as the draft", () => {
+  const words: Quote = { id: "m12", author: "claude", label: "Claude · Opus", text: "first line\n@all second" };
+  const code: Quote = { id: "m13", author: "codex", label: "Codex", text: "if x:\n    run()\n\n  done()" };
+  const lines: Quote = { id: "t7", author: "codex", label: "Codex", text: "-old\n+new [x](y)", file: { path: "src/a [b].ts", lines: "old 11–12; new 11–13" } };
+  const authors: Record<string, string> = { m12: "claude", m13: "codex", t7: "codex" };
+  const authorOf = (id: string) => authors[id];
+  const body = "@codex why?\n\n> not a quote of ours\n\nlast";
+  const sent = withContextFiles(withQuotes(body, [words, code, lines]), ["docs/My file.md", "a/b.ts"]);
+  const back = recallSent(sent, authorOf);
+  assert.deepEqual(back.files, ["docs/My file.md", "a/b.ts"]);
+  assert.deepEqual(back.quotes, [words, code, lines]);
+  assert.equal(back.body, body);
+
+  // Only what reads back exactly becomes a chip: a source the room no longer has, or hand-written quotes, stay text.
+  const gone = recallSent(withQuotes("hi", [words]), () => undefined);
+  assert.deepEqual(gone.quotes, []);
+  assert.equal(gone.body, withQuotes("hi", [words]));
+  assert.deepEqual(recallSent("> [Claude · m12](#m12)\n>\n> edited by hand\n\nhi", () => "claude").quotes.map((q) => q.text), ["edited by hand"]);
+  assert.deepEqual(recallSent("> [Claude · m12](#m12)\n> edited by hand\n\nhi", () => "claude").quotes, [], "not as withQuotes writes it");
+  assert.deepEqual(recallSent("> [Claude](#m12)\n> x\n\nhi", () => "claude").quotes, [], "a source without its id is not ours");
+  assert.deepEqual(recallSent("plain words", authorOf), { body: "plain words", quotes: [], files: [] });
+  assert.deepEqual(recallSent(withQuotes("", [words]), authorOf), { body: "", quotes: [words], files: [] });
+});
+
+test("one rule for both kinds of quote: they go to the agent who wrote them, never to the human or a shared file", () => {
+  const agents = ["claude", "codex"];
+  assert.equal(quoteAddressee({ id: "m12", author: "codex", label: "Codex", text: "x" }, agents), "codex");
+  assert.equal(quoteAddressee({ id: "t7", author: "claude", label: "Claude", text: "+x", file: { path: "a.ts", lines: "+1" } }, agents), "claude");
+  assert.equal(quoteAddressee({ id: "t7", author: "claude", label: "Claude", text: "+x", file: { path: "a.ts", lines: "+1" } }, agents, true), undefined);
+  assert.equal(quoteAddressee({ id: "m3", author: "Ivan", label: "Ivan", text: "mine" }, agents), undefined);
 });

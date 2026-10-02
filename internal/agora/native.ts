@@ -35,6 +35,11 @@ export interface NativeScan {
   lastAgoryx: boolean;
   /** Times the CLI compacted the session's context; a rescan from an unfinished exchange returns them again. */
   compactions: NativeCompaction[];
+  /**
+   * Claude: commands Claude Code ran itself (/compact, /model…), by their line's key — the human used the session
+   * without saying anything in it. A rescan from an unfinished exchange returns them again.
+   */
+  commands?: string[];
 }
 
 export interface NativeCompaction {
@@ -207,6 +212,12 @@ interface Draft {
   commentary?: string;
   done: boolean;
   interrupted: boolean;
+  /** Claude: the exchange is a slash command the human typed. */
+  command?: boolean;
+  /** Claude: Claude Code ran the command itself and printed its output; unless the model answers after it, nobody said anything. */
+  ran?: boolean;
+  /** Claude: the model wrote something in this exchange. */
+  answered?: boolean;
   /** Claude: the API message that ended the turn; its other content blocks follow as separate lines. */
   endedBy?: string;
   endedAt?: number;
@@ -214,6 +225,7 @@ interface Draft {
 
 const finish = (draft: Draft): NativeExchange | null => {
   if (draft.agoryx) return null;
+  if (draft.ran && !draft.answered) return null;
   const prompt = draft.prompts.join("\n\n").trim() || null;
   const reply = draft.reply.join("\n\n").trim() || draft.commentary?.trim() || null;
   if (!prompt && !reply) return null;
@@ -237,10 +249,12 @@ export const humanText = (content: unknown): string | null => {
   } else {
     return null;
   }
-  const command = /<command-name>([^<]*)<\/command-name>/.exec(text);
+  // A slash command is written as the line's own tags; a prompt that only quotes them is a prompt.
+  const command = /^\s*(<command-message>[^<]*<\/command-message>\s*)?<command-name>([^<]*)<\/command-name>/.exec(text);
   if (command) {
-    const args = /<command-args>([^<]*)<\/command-args>/.exec(text)?.[1]?.trim();
-    return `${command[1]!.trim()}${args ? ` ${args}` : ""}`;
+    // Arguments are written as typed: a /goal's condition may hold "<".
+    const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text)?.[1]?.trim();
+    return `${command[2]!.trim()}${args ? ` ${args}` : ""}`;
   }
   // Skills expand to "<name-command>…instructions…": show what the human typed.
   const skill = /^\s*<([a-z][a-z0-9-]*)-command>/.exec(text);
@@ -251,11 +265,22 @@ export const humanText = (content: unknown): string | null => {
 };
 
 const INTERRUPTED = /^\[Request interrupted by user/;
+const COMMAND = /^\s*<command-(name|message)>/;
+const LOCAL_OUTPUT = /^\s*<local-command-(stdout|stderr)>/;
+
+/** A user line's text as written, harness tags and all. */
+const rawText = (content: unknown): string =>
+  typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content.map((part) => (part?.type === "text" ? String(part.text ?? "") : "")).join("\n")
+      : "";
 const TURN_ENDS = new Set(["end_turn", "max_tokens", "stop_sequence", "refusal"]);
 
 const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: boolean): NativeScan => {
   const exchanges: NativeExchange[] = [];
   const compactions: NativeCompaction[] = [];
+  const commands: string[] = [];
   let draft: Draft | null = null;
   let lastAgoryx = tailAgoryx;
   let consumed = offset;
@@ -266,6 +291,26 @@ const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: bool
     lastAgoryx = draft.agoryx;
     draft = null;
     consumed = at;
+  };
+
+  // A command Claude Code runs itself (/compact, /clear, /model, /config…) prints its output right after it — as a
+  // "user" line, or (newer builds) a "system" local_command line. Unless the model then goes on with it (/goal), it
+  // never reached the model and nobody said anything in the room; a compaction it made shows as its own quiet line,
+  // from the summary. A skill or custom command prints no output: the model answers it, and it is the human's message.
+  // Claude Code runs a command typed during a turn at once (other input waits for the turn to end): it is no part
+  // of that turn, which goes on with the same exchange.
+  let midTurn: string | null = null;
+  const ranCommand = (): boolean => {
+    if (midTurn !== null) {
+      commands.push(midTurn);
+      midTurn = null;
+      return true;
+    }
+    const current = draft as Draft | null;
+    if (!current?.command || current.answered) return false;
+    current.ran = true;
+    commands.push(current.key);
+    return true;
   };
 
   for (const { start, end: lineEnd, value } of lines) {
@@ -299,6 +344,8 @@ const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: bool
       const content = value.message?.content;
       const toolResult = Array.isArray(content) && content.some((part: any) => part?.type === "tool_result");
       const text = toolResult ? null : humanText(content);
+      const raw = toolResult ? "" : rawText(content);
+      if (LOCAL_OUTPUT.test(raw) && ranCommand()) continue;
       if (text !== null && INTERRUPTED.test(text)) {
         if (draft) {
           (draft as Draft).interrupted = true;
@@ -310,6 +357,11 @@ const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: bool
         const agoryx = typeof content === "string" ? isAgoryxPrompt(content) : text !== null && isAgoryxPrompt(text);
         // Newer Claude Code stamps human input with origin.kind = "human"; older builds have no origin.
         const human = !agoryx && text !== null && (origin === undefined || origin === "human");
+        const turn = draft as Draft | null;
+        if (human && COMMAND.test(raw) && turn?.answered && turn.endedBy === undefined) {
+          midTurn = String(value.promptId ?? value.uuid ?? start);
+          continue;
+        }
         if (agoryx || human || origin !== undefined) {
           close(start);
           draft = {
@@ -321,9 +373,12 @@ const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: bool
             reply: [],
             done: false,
             interrupted: false,
+            ...(human && COMMAND.test(raw) ? { command: true } : {}),
           };
         }
       }
+    } else if (value.type === "system" && value.subtype === "local_command") {
+      if (LOCAL_OUTPUT.test(String(value.content ?? "")) && ranCommand()) continue;
     } else if (value.type === "assistant") {
       if (!draft) {
         // The agent went on without a new prompt (a stop hook, a background task): same speaker as before.
@@ -339,6 +394,7 @@ const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: bool
         };
       }
       const current: Draft = draft;
+      current.answered = true;
       const parts = Array.isArray(value.message?.content) ? value.message.content : [];
       for (const part of parts) {
         if (part?.type === "tool_use") current.reply = [];
@@ -357,9 +413,11 @@ const scanClaude = (lines: Line[], offset: number, end: number, tailAgoryx: bool
   return {
     exchanges,
     offset: open ? open.start : Math.max(consumed, end),
-    openNative: Boolean(open && !open.agoryx),
+    // A command Claude Code ran by itself keeps no one busy; one the model goes on with (/goal) does.
+    openNative: Boolean(open && !open.agoryx && !(open.ran && !open.answered)),
     lastAgoryx,
     compactions,
+    commands,
   };
 };
 

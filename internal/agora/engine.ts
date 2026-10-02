@@ -162,6 +162,8 @@ interface NativeTracker {
   nextLocateAt: number;
   /** When a native exchange was last seen open or imported. */
   nativeAt?: number;
+  /** Commands Claude Code ran itself that the engine has acted on (a rescan returns them again). */
+  commands?: Set<string>;
 }
 
 /** A change to the canonical file this soon after a native exchange is credited to that agent. */
@@ -2316,6 +2318,12 @@ export class RoomEngine {
         if (scan.openNative || scan.exchanges.length > 0) {
           tracker.nativeAt = Date.now();
           // Someone talked to this session outside the room: a process that kept the session in memory no longer has all of it.
+          this.closeLive(agent.id, "the session was used outside the room");
+        }
+        // A command run in the app (/compact, /model) changed the session without a word: the same, once per command.
+        const commands = (scan.commands ?? []).filter((key) => !tracker!.commands?.has(key));
+        if (commands.length > 0) {
+          for (const key of commands) (tracker.commands ??= new Set()).add(key);
           this.closeLive(agent.id, "the session was used outside the room");
         }
         tracker.size = size;

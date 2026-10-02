@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { claudeProjectKey, isAgoryxPrompt, locateNativeSession, scanNativeSession } from "../../internal/agora/native.js";
+import { claudeProjectKey, humanText, isAgoryxPrompt, locateNativeSession, scanNativeSession } from "../../internal/agora/native.js";
 import { agentCliScript } from "../../internal/agora/workspace.js";
 import { createTestRoom, withTimeout, type TestRoom } from "./helpers.js";
 
@@ -579,4 +579,113 @@ test("an edit to the canonical file made in an agent's own session is credited t
   } finally {
     await room.cleanup();
   }
+});
+
+/**
+ * A manual /compact typed in the Claude app, lines trimmed from a real session: the summary, Claude Code's
+ * caveat, the command itself as a "user" line (`<command-name>/compact</command-name>`, no origin) and its
+ * `<local-command-stdout>`, under one promptId — and no assistant reply. Read as a prompt, the room showed
+ * Claude busy for five minutes and then posted "/compact" as the human's message.
+ */
+const MANUAL_COMPACT = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "p10", "claude-manual-compact.jsonl");
+
+test("Claude: a manual /compact is neither the human's message nor a turn in progress, only a compaction", () => {
+  const scan = scanNativeSession("claude", MANUAL_COMPACT, 0);
+  assert.equal(scan.openNative, false, "nothing is being answered");
+  assert.equal(scan.exchanges.length, 2);
+  assert.ok(scan.exchanges.every((entry) => !/\/compact|local-command/.test(entry.prompt)), "the command is no one's prompt");
+  assert.match(scan.exchanges[0]!.reply, /^PR is open against `main`/);
+  assert.match(scan.exchanges[1]!.prompt, /^тепер займись apple sign/, "the next prompt is read as before");
+  assert.deepEqual(scan.compactions.map((entry) => entry.at), ["2026-09-03T23:04:39.348Z"]);
+  assert.deepEqual(scan.commands, ["ca1db0a5-3e96-4ade-ab55-c56d929eacbb"], "the room is told a command ran (its live process no longer has the session)");
+
+  // Cut right after the command, as the room reads it while the app is still writing: not busy either.
+  const dir = scratch();
+  const file = join(dir, "session.jsonl");
+  const lines = readFileSync(MANUAL_COMPACT, "utf8").split("\n").filter(Boolean);
+  const command = lines.findIndex((line) => line.includes("<command-name>/compact"));
+  try {
+    for (const end of [command + 1, command + 2]) {
+      writeFileSync(file, lines.slice(0, end).join("\n") + "\n");
+      const partial = scanNativeSession("claude", file, 0);
+      assert.equal(partial.exchanges.length, 1, `cut at ${end}`);
+      // Written but not yet run, a command may still be one the model goes on with (/goal): open until its output.
+      assert.equal(partial.openNative, end === command + 1, `cut at ${end}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Real lines, trimmed, of two sessions: /goal with a condition (its output a "system" local_command line, then Claude
+ * goes on with it), then /config whose output is also a "system" line (newer Claude Code writes most local commands'
+ * output so), then the human's next prompt, being answered. Joined so, /config comes while the /goal turn is going:
+ * a command Claude Code runs at once, during a turn.
+ */
+const LOCAL_COMMANDS = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "p10", "claude-local-commands.jsonl");
+
+test("Claude: a local command whose output is a system line is no one's message either; one the model goes on with is the human's", () => {
+  const scan = scanNativeSession("claude", LOCAL_COMMANDS, 0);
+  assert.deepEqual(scan.exchanges.map((entry) => entry.prompt?.split(" ")[0]), ["/goal"], "/goal is the human's; /config is not");
+  assert.equal(scan.openNative, true, "the next prompt is being answered");
+  assert.deepEqual(scan.commands, ["d911a9e0-5eab-489a-a541-e624796bd8fd", "7ce1337b-409a-49d4-b287-7eab6da15aa2"], "/goal and /config ran");
+
+  const dir = scratch();
+  const file = join(dir, "session.jsonl");
+  const lines = readFileSync(LOCAL_COMMANDS, "utf8").split("\n").filter(Boolean);
+  const at = (text: string) => lines.findIndex((line) => line.includes(text));
+  const read = (end: number) => {
+    writeFileSync(file, lines.slice(0, end).join("\n") + "\n");
+    return scanNativeSession("claude", file, 0);
+  };
+  try {
+    // /goal run, not yet answered: nobody is busy; once Claude writes, it is.
+    assert.equal(read(at("Stop hook is now active") + 1).openNative, false);
+    assert.equal(read(at("Stop hook is now active") + 2).openNative, true);
+    // /config run during the /goal turn (output as a system line): the turn goes on, nothing is posted for it.
+    const config = read(at("Set Output style to Concise") + 1);
+    assert.equal(config.openNative, true);
+    assert.equal(config.exchanges.length, 0);
+    assert.equal(config.commands?.length, 2);
+    // The human's next prompt: /config is not posted before it.
+    const next = read(at("Тобі вдалося відтворити") + 3);
+    assert.deepEqual(next.exchanges.map((entry) => entry.prompt?.split(" ")[0]), ["/goal"]);
+    assert.equal(next.openNative, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Claude: a command run during a turn is no part of it: the turn's reply stays its own", () => {
+  const lines = readFileSync(LOCAL_COMMANDS, "utf8").split("\n").filter(Boolean);
+  const upTo = lines.findIndex((line) => line.includes("Set Output style to Concise"));
+  // The /goal turn goes on after /config's output: its tool's result, then its last words.
+  const rest = [
+    { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_01VxCBH7YUEczCv3YPbdPcFD", content: "ok" }] }, uuid: "r1", timestamp: "2026-10-02T15:34:30.000Z" },
+    { type: "assistant", message: { id: "msg_end", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "The library is ready." }] }, uuid: "a1", timestamp: "2026-10-02T15:34:40.000Z" },
+  ].map((line) => JSON.stringify(line));
+  const dir = scratch();
+  const file = join(dir, "session.jsonl");
+  try {
+    writeFileSync(file, [...lines.slice(0, upTo + 1), ...rest].join("\n") + "\n");
+    const scan = scanNativeSession("claude", file, 0);
+    assert.deepEqual(scan.exchanges.map((entry) => [entry.prompt?.split(" ")[0], entry.reply]), [["/goal", "The library is ready."]]);
+    assert.equal(scan.openNative, false);
+    assert.equal(scan.commands?.length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a prompt that only quotes a slash command's tags is the prompt, not the command", () => {
+  const text = "Review this change: <command-name>/review</command-name> is what the app writes";
+  assert.equal(humanText(text), text);
+  assert.equal(humanText("<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>opus</command-args>"), "/model opus");
+  // Arguments as typed, "<" and all.
+  assert.equal(
+    humanText("<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>no traces in workspaces/<checkout>-<hash>/</command-args>"),
+    "/goal no traces in workspaces/<checkout>-<hash>/",
+  );
+  assert.equal(humanText("<command-message>loop</command-message>\n<command-name>/loop</command-name>\n<command-args>5m check</command-args>"), "/loop 5m check");
 });

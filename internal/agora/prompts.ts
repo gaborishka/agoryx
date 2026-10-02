@@ -1,3 +1,4 @@
+export const BRIEFING_VERSION = 2;
 import { originName } from "./actor.js";
 import { parseMentions } from "./mentions.js";
 import { PASS_RESPONSE_TOKEN } from "../events/pass-token.js";
@@ -273,26 +274,33 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     ...roleLines(state, agent, others),
     "",
     `Room: "${state.name}"`,
-    `Workspace: ${state.workspace}`,
-    ...(tracking === "git"
-      ? [
-          `  A shared git directory — everyone works here. ${access}`,
-          "  Others may edit files at the same time: check `git status` / `git diff` before overwriting, and say which files you touched.",
-        ]
-      : [
-          `  A shared folder — everyone works here. ${access}`,
-          tracking === "shadow"
-            ? "  It is not a git repository (`git status` there finds none); Agoryx tracks each turn's changes itself."
-            : "  It is not a git repository, and it is too big for Agoryx to track: nobody's changes are recorded here, so say exactly which files you touched.",
-          "  Others may edit files at the same time: re-read a file before overwriting it, and say which files you touched.",
-        ]),
-    `  Say what you are doing while you do it: \`${agentCli} say "taking internal/x.ts — leaving the CLI to you"\` posts to the room at once, as often as is useful (it is not a turn; it wakes only an agent you @mention that is not working now — that one starts at once, so \`say "@<agent> can you run the daemon tests?"\` gets an answer while you keep going; see it with \`read new\`). \`${agentCli} read new\` shows what the others said since your turn began — look before you take a file someone may be on.`,
-    ...(tracking === "none"
-      ? []
-      : [
-          `  Every turn's exact change is kept. Your delta lists what others changed with +/− counts and the turn id; \`${agentCli} diff t7\` prints that turn's patch (add a path to narrow it, or no id to list recent ones). What was done is in the diff, not only in what was said about it.`,
-        ]),
+    ...(state.mode === "chat" ? [
+      "Mode: Chat. No project is connected.",
+      `Conversation materials: ${state.workspace}. Use this folder for files requested in this conversation.`,
+    ] : [
+      "Mode: Work.",
+      `Workspace: ${state.workspace}`,
+      ...(tracking === "git"
+        ? [
+            `  A shared git directory — everyone works here. ${access}`,
+            "  Others may edit files at the same time: check `git status` / `git diff` before overwriting, and say which files you touched.",
+          ]
+        : [
+            `  A shared folder — everyone works here. ${access}`,
+            tracking === "shadow"
+              ? "  It is not a git repository (`git status` there finds none); Agoryx tracks each turn's changes itself."
+              : "  It is not a git repository, and it is too big for Agoryx to track: nobody's changes are recorded here, so say exactly which files you touched.",
+            "  Others may edit files at the same time: re-read a file before overwriting it, and say which files you touched.",
+          ]),
+      `  Say what you are doing while you do it: \`${agentCli} say "taking internal/x.ts — leaving the CLI to you"\` posts to the room at once, as often as is useful (it is not a turn; it wakes only an agent you @mention that is not working now — that one starts at once, so \`say "@<agent> can you run the daemon tests?"\` gets an answer while you keep going; see it with \`read new\`). \`${agentCli} read new\` shows what the others said since your turn began — look before you take a file someone may be on.`,
+      ...(tracking === "none"
+        ? []
+        : [
+            `  Every turn's exact change is kept. Your delta lists what others changed with +/− counts and the turn id; \`${agentCli} diff t7\` prints that turn's patch (add a path to narrow it, or no id to list recent ones). What was done is in the diff, not only in what was said about it.`,
+          ]),
+    ]),
     "",
+    ...(state.workspaceHistory && state.workspaceHistory.length > 1 ? [`Earlier conversation files remain in: ${[...new Set(state.workspaceHistory.map((entry) => entry.workspace))].filter((path) => path !== state.workspace).join(", ")}.`] : []),
     "How the room works:",
     "- Each turn you get only what is new since your last turn. Your final message is posted to the room; your tool calls show up to others as a short activity trace.",
     `  A long message from another agent comes as its start, its end, and every paragraph that addresses you or objects; \`${agentCli} read m12\` prints any message whole (\`${agentCli} read\` lists recent ones). An excerpt is not the author's position: read the whole before you agree with it or answer it.`,
@@ -304,18 +312,17 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     `- Address someone with @name. ${state.human} is a participant, not a gatekeeper: you don't need permission to do the work being discussed.`,
     `  When ${state.human} addresses only you, your reply goes back to them: the others read it in their next turn, and it wakes one of them only if you @mention them.`,
     `  When you need ${state.human}'s answer or decision, @mention them (@${state.human}): the room then shows them that you are waiting for it.`,
-    others.length ? "- Work goes in steps, and a step is someone else's to check:" : "- Work goes in steps, each checked before it is called done:",
-    "  - A step goes on the table (`table next`, on the route option it carries out), so the human sees where it stands.",
-    ...(others.length
-      ? [
-          "  - Built one? Ask for its check (`table review X1`) and @mention another agent. Say \"done\", \"ready\" or \"verified\" only after that check has passed, with the fixes it asked for in.",
-          "  - Checking one? What fails goes on the step (`table object X1 \"what fails\"`); once it passes, `table done X1`.",
-        ]
-      : ["  - Built one? Check it yourself (run it, test it), say how, then `table done X1`. Say \"done\", \"ready\" or \"verified\" only after that."]),
-    ...(tracking === "git" && state.settings.access !== "readonly"
-      ? ["  - Once it is checked, its author commits it, before the next step goes on top: only that step's files, its id first in the message (`git add <them> && git commit -m \"X1 <the step>\" -- <them>`), so the room sees it went in and each step can be read and taken back on its own."]
-      : []),
-    "  - Don't wait inside your turn for a reply or a check: no sleeping, no polling. Say what you need, end the turn; an @mention wakes you when there is something for you.",
+    ...(state.mode === "chat" ? [] : [
+      others.length ? "- Work goes in steps, and a step is someone else's to check:" : "- Work goes in steps, each checked before it is called done:",
+      "  - A step goes on the table (`table next`, on the route option it carries out), so the human sees where it stands.",
+      ...(others.length
+        ? [
+            "  - Built one? Ask for its check (`table review X1`) and @mention another agent. Say \"done\", \"ready\" or \"verified\" only after that check has passed, with the fixes it asked for in.",
+            "  - Checking one? What fails goes on the step (`table object X1 \"what fails\"`); once it passes, `table done X1`.",
+          ]
+        : ["  - Built one? Check it yourself (run it, test it), say how, then `table done X1`. Say \"done\", \"ready\" or \"verified\" only after that."]),
+      "  - Don't wait inside your turn for a reply or a check: no sleeping, no polling. Say what you need, end the turn; an @mention wakes you when there is something for you.",
+    ]),
     state.settings.budget === null
       ? "- There is no turn limit: the room goes on until everyone passes (or the human stops it). So pass as soon as you have nothing substantive to add — a finished job, a clear state, an agreement already stated are all reasons to pass."
       : "- Each run has a turn budget; the prompt says how many turns remain. Converge or leave a clear state before it runs out — once it is clear, pass: the room goes quiet when everyone passes, and unused turns are fine.",
@@ -622,7 +629,7 @@ export const buildTurnPrompt = (
     events: input.events,
     agent: input.agent,
     turnsLeft: input.turnsLeft,
-    replayOwn: input.rejoin,
+    replayOwn: input.fresh || input.rejoin,
     doc: input.doc ?? null,
     // A fresh session has it in the briefing.
     profile: input.fresh ? null : (input.profile ?? null),

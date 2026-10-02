@@ -34,13 +34,14 @@ import { defaultRoster, parseAgents, rosterPath, RosterError } from "./roster.js
 import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type StreamBuffer } from "./snapshot.js";
 import type { AgentRunner } from "./runners/types.js";
 import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js";
-import { createRoom, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
+import { workspaceAt } from "./room-mode.js";
+import { changeRoomMode, createRoom, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
 import { TerminalError, TerminalHub } from "./terminal.js";
-import { isGitRepo, listWorkspaceFiles, repoRoot, resolveInside, workspacePaths, workspaceTracking } from "./workspace.js";
+import { isGitRepo, listWorkspaceFiles, repoRoot, readCheckpoint, resolveInside, workspacePaths, workspaceTracking } from "./workspace.js";
 
 export interface DaemonOptions {
   env?: NodeJS.ProcessEnv;
@@ -305,6 +306,7 @@ const findWebDir = (): string | null => {
 };
 
 interface RoomHandle {
+  changingMode?: boolean;
   store: RoomStore;
   engine?: RoomEngine;
   /** Why this process cannot drive the room (another agoryx process holds it). */
@@ -681,7 +683,7 @@ export class AgoraDaemon {
     }
     const existing = this.rooms.get(id);
     if (existing) {
-      if (!existing.engine) this.tryDrive(existing);
+      if (!existing.engine && !existing.changingMode) this.tryDrive(existing);
       return existing;
     }
     const store = RoomStore.open(root, id);
@@ -753,6 +755,7 @@ export class AgoraDaemon {
   }
 
   private engineFor(handle: RoomHandle): RoomEngine {
+    if (handle.changingMode) throw new HttpError(409, "The room is switching modes");
     if (!handle.engine) {
       throw new HttpError(409, `${handle.lockedBy ?? "room is not available"} — stop that agoryx process or wait until it finishes`);
     }
@@ -959,7 +962,14 @@ export class AgoraDaemon {
       return;
     }
     let full: string | null;
-    if (relPath.startsWith("~abs/")) {
+    if (relPath.startsWith("~at/")) {
+      const [, seqPart, ...fileParts] = relPath.split("/");
+      const seq = Number(seqPart);
+      if (!Number.isSafeInteger(seq) || seq < 1 || seq > handle.store.state.seq) throw new HttpError(404, "no such conversation file");
+      const root = workspaceAt(handle.store.state, seq);
+      full = resolveInside(root, fileParts.join("/"));
+      if (!full || inGitDir(root, full) || !existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such conversation file");
+    } else if (relPath.startsWith("~abs/")) {
       // A media file outside the workspace, served only while a text in the room links it.
       // relPath is decoded already: the path is taken as is, not decoded again.
       const ref = relPath.slice("~abs/".length);
@@ -1244,6 +1254,7 @@ export class AgoraDaemon {
         try {
           store = createRoom({
             name,
+            ...(body.mode !== undefined ? { mode: body.mode as import("./types.js").RoomMode } : {}),
             ...(typeof body.dir === "string" && body.dir.trim() ? { dir: resolveFolder(body.dir, this.env) } : {}),
             ...(body.worktree === true ? { worktree: true } : {}),
             ...(typeof body.base === "string" && body.base.trim() ? { base: body.base.trim() } : {}),
@@ -1273,6 +1284,36 @@ export class AgoraDaemon {
 
     if (!action && method === "GET") {
       sendJson(res, 200, this.snapshot(handle, device));
+      return;
+    }
+
+    if (action === "mode" && method === "POST") {
+      if (caller.agent) throw new HttpError(403, "Only the human switches room modes");
+      const engine = this.engineFor(handle);
+      const body = await readBody(req) as Record<string, unknown>;
+      if (body.mode !== "chat" && body.mode !== "work") throw new HttpError(400, "mode must be chat or work");
+      if (engine.state.runs.at(-1)?.status === "active" || engine.state.turns.some((turn) => turn.status === "running") || Object.values(engine.presence()).some((p) => p === "native")) throw new HttpError(409, "Wait for the agents to finish before switching modes");
+      this.engineFor(handle);
+      if (this.terminals.list(handle.store.id).some((terminal) => terminal.exit === null)) throw new HttpError(409, "Close the room terminals before switching modes");
+      handle.changingMode = true;
+      try {
+        await engine.close();
+        delete handle.engine;
+        changeRoomMode(handle.store, {
+          mode: body.mode,
+          ...(typeof body.dir === "string" && body.dir.trim() ? { dir: resolveFolder(body.dir, this.env) } : {}),
+          ...(body.worktree === true ? { worktree: true } : {}),
+          ...(typeof body.base === "string" ? { base: body.base } : {}),
+        }, this.env);
+        this.browser.closeRoom(handle.store.id);
+        this.tryDrive(handle);
+        sendJson(res, 200, this.snapshot(handle, device));
+      } catch (error) {
+        this.tryDrive(handle);
+        throw new HttpError(400, error instanceof Error ? error.message : String(error));
+      } finally {
+        handle.changingMode = false;
+      }
       return;
     }
 
@@ -1348,18 +1389,9 @@ export class AgoraDaemon {
     if (action === "commit" && method === "GET") {
       const sha = url.searchParams.get("sha") ?? "";
       if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new HttpError(400, "bad sha");
-      let text: string;
-      try {
-        text = execFileSync("git", ["show", "--stat", "--patch", "--no-color", "--format=%H%n%s%n%n%b", sha], {
-          cwd: handle.store.state.workspace,
-          encoding: "utf8",
-          maxBuffer: 8 * 1024 * 1024,
-          timeout: 10_000,
-          stdio: ["ignore", "pipe", "ignore"],
-        });
-      } catch {
-        throw new HttpError(404, "commit not found");
-      }
+      const checkpoint = handle.store.state.commits.find((entry) => entry.sha.startsWith(sha));
+      const text = readCheckpoint(checkpoint?.workspace ?? handle.store.state.workspace, sha);
+      if (text === null) throw new HttpError(404, "commit or snapshot not found");
       sendJson(res, 200, { sha, text: text.length > 400_000 ? `${text.slice(0, 400_000)}\n… (truncated)` : text });
       return;
     }
@@ -1632,7 +1664,7 @@ export class AgoraDaemon {
     const key = `${state.id}\0${agent.id}\0${sessionId}`;
     let file = this.sessionFiles.get(key) ?? null;
     if (!file || !existsSync(file)) {
-      file = locateNativeSession(agent.kind, sessionId, state.workspace, this.env);
+      file = locateNativeSession(agent.kind, sessionId, workspaceAt(state, turn.seq), this.env);
       if (file) this.sessionFiles.set(key, file);
     }
     if (!file) return empty;

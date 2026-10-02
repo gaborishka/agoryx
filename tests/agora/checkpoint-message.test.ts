@@ -29,17 +29,12 @@ test("a run's checkpoint is named by the steps it finished and lists every file 
     writeFileSync(join(ws, "c.txt"), "c\n");
     room.engine.postHuman("Please do the work, and remove T3 from every commit");
     await withTimeout(room.engine.waitIdle());
-    const subject = git(ws, ["log", "-1", "--format=%s"]).trim();
-    const body = git(ws, ["log", "-1", "--format=%b"]).trim();
-    // The room's name is the human's words more often than not: only at the end of the body.
-    assert.equal(subject, "agoryx: X1 Write a");
-    assert.doesNotMatch(`${subject}\n${body}`, /Please|T3/);
-    assert.match(body, new RegExp(`\\n\\nRoom: ${room.store.state.name}$`));
-    assert.match(body, /^Steps done:\n- X1 Write a \(done by codex\)$/m);
-    assert.match(body, /^- a\.txt \(t\d+ codex\)$/m);
-    assert.match(body, /^- b\.txt \(t\d+ claude\)$/m);
-    assert.match(body, /^- c\.txt \(no turn of this run\)$/m);
-    assert.deepEqual(git(ws, ["show", "--name-only", "--format=", "HEAD"]).split("\n").filter(Boolean).sort(), ["a.txt", "b.txt", "c.txt"]);
+    const snapshot = room.store.state.commits.at(-1)!;
+    assert.equal(snapshot.internal, true);
+    assert.equal(snapshot.subject, "agoryx: X1 Write a");
+    assert.equal(git(ws, ["rev-parse", "--verify", "HEAD"]), "", "no branch commit was made");
+    assert.deepEqual(git(ws, ["ls-tree", "-r", "--name-only", snapshot.sha]).split("\n").filter(Boolean).sort(), ["a.txt", "b.txt", "c.txt"]);
+    assert.equal(room.store.state.table.next[0]!.commit, undefined, "done does not imply committed");
   } finally {
     await room.cleanup();
   }
@@ -64,7 +59,7 @@ test("a run's steps: done during it, or put on the table during it and still to 
 
 // P10: Codex slept inside its turn waiting for Claude's review (m45–m50, then the turn limit), "done" came before any
 // check, settle was used for work, and nothing was committed between steps.
-test("the briefing: a step is checked by another agent, then committed by its author; no waiting inside a turn; settle is not for work", async () => {
+test("the briefing: a step is checked without requiring a commit; no waiting inside a turn; settle is not for work", async () => {
   const room = createTestRoom({});
   try {
     const { state } = room.store;
@@ -73,10 +68,7 @@ test("the briefing: a step is checked by another agent, then committed by its au
       buildBriefing({ state: { ...state, agents }, agent: claude!, agentCli: { command: "agoryx" }, tracking });
     const git = briefing("git");
     assert.match(git, /Ask for its check \(`table review X1`\) and @mention another agent\. Say "done", "ready" or "verified" only after that check has passed/);
-    assert.match(git, /Once it is checked, its author commits it, before the next step goes on top: only that step's files, its id first in the message \(`git add <them> && git commit -m "X1 <the step>" -- <them>`\)/);
-    // A commit made as the briefing says is one the room reads as that step's.
-    const example = /git commit -m "([^"]+)"/.exec(git)![1]!.replace("<the step>", "Quote chips");
-    assert.deepEqual(stepsInSubject(example), ["X1"]);
+    assert.doesNotMatch(git, /its author commits it|git add|git commit/, "native agents decide when to commit");
     assert.match(git, /Don't wait inside your turn for a reply or a check: no sleeping, no polling\./);
     assert.match(git, /settle is for what the room has concluded, not for work: work is steps/);
     // No git of the folder's own: nothing to commit. Alone: the agent checks its own step.
@@ -111,12 +103,12 @@ test("a step its author committed during the run is named in that commit, not ag
   try {
     room.engine.postHuman("Please do the work");
     await withTimeout(room.engine.waitIdle());
-    const [subject, before] = git(ws, ["log", "-2", "--format=%s"]).trim().split("\n");
-    const own = git(ws, ["rev-parse", "HEAD~1"]).trim();
-    assert.equal(before, "X1 Write a");
-    assert.match(subject!, /^agoryx: run r\d+ by /);
-    assert.match(git(ws, ["log", "-1", "--format=%b"]), new RegExp(`^- X1 Write a \\(done by codex; committed as ${own.slice(0, 8)}\\)$`, "m"));
-    assert.deepEqual(git(ws, ["show", "--name-only", "--format=", "HEAD"]).split("\n").filter(Boolean), ["b.txt"]);
+    assert.equal(git(ws, ["log", "-1", "--format=%s"]).trim(), "X1 Write a");
+    assert.equal(git(ws, ["rev-list", "--count", "HEAD"]).trim(), "1", "only the agent's requested commit is on the branch");
+    const snapshot = room.store.state.commits.at(-1)!;
+    assert.equal(snapshot.internal, true);
+    assert.deepEqual(git(ws, ["ls-tree", "-r", "--name-only", snapshot.sha]).split("\n").filter(Boolean), ["a.txt", "b.txt"]);
+    assert.deepEqual(git(ws, ["show", "--name-only", "--format=", "HEAD"]).split("\n").filter(Boolean), ["a.txt"]);
   } finally {
     await room.cleanup();
   }

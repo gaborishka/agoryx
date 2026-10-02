@@ -239,10 +239,11 @@ function CommittedSteps({ steps }: { steps: TableItem[] }) {
   );
 }
 
-export function CommitLine({ c }: { c: { sha: string; subject: string; files: number } }) {
+export function CommitLine({ c }: { c: { sha: string; subject: string; files: number; internal?: boolean; workspace?: string } }) {
   const openChanges = useStore((s) => s.openChanges);
   const openDialog = useStore((s) => s.openDialog);
   const driven = useStore((s) => s.snap?.driven);
+  const workspace = useStore((s) => s.snap?.state.workspace);
   const next = useStore((s) => s.snap?.state.table.next);
   const steps = next?.filter((n) => n.commit?.by === "agoryx" && n.commit.sha === c.sha) ?? [];
   return (
@@ -251,7 +252,7 @@ export function CommitLine({ c }: { c: { sha: string; subject: string; files: nu
         <GitCommitHorizontalIcon className="size-3.5" />
       </span>
       <span>
-        Checkpoint{" "}
+        {c.internal ? "Recovery snapshot" : "Checkpoint"}{" "}
         <button type="button" className="font-mono text-meta text-foreground underline decoration-border underline-offset-2 hover:decoration-current" onClick={() => openChanges({ scope: "commit", sha: c.sha })}>
           {c.sha.slice(0, 7)}
         </button>{" "}
@@ -262,7 +263,7 @@ export function CommitLine({ c }: { c: { sha: string; subject: string; files: nu
           with <CommittedSteps steps={steps} />
         </span>
       ) : null}
-      {driven ? (
+      {driven && (!c.workspace || c.workspace === workspace) ? (
         <Button
           variant="ghost"
           size="xs"

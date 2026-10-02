@@ -104,6 +104,7 @@ export function useShortcuts() {
           s.openSession(undefined, true);
           break;
         case "terminal":
+          if (room?.mode === "chat") break;
           s.setTerminalOpen(!s.terminalOpen);
           break;
         case "stop":

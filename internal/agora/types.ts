@@ -30,6 +30,16 @@ export interface RoomAgent {
 
 export type SandboxAccess = "workspace" | "readonly";
 
+export type RoomMode = "chat" | "work";
+
+/** Remembered project when the conversation returns to Chat. */
+export interface RoomProject {
+  workspace: string;
+  createdWorkspace: boolean;
+  worktree?: RoomWorktree;
+  doc?: string | null;
+}
+
 export interface RoomSettings {
   /**
    * Agent turns allowed per run (a run starts with a human message), or null: no limit — the run ends when
@@ -41,7 +51,7 @@ export interface RoomSettings {
   access: SandboxAccess;
   /** Let sandboxed commands reach the network. */
   network: boolean;
-  /** Commit workspace changes at the end of every run. */
+  /** Legacy persisted field. Always false now; recovery snapshots never commit to the working branch. */
   autoCommit: boolean;
   /**
    * The room's canonical file, relative to the workspace: the one text the room is making.
@@ -55,7 +65,7 @@ export const DEFAULT_SETTINGS: RoomSettings = {
   turnTimeoutMs: 20 * 60 * 1000,
   access: "workspace",
   network: true,
-  autoCommit: true,
+  autoCommit: false,
   doc: null,
 };
 
@@ -424,6 +434,9 @@ export interface RoomCreatedEvent {
   workspace: string;
   createdWorkspace: boolean;
   worktree?: RoomWorktree;
+  /** Absent in older logs: Work. */
+  mode?: RoomMode;
+  project?: RoomProject;
   human: string;
   agents: RoomAgent[];
   settings: RoomSettings;
@@ -436,6 +449,7 @@ export interface RoomCreatedEvent {
 
 export type RoomEventBody =
   | RoomCreatedEvent
+  | { type: "room.mode.changed"; mode: RoomMode; workspace: string; project?: RoomProject; by: string }
   | { type: "message.posted"; message: RoomMessage }
   | { type: "run.started"; runId: string; trigger: string | null; budget: number | null }
   | { type: "run.extended"; runId: string; by: string; from?: ActorOrigin; turns: number }
@@ -485,7 +499,7 @@ export type RoomEventBody =
       /** The agent never got to answer what this turn showed it (the process died): show it again. */
       unseen?: boolean;
     }
-  | { type: "session.bound"; agent: string; sessionId: string }
+  | { type: "session.bound"; agent: string; sessionId: string; briefingVersion?: number }
   | { type: "table.op"; op: TableOp }
   /** `by`: who changed them (absent in logs from before authors were recorded). */
   | { type: "settings.changed"; patch: Partial<RoomSettings>; by?: string; from?: ActorOrigin }
@@ -510,7 +524,7 @@ export type RoomEventBody =
   /** The human sent an agent out of the room. Its messages stay, under its name (`RoomState.former`). */
   | { type: "agent.removed"; agent: string; by?: string; from?: ActorOrigin }
   /** `folder`: the whole folder at this checkpoint, when the commit holds only the room's own files (a shared folder). */
-  | { type: "commit.created"; sha: string; subject: string; files: number; folder?: string }
+  | { type: "commit.created"; sha: string; subject: string; files: number; folder?: string; workspace?: string; internal?: boolean }
   /**
    * Steps (X3) went into a commit: one an agent made naming them, the room's checkpoint of a run that finished them,
    * or the one the human made for a step with its button.
@@ -688,6 +702,9 @@ export interface RoomState {
   workspace: string;
   createdWorkspace: boolean;
   worktree?: RoomWorktree;
+  /** Absent in older logs: Work. */
+  mode?: RoomMode;
+  project?: RoomProject;
   human: string;
   agents: RoomAgent[];
   /** Agents that left the room, as they were when they left: their messages are still theirs. */
@@ -696,17 +713,20 @@ export interface RoomState {
   joined: Record<string, number>;
   settings: RoomSettings;
   createdAt: string;
+  /** Workspace boundaries, retained for historical files and diffs. */
+  workspaceHistory?: Array<{ seq: number; workspace: string }>;
+  modeSince?: number;
   seq: number;
   messages: MessageEntry[];
   turns: TurnState[];
   runs: RunState[];
-  sessions: Record<string, { sessionId: string; boundAt: string }>;
+  sessions: Record<string, { sessionId: string; boundAt: string; briefingVersion?: number }>;
   /** Highest seq each agent has seen (via prompt or authorship). */
   cursors: Record<string, number>;
   /** Hash of the human's profile each agent's session holds ("" or absent: none). */
   profiles: Record<string, string>;
   table: TableState;
-  commits: Array<{ sha: string; subject: string; files: number; seq: number; folder?: string }>;
+  commits: Array<{ sha: string; subject: string; files: number; seq: number; folder?: string; workspace?: string; internal?: boolean }>;
   /** Returns of the folder to a checkpoint and their undos, oldest first. */
   reverts: RevertEntry[];
   /** Revisions of the canonical file (texts stay in the event log). */

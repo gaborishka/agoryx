@@ -20,6 +20,8 @@ import type {
   ActorOrigin,
   EphemeralEvent,
   RoomAgent,
+  RoomMode,
+  RoomProject,
   RoomCreatedEvent,
   RoomEvent,
   RoomEventBody,
@@ -34,6 +36,8 @@ export type StoreListener = (event: RoomEvent | EphemeralEvent) => void;
 export interface CreateRoomInput {
   name: string;
   workspace: string;
+  mode?: RoomMode;
+  project?: RoomProject;
   createdWorkspace: boolean;
   worktree?: RoomWorktree;
   human: string;
@@ -45,6 +49,7 @@ export interface CreateRoomInput {
 }
 
 export interface RoomSummary {
+  mode?: RoomMode;
   id: string;
   name: string;
   workspace: string;
@@ -143,6 +148,8 @@ export class RoomStore {
       id,
       name: input.name,
       workspace: input.workspace,
+      mode: input.mode ?? "work",
+      ...(input.project ? { project: input.project } : {}),
       createdWorkspace: input.createdWorkspace,
       ...(input.worktree ? { worktree: input.worktree } : {}),
       human: input.human,
@@ -243,6 +250,7 @@ export class RoomStore {
     const working = this.state.turns.filter((turn) => turn.status === "running").map((turn) => ({ agent: turn.agent, since: turn.startedAt }));
     return {
       id: this.state.id,
+      mode: this.state.mode ?? "work",
       name: this.state.name,
       workspace: this.state.workspace,
       createdAt: this.state.createdAt,
@@ -252,7 +260,7 @@ export class RoomStore {
       running: working.length > 0,
       agents: this.state.agents.map(({ id, kind, label }) => ({ id, kind, label })),
       ...(working.length > 0 ? { working } : {}),
-      ...(this.state.worktree
+      ...(this.state.mode === "chat" ? {} : this.state.worktree
         ? { folder: this.state.worktree.source, branch: this.state.worktree.branch }
         : this.state.createdWorkspace
           ? {}

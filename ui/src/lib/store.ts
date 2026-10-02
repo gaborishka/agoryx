@@ -35,6 +35,7 @@ export type RoomView = "chat" | "table";
 export type DialogState =
   /** Return the folder: to checkpoint `sha`, undo return `undo` (its seq), or neither: pick a checkpoint. */
   | { kind: "revert"; sha?: string; undo?: number }
+  | { kind: "mode" }
   | { kind: "settings" }
   /** Who sits in the room: seat, send out, roles; `agent`: the one to show first. */
   | { kind: "agents"; agent?: string }
@@ -390,6 +391,13 @@ type Patch = {
 };
 
 const applyPatch = (event: RoomEvent, patch: Patch) => {
+  if (event.type === "room.mode.changed") {
+    const s = useStore.getState();
+    useStore.setState({ panel: null, terminalOpen: false, docFocus: null, docReset: s.docReset + 1 });
+    if (s.route.kind === "room") void s.openRoom(s.route.id, true);
+    void s.loadRooms();
+    return;
+  }
   const { snap, rooms } = useStore.getState();
   if (!snap || event.seq <= snap.state.seq) return;
   const st = { ...snap.state, seq: event.seq };

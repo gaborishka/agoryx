@@ -57,7 +57,7 @@ export const revertTarget = (state: RoomState, request: RevertRequest): RevertTa
   }
   const sha = (request.sha ?? "").trim().toLowerCase();
   if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new RevertError("bad", "a checkpoint sha is required (7 to 40 hex characters)");
-  const matches = state.commits.filter((commit) => commit.sha.startsWith(sha));
+  const matches = state.commits.filter((commit) => commit.sha.startsWith(sha) && (!commit.workspace || commit.workspace === state.workspace));
   if (matches.length > 1) throw new RevertError("bad", `${sha} matches several checkpoints; give more of the sha`);
   if (!matches.length) throw new RevertError("missing", `no checkpoint ${sha} in this room`);
   return { sha: matches[0]!.sha, source: matches[0]!.folder ?? matches[0]!.sha, checkpoint: matches[0]! };

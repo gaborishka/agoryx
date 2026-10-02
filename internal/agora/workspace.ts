@@ -811,6 +811,17 @@ const keepTree = (root: string, tree: string, parent: string | undefined, ref: s
   return sha;
 };
 
+/** A commit or private recovery snapshot, including in a non-git folder's shadow store. */
+export const readCheckpoint = (root: string, sha: string): string | null =>
+  track(root, ["show", "--stat", "--patch", "--no-color", "--format=%H%n%s%n%n%b", sha]);
+
+/** Recovery point kept off the working branch; staging and HEAD are untouched. */
+export const recoverySnapshot = (root: string, room: string, subject: string): string | null => {
+  const tree = snapshotTree(root);
+  if (!tree) return null;
+  return keepTree(root, tree, undefined, `refs/agoryx/checkpoint/${refRoom(room)}/${randomBytes(12).toString("hex")}`, subject);
+};
+
 /**
  * The whole folder at a checkpoint, to return to later. A room alone in its folder commits all of it, so
  * the commit is the folder. A room sharing the folder commits only its own files, so the rest (the human's

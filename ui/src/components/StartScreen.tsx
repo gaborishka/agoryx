@@ -56,6 +56,12 @@ const EXAMPLES = [
   },
 ];
 
+const CHAT_EXAMPLES = [
+  { icon: ScrollTextIcon, voice: "var(--claude-0)", title: "Understand something", text: "Explain the difference between an idea and a hypothesis, with examples" },
+  { icon: SearchCodeIcon, voice: "var(--codex-0)", title: "Explore an idea", text: "Help me think through an idea. Ask me one question to get started" },
+  { icon: LayoutTemplateIcon, voice: "var(--human)", title: "Compare perspectives", text: "What makes a useful disagreement? Give me your different perspectives" },
+];
+
 /** No limit: the room goes on until everyone passes, or you stop it. The same default as the daemon's. */
 const DEFAULT_BUDGET: number | null = null;
 const BUDGETS = [4, 8, 16, 32];
@@ -293,6 +299,7 @@ export function StartScreen() {
   const [folder, setFolder] = useState<string | null>(() =>
     local.get("folder"),
   );
+  const [mode, setMode] = useState<"chat" | "work">("chat");
   const [worktree, setWorktree] = useState(() => local.get("worktree") === "1");
   const [base, setBase] = useState<string | null>(null);
   const [budget, setBudget] = useState<number | null>(() => {
@@ -367,8 +374,9 @@ export function StartScreen() {
         "/api/rooms",
         {
           text: withFiles(body, await files.upload()),
-          ...(folder ? { dir: folder } : {}),
-          ...(inWorktree ? { worktree: true, ...(base ? { base } : {}) } : {}),
+          mode,
+          ...(mode === "work" && folder ? { dir: folder } : {}),
+          ...(mode === "work" && inWorktree ? { worktree: true, ...(base ? { base } : {}) } : {}),
           ...(budget !== DEFAULT_BUDGET ? { budget } : {}),
           agents: seated.map(rosterEntry),
         },
@@ -397,7 +405,7 @@ export function StartScreen() {
               <h1 className="font-display text-[clamp(34px,5.6vw,58px)] leading-[1.02] font-[650] text-balance">
                 {first
                   ? `A shared room for you, ${who}`
-                  : "What should we work on?"}
+                  : mode === "chat" ? "What’s on your mind?" : "What should we work on?"}
               </h1>
               <p className="max-w-[50ch] text-lead leading-relaxed text-pretty text-muted-foreground">
                 One conversation for everyone. Each agent works in its own native
@@ -408,6 +416,21 @@ export function StartScreen() {
           </div>
 
           <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-1 self-center rounded-xl bg-muted p-1" role="group" aria-label="Conversation mode">
+              {(["chat", "work"] as const).map((value) => (
+                <Button
+                  key={value}
+                  type="button"
+                  size="sm"
+                  variant={mode === value ? "default" : "ghost"}
+                  className="min-w-20 font-semibold"
+                  aria-pressed={mode === value}
+                  onClick={() => setMode(value)}
+                >
+                  {value === "chat" ? "Chat" : "Work"}
+                </Button>
+              ))}
+            </div>
             <form
               onSubmit={submit}
               className={cn(
@@ -416,7 +439,7 @@ export function StartScreen() {
               )}
               {...files.drop}
             >
-              <div className="flex flex-wrap items-start gap-x-2 gap-y-1 rounded-t-[26px] border-b border-border/80 bg-muted/40 px-3 py-2">
+              {mode === "work" ? <div className="flex flex-wrap items-start gap-x-2 gap-y-1 rounded-t-[26px] border-b border-border/80 bg-muted/40 px-3 py-2">
                 <span className="pr-0.5 pl-1 text-meta leading-8 text-faint">
                   Working in
                 </span>
@@ -429,7 +452,7 @@ export function StartScreen() {
                   base={base}
                   onBase={setBase}
                 />
-              </div>
+              </div> : null}
               <textarea
                 ref={ta}
                 rows={3}
@@ -446,7 +469,7 @@ export function StartScreen() {
                   }
                 }}
                 onPaste={files.onPaste}
-                placeholder={`Describe a task or question for ${who}…`}
+                placeholder={mode === "chat" ? `Ask ${who} anything…` : `Describe a task for ${who}…`}
                 aria-label="First message"
                 data-composer
                 className="scroll-thin block min-h-[108px] w-full resize-none bg-transparent px-5 pt-4 text-lead leading-relaxed outline-none placeholder:text-faint"
@@ -514,7 +537,7 @@ export function StartScreen() {
           </div>
 
           <div className="grid gap-x-6 gap-y-1 sm:grid-cols-3">
-            {EXAMPLES.map(({ icon: Icon, voice, title, text: example }) => (
+            {(mode === "chat" ? CHAT_EXAMPLES : EXAMPLES).map(({ icon: Icon, voice, title, text: example }) => (
               <button
                 key={title}
                 type="button"
@@ -539,7 +562,7 @@ export function StartScreen() {
           {/* How a room works, for the first one; after that the examples alone. */}
           {first ? (
             <div className="pt-1">
-              <Steps budget={budget} />
+              {mode === "work" ? <Steps budget={budget} /> : <p className="text-center text-small text-muted-foreground">Ask a question, bring an idea, or just talk. Connect a project whenever you want to work on it.</p>}
             </div>
           ) : null}
         </div>

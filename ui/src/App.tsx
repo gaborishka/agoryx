@@ -119,7 +119,7 @@ function RoomLoading() {
 function Room() {
   const loaded = useStore((s) => Boolean(s.snap));
   const view = useStore((s) => s.view);
-  const terminal = useStore((s) => s.terminalOpen);
+  const terminal = useStore((s) => s.terminalOpen && s.snap?.state.mode !== "chat");
   const roomId = useStore((s) => s.snap?.state.id);
   if (!loaded) return <RoomLoading />;
   return (

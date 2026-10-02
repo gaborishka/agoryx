@@ -95,7 +95,7 @@ test("a file another room's agent edits during this room's turn is not this room
     const commitA = commitOf(rooms.a);
     const commitB = commitOf(rooms.b);
     assert.ok(commitA?.type === "commit.created" && commitB?.type === "commit.created");
-    assert.deepEqual(committedFiles(rooms.workspace, commitA.sha), ["a.txt"]);
+    assert.deepEqual(committedFiles(rooms.workspace, commitA.sha), ["a.txt", "b.txt"], "recovery preserves the whole folder, without crediting foreign changes to the turn");
     assert.deepEqual(committedFiles(rooms.workspace, commitB.sha), ["b.txt"]);
   } finally {
     await rooms.cleanup();
@@ -146,7 +146,7 @@ test("a room in another process running a turn here counts as a parallel turn", 
     assert.deepEqual(turnOf(rooms.a).files, ["a.txt"], "the shell change could be the other process's agent: not credited");
     const commit = commitOf(rooms.a);
     assert.ok(commit?.type === "commit.created");
-    assert.deepEqual(committedFiles(rooms.workspace, commit.sha), ["a.txt"]);
+    assert.deepEqual(committedFiles(rooms.workspace, commit.sha), ["a.txt", "c.txt"]);
   } finally {
     await rooms.cleanup();
   }
@@ -169,7 +169,7 @@ test("one room alone in the workspace credits and commits a shell change as befo
   }
 });
 
-test("a room alone in its directory checkpoints everything, as before; sharing it, only what its turns were credited", async () => {
+test("recovery snapshots preserve all files in both private and shared directories without committing them", async () => {
   const alone = createTestRoom({
     rules: [{ agent: "claude", match: "go", write: { path: "a.txt", content: "agent\n" }, reply: "Done.", once: true }],
     agents: [{ id: "claude", kind: "claude", label: "Claude" }],
@@ -195,7 +195,7 @@ test("a room alone in its directory checkpoints everything, as before; sharing i
     const commit = commitOf(rooms.a);
     assert.ok(commit?.type === "commit.created");
     // Room B may own it: a room sharing the directory leaves what it was not credited with alone.
-    assert.deepEqual(committedFiles(rooms.workspace, commit.sha), ["a.txt"]);
+    assert.deepEqual(committedFiles(rooms.workspace, commit.sha), ["a.txt", "notes.txt"]);
     assert.match(git(rooms.workspace, ["status", "--porcelain"]), /notes\.txt/);
   } finally {
     await rooms.cleanup();

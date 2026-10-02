@@ -163,7 +163,7 @@ test("the human returns the room's folder to a checkpoint and undoes it; agents 
     assert.equal(revert.by, "Ivan");
     assert.equal(git(ws, "rev-parse", revert.ref).trim(), revert.undo, "the undo point is a commit under refs/agoryx/");
     assert.match(revert.ref, /^refs\/agoryx\/revert\//);
-    assert.equal(git(ws, "rev-parse", "HEAD^").trim(), second.sha, "no commit is taken back");
+    assert.throws(() => git(ws, "rev-parse", "--verify", "HEAD"), "recovery never creates a branch commit");
     assert.equal(room.store.state.messages.length, messages, "history is not touched");
     assert.equal(JSON.stringify(room.store.state.table), table, "the table stays: it is what was said");
     assert.deepEqual(room.store.events.slice(-3).map((entry) => entry.type), ["workspace.reverted", "doc.revised", "commit.created"]);
@@ -172,7 +172,7 @@ test("the human returns the room's folder to a checkpoint and undoes it; agents 
     // With checkpoints on, the return is a checkpoint of its own: the next run's is not credited with it.
     const own = room.store.state.commits.at(-1)!;
     assert.match(own.subject, new RegExp(`Ivan returned the folder to ${first.sha.slice(0, 8)}$`));
-    assert.equal(git(ws, "rev-parse", "HEAD").trim(), own.sha);
+    assert.equal(git(ws, "show", `${own.sha}:a.txt`).trim(), "v1");
 
     // The agent is told in its next turn, before it builds on files it remembers otherwise.
     room.engine.postHuman("look again");

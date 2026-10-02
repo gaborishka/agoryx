@@ -309,9 +309,10 @@ function useBranch(roomId: string, turns: number): string | null {
 function Place() {
   const room = useStore((s) => s.snap?.state);
   const openFile = useStore((s) => s.openFile);
-  const asked = useBranch(room?.id ?? "", room?.turns.length ?? 0);
+  const asked = useBranch(room?.id ?? "", (room?.turns.length ?? 0) + (room?.modeSince ?? 0));
   const branch = room?.repo ? (room.repo.branch ?? asked) : asked;
   if (!room) return null;
+  if (room.mode === "chat") return <span className="text-micro text-faint">Chat · no project</span>;
   const wt = room.worktree;
   const folder = wt ? wt.source : room.workspace;
   const tip = wt
@@ -426,9 +427,12 @@ export function RoomHeader() {
           <Presence key={a.id} a={a} />
         ))}
       </div>
-      <OpenPr />
+      <Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground" onClick={() => openDialog({ kind: "mode" })} aria-label="Change conversation mode">
+        {room.mode === "chat" ? "Chat" : "Work"}
+      </Button>
+      {room.mode !== "chat" ? <OpenPr /> : null}
       <span className="mx-0.5 hidden h-5 w-px bg-border @min-[36rem]:block" />
-      <TerminalToggle />
+      {room.mode !== "chat" ? <TerminalToggle /> : null}
       <PanelToggle />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -454,13 +458,13 @@ export function RoomHeader() {
               </small>
             </span>
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => openChanges({ scope: "room" })}>
+          {room.mode !== "chat" ? <DropdownMenuItem onSelect={() => openChanges({ scope: "room" })}>
             <GitCompareArrowsIcon />
             All room changes
-          </DropdownMenuItem>
+          </DropdownMenuItem> : null}
           <DropdownMenuItem onSelect={() => openFile(null)}>
             <FolderIcon />
-            Working folder files
+            {room.mode === "chat" ? "Conversation files" : "Working folder files"}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openDialog({ kind: "revert" })}>
             <RotateCcwIcon />

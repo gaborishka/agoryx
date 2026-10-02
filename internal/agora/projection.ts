@@ -6,13 +6,16 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   id: event.id,
   name: event.name,
   workspace: event.workspace,
+  mode: event.mode ?? "work",
+  project: event.project ?? ((event.mode ?? "work") === "work" ? { workspace: event.workspace, createdWorkspace: event.createdWorkspace, worktree: event.worktree, doc: event.settings.doc } : undefined),
+  workspaceHistory: [{ seq: event.seq, workspace: event.workspace }],
   createdWorkspace: event.createdWorkspace,
   ...(event.worktree ? { worktree: event.worktree } : {}),
   human: event.human,
   agents: event.agents,
   former: [],
   joined: {},
-  settings: { ...event.settings },
+  settings: { ...event.settings, autoCommit: false },
   createdAt: event.ts,
   seq: event.seq,
   messages: [],
@@ -77,6 +80,24 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
   switch (event.type) {
     case "room.created":
       return;
+    case "room.mode.changed": {
+      state.mode = event.mode;
+      state.workspace = event.workspace;
+      state.project = event.project;
+      state.createdWorkspace = event.mode === "work" && Boolean(event.project?.createdWorkspace);
+      state.worktree = event.mode === "work" ? event.project?.worktree : undefined;
+      state.settings.doc = event.mode === "work" ? event.project?.doc : null;
+      state.settings.autoCommit = false;
+      state.workspaceHistory ??= [];
+      state.workspaceHistory.push({ seq: event.seq, workspace: event.workspace });
+      state.modeSince = event.seq;
+      // Native sessions belong to a cwd. Start fresh with the same room history at the new location.
+      state.sessions = {};
+      state.cursors = Object.fromEntries(state.agents.map((agent) => [agent.id, 0]));
+      state.profiles = {};
+      delete state.repo;
+      return;
+    }
     case "message.posted": {
       state.counters.m = (state.counters.m ?? 0) + 1;
       // Cursors move only when a turn starts: a message posted by an agent at the
@@ -169,7 +190,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       return;
     }
     case "session.bound":
-      state.sessions[event.agent] = { sessionId: event.sessionId, boundAt: event.ts };
+      state.sessions[event.agent] = { sessionId: event.sessionId, boundAt: event.ts, ...(event.briefingVersion !== undefined ? { briefingVersion: event.briefingVersion } : {}) };
       return;
     case "table.op":
       applyTableOp(state.table, event.op, event.seq, {
@@ -178,7 +199,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       });
       return;
     case "settings.changed":
-      state.settings = { ...state.settings, ...event.patch };
+      state.settings = { ...state.settings, ...event.patch, autoCommit: false };
       return;
     case "room.renamed":
       state.name = event.name;
@@ -222,7 +243,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       return;
     }
     case "commit.created":
-      state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq, ...(event.folder ? { folder: event.folder } : {}) });
+      state.commits.push({ sha: event.sha, subject: event.subject, files: event.files, seq: event.seq, workspace: event.workspace ?? state.workspace, internal: event.internal, ...(event.folder ? { folder: event.folder } : {}) });
       return;
     case "step.committed":
       // The first commit a step went into is the one it is in; a later one naming it again does not move it.

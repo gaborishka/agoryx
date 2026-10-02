@@ -63,7 +63,8 @@ export function Driver() {
 
 function TabStrip({ current }: { current: PanelTab }) {
   const setPanel = useStore((s) => s.setPanel);
-  const tabs = panelTabs();
+  const chat = useStore((s) => s.snap?.state.mode === "chat");
+  const tabs = panelTabs().filter((tab) => !chat || tab !== "diff");
   const strip = useRef<HTMLDivElement>(null);
   // Arrows move between tabs, as in any tab list.
   const keys = (event: KeyboardEvent) => {
@@ -141,6 +142,7 @@ export function SidePanel({ overlay, phone }: { overlay: boolean; phone: boolean
   const setWide = useStore((s) => s.setWide);
   const setPanel = useStore((s) => s.setPanel);
   const navWidth = useStore((s) => s.navWidth);
+  const navCollapsed = useStore((s) => s.navCollapsed);
   const panelWidth = useStore((s) => s.panelWidth);
   const setPanelWidth = useStore((s) => s.setPanelWidth);
   const viewport = useViewportWidth();
@@ -172,7 +174,7 @@ export function SidePanel({ overlay, phone }: { overlay: boolean; phone: boolean
   const browser = panel === "browser";
   // Docked, its width is dragged by its left edge; the room keeps room for a readable conversation.
   const min = PANEL_MIN;
-  const max = Math.max(min, viewport - navWidthOf(navWidth) - ROOM_MIN);
+  const max = Math.max(min, viewport - (navCollapsed ? 0 : navWidthOf(navWidth)) - ROOM_MIN);
   const width = Math.round(Math.min(max, Math.max(min, wide || browser ? browserWidth(viewport) : (panelWidth ?? (viewport >= 1280 ? 480 : 440)))));
   const resize = (next: number) => {
     if (wide) setWide(false);

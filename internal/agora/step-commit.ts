@@ -1,3 +1,4 @@
+import { workspaceAt } from "./room-mode.js";
 import { checkpointSubject } from "./checkpoint-message.js";
 import { stepBuilder } from "./table.js";
 import type { RoomEvent, RoomState, TableItem, TurnState } from "./types.js";
@@ -87,10 +88,10 @@ export const planStepCommit = (state: RoomState, events: readonly RoomEvent[], i
   if (!paths) throw new StepCommitError("the folder is not a git repository of its own: there is nothing to commit to", 409);
   const operation = gitOperation(state.workspace);
   if (operation) throw new StepCommitError(`the repository is in the middle of ${operation}: finish it or abort it first`, 409);
-  const own = new Set(stepTurns(state, events, step).flatMap((turn) => turn.files ?? []));
+  const own = new Set(stepTurns(state, events, step).filter((turn) => workspaceAt(state, turn.seq) === state.workspace).flatMap((turn) => turn.files ?? []));
   const files = paths.map((path) => ({
     path,
-    turns: state.turns.filter((turn) => turn.files?.includes(path)).map((turn) => ({ id: turn.id, agent: turn.agent })),
+    turns: state.turns.filter((turn) => workspaceAt(state, turn.seq) === state.workspace && turn.files?.includes(path)).map((turn) => ({ id: turn.id, agent: turn.agent })),
     step: own.has(path),
   }));
   return { step: step.id, subject: stepSubject(step), files };

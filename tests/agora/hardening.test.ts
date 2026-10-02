@@ -64,12 +64,12 @@ test("the readable workspace name is claimed atomically: a directory that alread
   const home = mkdtempSync(join(tmpdir(), "agora-home-"));
   try {
     const env = { ...process.env, AGORYX_HOME: home };
-    const first = createRoom({ name: "Same name", env });
+    const first = createRoom({ name: "Same name", mode: "work", env });
     const taken = first.state.workspace;
     // Empty again, as if a second create had just made it and not yet written into it.
     rmSync(taken, { recursive: true, force: true });
     mkdirSync(taken);
-    const second = createRoom({ name: "Same name", env });
+    const second = createRoom({ name: "Same name", mode: "work", env });
     assert.notEqual(second.state.workspace, taken);
     assert.ok(second.state.workspace.endsWith(second.id));
   } finally {

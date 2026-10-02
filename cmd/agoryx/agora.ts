@@ -85,7 +85,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx revert [-r room] [SHA | --undo [N]] [--yes]   Return the folder to a checkpoint (no SHA: list them), or undo a return",
       "  agoryx usage [room] [--json]      Your agents' subscription limits, as their CLIs last reported them, and what the room's wakes cost",
       "  agoryx profile [-r room]           Your profile (who you are, for the agents): where it is, and who in the room sees it",
-      "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--autocommit on|off] [--access workspace|readonly] [--doc PATH|none]",
+      "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--access workspace|readonly] [--doc PATH|none]",
       "",
       "Table ops:",
       ...TABLE_USAGE.map((line) => `  ${line}`),
@@ -807,6 +807,7 @@ const runOpen = async (argv: string[]): Promise<number> => {
 
 const runNew = async (argv: string[]): Promise<number> => {
   const parsed = parse(argv, [
+    { long: "mode", takesValue: true },
     { long: "dir", takesValue: true },
     { long: "worktree", takesValue: false },
     { long: "base", takesValue: true },
@@ -830,8 +831,10 @@ const runNew = async (argv: string[]): Promise<number> => {
     if (error instanceof RosterError) throw new CliUsageError(`--agents: ${error.message}`);
     throw error;
   }
+  if (parsed.options.mode && parsed.options.mode !== "chat" && parsed.options.mode !== "work") throw new CliUsageError("--mode must be chat or work");
   const input = {
     name,
+    ...(parsed.options.mode ? { mode: parsed.options.mode as "chat" | "work" } : {}),
     ...(agents ? { agents } : {}),
     ...(parsed.options.dir ? { dir: resolve(parsed.options.dir) } : {}),
     ...(parsed.options.worktree ? { worktree: true } : {}),
@@ -851,7 +854,7 @@ const runNew = async (argv: string[]): Promise<number> => {
   }
   const store = RoomStore.open(roomsDir(), roomId);
   console.log(`${pc.bold(store.state.name)} ${pc.dim(`(${roomId})`)}`);
-  console.log(`  workspace  ${store.state.workspace}${store.state.createdWorkspace ? pc.dim(" (new git repo)") : ""}`);
+  console.log(`  ${store.state.mode === "chat" ? "materials" : "workspace"}  ${store.state.workspace}${store.state.createdWorkspace ? pc.dim(" (new git repo)") : ""}`);
   if (store.state.worktree) console.log(`  worktree   ${store.state.worktree.branch} ${pc.dim(`from ${store.state.worktree.base}, in ${store.state.worktree.repo}`)}`);
   console.log(`  here       ${store.state.agents.map((agent) => agent.label).join(", ")} and ${store.state.human}`);
   console.log(`  budget     ${budgetLine(store.state.settings.budget)}`);
@@ -1098,7 +1101,8 @@ const runSettings = async (argv: string[]): Promise<number> => {
   const network = onOff(parsed.options.network);
   if (network !== undefined) patch.network = network;
   const autoCommit = onOff(parsed.options.autocommit);
-  if (autoCommit !== undefined) patch.autoCommit = autoCommit;
+  if (autoCommit === true) throw new CliUsageError("Automatic commits are no longer used. Agoryx keeps recovery snapshots without changing your branch.");
+  if (autoCommit === false) patch.autoCommit = false;
   if (parsed.options.access === "workspace" || parsed.options.access === "readonly") patch.access = parsed.options.access;
   const ref = parsed.options.room ?? parsed.positionals[0];
   let settings: RoomSettings;
@@ -1115,7 +1119,7 @@ const runSettings = async (argv: string[]): Promise<number> => {
   console.log(`budget      ${budgetLine(settings.budget)}`);
   console.log(`access      ${settings.access === "workspace" ? "agents can edit the workspace" : "read-only"}`);
   console.log(`network     ${settings.network ? "on" : "off"}`);
-  console.log(`autocommit  ${settings.autoCommit ? "on (checkpoint commit after each run)" : "off"}`);
+  console.log("snapshots   automatic recovery points; no branch commits");
   console.log(`turn limit  ${Math.round(settings.turnTimeoutMs / 60_000)} min`);
   console.log(`doc         ${settings.doc ?? pc.dim("none")}`);
   return 0;
@@ -1295,9 +1299,7 @@ const runRevert = async (argv: string[]): Promise<number> => {
 
   if (!ref && !parsed.options.undo) {
     if (!state.commits.length) {
-      // A checkpoint is a git commit: a folder without its own repository never gets one.
-      if (workspaceTracking(state.workspace) !== "git") console.log(pc.dim(`no checkpoints in ${state.name}: a checkpoint is a git commit, and ${state.workspace} is not a git repository (git init there, then agoryx settings --autocommit on)`));
-      else console.log(pc.dim(`no checkpoints in ${state.name}: they are made after each run while \`agoryx settings --autocommit on\`${state.settings.autoCommit ? " (it is on; none yet)" : ""}`));
+      console.log(pc.dim(`no recovery snapshots in ${state.name}: they are kept after agents change files, without committing to the working branch`));
     }
     for (const commit of [...state.commits].reverse().slice(0, 20)) {
       console.log(`${pc.bold(commit.sha.slice(0, 7))} ${pc.dim(stamp(commit.seq))}  ${oneLine(commit.subject, 70)} ${pc.dim(`· ${commit.files} file${commit.files === 1 ? "" : "s"}`)}`);

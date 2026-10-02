@@ -174,9 +174,9 @@ export const en = {
       `The room’s worktree: branch ${branch} from ${base}, folder ${folder}. ${names(agents)} work in it together; ${source} stays as it is.`,
   },
   checkpoint: {
-    one: "One checkpoint (a git commit)",
-    none: "They appear after a round when checkpoints are turned on in settings.",
-    setting: "A checkpoint (a git commit) after every round",
+    one: "One recovery snapshot",
+    none: "They appear after agents change files, without adding commits to your branch.",
+    setting: "Recovery snapshots after file changes",
   },
   loading: "Loading",
 };

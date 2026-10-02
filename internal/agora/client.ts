@@ -62,6 +62,7 @@ export class DaemonClient {
 
   createRoom(input: {
     name: string;
+    mode?: "chat" | "work";
     dir?: string;
     worktree?: boolean;
     base?: string;

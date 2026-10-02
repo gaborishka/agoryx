@@ -12,6 +12,7 @@ import { errText } from "@/lib/load";
 import { useStore } from "@/lib/store";
 import type { ProjectEvent, ProjectView, RoomSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { MemorySection } from "./MemorySection";
 
 /**
  * A project: the folder Work rooms work in, with a name, a goal and instructions that outlive one room. The agents
@@ -34,9 +35,22 @@ const FIELDS: Array<{ id: keyof Fields; label: string; hint: string; rows?: numb
 
 const fieldsOf = (project: ProjectView): Fields => ({ name: project.name ?? "", goal: project.goal ?? "", instructions: project.instructions ?? "" });
 
+const changeText = (event: ProjectEvent): string => {
+  switch (event.type) {
+    case "project.changed":
+      return `${event.value === null ? "cleared" : "wrote"} the ${event.field}`;
+    case "memory.noted":
+      return `kept ${event.id} (${event.entry.kind})`;
+    case "memory.revised":
+      return `revised ${event.id}`;
+    case "memory.removed":
+      return `removed ${event.id}`;
+  }
+};
+
 const who = (event: ProjectEvent) => (event.from ? `${event.from.label} in “${event.from.roomName}”` : event.by);
 
-function Block({ title, children, aside }: { title: string; children: ReactNode; aside?: ReactNode }) {
+export function Block({ title, children, aside }: { title: string; children: ReactNode; aside?: ReactNode }) {
   return (
     <section className="flex flex-col gap-3">
       <header className="flex items-baseline gap-3">
@@ -87,7 +101,7 @@ export function ProjectPage({ hash }: { hash: string }) {
     setBusy(true);
     try {
       // Sent with the version this page holds: if anyone wrote since, nothing is overwritten.
-      const body: Record<string, unknown> = { seq: (theirs ?? project).seq };
+      const body: Record<string, unknown> = { seq: (theirs ?? project).fieldsSeq };
       for (const id of changed) body[id] = draft[id];
       const got = await api<{ project: ProjectView }>("PATCH", `/api/projects/${hash}`, body);
       setProject(got.project);
@@ -198,6 +212,8 @@ export function ProjectPage({ hash }: { hash: string }) {
                 </div>
               </form>
 
+              <MemorySection project={project} onChange={setProject} />
+
               <Block title="Rooms" aside={`${members.length}`}>
                 {members.length ? (
                   <ul className="flex flex-col divide-y divide-border/60 rounded-xl border border-border/70">
@@ -228,7 +244,7 @@ export function ProjectPage({ hash }: { hash: string }) {
                       <li key={event.seq} className="flex gap-2">
                         <span className="shrink-0 text-faint">{ago(event.ts)}</span>
                         <span className="min-w-0">
-                          <span className="text-foreground">{who(event)}</span> {event.value === null ? "cleared" : "wrote"} the {event.field}
+                          <span className="text-foreground">{who(event)}</span> {changeText(event)}
                         </span>
                       </li>
                     ))}

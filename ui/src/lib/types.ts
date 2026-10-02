@@ -32,15 +32,48 @@ export interface RoomSummary {
 }
 
 /** A project event: a name, goal or instructions written, with who wrote it. */
-export interface ProjectEvent {
-  type: "project.changed";
-  field: "name" | "goal" | "instructions";
-  value: string | null;
+type ProjectWriteMeta = {
   seq: number;
   ts: string;
   by: string;
   from?: { room: string; roomName: string; agent: string; label: string };
+};
+
+export type MemoryKind = "disagreement" | "decision" | "fact" | "person" | "preference";
+
+export interface MemoryVoice {
+  by: string;
+  text: string;
 }
+
+export interface MemoryEntry {
+  id: string;
+  kind: MemoryKind;
+  text: string;
+  why?: string;
+  /** Whose claim it is. */
+  author: string;
+  decidedBy?: string;
+  about?: string;
+  positions?: Array<{ ref?: string; by: string; text: string; objections: MemoryVoice[] }>;
+  objections?: MemoryVoice[];
+  source?: { room: string; roomName: string; ref: string };
+  /** Who wrote it into memory. */
+  by: string;
+  from?: ProjectWriteMeta["from"];
+  at: string;
+  revisedBy?: string;
+  /** An edit made against an older one is refused (409). */
+  seq: number;
+}
+
+export type ProjectEvent = ProjectWriteMeta &
+  (
+    | { type: "project.changed"; field: "name" | "goal" | "instructions"; value: string | null }
+    | { type: "memory.noted"; id: string; entry: Pick<MemoryEntry, "kind" | "text"> }
+    | { type: "memory.revised"; id: string }
+    | { type: "memory.removed"; id: string }
+  );
 
 export interface ProjectView {
   hash: string;
@@ -49,8 +82,12 @@ export interface ProjectView {
   name?: string;
   goal?: string;
   instructions?: string;
-  /** The last event's seq: an edit made from an older one is refused (409). */
+  /** The last event's seq. */
   seq: number;
+  /** The last name/goal/instructions change: an edit of them made from an older one is refused (409). */
+  fieldsSeq: number;
+  memory: MemoryEntry[];
+  memoryPath: string;
   rooms: string[];
   events: ProjectEvent[];
 }

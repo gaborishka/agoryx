@@ -28,7 +28,8 @@ import { readTurnActivity, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
-import { listProjects, PROJECT_FIELDS, ProjectError, projectHash, readProject, setProjectField, type Project, type ProjectWriter } from "./projects.js";
+import { listProjects, PROJECT_FIELDS, ProjectError, projectHash, projectKey, readProject, setProjectField, type Project, type ProjectWriter } from "./projects.js";
+import { memoryPath, noteMemory, promoteToMemory, removeMemory, reviseMemory } from "./memory.js";
 import { parseSubscription, PushNotes, PushSender } from "./push.js";
 import { qrSvg } from "./qr.js";
 import { defaultRoster, parseAgents, rosterPath, RosterError } from "./roster.js";
@@ -1100,9 +1101,10 @@ export class AgoraDaemon {
   }
 
   /**
-   * Projects: the folders Work rooms work in, with a name, a goal and instructions that outlive one room.
+   * Projects: the folders Work rooms work in, with a name, a goal, instructions and memory that outlive one room.
    * `GET /api/projects`, `GET|PATCH /api/projects/<hash>` (a folder nothing was written for yet is named by
-   * `key`, its path). Agents write with their own key, and every write says who made it.
+   * `key`, its path), `POST /api/projects/<hash>/memory` (`note` or `promote`), `PATCH|DELETE …/memory/<id>`.
+   * Agents write with their own key, and every write says who made it.
    */
   private async projectsApi(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[], method: string, caller: Caller): Promise<void> {
     const rooms = RoomStore.list(roomsDir(this.env));
@@ -1121,6 +1123,9 @@ export class AgoraDaemon {
       ...(project.goal ? { goal: project.goal } : {}),
       ...(project.instructions ? { instructions: project.instructions } : {}),
       seq: project.seq,
+      fieldsSeq: project.fieldsSeq,
+      memory: project.memory,
+      memoryPath: memoryPath(project.key, this.env),
       rooms: rooms.filter((room) => room.projectHash === project.hash).map((room) => room.id),
     });
     if (parts.length === 0) {
@@ -1128,9 +1133,10 @@ export class AgoraDaemon {
       sendJson(res, 200, { projects: [...keys.values()].map((key) => view(readProject(key, this.env))) });
       return;
     }
-    if (parts.length !== 1) throw new HttpError(404, "unknown endpoint");
+    const memory = parts[1] === "memory";
+    if (parts.length !== 1 && !(memory && parts.length <= 3)) throw new HttpError(404, "unknown endpoint");
     const hash = parts[0]!;
-    const body = method === "PATCH" ? ((await readBody(req)) as Record<string, unknown>) : {};
+    const body = method === "GET" || method === "DELETE" ? {} : (((await readBody(req)) ?? {}) as Record<string, unknown>);
     const asked = typeof body.key === "string" ? body.key : url.searchParams.get("key");
     let key = keys.get(hash);
     if (!key && asked) {
@@ -1143,13 +1149,65 @@ export class AgoraDaemon {
       if (projectHash(folder) === hash) key = folder;
     }
     if (!key) throw new HttpError(404, "no such project: no Work room works in that folder and nothing was written for it");
-    if (method === "PATCH") {
+    const writer: ProjectWriter = caller.agent ? { by: caller.agent.agent, from: caller.agent } : { by: defaultHumanName(this.env) };
+    const fail = (error: unknown): never => {
+      if (error instanceof ProjectError) throw new HttpError(400, error.message);
+      throw error;
+    };
+    const text = (value: unknown, field: string): string | undefined => {
+      if (value === undefined) return undefined;
+      if (typeof value !== "string") throw new HttpError(400, `${field} must be a string`);
+      return value;
+    };
+    if (memory && parts.length === 2) {
+      if (method !== "POST") throw new HttpError(405, "POST");
+      const note = body.note as Record<string, unknown> | undefined;
+      const promote = body.promote as Record<string, unknown> | undefined;
+      try {
+        if (note && typeof note === "object") {
+          noteMemory(key, { text: text(note.text, "text") ?? "", kind: text(note.kind, "kind"), why: text(note.why, "why") }, writer, this.env);
+        } else if (promote && typeof promote === "object") {
+          const roomId = text(promote.room, "room") ?? caller.agent?.room;
+          const ref = text(promote.ref, "ref");
+          if (!roomId || !ref) throw new HttpError(400, "promote needs a room and a table ref (S3, F2, D1, Q1)");
+          const state = this.rooms.get(roomId)?.store.state ?? (() => {
+            try {
+              return RoomStore.open(roomsDir(this.env), roomId).state;
+            } catch {
+              throw new HttpError(404, `no room ${roomId}`);
+            }
+          })();
+          if (projectKey(state) !== key) throw new HttpError(400, `"${state.name}" is not a Work room of this project`);
+          promoteToMemory(key, { id: state.id, name: state.name, table: state.table }, ref, writer, this.env);
+        } else throw new HttpError(400, 'send { note: { text, kind?, why? } } or { promote: { room, ref } }');
+      } catch (error) {
+        fail(error);
+      }
+    } else if (memory) {
+      const id = parts[2]!;
       const project = readProject(key, this.env);
-      if (typeof body.seq === "number" && body.seq !== project.seq) {
+      const entry = project.memory.find((item) => item.id === id.toUpperCase());
+      if (!entry) throw new HttpError(404, `no memory entry ${id}`);
+      if (typeof body.seq === "number" && body.seq !== entry.seq) {
+        sendJson(res, 409, { error: `${entry.id} changed since you opened it`, entry, project: { ...view(project), events: project.events } });
+        return;
+      }
+      try {
+        if (method === "PATCH") {
+          const why = body.why === null ? null : text(body.why, "why");
+          reviseMemory(key, entry.id, { text: text(body.text, "text"), why, kind: text(body.kind, "kind") }, writer, this.env);
+        } else if (method === "DELETE") removeMemory(key, entry.id, writer, this.env);
+        else throw new HttpError(405, "PATCH or DELETE");
+      } catch (error) {
+        fail(error);
+      }
+    } else if (method === "PATCH") {
+      const project = readProject(key, this.env);
+      // Against the fields' own version: a memory entry written meanwhile does not make this edit stale.
+      if (typeof body.seq === "number" && body.seq !== project.fieldsSeq) {
         sendJson(res, 409, { error: "the project changed since you opened it", project: { ...view(project), events: project.events } });
         return;
       }
-      const writer: ProjectWriter = caller.agent ? { by: caller.agent.agent, from: caller.agent } : { by: defaultHumanName(this.env) };
       for (const field of PROJECT_FIELDS) {
         const value = body[field];
         if (value === undefined) continue;

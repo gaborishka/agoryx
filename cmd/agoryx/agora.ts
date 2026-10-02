@@ -19,6 +19,7 @@ import { activeRun } from "../../internal/agora/projection.js";
 import { describeProfile, profilePath, readProfile } from "../../internal/agora/profile.js";
 import { describeProject, PROJECT_FIELDS, projectHash, projectKey, projectKeyOfFolder, readProject, setProjectField, type ProjectField } from "../../internal/agora/projects.js";
 import { resolveFolder } from "../../internal/agora/folders.js";
+import { MEMORY_KINDS, noteMemory, promoteToMemory, removeMemory, renderMemoryMarkdown, reviseMemory } from "../../internal/agora/memory.js";
 import { readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
 import { createRoom, defaultHumanName, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
@@ -56,6 +57,7 @@ export const AGORA_COMMANDS = new Set([
   "revert",
   "profile",
   "project",
+  "memory",
   "usage",
   "pair",
   "devices",
@@ -90,6 +92,8 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx usage [room] [--json]      Your agents' subscription limits, as their CLIs last reported them, and what the room's wakes cost",
       "  agoryx profile [-r room]           Your profile (who you are, for the agents): where it is, and who in the room sees it",
       '  agoryx project [-r room | --dir D] [set name|goal|instructions "text"]   The project of a Work room (its folder): show it, or write to it',
+      '  agoryx memory [-r room | --dir D] [note "text" [--kind K] [--why "…"] | promote S3|F2|D1|Q1 | revise M2 "text" [--why "…"] | remove M2]',
+      "                                     The project's memory: show it, note something, keep a table item as the table holds it, or take one out",
       "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--access workspace|readonly] [--doc PATH|none]",
       "",
       "Table ops:",
@@ -1432,6 +1436,55 @@ const runProject = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+const runMemory = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, [ROOM_OPT, { long: "dir", takesValue: true }, { long: "kind", takesValue: true }, { long: "why", takesValue: true }]);
+  if (parsed.options.help) {
+    printAgoraUsage();
+    return 0;
+  }
+  const [verb, ref, ...rest] = parsed.positionals;
+  const verbs = ["note", "promote", "revise", "remove"];
+  if (verb && !verbs.includes(verb)) throw new CliUsageError(`agoryx memory [${verbs.join("|")}] — not "${verb}"`);
+  if (verb === "promote" && parsed.options.dir) throw new CliUsageError("promote keeps an item of a room's table: name the room with -r, not a folder");
+  const key = projectKeyFor(parsed.options);
+  const hash = projectHash(key);
+  const text = [ref, ...rest].filter((part) => part !== undefined).join(" ");
+  const why = parsed.options.why;
+  if (verb) {
+    if (verb === "note" && !text.trim()) throw new CliUsageError('agoryx memory note "text" [--kind decision|fact|person|preference] [--why "…"]');
+    if (verb !== "note" && !ref) throw new CliUsageError(`agoryx memory ${verb} ${verb === "promote" ? "S3|F2|D1|Q1" : "M2"}`);
+    const room = verb === "promote" ? RoomStore.open(roomsDir(), resolveRoom(parsed.options.room)).state : null;
+    const info = await findDaemon();
+    if (info) {
+      const client = daemonClient(info);
+      if (verb === "note") await client.request("POST", `/api/projects/${hash}/memory`, { key, note: { text, kind: parsed.options.kind, why } });
+      else if (verb === "promote") await client.request("POST", `/api/projects/${hash}/memory`, { key, promote: { room: room!.id, ref } });
+      else if (verb === "revise") await client.request("PATCH", `/api/projects/${hash}/memory/${ref}?key=${encodeURIComponent(key)}`, { text: rest.length ? rest.join(" ") : undefined, why, kind: parsed.options.kind });
+      else await client.request("DELETE", `/api/projects/${hash}/memory/${ref}?key=${encodeURIComponent(key)}`);
+    } else {
+      const agent = localAgent();
+      const writer = agent ? { by: agent.agent, from: agent } : { by: defaultHumanName() };
+      if (verb === "note") noteMemory(key, { text, kind: parsed.options.kind, why }, writer);
+      else if (verb === "promote") promoteToMemory(key, { id: room!.id, name: room!.name, table: room!.table }, ref!, writer);
+      else if (verb === "revise") reviseMemory(key, ref!, { text: rest.length ? rest.join(" ") : undefined, why, kind: parsed.options.kind }, writer);
+      else removeMemory(key, ref!, writer);
+    }
+  }
+  const project = readProject(key);
+  if (verb && verb !== "remove") {
+    const entry = verb === "note" || verb === "promote" ? project.memory.at(-1) : project.memory.find((item) => item.id === ref!.toUpperCase());
+    if (entry) console.log(`${verb === "revise" ? "Revised" : "Kept"} ${entry.id} (${entry.kind}).`);
+    return 0;
+  }
+  if (verb === "remove") {
+    console.log(`Removed ${ref!.toUpperCase()}.`);
+    return 0;
+  }
+  process.stdout.write(renderMemoryMarkdown(project));
+  if (!project.memory.length) console.log(`(kinds: ${MEMORY_KINDS.join(", ")})`);
+  return 0;
+};
+
 /** "1h 05m", "4m 10s", "12s". */
 const span = (ms: number): string => {
   const seconds = Math.round(ms / 1000);
@@ -1669,6 +1722,8 @@ export const runAgora = async (command: string, argv: string[]): Promise<number>
       return runProfile(argv);
     case "project":
       return runProject(argv);
+    case "memory":
+      return runMemory(argv);
     case "usage":
       return runUsage(argv);
     case "pair":

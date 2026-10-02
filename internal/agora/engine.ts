@@ -1671,7 +1671,7 @@ export class RoomEngine {
         rejoin,
         doc: this.docDelta(agent, fromSeq, fresh),
         profile: fresh ? (profile ? profileBriefing(profile, this.state.human) : null) : profileUpdate(profile, held, this.state.human),
-        project: !project ? null : fresh ? projectBriefing(project, cli) : projectUpdate(project, this.state.projectSeen?.[agent.id] ?? 0, { room: this.state.id, agent: agent.id }),
+        project: !project ? null : fresh ? projectBriefing(project, cli, this.env) : projectUpdate(project, this.state.projectSeen?.[agent.id] ?? 0, { room: this.state.id, agent: agent.id }, cli),
         tracking: fresh ? workspaceTracking(this.state.workspace) : undefined,
       });
     const prompt = promptFor(!sessionId, false);

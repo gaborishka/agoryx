@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { foldMemoryEvent, memoryBriefing, memoryUpdateLine, type MemoryEntry, type MemoryEventBody } from "./memory.js";
 import { agoraHome } from "./paths.js";
 import type { ActorOrigin, RoomState } from "./types.js";
 
@@ -22,7 +23,7 @@ export const PROJECT_FIELDS: readonly ProjectField[] = ["name", "goal", "instruc
 /** A goal or instructions are a paragraph, not a document: agents get them with every fresh session. */
 export const MAX_PROJECT_TEXT = 4_000;
 
-export type ProjectEventBody = { type: "project.changed"; field: ProjectField; value: string | null };
+export type ProjectEventBody = { type: "project.changed"; field: ProjectField; value: string | null } | MemoryEventBody;
 
 export type ProjectEvent = ProjectEventBody & {
   seq: number;
@@ -39,8 +40,12 @@ export interface Project {
   name?: string;
   goal?: string;
   instructions?: string;
+  /** What its rooms keep (memory.ts), in the order it was written. */
+  memory: MemoryEntry[];
   /** The last event's seq; 0: nothing written yet. */
   seq: number;
+  /** The last name/goal/instructions change's seq: an edit of them made against an older one is refused. */
+  fieldsSeq: number;
   events: ProjectEvent[];
 }
 
@@ -80,13 +85,14 @@ const readEvents = (file: string): ProjectEvent[] => {
 
 /** The project as its events add up to. */
 export const foldProject = (key: string, events: ProjectEvent[]): Project => {
-  const project: Project = { key, hash: projectHash(key), seq: 0, events };
+  const project: Project = { key, hash: projectHash(key), memory: [], seq: 0, fieldsSeq: 0, events };
   for (const event of events) {
     project.seq = Math.max(project.seq, event.seq);
     if (event.type === "project.changed") {
+      project.fieldsSeq = event.seq;
       if (event.value) project[event.field] = event.value;
       else delete project[event.field];
-    }
+    } else project.memory = foldMemoryEvent(project.memory, event);
   }
   return project;
 };
@@ -101,6 +107,7 @@ const summaryOf = (project: Project) => ({
   ...(project.name ? { name: project.name } : {}),
   ...(project.goal ? { goal: project.goal } : {}),
   ...(project.instructions ? { instructions: project.instructions } : {}),
+  memory: project.memory.length,
   seq: project.seq,
 });
 
@@ -169,14 +176,14 @@ export const describeProject = (project: Project, rooms: Array<{ id: string; nam
   if (project.seq === 0) {
     lines.push("  nothing written yet — `agoryx project set goal|instructions|name \"…\"` (agents of its Work rooms get the goal and instructions)");
   }
-  const last = (field: ProjectField) => [...project.events].reverse().find((event) => event.type === "project.changed" && event.field === field);
   for (const field of PROJECT_FIELDS) {
     const value = project[field];
     if (!value) continue;
-    const event = last(field);
+    const event = lastChange(project.events, field);
     lines.push("", `${field}${event ? ` (by ${event.from ? `${event.by} in "${event.from.roomName}"` : event.by}, ${event.ts.slice(0, 10)})` : ""}:`);
     for (const line of value.split("\n")) lines.push(`  ${line}`);
   }
+  if (project.memory.length) lines.push("", `memory: ${project.memory.length} entr${project.memory.length === 1 ? "y" : "ies"} — \`agoryx memory\``);
   lines.push("", rooms.length ? `Work rooms in it: ${rooms.map((room) => `"${room.name}" (${room.id})`).join(", ")}` : "No Work room works in it yet.");
   return lines;
 };
@@ -184,28 +191,30 @@ export const describeProject = (project: Project, rooms: Array<{ id: string; nam
 const writerOf = (event: ProjectEvent): string => (event.from ? `${event.by} in "${event.from.roomName}"` : event.by);
 
 const lastChange = (events: ProjectEvent[], field: ProjectField) =>
-  [...events].reverse().find((event) => event.type === "project.changed" && event.field === field);
+  [...events].reverse().find((event): event is ProjectEvent & { type: "project.changed" } => event.type === "project.changed" && event.field === field);
 
 const block = (text: string): string => text.split("\n").map((line) => `    ${line}`).join("\n");
 
 /**
  * The project for a fresh Work session's briefing: what was written for this folder, each part with who wrote it,
- * and how to change it. With nothing written, one line on how to write it.
+ * its memory (an index, disagreements first), and how to change them. With nothing written, one line on how to.
  */
-export const projectBriefing = (project: Project, cli: string): string => {
+export const projectBriefing = (project: Project, cli: string, env: NodeJS.ProcessEnv = process.env): string => {
   const lines = [`Project: ${projectTitle(project)} — this folder's project, shared by every Work room in it (${project.key}).`];
   if (project.seq === 0) {
-    lines.push(`  Nothing is written for it yet. \`${cli} project set goal|instructions "…"\` writes what every Work room here starts with — anyone may, you included.`);
+    lines.push(
+      `  Nothing is written for it yet. \`${cli} project set goal|instructions "…"\` and \`${cli} memory note "…"\` (or \`${cli} memory promote S3|D1|Q1\` from the table) keep what every Work room here starts with — anyone may, you included.`,
+    );
     return lines.join("\n");
   }
-  lines.push("  Written by those who work here, each part by someone; Agoryx adds nothing to it:");
-  for (const field of ["goal", "instructions"] as const) {
-    const value = project[field];
-    if (!value) continue;
+  const written = (["goal", "instructions"] as const).filter((field) => project[field]);
+  if (written.length) lines.push("  Written by those who work here, each part by someone; Agoryx adds nothing to it:");
+  for (const field of written) {
     const event = lastChange(project.events, field);
-    lines.push(`  ${field === "goal" ? "Goal" : "Instructions"}${event ? ` — by ${writerOf(event)}` : ""}:`, block(value));
+    lines.push(`  ${field === "goal" ? "Goal" : "Instructions"}${event ? ` — by ${writerOf(event)}` : ""}:`, block(project[field]!));
   }
   lines.push(`  \`${cli} project\` shows it; \`${cli} project set goal|instructions|name "…"\` changes it for every Work room in this folder.`);
+  lines.push(...memoryBriefing(project, cli, env));
   return lines.join("\n");
 };
 
@@ -213,7 +222,7 @@ export const projectBriefing = (project: Project, cli: string): string => {
  * What changed in the project since this agent's session last got it (`seen`: the project's seq then), for a running
  * session's delta: each part someone else changed, with its new text. Its own writes it already knows. Null: nothing new.
  */
-export const projectUpdate = (project: Project, seen: number, reader: { room: string; agent: string }): string | null => {
+export const projectUpdate = (project: Project, seen: number, reader: { room: string; agent: string }, cli = "agoryx"): string | null => {
   const fresh = project.events.filter((event) => event.seq > seen && !(event.by === reader.agent && event.from?.room === reader.room));
   if (fresh.length === 0) return null;
   const lines = [`── The project (${projectTitle(project)}) changed since your last turn:`];
@@ -225,5 +234,7 @@ export const projectUpdate = (project: Project, seen: number, reader: { room: st
     else if (field === "name") lines.push(`  ${writerOf(event)} named it "${now}".`);
     else lines.push(`  ${writerOf(event)} wrote the ${field}:`, block(now));
   }
+  const memory = memoryUpdateLine(fresh, cli);
+  if (memory) lines.push(memory);
   return lines.length > 1 ? lines.join("\n") : null;
 };

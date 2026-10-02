@@ -96,6 +96,8 @@ interface Store {
   navWidth: number | null;
   panelWidth: number | null;
   navOpen: boolean;
+  /** Desktop room list visibility, independent of the mobile drawer. */
+  navCollapsed: boolean;
   dialog: DialogState | null;
   /** Doc panel: bumped when the canonical file changed, so the panel refetches. */
   docTick: number;
@@ -135,6 +137,7 @@ interface Store {
   setNavWidth: (width: number | null) => void;
   setPanelWidth: (width: number | null) => void;
   setNavOpen: (open: boolean) => void;
+  setNavCollapsed: (collapsed: boolean) => void;
   openDialog: (dialog: DialogState | null) => void;
   goToRef: (ref: string) => void;
   /** Put a draft into the composer for the human to edit and send; nothing is sent. */
@@ -179,6 +182,7 @@ export const useStore = create<Store>((set, get) => ({
   navWidth: Number(local.get("navWidth")) || null,
   panelWidth: Number(local.get("panelWidth")) || null,
   navOpen: false,
+  navCollapsed: local.get("navCollapsed") === "1",
   dialog: null,
   docTick: 0,
   docReset: 0,
@@ -315,6 +319,10 @@ export const useStore = create<Store>((set, get) => ({
   setPanelWidth(panelWidth) {
     local.set("panelWidth", panelWidth ? String(panelWidth) : null);
     set({ panelWidth });
+  },
+  setNavCollapsed(navCollapsed) {
+    local.set("navCollapsed", navCollapsed ? "1" : null);
+    set({ navCollapsed });
   },
   setNavOpen(navOpen) {
     set({ navOpen });

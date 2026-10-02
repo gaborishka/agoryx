@@ -284,6 +284,7 @@ function Steps({ budget }: { budget: number | null }) {
 }
 
 export function StartScreen() {
+  const navCollapsed = useStore((s) => s.navCollapsed);
   const rooms = useStore((s) => s.rooms);
   const loadRooms = useStore((s) => s.loadRooms);
   const go = useStore((s) => s.go);
@@ -385,7 +386,7 @@ export function StartScreen() {
   const first = !rooms.length;
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <header className="relative flex h-14 shrink-0 items-center px-3 lg:hidden">
+      <header className={cn("relative flex h-14 shrink-0 items-center px-3", !navCollapsed && "lg:hidden")}>
         <NavButton />
       </header>
       <div className="scroll-thin relative flex min-h-0 flex-1 flex-col overflow-y-auto">

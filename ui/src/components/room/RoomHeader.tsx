@@ -5,7 +5,7 @@ import {
   GitCompareArrowsIcon,
   HourglassIcon,
   LayoutPanelLeftIcon,
-  MenuIcon,
+  PanelLeftIcon,
   MessagesSquareIcon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
@@ -207,15 +207,21 @@ function Title() {
 
 export function NavButton() {
   const setNavOpen = useStore((s) => s.setNavOpen);
+  const navCollapsed = useStore((s) => s.navCollapsed);
+  const setNavCollapsed = useStore((s) => s.setNavCollapsed);
   return (
     <Button
       variant="ghost"
       size="icon"
-      className="size-8 lg:hidden"
-      aria-label="Rooms"
-      onClick={() => setNavOpen(true)}
+      className={cn("size-8 text-muted-foreground", !navCollapsed && "lg:hidden")}
+      aria-label="Show sidebar"
+      title="Show sidebar"
+      onClick={() => {
+        if (window.matchMedia("(min-width: 1024px)").matches) setNavCollapsed(false);
+        else setNavOpen(true);
+      }}
     >
-      <MenuIcon className="size-4.5" />
+      <PanelLeftIcon className="size-4.5" />
     </Button>
   );
 }

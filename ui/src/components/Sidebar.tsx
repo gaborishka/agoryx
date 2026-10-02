@@ -1,4 +1,4 @@
-import { ChevronRightIcon, CircleHelpIcon, Settings2Icon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
+import { PanelLeftIcon, ChevronRightIcon, CircleHelpIcon, Settings2Icon, MonitorIcon, MoonIcon, PlusIcon, SearchIcon, SmartphoneIcon, SunIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { MarkMono, Wordmark } from "@/components/brand/Mark";
 import { Avatar, Tip } from "@/components/room/bits";
@@ -264,6 +264,8 @@ export function Sidebar() {
   const openDialog = useStore((s) => s.openDialog);
   const setPaletteOpen = useStore((s) => s.setPaletteOpen);
   const device = useStore((s) => s.device);
+  const setNavCollapsed = useStore((s) => s.setNavCollapsed);
+  const setNavOpen = useStore((s) => s.setNavOpen);
   const { pref, cycle } = useTheme();
   const ThemeIcon = pref === "dark" ? MoonIcon : pref === "light" ? SunIcon : MonitorIcon;
   const [filter, setFilterState] = useState<Filter>(readFilter);
@@ -296,6 +298,20 @@ export function Sidebar() {
         <button type="button" className="rounded-md" aria-label="Agoryx — new room" onClick={() => go({ kind: "new" })}>
           <Wordmark className="text-[21px]" />
         </button>
+        <Tip tip="Hide sidebar">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="ml-auto size-8 text-muted-foreground"
+            aria-label="Hide sidebar"
+            onClick={() => {
+              if (window.matchMedia("(min-width: 1024px)").matches) setNavCollapsed(true);
+              else setNavOpen(false);
+            }}
+          >
+            <PanelLeftIcon className="size-4.5" />
+          </Button>
+        </Tip>
       </div>
       <div className="flex gap-1.5 px-3 pb-3">
         <Button

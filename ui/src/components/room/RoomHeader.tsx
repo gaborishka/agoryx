@@ -1,6 +1,7 @@
 import {
   EllipsisIcon,
   FolderIcon,
+  FoldersIcon,
   GitBranchIcon,
   GitCompareArrowsIcon,
   HourglassIcon,
@@ -373,6 +374,25 @@ function Place() {
 }
 
 /** One button for the side panel; it opens on the tab shown last. The dot: an agent drives the room's browser. */
+/** The room's project beside the conversation: its threads, library and usage. */
+function OverviewToggle() {
+  const on = useStore((s) => s.panel === "project");
+  const togglePanel = useStore((s) => s.togglePanel);
+  return (
+    <Tip tip="The project: its threads, its library and what its rooms took">
+      <Button
+        variant="ghost"
+        size="sm"
+        className={cn("hidden shrink-0 text-muted-foreground @min-[36rem]:inline-flex", on && "bg-secondary text-secondary-foreground hover:bg-secondary")}
+        aria-pressed={on}
+        onClick={() => togglePanel("project")}
+      >
+        Overview
+      </Button>
+    </Tip>
+  );
+}
+
 function PanelToggle() {
   const panel = useStore((s) => s.panel);
   const lastTab = useStore((s) => s.lastTab);
@@ -437,7 +457,7 @@ export function RoomHeader() {
   const openDialog = useStore((s) => s.openDialog);
   const openFile = useStore((s) => s.openFile);
   const openChanges = useStore((s) => s.openChanges);
-  // A Work room is in its folder's project: its settings are a click away from here.
+  // A Work room is in its folder's project: its overview and settings are a click away from here.
   const projectHash = useStore((s) => s.rooms.find((entry) => entry.id === s.snap?.state.id)?.projectHash);
   if (!room) return null;
   return (
@@ -459,6 +479,7 @@ export function RoomHeader() {
         {room.mode === "chat" ? "Chat" : "Work"}
       </Button>
       {room.mode !== "chat" ? <OpenPr className="hidden @min-[36rem]:inline-flex" /> : null}
+      {room.mode !== "chat" && projectHash ? <OverviewToggle /> : null}
       <span className="mx-0.5 hidden h-5 w-px bg-border @min-[36rem]:block" />
       {room.mode !== "chat" ? <TerminalToggle /> : null}
       <PanelToggle />
@@ -511,10 +532,16 @@ export function RoomHeader() {
             Room settings
           </DropdownMenuItem>
           {room.mode !== "chat" && projectHash ? (
-            <DropdownMenuItem onSelect={() => openDialog({ kind: "project", hash: projectHash })}>
-              <Settings2Icon />
-              Project settings…
-            </DropdownMenuItem>
+            <>
+              <DropdownMenuItem onSelect={() => useStore.getState().setPanel("project")}>
+                <FoldersIcon />
+                Project overview
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => openDialog({ kind: "project", hash: projectHash })}>
+                <Settings2Icon />
+                Project settings…
+              </DropdownMenuItem>
+            </>
           ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuItem

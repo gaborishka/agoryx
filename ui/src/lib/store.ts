@@ -12,8 +12,8 @@ import type { AgentPresence, LimitSnapshot, OpEntry, RoomEvent, RoomSummary, Run
  * but never both at once). `thread`: a thread of this room, opened from its card; it is not one of the tabs an
  * address or the toggle brings back, since it shows another room.
  */
-export type PanelTab = "session" | "doc" | "browser" | "diff" | "files" | "table" | "thread";
-export const PANEL_TABS: readonly PanelTab[] = ["session", "doc", "browser", "diff", "files", "table"];
+export type PanelTab = "session" | "doc" | "browser" | "diff" | "files" | "table" | "project" | "thread";
+export const PANEL_TABS: readonly PanelTab[] = ["session", "doc", "browser", "diff", "files", "table", "project"];
 
 /** Which changes the Changes tab shows: one turn's, the whole room's against where it began, or one checkpoint. */
 export type ChangeScope = "turn" | "room" | "commit";

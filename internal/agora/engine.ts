@@ -4,12 +4,12 @@ import { clearTurnContext, TURN_FILE_ENV, turnContextPath, writeTurnContext } fr
 import { actorFields, actorLabel, AGENT_KEY_ENV, describeSettings, originName } from "./actor.js";
 import { baselineRevision, diffLines, diffStats, docHash, docWritable, MAX_DOC_TEXT, normalizeDocPath, readDoc, renderDiff, statDoc } from "./doc.js";
 import { embed, mediaRefs } from "./media.js";
-import { locateNativeSession, scanNativeSession, type NativeExchange } from "./native.js";
+import { locateNativeSession, scanNativeSession, type NativeCompaction, type NativeExchange } from "./native.js";
 import { activeRun } from "./projection.js";
 import { inTurnAt, wakesAgent } from "./wakes.js";
 import { limitAccount } from "./limits-store.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
-import { buildTurnPrompt, paragraphs, parseMentions, passNote } from "./prompts.js";
+import { buildTurnPrompt, forHumanOnly, paragraphs, parseMentions, passNote } from "./prompts.js";
 import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
 import { cleanRole, MAX_ROLE_CHARS, parseAgents, validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
@@ -324,6 +324,9 @@ export class RoomEngine {
   private readonly opsPollMs: number;
   private readonly nativePollMs: number;
   private readonly native = new Map<string, NativeTracker>();
+  /** The room's last event when this engine opened it: a compaction from before is history, one after it is news even if no engine ran then. */
+  private readonly compactedSince: number;
+  private compactedKeys?: Set<string>;
   private nativeKeys?: Set<string>;
   private nativeTimer: NodeJS.Timeout | undefined;
   private lastPresence = "";
@@ -365,6 +368,7 @@ export class RoomEngine {
 
   constructor(options: EngineOptions) {
     this.store = options.store;
+    this.compactedSince = Date.parse(this.store.events.at(-1)?.ts ?? "") || Date.now();
     this.runners = options.runners;
     this.shimDir = options.shimDir;
     this.agentCli = options.agentCli ?? "agoryx";
@@ -2017,6 +2021,7 @@ export class RoomEngine {
         tracker.size = size;
         tracker.mtimeMs = mtimeMs;
         for (const exchange of scan.exchanges) this.importNative(agent, exchange);
+        for (const compaction of scan.compactions) this.noteCompaction(agent, compaction);
       } catch (error) {
         this.log(`could not read ${agent.id}'s native session: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -2047,6 +2052,25 @@ export class RoomEngine {
       );
     }
     return true;
+  }
+
+  /**
+   * The agent's CLI compacted its context: a quiet line for the human (its next answers may have lost detail),
+   * once per compaction (a rescan from an unfinished exchange returns it again). Ones from before the room's last
+   * event when this engine opened are history; ones after it are news, even if they happened while no engine ran.
+   */
+  private noteCompaction(agent: RoomAgent, compaction: NativeCompaction): void {
+    const at = Date.parse(compaction.at);
+    if (!Number.isFinite(at) || at < this.compactedSince) return;
+    this.compactedKeys ??= new Set(
+      this.state.messages.flatMap((message) => (message.sys?.code === "agent.compacted" ? [`${message.sys.handle}:${message.sys.key}`] : [])),
+    );
+    const key = `${agent.id}:${compaction.key}`;
+    if (this.compactedKeys.has(key)) return;
+    this.compactedKeys.add(key);
+    const time = new Date(at);
+    const hhmm = `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
+    this.postSystem(`${agent.label}'s context was compacted at ${hhmm}.`, { code: "agent.compacted", agent: agent.label, handle: agent.id, key: compaction.key, at: compaction.at }, false);
   }
 
   private importNative(agent: RoomAgent, exchange: NativeExchange): void {
@@ -2105,7 +2129,7 @@ export class RoomEngine {
     const id = `m${(this.state.counters.m ?? 0) + 1}`;
     this.store.append({ type: "message.posted", message: { id, ...input } });
     const entry = this.state.messages[this.state.messages.length - 1]!;
-    writeRoomMessage(this.ws, this.state.id, entry);
+    if (!forHumanOnly(entry)) writeRoomMessage(this.ws, this.state.id, entry);
     return entry;
   }
 
@@ -2113,7 +2137,7 @@ export class RoomEngine {
   private writeMissingMessages(): void {
     for (const message of this.state.messages) {
       const target = messagePath(this.ws, this.state.id, message.id);
-      if (target && !existsSync(target)) writeRoomMessage(this.ws, this.state.id, message);
+      if (target && !existsSync(target) && !forHumanOnly(message)) writeRoomMessage(this.ws, this.state.id, message);
     }
   }
 

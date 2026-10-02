@@ -123,6 +123,8 @@ export type SystemNote =
   | { code: "agent.removed"; by: string; agent: string }
   | { code: "turn.failed"; agent: string; cli: AgentKind; error: TurnError["kind"]; message: string }
   | { code: "agent.busy"; agent: string }
+  /** The agent's CLI compacted its context (`handle`: the agent's id, `key`: the line in its session file, `at`: when). Agents never read it. */
+  | { code: "agent.compacted"; agent: string; handle: string; key: string; at: string }
   | { code: "jev.second_look"; agent: string; readers: JevShare[] }
   | { code: "jev.meant_for"; agent: string; message: string; readers: JevShare[] }
   | { code: "decision"; n: number; option: string; title: string; note?: string; by: string };

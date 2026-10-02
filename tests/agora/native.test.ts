@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { claudeProjectKey, isAgoryxPrompt, locateNativeSession, scanNativeSession } from "../../internal/agora/native.js";
 import { agentCliScript } from "../../internal/agora/workspace.js";
 import { createTestRoom, withTimeout, type TestRoom } from "./helpers.js";
@@ -118,6 +119,56 @@ test("Claude: human exchanges are read back; Agoryx turns, tools and harness lin
   }
 });
 
+/**
+ * Two Agoryx turns from the P10 room (t7 and t19), lines trimmed: in each, Claude Code compacted its context
+ * mid-turn and wrote the summary as a "user" line (isCompactSummary, isVisibleInTranscriptOnly, no origin),
+ * under the same promptId as the turn. Read as a human prompt, it posted as Ivan (m37, m75) and the
+ * reply after it twice (m38, m76). A third compaction (13:47, not in the fixture) did the same as m62–m63,
+ * and the copied reply woke Codex.
+ */
+const COMPACTED = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "p10", "claude-compacted.jsonl");
+
+test("Claude: a compacted context is not a human prompt, and the reply after it stays the Agoryx turn's", () => {
+  const scan = scanNativeSession("claude", COMPACTED, 0);
+  assert.deepEqual(scan.exchanges, [], "both turns came from Agoryx: nothing to import");
+  assert.equal(scan.openNative, false);
+  assert.equal(scan.lastAgoryx, true);
+  assert.deepEqual(scan.compactions, [
+    { key: "0709444c-0783-48a9-a79f-43ec7e4db118", at: "2026-10-01T13:12:29.607Z" },
+    { key: "5897eaad-3dae-4255-afc6-b3a8dd580eaa", at: "2026-10-01T14:21:01.593Z" },
+  ]);
+});
+
+test("Claude: a compaction in the human's own exchange keeps that exchange whole", () => {
+  const dir = scratch();
+  const file = join(dir, "session.jsonl");
+  const summary = readFileSync(COMPACTED, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .find((line) => line.isCompactSummary);
+  writeFileSync(
+    file,
+    jsonl([
+      cUser("Refactor the store, then tell me what changed", { origin: { kind: "human" } }),
+      cAssistant([toolUse], "tool_use"),
+      cUser(toolResult),
+      { type: "system", subtype: "compact_boundary", uuid: "b1", timestamp: ts() },
+      { ...summary, promptId: "p0" },
+      cAssistant([text("The store now writes through one function.")], "end_turn"),
+    ]),
+  );
+  try {
+    const scan = scanNativeSession("claude", file, 0);
+    assert.deepEqual(scan.exchanges.map((entry) => [entry.prompt, entry.reply]), [
+      ["Refactor the store, then tell me what changed", "The store now writes through one function."],
+    ]);
+    assert.equal(scan.compactions.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- Codex rollout lines ----------------------------------------------------------
 
 const xEvent = (payload: Record<string, unknown>) => ({ timestamp: ts(), type: "event_msg", payload });
@@ -142,6 +193,8 @@ test("Codex: human turns are read back without injected context; Agoryx turns ar
       { timestamp: ts(), type: "session_meta", payload: { id: "x", cwd: "/w" } },
       ...xTurn("t1", "You are Codex, in an Agoryx room — one shared conversation", "@claude P2 is up."),
       ...xTurn("t2", "Is P2 really faster?", "Yes: 3x on the bench in bench/run.txt."),
+      // Codex compacting its history: a line of its own, never a prompt (P10's rollout had one at 13:45).
+      { timestamp: "2026-10-01T13:45:15.743Z", type: "compacted", payload: { message: "", replacement_history: [] } },
       ...xTurn("t3", "Try the other approach", "Half done", "aborted"),
       // Codex Desktop wraps the request; a turn may end without a final answer.
       xEvent({ type: "task_started", turn_id: "t3b" }),
@@ -172,6 +225,7 @@ test("Codex: human turns are read back without injected context; Agoryx turns ar
         ["t4", "Summarise the table", "Q1 is open; P2 leads.", false],
       ],
     );
+    assert.deepEqual(first.compactions, [{ key: "compacted@2026-10-01T13:45:15.743Z", at: "2026-10-01T13:45:15.743Z" }]);
     appendFileSync(file, jsonl(xTurn("t5", "One more thing", null, null)));
     const pending = scanNativeSession("codex", file, first.offset, first.lastAgoryx);
     assert.deepEqual(pending.exchanges, []);
@@ -281,6 +335,93 @@ test("talking to Claude in its own session shows up in the room; @codex there wa
     assert.doesNotMatch(claudePrompt, /is the parser safe/);
     assert.equal(room.store.state.messages.filter((message) => message.native).length, 4);
   } finally {
+    await room.cleanup();
+  }
+});
+
+test("Claude compacting its context mid-turn shows as a quiet line, not as the human, and reaches no one", async () => {
+  const room = createTestRoom();
+  try {
+    room.engine.postHuman("Hello both");
+    await withTimeout(room.engine.waitIdle());
+    const file = locateNativeSession("claude", room.store.state.sessions.claude!.sessionId, room.store.state.workspace, room.env)!;
+    const runsBefore = room.store.state.runs.length;
+    const messagesBefore = room.store.state.messages.length;
+    const p10 = readFileSync(COMPACTED, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+
+    // As P10 had them (1 October): from before this room opened, so history — and still nothing from "Ivan".
+    appendFileSync(file, jsonl(p10));
+    room.engine.syncNative();
+    assert.deepEqual(room.store.state.messages.slice(messagesBefore), []);
+
+    // The same two turns now: each compaction is one quiet line, and the reply after it is not posted again.
+    const now = Date.now();
+    const today = p10.map((line, index) => ({ ...line, timestamp: new Date(now + index * 1000).toISOString() }));
+    const at = today.filter((line) => line.isCompactSummary).map((line) => line.timestamp as string);
+    appendFileSync(file, jsonl(today));
+    room.engine.syncNative();
+    assert.deepEqual(
+      room.store.state.messages.slice(messagesBefore).map((message) => [message.author, message.kind, message.wakes, message.sys]),
+      [
+        ["agoryx", "system", false, { code: "agent.compacted", agent: "Claude", handle: "claude", key: "0709444c-0783-48a9-a79f-43ec7e4db118", at: at[0] }],
+        ["agoryx", "system", false, { code: "agent.compacted", agent: "Claude", handle: "claude", key: "5897eaad-3dae-4255-afc6-b3a8dd580eaa", at: at[1] }],
+      ],
+      "no message from the human, no second copy of Claude's reply",
+    );
+    assert.equal(room.store.state.runs.length, runsBefore, "nobody was woken");
+
+    assert.ok(!existsSync(join(room.store.state.workspace, ".agoryx", "messages", room.store.id, `${room.store.state.messages.at(-1)!.id}.md`)), "no message file for the agents to read");
+
+    // Read again: the same compactions are not posted twice.
+    appendFileSync(file, jsonl(today));
+    room.engine.syncNative();
+    assert.equal(room.store.state.messages.filter((message) => message.sys?.code === "agent.compacted").length, 2);
+
+    room.engine.postHuman("@codex status?");
+    await withTimeout(room.engine.waitIdle());
+    const codexPrompt = room.invocations("codex").at(-1)!.prompt!;
+    assert.doesNotMatch(codexPrompt, /This session is being continued/);
+    assert.doesNotMatch(codexPrompt, /context was compacted/, "Claude's own housekeeping is not news for Codex");
+  } finally {
+    await room.cleanup();
+  }
+});
+
+test("a compaction while no engine ran is still shown once the room opens; renaming the agent does not show it again", async () => {
+  const room = createTestRoom();
+  let reopened: import("../../internal/agora/engine.js").RoomEngine | undefined;
+  try {
+    room.engine.postHuman("Hello both");
+    await withTimeout(room.engine.waitIdle());
+    const file = locateNativeSession("claude", room.store.state.sessions.claude!.sessionId, room.store.state.workspace, room.env)!;
+    await room.engine.close();
+    // The daemon is down; the human goes on in Claude's own app, and Claude compacts in the middle of it.
+    const summary = readFileSync(COMPACTED, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((line) => line.isCompactSummary);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const at = new Date().toISOString();
+    appendFileSync(
+      file,
+      jsonl([
+        cUser("Refactor the store", { origin: { kind: "human" } }),
+        cAssistant([toolUse], "tool_use"),
+        cUser(toolResult),
+        { ...summary, timestamp: at, promptId: "p0" },
+      ]),
+    );
+    const { RoomEngine } = await import("../../internal/agora/engine.js");
+    reopened = new RoomEngine({ store: room.store, runners: {}, shimDir: room.shimDir, env: room.env, nativePollMs: 0 });
+    reopened.syncNative();
+    const compacted = () => room.store.state.messages.filter((message) => message.sys?.code === "agent.compacted");
+    assert.deepEqual(compacted().map((message) => message.sys), [{ code: "agent.compacted", agent: "Claude", handle: "claude", key: summary.uuid, at }]);
+
+    // The exchange is still open, so the next read starts at it again; the agent's new name is no new compaction.
+    reopened.updateAgent("claude", { label: "Claudia" });
+    appendFileSync(file, jsonl([cAssistant([text("Done.")], "end_turn")]));
+    reopened.syncNative();
+    assert.equal(compacted().length, 1);
+    assert.deepEqual(room.store.state.messages.filter((message) => message.native).map((message) => message.text).slice(-2), ["Refactor the store", "Done."]);
+  } finally {
+    await reopened?.close();
     await room.cleanup();
   }
 });

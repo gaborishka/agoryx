@@ -68,6 +68,12 @@ const failure = (error: TurnError["kind"], message: string, cli: string): string
   return `${message}${hint}`;
 };
 
+/** "14:21", the viewer's local time. */
+const clock = (iso: string) => {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+};
+
 const shares = (readers: Array<{ label: string; percent: number }>) => readers.map((r) => `${r.label} ${r.percent}%`).join(", ");
 
 const sys: Say = {
@@ -108,6 +114,7 @@ const sys: Say = {
   "agent.removed": (n, who) => `${who ?? n.by} removes ${n.agent} from the room. Its messages stay.`,
   "turn.failed": (n) => `${n.agent}: the turn could not finish — ${failure(n.error, n.message, n.cli)}`,
   "agent.busy": (n) => `${n.agent} is talking in its own session right now — its turn in the room starts after that.`,
+  "agent.compacted": (n) => `${n.agent}’s context was compacted at ${clock(n.at)}.`,
   "jev.second_look": (n) => {
     const who = names(n.readers.map((r) => r.label));
     return `Jev: ${n.agent}’s reply is worth a second look (${shares(n.readers)}) — ${who} ${n.readers.length === 1 ? "takes a look" : "take a look"}.`;

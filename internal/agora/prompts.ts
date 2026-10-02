@@ -21,6 +21,9 @@ export const passNote = (text: string): string | null => {
   return rest.length > 280 ? null : rest;
 };
 
+/** Lines the room shows the human and no agent reads: not in a delta, not in `read new`. */
+export const forHumanOnly = (message: Pick<RoomMessage, "sys">): boolean => message.sys?.code === "agent.compacted";
+
 const clock = (iso: string): string => {
   const date = new Date(iso);
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
@@ -471,6 +474,7 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
     }
     if (event.type === "message.posted") {
       const message = event.message;
+      if (forHumanOnly(message)) continue;
       const own = message.author === agent.id || message.native?.agent === agent.id;
       // The agent's own session already holds what it said and what was said to it there.
       if (own && !replayOwn) continue;

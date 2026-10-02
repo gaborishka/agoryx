@@ -4,16 +4,19 @@ import { toast } from "sonner";
 import { EmptyState, Hint, Loading } from "@/components/common/states";
 import { Markdown } from "@/components/md/Markdown";
 import { Avatar, Time } from "@/components/room/bits";
+import { ModelMenu } from "@/components/room/ModelMenu";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { api, roomPath, Unauthorized } from "@/lib/api";
 import { ago } from "@/lib/format";
+import { useModels } from "@/lib/models";
+import { type Quote, quoteMarkdown } from "@/lib/quote";
 import { errText } from "@/lib/load";
 import { participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import { sysLine } from "@/lib/system";
 import { groupThreads, threadGroup } from "@/lib/threads";
-import type { RoomState, RoomSummary } from "@/lib/types";
+import type { RoomAgent, RoomState, RoomSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /**
@@ -100,9 +103,40 @@ function Transcript({ state }: { state: RoomState }) {
   );
 }
 
-function Steer({ id, running }: { id: string; running: boolean }) {
+/** A passage of the room as the thread reads it: named as the room's, since its message ids are not the thread's. */
+const fromRoom = (quote: Quote, room: string) => quoteMarkdown(quote).replace(/^> \[([^\]]*)\]\(#[^)]*\)/, (_, source: string) => `> ${source} · in ${room}:`);
+
+/**
+ * The human's line to the thread, with its agents' model and effort beside it (from the thread's next turn).
+ * A passage sent here from the room («To thread») lands above the draft; the human sends it.
+ */
+function Steer({ state, running, onAgent }: { state: RoomState; running: boolean; onAgent: (agent: RoomAgent) => void }) {
+  const id = state.id;
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const area = useRef<HTMLTextAreaElement>(null);
+  const models = useModels();
+  const steering = useStore((s) => s.steering);
+  const room = useStore((s) => s.snap?.state.name ?? "the room");
+  useEffect(() => {
+    if (!steering) return;
+    setText((draft) => [fromRoom(steering.quote, room), draft].filter((part) => part.trim()).join("\n\n") + "\n\n");
+    useStore.setState({ steering: null });
+    requestAnimationFrame(() => {
+      const el = area.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }, [steering, room]);
+  const setModel = async (agent: RoomAgent, change: { model?: string | null; effort?: string | null }) => {
+    try {
+      const res = await api<{ agent: RoomAgent }>("POST", roomPath(id, "/agent"), { agent: agent.id, ...change });
+      onAgent(res.agent);
+    } catch (err) {
+      if (!(err instanceof Unauthorized)) toast.error(errText(err));
+    }
+  };
   const send = async () => {
     if (!text.trim() || busy) return;
     setBusy(true);
@@ -125,24 +159,41 @@ function Steer({ id, running }: { id: string; running: boolean }) {
   };
   return (
     <form
-      className="flex shrink-0 items-end gap-2 border-t border-border/70 p-2"
+      className="flex shrink-0 flex-col gap-1 border-t border-border/70 p-2"
       onSubmit={(event) => {
         event.preventDefault();
         void send();
       }}
     >
-      <Textarea
-        aria-label="Message to the thread"
-        rows={1}
-        value={text}
-        placeholder={running ? "Steer the thread…" : "Write in the thread…"}
-        onChange={(event) => setText(event.target.value)}
-        onKeyDown={keys}
-        className="max-h-40 min-h-9 resize-none text-small"
-      />
-      <Button type="submit" size="sm" disabled={!text.trim() || busy}>
-        Send
-      </Button>
+      <div className="flex items-end gap-2">
+        <Textarea
+          ref={area}
+          aria-label="Message to the thread"
+          rows={1}
+          value={text}
+          placeholder={running ? "Steer the thread…" : "Write in the thread…"}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={keys}
+          className="max-h-40 min-h-9 resize-none text-small"
+        />
+        <Button type="submit" size="sm" disabled={!text.trim() || busy}>
+          Send
+        </Button>
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-0.5">
+        {state.agents.map((agent) => (
+          <ModelMenu
+            key={agent.id}
+            agent={agent}
+            seating={state}
+            models={models}
+            working={running}
+            align="start"
+            className="h-7 px-1.5 text-meta text-muted-foreground"
+            onSet={(change) => void setModel(agent, change)}
+          />
+        ))}
+      </div>
     </form>
   );
 }
@@ -201,6 +252,11 @@ export function ThreadPanel() {
     setError(null);
     setListing(false);
   }, [id]);
+  // A passage sent «To thread» with no thread open: the human picks which one it goes to.
+  const pick = useStore((s) => (s.steering?.pick ? s.steering.at : 0));
+  useEffect(() => {
+    if (pick) setListing(true);
+  }, [pick]);
   useEffect(() => {
     if (!id) return;
     let live = true;
@@ -267,7 +323,7 @@ export function ThreadPanel() {
           <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
             <Transcript state={state} />
           </div>
-          <Steer id={state.id} running={running} />
+          <Steer state={state} running={running} onAgent={(agent) => setState((was) => (was ? { ...was, agents: was.agents.map((a) => (a.id === agent.id ? agent : a)) } : was))} />
         </>
       )}
     </div>

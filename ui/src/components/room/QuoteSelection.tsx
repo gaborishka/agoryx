@@ -1,4 +1,4 @@
-import { QuoteIcon } from "lucide-react";
+import { GitBranchIcon, QuoteIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Kbd } from "@/components/ui/kbd";
@@ -23,12 +23,16 @@ const BUTTON = 36;
 
 /**
  * Select words in a message and a «Quote» button appears under them: it puts the passage above the
- * composer, with the message it came from. A selection across two messages quotes nothing.
+ * composer, with the message it came from; «To thread» puts it into a thread's steer box instead, when the room has
+ * threads. A selection across two messages quotes nothing.
  */
 export function QuoteSelection() {
   const room = useStore((s) => s.snap?.state);
   const driven = useStore((s) => s.snap?.driven ?? false);
   const quote = useStore((s) => s.quote);
+  const steerQuote = useStore((s) => s.steerQuote);
+  // A passage can go to one of this room's threads too: into its steer box, for the human to send.
+  const threaded = useStore((s) => Boolean(s.snap && s.rooms.some((room) => room.parent === s.snap?.state.id)));
   const [shown, setShown] = useState<{ quote: Quote; x: number; y: number; below: boolean } | null>(null);
   const roomRef = useRef(room);
   roomRef.current = room;
@@ -109,6 +113,11 @@ export function QuoteSelection() {
     document.getSelection()?.removeAllRanges();
     setShown(null);
   };
+  const toThread = (q: Quote) => {
+    steerQuote(q);
+    document.getSelection()?.removeAllRanges();
+    setShown(null);
+  };
   const current = shown?.quote;
   useEffect(() => {
     if (!current) return;
@@ -124,20 +133,34 @@ export function QuoteSelection() {
   }, [current]);
 
   if (!shown) return null;
+  const pill = "flex items-center gap-1.5 rounded-full border border-border bg-popover py-1 text-small font-medium text-popover-foreground shadow-lift transition hover:bg-accent";
   return createPortal(
-    <button
-      type="button"
-      // Keep the selection: a mousedown on the button would collapse it before the click.
-      onPointerDown={(event) => event.preventDefault()}
-      onClick={() => take(shown.quote)}
-      style={{ left: shown.x, top: shown.y }}
-      className={`fixed z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-popover py-1 pr-1.5 pl-2.5 text-small font-medium text-popover-foreground shadow-lift transition hover:bg-accent ${shown.below ? "" : "-translate-y-full"}`}
-      aria-label={`Quote ${shown.quote.label} in your message`}
-    >
-      <QuoteIcon className="size-3.5" />
-      Quote
-      <Kbd>Q</Kbd>
-    </button>,
+    <div style={{ left: shown.x, top: shown.y }} className={`fixed z-50 flex -translate-x-1/2 items-center gap-1 ${shown.below ? "" : "-translate-y-full"}`}>
+      <button
+        type="button"
+        // Keep the selection: a mousedown on the button would collapse it before the click.
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={() => take(shown.quote)}
+        className={`${pill} pr-1.5 pl-2.5`}
+        aria-label={`Quote ${shown.quote.label} in your message`}
+      >
+        <QuoteIcon className="size-3.5" />
+        Quote
+        <Kbd>Q</Kbd>
+      </button>
+      {threaded ? (
+        <button
+          type="button"
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => toThread(shown.quote)}
+          className={`${pill} px-2.5`}
+          title="Into a thread's steer box: you send it"
+        >
+          <GitBranchIcon className="size-3.5" />
+          To thread
+        </button>
+      ) : null}
+    </div>,
     document.body,
   );
 }

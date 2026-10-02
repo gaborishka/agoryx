@@ -129,6 +129,8 @@ interface Store {
   compose: { text: string; at: number } | null;
   /** A passage quoted from a message or a diff, on its way to the composer; `at` makes a repeat count; `to`: whom it is for by default. */
   quoting: { quote: Quote; at: number; to?: string } | null;
+  /** A passage on its way to a thread's steer box, as `quoting` is to the composer: the human sends it. `pick`: which thread is the human's to choose. */
+  steering: { quote: Quote; at: number; pick?: boolean } | null;
   paletteOpen: boolean;
 
   loadRooms: () => Promise<void>;
@@ -164,6 +166,8 @@ interface Store {
   composeDraft: (text: string) => void;
   /** Add a quoted passage above the composer's draft (the draft stays); nothing is sent. `to` is @-addressed when the draft names no one yet. */
   quote: (quote: Quote, to?: string) => void;
+  /** Put a quoted passage into the open thread's steer box (the room's threads to pick from when none is open); nothing is sent. */
+  steerQuote: (quote: Quote) => void;
   openDocRevision: (seq: number) => void;
   setPaletteOpen: (open: boolean) => void;
   post: (suffix: string, body?: unknown) => Promise<Record<string, unknown>>;
@@ -212,6 +216,7 @@ export const useStore = create<Store>((set, get) => ({
   flash: null,
   compose: null,
   quoting: null,
+  steering: null,
   paletteOpen: false,
 
   async loadRooms() {
@@ -367,6 +372,15 @@ export const useStore = create<Store>((set, get) => ({
   },
   quote(quote, to) {
     set({ quoting: { quote, at: Date.now(), ...(to ? { to } : {}) } });
+  },
+  steerQuote(quote) {
+    const { thread, rooms, snap } = get();
+    const threads = rooms.filter((room) => room.parent && room.parent === snap?.state.id);
+    const open = thread && threads.some((room) => room.id === thread) ? thread : null;
+    const latest = [...threads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    set({ steering: { quote, at: Date.now(), ...(!open && threads.length > 1 ? { pick: true } : {}) } });
+    if (open) get().setPanel("thread");
+    else if (latest) get().openThread(latest.id);
   },
   openDocRevision(seq) {
     get().setPanel("doc");
@@ -590,7 +604,7 @@ const hashFor = (s: Addressed): string => {
 };
 
 /** Nothing of another room's selected: its own turns, files and revisions. */
-const FRESH = { changes: { scope: "turn" } as ChangesFocus, filePath: null, fileTabs: [] as string[], docFocus: null, thread: null };
+const FRESH = { changes: { scope: "turn" } as ChangesFocus, filePath: null, fileTabs: [] as string[], docFocus: null, thread: null, steering: null };
 
 /**
  * What entering a room sets besides the route. From an address (`params`): what it says, the view otherwise
@@ -643,12 +657,12 @@ function applyRoute(route: Route, extra: Partial<Store> = {}) {
   if (route.kind === "room") {
     if (prev.kind !== "room" || prev.id !== route.id || !useStore.getState().snap) {
       closeStream();
-      useStore.setState({ snap: null, compose: null, quoting: null });
+      useStore.setState({ snap: null, compose: null, quoting: null, steering: null });
       void useStore.getState().openRoom(route.id);
     }
   } else {
     closeStream();
-    useStore.setState({ snap: null, compose: null, quoting: null });
+    useStore.setState({ snap: null, compose: null, quoting: null, steering: null });
     document.title = "Agoryx";
   }
 }

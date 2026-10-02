@@ -20,6 +20,7 @@ import { describeProfile, profilePath, readProfile } from "../../internal/agora/
 import { readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
 import { createRoom, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
+import { limitText } from "../../internal/agora/duration.js";
 import { describeRevert, planRevert, RevertError, undoableRevert, type RevertRequest } from "../../internal/agora/revert.js";
 import { changeStats, patchSection, workspaceTracking } from "../../internal/agora/workspace.js";
 import { RoomStore } from "../../internal/agora/store.js";
@@ -1116,7 +1117,7 @@ const runSettings = async (argv: string[]): Promise<number> => {
   console.log(`access      ${settings.access === "workspace" ? "agents can edit the workspace" : "read-only"}`);
   console.log(`network     ${settings.network ? "on" : "off"}`);
   console.log(`autocommit  ${settings.autoCommit ? "on (checkpoint commit after each run)" : "off"}`);
-  console.log(`turn limit  ${Math.round(settings.turnTimeoutMs / 60_000)} min`);
+  console.log(`turn limit  ${limitText(settings.turnTimeoutMs)}`);
   console.log(`doc         ${settings.doc ?? pc.dim("none")}`);
   return 0;
 };

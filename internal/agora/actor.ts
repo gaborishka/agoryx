@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { limitText } from "./duration.js";
 import { agoraHome } from "./paths.js";
 import type { Actor, ActorOrigin, RoomSettings, RoomState } from "./types.js";
 
@@ -98,7 +99,7 @@ export const describeSettings = (patch: Partial<RoomSettings>): string[] => {
   if (patch.access !== undefined) parts.push(`access ${patch.access}`);
   if (patch.network !== undefined) parts.push(`network ${onOff(patch.network)}`);
   if (patch.autoCommit !== undefined) parts.push(`autocommit ${onOff(patch.autoCommit)}`);
-  if (patch.turnTimeoutMs !== undefined) parts.push(`turn limit ${Math.round(patch.turnTimeoutMs / 60_000)} min`);
+  if (patch.turnTimeoutMs !== undefined) parts.push(`turn limit ${limitText(patch.turnTimeoutMs)}`);
   if (patch.doc !== undefined) parts.push(patch.doc ? `canonical file ${patch.doc}` : "no canonical file");
   return parts;
 };

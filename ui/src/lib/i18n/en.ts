@@ -1,3 +1,4 @@
+import { limitText } from "../../../../internal/agora/duration";
 import type { RoomSettings, SystemCode, SystemNote, TurnError } from "../types";
 
 /**
@@ -5,10 +6,10 @@ import type { RoomSettings, SystemCode, SystemNote, TurnError } from "../types";
  * and the room's own worktree. The interface speaks one locale, English; the rest of the UI keeps its copy in place.
  */
 
-/** "1 turn", "3 turns". */
 /** A pull request as the lines name it: `#12`, or `owner/name#12` when it is another repository's. */
 const prRef = (n: { n: number; repo?: string }) => `${n.repo ?? ""}#${n.n}`;
 
+/** "1 turn", "3 turns". */
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** "Claude", "Claude and Codex", "Opus, Sonnet and Codex": a room may seat any number of agents. */
@@ -40,7 +41,7 @@ const settings = (patch: Partial<RoomSettings>): string =>
     patch.access === undefined ? null : patch.access === "readonly" ? "read-only" : "agents can edit the folder",
     patch.network === undefined ? null : `network ${onOff(patch.network)}`,
     patch.autoCommit === undefined ? null : `checkpoints ${onOff(patch.autoCommit)}`,
-    patch.turnTimeoutMs === undefined ? null : `turn time limit ${Math.round(patch.turnTimeoutMs / 60_000)} min`,
+    patch.turnTimeoutMs === undefined ? null : `turn time limit ${limitText(patch.turnTimeoutMs)}`,
     patch.doc === undefined ? null : patch.doc ? `shared document \`${patch.doc}\`` : "no shared document",
   ]
     .filter(Boolean)
@@ -58,8 +59,9 @@ const openOnTable = (open: Note<"run.budget">["open"]): string =>
 
 /** What went wrong with a turn, and what to do about it; the CLI's own message stays as it said it. */
 const failure = (error: TurnError["kind"], message: string, cli: string): string => {
-  const minutes = error === "timeout" ? /(\d+)\s*min/.exec(message)?.[1] : undefined;
-  if (minutes) return `the turn ran past its time limit (${minutes} min)`;
+  // "turn exceeded 1:30": the limit as it was set (older rooms: whole minutes, "turn exceeded 2 min").
+  const limit = error === "timeout" ? /^turn exceeded (.+)$/.exec(message)?.[1] : undefined;
+  if (limit) return `the turn ran past its time limit (${limit})`;
   const hint =
     error === "rate_limit"
       ? " (rate limit — it will try again with the next message)"

@@ -205,6 +205,7 @@ test("a question put to one agent alone is answered to the human: the other is n
     assert.equal(answer.wakes, false);
     assert.equal(room.store.state.runs.at(-1)?.endReason, "quiet");
     assert.match(room.invocations("claude")[0]!.prompt!, /When Ivan addresses only you, your reply goes back to them/);
+    assert.match(room.invocations("claude")[0]!.prompt!, /When you need Ivan's answer or decision, @mention them \(@Ivan\)/);
 
     // The agent can still bring the other in, by name.
     room.engine.postHuman("@claude ask codex");

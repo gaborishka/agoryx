@@ -303,6 +303,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, track
     ...(norms ? ["- Disagree when you disagree, and say what would change your mind. An unresolved disagreement, stated clearly, is a valid outcome."] : []),
     `- Address someone with @name. ${state.human} is a participant, not a gatekeeper: you don't need permission to do the work being discussed.`,
     `  When ${state.human} addresses only you, your reply goes back to them: the others read it in their next turn, and it wakes one of them only if you @mention them.`,
+    `  When you need ${state.human}'s answer or decision, @mention them (@${state.human}): the room then shows them that you are waiting for it.`,
     others.length ? "- Work goes in steps, and a step is someone else's to check:" : "- Work goes in steps, each checked before it is called done:",
     "  - A step goes on the table (`table next`, on the route option it carries out), so the human sees where it stands.",
     ...(others.length

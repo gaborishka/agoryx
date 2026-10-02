@@ -124,6 +124,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         activity: [],
         profile: event.profile ?? "",
         profileBefore: state.profiles[event.agent] ?? "",
+        ...(event.limitMs !== undefined ? { limitMs: event.limitMs } : {}),
       });
       state.cursors[event.agent] = Math.max(state.cursors[event.agent] ?? 0, event.cursor);
       state.profiles[event.agent] = event.profile ?? "";

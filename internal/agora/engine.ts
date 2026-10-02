@@ -1649,6 +1649,7 @@ export class RoomEngine {
       sessionId,
       promptChars: prompt.length,
       ...(profile ? { profile: profile.hash } : {}),
+      limitMs: this.state.settings.turnTimeoutMs,
     });
 
     const controller = new AbortController();

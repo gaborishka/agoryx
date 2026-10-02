@@ -1,4 +1,4 @@
-import { ColumnsIcon, RowsIcon, SplitIcon } from "lucide-react";
+import { ChevronDownIcon, ColumnsIcon, RowsIcon, SplitIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { Conversation, ConversationContent, ConversationScrollButton } from "@/components/ai-elements/conversation";
@@ -6,7 +6,8 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Markdown } from "@/components/md/Markdown";
 import { OpCards } from "@/components/table/OpCard";
 import { useNow } from "@/hooks/use-now";
-import { names, secs } from "@/lib/format";
+import { clock, names, plural, secs } from "@/lib/format";
+import { unquoted } from "../../../../internal/agora/quote";
 import { buildFeed, type FeedItem, type FeedModel, type FeedRow, ink, nameOf, participant } from "@/lib/room";
 import { useStore } from "@/lib/store";
 import type { TableOp, TurnState } from "@/lib/types";
@@ -167,6 +168,93 @@ function Round({ row, model, isFresh }: { row: Extract<FeedRow, { type: "group" 
   );
 }
 
+/** The opening words of a message, as plain text: the folded line's glimpse of where the exchange ended. */
+const lastWords = (text: string) =>
+  unquoted(text)
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/^[ \t]*(?:#{1,6}|>)[ \t]*/gm, "")
+    // Emphasis marks, not the underscores of a name (turn_activity) or the # of PR #27.
+    .replace(/[`*]|(?<![\p{L}\p{N}])_+|_+(?![\p{L}\p{N}])/gu, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
+
+/**
+ * Agents talking to each other, folded into one line: who, how many messages (an agent's pass among them is none), which
+ * table items they were about. The human opens it to read the exchange; a link to one of its messages opens it too.
+ */
+function Between({ row, model, isFresh }: { row: Extract<FeedRow, { type: "between" }>; model: FeedModel; isFresh: (id: string) => boolean }) {
+  const room = useStore((s) => s.snap?.state);
+  const flashAt = useStore((s) => (s.flash && row.items.some((g) => g.key === s.flash!.ref) ? s.flash.at : 0));
+  const [open, setOpen] = useState(false);
+  const [opened, setOpened] = useState(0);
+  // A link followed before this line was drawn (the exchange was still open then) is not one to open it for.
+  const [mountedAt] = useState(Date.now);
+  // Opened in the same render the link lands in, so the message exists when FlashTarget looks for it.
+  if (flashAt && flashAt !== opened && flashAt >= mountedAt - 1000) {
+    setOpened(flashAt);
+    setOpen(true);
+  }
+  const said = row.items.filter((g) => g.m.kind !== "pass");
+  const first = said[0]!.m;
+  const last = said.at(-1)!.m;
+  // Read: what it held when it was drawn, what joined it that the human had already seen in the room (replies regrouped
+  // with their turns can join it later), and all of it once opened. The rest is new.
+  const read = useRef(new Map<string, boolean>());
+  for (const g of said) if (open || !read.current.has(g.m.id)) read.current.set(g.m.id, open || !isFresh(g.m.id));
+  const fresh = open ? 0 : said.filter((g) => !read.current.get(g.m.id)).length;
+  const authors = [...new Set(said.map((g) => g.m.author))];
+  // One agent writing to another: "3 messages from Codex to Claude".
+  const who =
+    authors.length === 1
+      ? `from ${nameOf(room, authors[0]!)} to ${names(row.agents.filter((h) => h !== authors[0]).map((h) => nameOf(room, h)))}`
+      : `between ${names(row.agents.map((h) => nameOf(room, h)))}`;
+  const span = clock(first.ts) === clock(last.ts) ? clock(first.ts) : `${clock(first.ts)}–${clock(last.ts)}`;
+  const shown = row.refs.slice(0, 5);
+  return (
+    <div className="flex w-full max-w-reading flex-col gap-5 sm:px-2" data-between={row.key}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="group flex min-w-0 items-center gap-2 rounded-lg text-left text-small text-muted-foreground transition hover:text-foreground"
+      >
+        <span className="flex shrink-0 -space-x-1.5">
+          {row.agents.map((h) => (
+            <Avatar key={h} handle={h} size={18} className="ring-2 ring-background" />
+          ))}
+        </span>
+        <span className="min-w-0 truncate">
+          <b className="font-semibold text-foreground">{plural(said.length, "message", "messages")}</b> {who}
+          {shown.length ? (
+            <span className="font-mono text-meta">
+              {" · "}
+              {shown.join(" ")}
+              {row.refs.length > shown.length ? ` +${row.refs.length - shown.length}` : ""}
+            </span>
+          ) : null}
+        </span>
+        {fresh ? <span className="shrink-0 rounded-full bg-foreground/[0.07] px-1.5 text-meta font-medium text-foreground">{fresh} new</span> : null}
+        <span className="h-px min-w-4 flex-1 bg-border" />
+        <span className="tabular shrink-0 text-meta">{span}</span>
+        <span className="inline-flex shrink-0 items-center gap-0.5 text-meta font-medium">
+          {open ? "Hide" : "Show"}
+          <ChevronDownIcon className={cn("size-3.5 transition", open && "rotate-180")} />
+        </span>
+      </button>
+      {open ? null : (
+        <p className="-mt-3.5 truncate pl-8 text-meta text-faint" data-between-last>
+          {nameOf(room, last.author)}: {lastWords(last.text)}
+        </p>
+      )}
+      {open
+        ? row.items.map((g) => <Item key={g.key} item={g} model={model} fresh={isFresh(g.m.id)} clamp={720} />)
+        : null}
+    </div>
+  );
+}
+
 /** Scroll to a flashed message (m-<id>) once it exists. */
 function FlashTarget() {
   const flash = useStore((s) => s.flash);
@@ -206,6 +294,7 @@ export function Feed() {
         {model.rows.map((row) => {
           if (row.type === "hello") return <Hello key={row.key} />;
           if (row.type === "group") return <Round key={row.key} row={row} model={model} isFresh={isFresh} />;
+          if (row.type === "between") return <Between key={row.key} row={row} model={model} isFresh={isFresh} />;
           return (
             <div key={row.key} className="w-full max-w-reading sm:px-2">
               <Item item={row} model={model} fresh={row.type === "msg" && isFresh(row.m.id)} clamp={720} />

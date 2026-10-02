@@ -463,6 +463,8 @@ export type RoomEventBody =
        * Only the hash: the profile itself is never written to the room.
        */
       profile?: string;
+      /** The turn's time limit as it started (the room's setting then); absent in logs from before. */
+      limitMs?: number;
     }
   | { type: "turn.activity"; turnId: string; agent: string; activity: Activity }
   | {
@@ -620,6 +622,8 @@ export interface TurnState {
   endSeq?: number;
   startedAt: string;
   endedAt?: string;
+  /** Its time limit as it started; absent in logs from before. */
+  limitMs?: number;
   status: TurnStatus;
   resume: boolean;
   sessionId: string | null;

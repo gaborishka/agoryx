@@ -195,10 +195,11 @@ export function OpenPr({ className }: { className?: string }) {
           className={cn("h-8 gap-1.5", className)}
           aria-label="Open PR"
           disabled={busyTurn}
-          title={busyTurn ? "A turn is running: open the pull request once it has ended" : undefined}
+          title={busyTurn ? "A turn is running: open the pull request once it has ended" : "Open a pull request"}
         >
           <GitPullRequestArrowIcon />
-          <span className="hidden @min-[44rem]:inline">Open PR</span>
+          {/* While a turn runs the button can't be used, and the agents' chips need the room for their clocks. */}
+          <span className={cn("hidden", !busyTurn && "@min-[44rem]:inline")}>Open PR</span>
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80 text-small">

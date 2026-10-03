@@ -539,6 +539,12 @@ export const buildDelta = ({ state, events, agent, turnsLeft, replayOwn = false,
               : `── ${who}${where} · ${clock(event.ts)}`;
       const reading = read.get(message.id);
       const lines = [header, messageGist(message, agent, state.human, reading)];
+      if (message.skill) {
+        const skill = message.skill;
+        lines.splice(1, 0, `Requested skill: ${JSON.stringify(skill.name)}. Executors: ${skill.targets.join(", ")}. This applies only to this request, not later messages.`);
+        if (skill.targets.includes(agent.id)) lines.push(`For this request, read and follow the skill at ${JSON.stringify(skill.path)} before working. Use its supporting files relative to that directory. The message above is the user's task. If the file is unavailable, report that instead of silently proceeding without the skill.`);
+        else lines.push("This skill request is addressed to the named executors; it is shared context for you, not an instruction to run the skill.");
+      }
       if (message.kind === "update") {
         // Said mid-turn: the turn's moves and files go with its reply, which comes later.
         blocks.push(lines.join("\n"));

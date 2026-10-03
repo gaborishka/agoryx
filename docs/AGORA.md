@@ -401,6 +401,38 @@ agoryx open         # opens the browser with a login link (it becomes a 30-day c
   or acting in it clears the dot. The macOS app also shows these in its menu-bar icon, Dock badge and
   banners ([DESKTOP.md](DESKTOP.md), "When a room waits for you").
 
+### Commands and skills in the composer
+
+Type `/` at the start of a message (or after `@handle`) to search room commands and installed
+skills together. The slash button also opens the catalog without replacing an existing draft.
+Filter by Room or by a participant; `@claude /` searches that participant's skills. Files and
+participants remain under `@`. Arrow keys select, Enter/Tab chooses, Escape closes. Choosing an
+entry prepares it; a separate send runs it.
+
+- Room commands retain their existing behavior. `/model` asks which participant to configure.
+- A skill becomes a removable chip with a separate executor chip. A sole eligible participant is
+  selected automatically; otherwise choose one or explicitly choose all available participants.
+  Several agents of the same kind remain distinct choices. The same canonical skill file and name
+  can be shared; different files with the same name remain separate catalog entries.
+- Skill selection, recipients, text and context survive reloads and room changes. History restores
+  the skill and recipients too. Removing the skill preserves the task text.
+- The daemon obtains Codex's enabled skills through `app-server` `skills/list`, without starting a
+  model turn. Claude discovery reads personal and ancestor-project `.claude/skills` directories,
+  plus installed plugins explicitly enabled in the applicable settings files. Skills marked
+  `user-invocable: false` are omitted. Catalog failures are shown; room commands remain available.
+- On send, the daemon refreshes the catalog and validates the skill id and the selected participants;
+  it never accepts a path supplied by the client. A disappeared skill or participant keeps the draft
+  and produces an error. Only the human can create these invocations.
+- The event log stores the skill reference and explicit recipients alongside the user's message.
+  Its targets, rather than mentions inside the task, determine who wakes. Busy agents receive it
+  through the existing pending-message flow. Replies stay in the shared conversation.
+- The selected agents' prompt tells them to read that exact `SKILL.md` and its relative resources
+  for this request only; other agents see it as shared context. `agoryx read` also preserves the
+  skill reference. This is an explicit file-based skill instruction, not emulation of provider UI
+  slash commands or provider-specific frontmatter execution such as Claude's fork mode.
+
+Native CLI commands that the room cannot execute are not advertised as working commands.
+
 ### Rich content
 
 Messages, option bodies and the canonical file are rendered markdown, and agents are told to show

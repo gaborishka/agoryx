@@ -25,7 +25,7 @@ function Body({ hash }: { hash: string }) {
   const { overview, error, reload } = useOverview(hash);
   return (
     <>
-      <div className="flex gap-1 px-4 pt-3" role="tablist" aria-label="Project">
+      <div className="px-4 pt-3"><div className="inline-flex gap-0.5 rounded-lg bg-muted p-0.5" role="tablist" aria-label="Project">
         {SECTIONS.map(({ id, label }) => (
           <button
             key={id}
@@ -33,12 +33,12 @@ function Body({ hash }: { hash: string }) {
             role="tab"
             aria-selected={section === id}
             onClick={() => setSection(id)}
-            className={cn("h-7 rounded-md px-2.5 text-small transition", section === id ? "bg-foreground/[0.07] text-foreground" : "text-muted-foreground hover:text-foreground")}
+            className={cn("h-7 rounded-md px-3 text-small font-medium transition", section === id ? "bg-background text-foreground shadow-edge ring-1 ring-border/70" : "text-muted-foreground hover:text-foreground")}
           >
             {label}
           </button>
         ))}
-      </div>
+      </div></div>
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {error && !overview ? (
           <ErrorNote>{error}</ErrorNote>
@@ -68,7 +68,7 @@ export function ProjectPanel() {
   const name = summary.projectName || baseName(summary.workspace);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b border-border/70 px-4 py-2.5">
+      <div className="flex h-11 items-center gap-2 border-b border-border/70 px-4">
         <FoldersIcon className="size-4 shrink-0 text-faint" />
         <Tip tip="Open the project">
           <button type="button" className="min-w-0 truncate text-ui font-medium hover:underline" onClick={() => go({ kind: "project", hash })}>

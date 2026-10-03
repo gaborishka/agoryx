@@ -1,4 +1,4 @@
-import { CheckIcon, ChevronRightIcon, GitBranchIcon, SquareArrowOutUpRightIcon, Undo2Icon } from "lucide-react";
+import { ArrowUpIcon, CheckIcon, ChevronRightIcon, GitBranchIcon, SquareArrowOutUpRightIcon, Undo2Icon } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { EmptyState, Hint, Loading } from "@/components/common/states";
@@ -6,7 +6,6 @@ import { Markdown } from "@/components/md/Markdown";
 import { Avatar, Time } from "@/components/room/bits";
 import { ModelMenu } from "@/components/room/ModelMenu";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { api, roomPath, Unauthorized } from "@/lib/api";
 import { ago } from "@/lib/format";
 import { useModels } from "@/lib/models";
@@ -159,14 +158,14 @@ function Steer({ state, running, onAgent }: { state: RoomState; running: boolean
   };
   return (
     <form
-      className="flex shrink-0 flex-col gap-1 border-t border-border/70 p-2"
+      className="flex shrink-0 flex-col gap-1.5 px-3 pt-2 pb-3"
       onSubmit={(event) => {
         event.preventDefault();
         void send();
       }}
     >
-      <div className="flex items-end gap-2">
-        <Textarea
+      <div className="flex items-end gap-1 rounded-2xl border border-input bg-card p-1.5 pl-3 shadow-edge transition focus-within:border-foreground/30 focus-within:ring-3 focus-within:ring-foreground/[0.06]">
+        <textarea
           ref={area}
           aria-label="Message to the thread"
           rows={1}
@@ -174,10 +173,10 @@ function Steer({ state, running, onAgent }: { state: RoomState; running: boolean
           placeholder={running ? "Steer the thread…" : "Write in the thread…"}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={keys}
-          className="max-h-40 min-h-9 resize-none text-small"
+          className="scroll-thin field-sizing-content max-h-40 min-h-8 flex-1 resize-none bg-transparent py-1.5 text-small leading-relaxed outline-none placeholder:text-faint"
         />
-        <Button type="submit" size="sm" disabled={!text.trim() || busy}>
-          Send
+        <Button type="submit" size="icon" className="size-8 shrink-0 rounded-full" disabled={!text.trim() || busy} aria-label="Send" title="Send (Enter)">
+          <ArrowUpIcon className="size-4" />
         </Button>
       </div>
       <div className="flex min-w-0 flex-wrap items-center gap-0.5">
@@ -277,7 +276,7 @@ export function ThreadPanel() {
   const running = Boolean(summary?.running ?? state?.turns.some((turn) => turn.status === "running"));
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border/70 px-3 text-small">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border/70 px-4 text-small">
         <button type="button" onClick={() => setListing(true)} className={cn("shrink-0 transition", listing ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}>
           Threads
         </button>
@@ -312,7 +311,7 @@ export function ThreadPanel() {
         <Loading className="p-4" />
       ) : (
         <>
-          <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-border/70 px-3 py-1.5 text-meta text-muted-foreground">
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-border/70 bg-muted/40 px-4 py-2 text-meta text-muted-foreground">
             <span>{state.agents.map((agent) => agent.label).join(", ")}</span>
             {state.worktree ? (
               <span className="min-w-0 truncate font-mono">

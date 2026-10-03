@@ -93,7 +93,7 @@ function TabStrip({ current }: { current: PanelTab }) {
     requestAnimationFrame(() => strip.current?.querySelector<HTMLElement>(`[data-tab=${next}]`)?.focus());
   };
   return (
-    <div ref={strip} role="tablist" aria-label="Panel" onKeyDown={keys} className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
+    <div ref={strip} role="tablist" aria-label="Panel" onKeyDown={keys} className="flex min-w-0 items-center gap-0.5 overflow-x-auto rounded-lg bg-muted p-0.5 [scrollbar-width:none]">
       {tabs.map((tab) => {
         const { label, icon: Icon, tip } = TABS[tab];
         const on = tab === current;
@@ -110,8 +110,8 @@ function TabStrip({ current }: { current: PanelTab }) {
               tabIndex={on ? 0 : -1}
               onClick={() => setPanel(tab)}
               className={cn(
-                "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-small font-medium transition",
-                on ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-small font-medium transition",
+                on ? "bg-background text-foreground shadow-edge ring-1 ring-border/70" : "text-muted-foreground hover:text-foreground",
               )}
             >
               <span className="relative">

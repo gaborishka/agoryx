@@ -1,6 +1,11 @@
 # Projects, as Claude Code shows them — and the fixes from the UI/perf review
 
-Status: plan, decisions by Ivan 2026-10-03. Source: a screen recording of Claude Code's projects (list, New project,
+Status: **done** 2026-10-03, all thirteen steps committed (SHAs in the route below); checked in a scratch daemon with real
+claude and codex: a project made from New project with a context folder, both agents answering from it in a Work room,
+a thread reported as a pill and resolved by the human, a passage sent To thread with the model and effort beside the
+box, a file put in the library by + Add and named by both agents. Open: the agents read context folders listed under
+the library as library files too (one agent did, one did not) — the briefing may need to say they are separate. Was:
+plan, decisions by Ivan 2026-10-03. Source: a screen recording of Claude Code's projects (list, New project,
 Overview panel with Threads / Library, thread pills in the chat, settings modal) and the UI/UX + performance review of
 the projects work (`2026-10-02-projects.md`, done).
 
@@ -41,30 +46,30 @@ the projects work (`2026-10-02-projects.md`, done).
 
 ## Route (one commit per step; tests, typecheck and UI build green before each)
 
-1. **Phone header.** The room header fits 375 px: secondary actions fold into its menu below a width; the side panel
+1. **Phone header.** ✅ `ec951c0` The room header fits 375 px: secondary actions fold into its menu below a width; the side panel
    on a phone is a full-screen sheet again (no page wider than the viewport).
-2. **Static assets.** Hashed assets served `immutable`, gzip/brotli when the browser takes it; `index.html` stays
+2. **Static assets.** ✅ `d279c57` Hashed assets served `immutable`, gzip/brotli when the browser takes it; `index.html` stays
    `no-cache`.
-3. **Room list, cheaper.** The daemon keeps room summaries in memory (no full parse of every room per request;
+3. **Room list, cheaper.** ✅ `89f5976` The daemon keeps room summaries in memory (no full parse of every room per request;
    `resolveId` from the cache), and the page stops polling rooms while its tab is hidden (one load when it shows).
-4. **Refresh on change.** The project overview and the thread panel load again only when their rooms change (not
+4. **Refresh on change.** ✅ `4191d3e` The project overview and the thread panel load again only when their rooms change (not
    every few seconds during a run), and not while the tab is hidden.
-5. **Context folders.** Server + CLI (`agoryx project add-dir|remove-dir`), the runners pass them, the briefing names
+5. **Context folders.** ✅ `580ba78` Server + CLI (`agoryx project add-dir|remove-dir`), the runners pass them, the briefing names
    them, the project shows them. Tests: args for both CLIs, live fingerprints change with them, briefing lines, `by`.
-6. **Projects list and New project.** `#projects`, the sidebar entry, cards with search and sort, the New project
+6. **Projects list and New project.** ✅ `258140b` `#projects`, the sidebar entry, cards with search and sort, the New project
    dialog (folder picker, + Add context), `POST /api/projects`.
-7. **Project settings dialog.** The gear on the project page (and in a Work room's menu) opens General / Context /
+7. **Project settings dialog.** ✅ `bb25564` The gear on the project page (and in a Work room's menu) opens General / Context /
    Memory / Usage / Changes. The project page becomes its overview: rooms and threads beside the library, a "New
    room here" button, dim placeholders.
-8. **Overview in the room.** "Overview" in a Work room's header opens the panel tab Project: Threads / Library / Usage
+8. **Overview in the room.** ✅ `d6bc4dc` "Overview" in a Work room's header opens the panel tab Project: Threads / Library / Usage
    of its project, narrow layout.
-9. **Threads by what they need from you; Resolve.** `thread.resolved|reopened`, the groups on the board and in the
+9. **Threads by what they need from you; Resolve.** ✅ `904414f` `thread.resolved|reopened`, the groups on the board and in the
    panel, ✓ in the thread's header.
-10. **Thread pill.** The report as one line in the feed; the full card opens in place.
-11. **Send to a thread; model and effort when steering.** The message action, and the thread's agent's model/effort
+10. **Thread pill.** ✅ `17413c4` The report as one line in the feed; the full card opens in place.
+11. **Send to a thread; model and effort when steering.** ✅ `9664512` The message action, and the thread's agent's model/effort
     beside its steer box.
-12. **Library by source, + Add.** Groups, list/grid, `library.added|removed`, + Add from the attach flow.
-13. **Feed rendering.** Narrow store selectors in message rows, the Markdown selector out of the per-token path.
+12. **Library by source, + Add.** ✅ `e91f4e1` Groups, list/grid, `library.added|removed`, + Add from the attach flow.
+13. **Feed rendering.** ✅ `470fc73` Narrow store selectors in message rows, the Markdown selector out of the per-token path.
 
 Real E2E at the end in the scratch daemon (port 7791): create a project with a context folder, a Work room in it, an
 agent reads a file in the context folder, a thread reports, the human resolves it.

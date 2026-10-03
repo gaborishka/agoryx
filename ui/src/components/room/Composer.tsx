@@ -19,7 +19,6 @@ import {
 import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Kbd } from "@/components/ui/kbd";
 import { Avatar } from "@/components/room/bits";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { api, local, roomPath, Unauthorized } from "@/lib/api";
@@ -587,14 +586,9 @@ function ToolRow({ driven, mention }: { driven: boolean; mention: (who: string) 
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      {/* A hint that does not fit whole wraps onto a hidden second line, so none is cut mid-word; the empty first item lets even the first one go. */}
-      <span id="composer-keys" className={cn("h-5 min-w-0 flex-1 flex-wrap items-center gap-x-2.5 overflow-hidden px-1.5 text-meta whitespace-nowrap text-faint", driven ? "hidden pointer-fine:@min-[40rem]:flex" : "hidden")}>
-        <span aria-hidden className="-mr-2.5 h-5 w-0" />
-        <span className="flex h-5 items-center gap-1"><Kbd>{keyLabel("send")}</Kbd> send</span>
-        <span className="flex h-5 items-center gap-1"><Kbd>{keyLabel("newline")}</Kbd> new line</span>
-        <span className="flex h-5 items-center gap-1"><Kbd>@</Kbd> people / files</span>
-        <span className="flex h-5 items-center gap-1"><Kbd>/</Kbd> commands</span>
-        <span className="flex h-5 items-center gap-1"><Kbd>↑</Kbd> history</span>
+      {/* The keys, for screen readers; on screen ? lists them, and + offers mentions and commands. */}
+      <span id="composer-keys" className="sr-only">
+        {keyLabel("send")} sends, {keyLabel("newline")} starts a new line, @ names people and files, / runs commands, ↑ brings back what you sent.
       </span>
       {/* The agents, one pill each, on one line: a long roster scrolls rather than wraps. */}
       <div role="group" aria-label="Agents in the room" className="-my-0.5 ml-auto flex min-w-0 items-center gap-0.5 overflow-x-auto py-0.5 [scrollbar-width:none]">

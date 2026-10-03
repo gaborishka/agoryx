@@ -38,7 +38,8 @@ import { ink, nameOf, participant, profileLine, tableCount, turnClock, turnLimit
 import { useStore } from "@/lib/store";
 import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Tip } from "./bits";
+import { Avatar, Tip } from "./bits";
+import { useShallow } from "zustand/react/shallow";
 import { OpenPr, PrChip } from "./Github";
 import { t } from "@/lib/i18n";
 
@@ -86,6 +87,7 @@ function Presence({ a }: { a: RoomAgent }) {
         : waits
           ? `waiting for ${awaited}`
           : "waiting";
+  const busy = now !== "idle";
   return (
     <Tip tip={tip}>
       <button
@@ -94,58 +96,29 @@ function Presence({ a }: { a: RoomAgent }) {
         aria-label={`${a.label}: ${short}. Open session`}
         style={ink(who)}
         className={cn(
-          "inline-flex h-7 min-w-0 shrink items-center gap-1.5 overflow-hidden rounded-full border px-2.5 text-small whitespace-nowrap transition",
-          // Short of room, whom it waits for gives way first (as long as there is any of that name left): the other
-          // chips, its own name and the clocks stay whole.
-          waits && (working ? "@min-[61rem]:shrink-[10000]" : "@min-[52rem]:shrink-[10000]"),
+          "inline-flex h-8 min-w-0 shrink-0 items-center gap-1.5 rounded-full p-1 text-small whitespace-nowrap transition",
+          busy || waits ? "pr-2.5" : "",
           now === "idle"
-            ? "border-border text-muted-foreground hover:bg-accent"
+            ? "hover:bg-accent"
             : tone === "codex"
-              ? "border-codex/30 bg-codex-soft text-codex"
-              : "border-claude/30 bg-claude-soft text-claude",
+              ? "bg-codex-soft text-codex ring-1 ring-codex/25 ring-inset"
+              : "bg-claude-soft text-claude ring-1 ring-claude/25 ring-inset",
         )}
       >
-        <span
-          className={cn(
-            "size-2 shrink-0 rounded-full",
-            now === "idle"
-              ? tone === "codex"
-                ? "bg-codex/50"
-                : "bg-claude/50"
-              : tone === "codex"
-                ? "bg-codex"
-                : "bg-claude",
-            now !== "idle" && "animate-breathe",
-          )}
-        />
-        <b className="min-w-[3ch] truncate font-semibold">{a.label}</b>
-        {/* The narrower the header, the less a chip says: the words, then whom it waits for, then the limit, then all but
-            the name. The widths are those at which two agents' chips fit whole. */}
+        <Avatar handle={a.id} size={24} live={Boolean(working)} />
         {working ? (
-          <span className="tabular hidden shrink-0 @min-[53rem]:inline">
-            <span className="hidden opacity-80 @min-[74rem]:inline">working · </span>
-            <span className={cn(late ? "font-medium text-amber-ink" : "opacity-80")} data-turn-clock>
-              <span className="@min-[58rem]:hidden">{brief}</span>
-              <span className="hidden @min-[58rem]:inline">{clock}</span>
-            </span>
+          <span className={cn("tabular hidden @min-[44rem]:inline", late ? "font-medium text-amber-ink" : "")} data-turn-clock>
+            <span className="@min-[58rem]:hidden">{brief}</span>
+            <span className="hidden @min-[58rem]:inline">{clock}</span>
           </span>
         ) : null}
-        {waits && working ? (
-          <span className="hidden min-w-3 shrink items-center gap-1 opacity-80 @min-[53rem]:inline-flex @min-[61rem]:shrink-[10000]" data-waiting>
+        {now === "native" ? <span className="hidden @min-[52rem]:inline">own session</span> : null}
+        {now === "queued" ? <span className="hidden @min-[52rem]:inline">queued</span> : null}
+        {waits ? (
+          <span className={cn("flex items-center gap-1", now === "idle" ? "text-muted-foreground" : "opacity-80")} data-waiting>
             <HourglassIcon className="size-3 shrink-0" aria-hidden />
-            <span className="hidden @min-[74rem]:inline">waiting for</span>
-            <span className="hidden min-w-0 truncate @min-[61rem]:inline">{awaited}</span>
+            <span className="hidden max-w-[9rem] truncate @min-[64rem]:inline">{awaited}</span>
           </span>
-        ) : waits ? (
-          <span className="hidden min-w-0 shrink-[10000] truncate opacity-80 @min-[52rem]:inline" data-waiting>
-            waiting for {awaited}
-          </span>
-        ) : null}
-        {now === "native" ? (
-          <span className="hidden shrink-0 opacity-80 @min-[52rem]:inline">in own session</span>
-        ) : null}
-        {now === "queued" ? (
-          <span className="hidden shrink-0 opacity-80 @min-[52rem]:inline">queued</span>
         ) : null}
       </button>
     </Tip>
@@ -195,7 +168,7 @@ function Title() {
           aria-label="Room name"
           onBlur={() => void commit()}
           onKeyDown={(event) => event.key === "Escape" && setEditing(false)}
-          className="h-8 w-full rounded-lg border border-ring/50 bg-card px-2 font-display text-lead font-[650] outline-none ring-3 ring-ring/15"
+          className="h-7 w-full rounded-md border border-foreground/30 bg-card px-1.5 font-display text-[16px] font-semibold outline-none ring-3 ring-foreground/[0.07]"
         />
       </form>
     );
@@ -205,7 +178,7 @@ function Title() {
       type="button"
       onClick={() => setEditing(true)}
       title={createdBy ? `Rename. This room was opened from room “${createdBy.roomName}”: ${createdBy.label}` : "Rename"}
-      className="-mx-1.5 min-w-0 truncate rounded-lg px-1.5 py-0.5 text-left font-display text-lead leading-tight font-[650] hover:bg-accent"
+      className="-mx-1.5 min-w-0 truncate rounded-md px-1.5 text-left font-display text-[16px] leading-snug font-semibold hover:bg-accent"
     >
       {name}
     </button>
@@ -261,16 +234,16 @@ function ViewSwitch() {
   const count = tableCount(room);
   const tab = (on: boolean) =>
     cn(
-      "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-small font-medium transition sm:px-3",
+      "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-small font-medium transition @min-[50rem]:px-2.5",
       on
-        ? "bg-card text-foreground shadow-soft ring-1 ring-border"
+        ? "bg-background text-foreground shadow-edge ring-1 ring-border/70"
         : "text-muted-foreground hover:text-foreground",
     );
   return (
     <div
       role="tablist"
       aria-label="Room view"
-      className="flex shrink-0 items-center gap-0.5 rounded-xl bg-muted p-1"
+      className="flex shrink-0 items-center gap-0.5 rounded-lg bg-muted p-0.5"
     >
       <Tip tip={<span>Conversation <Kbd>{keyLabel("chat")}</Kbd></span>}>
         <button
@@ -283,7 +256,7 @@ function ViewSwitch() {
           onClick={() => setView("chat")}
         >
           <MessagesSquareIcon className="size-4" />
-          <span className="hidden @min-[50rem]:inline">Conversation</span>
+          <span className="hidden @min-[62rem]:inline">Conversation</span>
         </button>
       </Tip>
       <Tip tip={<span>Table: questions, options, arguments and decisions — the choice laid out piece by piece <Kbd>{keyLabel("table")}</Kbd></span>}>
@@ -297,7 +270,7 @@ function ViewSwitch() {
           onClick={() => setView("table")}
         >
           <ScaleIcon className="size-4" />
-          <span className="hidden @min-[50rem]:inline">Table</span>
+          <span className="hidden @min-[62rem]:inline">Table</span>
           {count ? (
             <span className="tabular grid h-4.5 min-w-4.5 place-items-center rounded-full bg-amber px-1 text-micro font-semibold text-amber-foreground">
               {count}
@@ -331,29 +304,54 @@ function useBranch(roomId: string, turns: number): string | null {
   return branch;
 }
 
-/** Where the room works: its folder, and in git its branch and whether it is the room's own worktree. */
+/** Where the room works, under its name: its project, its folder and branch (or its own worktree), its pull request, and its mode. */
 function Place() {
   const room = useStore((s) => s.snap?.state);
   const openFile = useStore((s) => s.openFile);
+  const openDialog = useStore((s) => s.openDialog);
+  const go = useStore((s) => s.go);
+  const project = useStore(useShallow((s) => {
+    const summary = s.rooms.find((entry) => entry.id === s.snap?.state.id);
+    return summary?.projectHash ? { hash: summary.projectHash, name: summary.projectName } : null;
+  }));
   const asked = useBranch(room?.id ?? "", (room?.turns.length ?? 0) + (room?.modeSince ?? 0));
   const branch = room?.repo ? (room.repo.branch ?? asked) : asked;
   if (!room) return null;
-  if (room.mode === "chat") return <span className="text-micro text-faint">Chat · no project</span>;
+  const mode = (
+    <Tip tip={room.mode === "chat" ? "Chat: no folder, no project. Click to connect one" : "Work: agents work in the folder. Click to change"}>
+      <button
+        type="button"
+        onClick={() => openDialog({ kind: "mode" })}
+        aria-label="Change conversation mode"
+        className="shrink-0 rounded px-1 text-micro font-medium text-muted-foreground ring-1 ring-border transition ring-inset hover:bg-accent hover:text-foreground"
+      >
+        {room.mode === "chat" ? "Chat" : "Work"}
+      </button>
+    </Tip>
+  );
+  if (room.mode === "chat") return <div className="flex min-w-0 items-center gap-2 text-meta text-faint">{mode}<span className="truncate">No project</span></div>;
   const wt = room.worktree;
   const folder = wt ? wt.source : room.workspace;
   const tip = wt
     ? t.worktree.place(wt.branch, wt.base, room.workspace, room.agents.map((a) => a.label), wt.source)
     : `Working folder: ${room.workspace}${branch ? `, branch ${branch}` : ""}`;
   return (
-    <div className="flex min-w-0 items-center gap-1.5">
+    <div className="flex min-w-0 items-center gap-2 text-meta text-faint">
+      {mode}
+      {project ? (
+        <button type="button" onClick={() => go({ kind: "project", hash: project.hash })} title="Open the project" className="max-w-[12rem] shrink-0 truncate font-medium text-muted-foreground transition hover:text-foreground">
+          {project.name || baseName(folder)}
+        </button>
+      ) : null}
       <Tip tip={tip}>
         <button
           type="button"
           onClick={() => openFile(null)}
-          className="flex w-fit max-w-full min-w-0 items-center gap-1.5 text-micro text-faint hover:text-muted-foreground"
+          className="flex w-fit max-w-full min-w-0 items-center gap-2 transition hover:text-muted-foreground"
         >
-          <span className="truncate font-mono">
-            {wt ? baseName(folder) : shortPath(folder)}
+          <span className="hidden min-w-0 items-center gap-1 @min-[40rem]:flex">
+            <FolderIcon className="size-3 shrink-0" />
+            <span className="truncate">{wt ? baseName(folder) : shortPath(folder)}</span>
           </span>
           {branch ? (
             <span className="flex min-w-0 items-center gap-1">
@@ -382,12 +380,13 @@ function OverviewToggle() {
     <Tip tip="The project: its threads, its library and what its rooms took">
       <Button
         variant="ghost"
-        size="sm"
-        className={cn("hidden shrink-0 text-muted-foreground @min-[36rem]:inline-flex", on && "bg-secondary text-secondary-foreground hover:bg-secondary")}
+        size="icon"
+        className={cn("hidden size-8 text-muted-foreground @min-[36rem]:inline-flex", on && "bg-secondary text-secondary-foreground hover:bg-secondary")}
+        aria-label="Project overview"
         aria-pressed={on}
         onClick={() => togglePanel("project")}
       >
-        Overview
+        <FoldersIcon className="size-4.5" />
       </Button>
     </Tip>
   );
@@ -461,26 +460,23 @@ export function RoomHeader() {
   const projectHash = useStore((s) => s.rooms.find((entry) => entry.id === s.snap?.state.id)?.projectHash);
   if (!room) return null;
   return (
-    <header className="@container flex h-14 shrink-0 items-center gap-1 border-b border-border/70 bg-background/85 px-2 backdrop-blur @min-[36rem]:gap-2 sm:px-4">
+    <header className="@container flex h-14 shrink-0 items-center gap-1 border-b border-border/70 bg-background/85 px-2 backdrop-blur @min-[36rem]:gap-1.5 sm:px-4">
       <NavButton />
-      {/* The name keeps its room when a side panel narrows the header: the agents' chips give way first. On a phone
-          the mode and the pull request move into the menu, so nothing runs past the screen's edge. */}
-      <div className="flex min-w-[min(10rem,30cqw)] flex-1 flex-col justify-center leading-tight">
+      {/* The name keeps its room when a side panel narrows the header: the agents' clocks give way first. On a phone
+          the pull request moves into the menu, so nothing runs past the screen's edge. */}
+      <div className="flex min-w-[min(10rem,30cqw)] flex-1 flex-col justify-center gap-0.5 pl-1">
         <Title />
         <Place />
       </div>
-      <ViewSwitch />
-      <div className="hidden min-w-0 shrink items-center gap-1.5 @min-[36rem]:flex">
+      <div className="hidden min-w-0 shrink items-center gap-0.5 @min-[36rem]:flex">
         {room.agents.map((a) => (
           <Presence key={a.id} a={a} />
         ))}
       </div>
-      <Button variant="ghost" size="sm" className="hidden shrink-0 text-muted-foreground @min-[36rem]:inline-flex" onClick={() => openDialog({ kind: "mode" })} aria-label="Change conversation mode">
-        {room.mode === "chat" ? "Chat" : "Work"}
-      </Button>
       {room.mode !== "chat" ? <OpenPr className="hidden @min-[36rem]:inline-flex" /> : null}
+      <ViewSwitch />
+      <span className="mx-1 hidden h-5 w-px bg-border @min-[36rem]:block" />
       {room.mode !== "chat" && projectHash ? <OverviewToggle /> : null}
-      <span className="mx-0.5 hidden h-5 w-px bg-border @min-[36rem]:block" />
       {room.mode !== "chat" ? <TerminalToggle /> : null}
       <PanelToggle />
       <DropdownMenu>

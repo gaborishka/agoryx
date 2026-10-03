@@ -199,16 +199,31 @@ function Steer({ state, running, onAgent }: { state: RoomState; running: boolean
 
 /**
  * The human's ✓: the thread moves to Resolved on the board. Its agents are not told and nothing stops; while it
- * works again it shows as Working, and Reopen brings it back for good.
+ * works again it shows as Working, and Reopen (or the toast's Undo, for five seconds) brings it back for good.
  */
 function Resolve({ id, resolved }: { id: string; resolved?: { by: string; at: string } }) {
   const loadRooms = useStore((s) => s.loadRooms);
   const [busy, setBusy] = useState(false);
+  const mark = async (to: boolean) => {
+    await api("POST", `${roomPath(id)}/resolve`, { resolved: to });
+    await loadRooms();
+  };
   const send = async () => {
     setBusy(true);
     try {
-      await api("POST", `${roomPath(id)}/resolve`, { resolved: !resolved });
-      await loadRooms();
+      await mark(!resolved);
+      // A ✓ hit by mistake is taken back from the toast, as the human's own Reopen.
+      if (!resolved)
+        toast.success("Thread resolved", {
+          duration: 5000,
+          action: {
+            label: "Undo",
+            onClick: () =>
+              void mark(false).catch((err) => {
+                if (!(err instanceof Unauthorized)) toast.error(errText(err));
+              }),
+          },
+        });
     } catch (err) {
       if (!(err instanceof Unauthorized)) toast.error(errText(err));
     } finally {

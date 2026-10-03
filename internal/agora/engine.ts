@@ -666,7 +666,10 @@ export class RoomEngine {
    * A thread of this room reported back (threads.ts): Agoryx's line, verbatim. It wakes the agent that started the
    * thread (`sys.wakes`), if it still sits here, and no one else; one the human started wakes nobody.
    */
-  postThreadReport(text: string, sys: Extract<SystemNote, { code: "thread.reported" }>): MessageEntry {
+  postThreadReport(text: string, sys: Extract<SystemNote, { code: "thread.reported" }>): MessageEntry | null {
+    // A report tried again (its room was busy the first time) is posted once.
+    const said = (message: MessageEntry) => message.sys?.code === "thread.reported" && message.sys.room === sys.room && message.sys.run === sys.run;
+    if (sys.run && this.state.messages.some(said)) return null;
     const spawner = sys.wakes ? this.state.agents.find((agent) => agent.id === sys.wakes) : undefined;
     const { wakes: _wakes, ...rest } = sys;
     const message = this.postMessage({

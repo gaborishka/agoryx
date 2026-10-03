@@ -8,9 +8,9 @@ import { agentKey } from "../../internal/agora/actor.js";
 import { AgoraDaemon } from "../../internal/agora/daemon.js";
 import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { createCodexRunner } from "../../internal/agora/runners/codex.js";
-import { createRoom } from "../../internal/agora/service.js";
+import { changeRoomMode, createRoom, openEngine } from "../../internal/agora/service.js";
 import { applyTableOp, emptyTable, prepareTableOp } from "../../internal/agora/table.js";
-import { tableItems, threadText } from "../../internal/agora/threads.js";
+import { tableItems, threadReport, threadText } from "../../internal/agora/threads.js";
 import { writeFakeBins } from "./helpers.js";
 
 let home: string;
@@ -180,6 +180,26 @@ test("a thread the human starts wakes nobody when it reports and waits in Attent
   assert.match(elsewhere.body.error, /a thread works in its room's folder/);
 });
 
+test("a report whose room another process drives waits, and goes in once that room is free", async () => {
+  const repo = makeRepo("held-repo");
+  rules([{ agent: "codex", match: "HELD-BRIEF", reply: "Looked, all fine." }]);
+  const parent = createRoom({ name: "Held", dir: repo, agents: [{ kind: "codex" }], env });
+  // Driven elsewhere, as by an agent's `agoryx new --from here` in a terminal.
+  const elsewhere = openEngine(parent, { env, runners: {} });
+  const made = await call("POST", "/api/rooms", { name: "While held", from: parent.id, text: "HELD-BRIEF: look" });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  await waitFor(async () => (await snapshot(made.body.room.id)).runs.some((run: any) => run.status === "ended"));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  parent.refresh();
+  assert.ok(!parent.state.messages.some((m) => m.sys?.code === "thread.reported"), "not while the room is held");
+  await elsewhere.close();
+  await waitFor(async () => (await snapshot(parent.id)).messages.some((m: any) => m.sys?.code === "thread.reported"));
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  const report = (await snapshot(parent.id)).messages.filter((m: any) => m.sys?.code === "thread.reported");
+  assert.equal(report.length, 1, "posted once, not with every try");
+  assert.equal(report[0].sys.room, made.body.room.id);
+});
+
 test("resolving a thread is the human's: it moves the thread on the board, posts nothing and wakes nobody", async () => {
   const repo = makeRepo("resolve-repo");
   rules([{ agent: "codex", match: "RESOLVE-BRIEF", reply: "Looked, all fine." }]);
@@ -233,6 +253,34 @@ test("a thread goes on from its parent's branch, in the parent's project folder"
   assert.equal(thread.state.worktree?.base, "agoryx/feature");
   assert.equal(thread.state.parent, parent.state.id);
   assert.equal(thread.state.mode, "work");
+  // A thread is a Work room for its whole life, not only at its start.
+  assert.throws(() => changeRoomMode(thread, { mode: "chat" }, env), /a thread is a Work room/);
+  assert.equal(thread.state.mode, "work");
+});
+
+test("a thread keeps its spawner's choice not to be given the human's profile", () => {
+  const repo = makeRepo("profile-repo");
+  const parent = createRoom({ name: "Quiet", dir: repo, env });
+  const agent = parent.state.agents[0]!;
+  parent.append({ type: "agent.changed", agent: agent.id, profile: false, by: "Ivan" });
+  const thread = createRoom({ name: "Sub", from: parent.state.id, createdBy: { room: parent.state.id, agent: agent.id }, env });
+  assert.equal(thread.state.agents[0]?.profile, false);
+});
+
+test("a report names only its own run's items, not what came after the run ended", () => {
+  const repo = makeRepo("bound-repo");
+  const parent = createRoom({ name: "Bound", dir: repo, env });
+  const thread = createRoom({ name: "Bounded", from: parent.state.id, env });
+  const agent = thread.state.agents[0]!.id;
+  const op = (raw: Record<string, unknown>, by: string) => thread.append({ type: "table.op", op: prepareTableOp(thread.state.table, raw, by, by === "Ivan") });
+  thread.append({ type: "run.started", runId: "r1", trigger: null, budget: null });
+  thread.append({ type: "turn.started", turnId: "t1", agent, runId: "r1", cursor: 0, resume: false, sessionId: null, promptChars: 0 });
+  op({ op: "fact", text: "Parser handles empty input." }, agent);
+  thread.append({ type: "run.ended", runId: "r1", reason: "quiet", turns: 1 });
+  op({ op: "fact", text: "Added after the run." }, "Ivan");
+  const report = threadReport(thread, "r1", parent.state, []);
+  assert.ok(report);
+  assert.deepEqual(report.sys.items.map((item) => item.text), ["Parser handles empty input."]);
 });
 
 test("the report's text says what the thread left and how to reach it", () => {

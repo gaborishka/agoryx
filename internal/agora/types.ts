@@ -178,6 +178,8 @@ export type SystemNote =
   | {
       code: "thread.reported";
       room: string;
+      /** The thread's run this reports; absent in logs from before. */
+      run?: string;
       name: string;
       reason: "quiet" | "budget" | "stopped";
       agents: string[];
@@ -746,6 +748,8 @@ export interface RunState {
   budget: number | null;
   used: number;
   startedSeq: number;
+  /** The seq of its run.ended. */
+  endedSeq?: number;
   status: "active" | "ended";
   endReason?: "quiet" | "budget" | "stopped";
 }

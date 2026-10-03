@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pidAlive } from "./daemoninfo.js";
 import { foldMemoryEvent, memoryBriefing, memoryUpdateLine, type MemoryEntry, type MemoryEventBody } from "./memory.js";
@@ -232,7 +232,9 @@ export const appendProjectEvent = (key: string, body: ProjectEventBody, writer: 
     const before = readEvents(file);
     const seq = before.reduce((max, event) => Math.max(max, event.seq), 0) + 1;
     const event = { ...body, seq, ts: new Date().toISOString(), by: writer.by, ...(writer.from ? { from: writer.from } : {}) } as ProjectEvent;
-    appendFileSync(file, `${JSON.stringify(event)}\n`);
+    // A crash mid-write can leave a partial last line: the new event starts on a line of its own, not glued onto it.
+    const partial = existsSync(file) && statSync(file).size > 0 && !readFileSync(file, "utf8").endsWith("\n");
+    appendFileSync(file, `${partial ? "\n" : ""}${JSON.stringify(event)}\n`);
     const project = foldProject(key, [...before, event]);
     const tmp = join(dir, "project.json.tmp");
     writeFileSync(tmp, `${JSON.stringify(summaryOf(project), null, 2)}\n`);
@@ -240,16 +242,30 @@ export const appendProjectEvent = (key: string, body: ProjectEventBody, writer: 
     return project;
   });
 
-/** Set (or, with an empty text, clear) a name, goal or instructions. Nothing is appended when nothing changes. */
-export const setProjectField = (key: string, field: ProjectField, text: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
+/** A name, goal or instructions as it would be written; refused when it could not be. */
+const checkProjectField = (field: ProjectField, text: unknown): string => {
   if (!PROJECT_FIELDS.includes(field)) throw new ProjectError(`a project has a ${PROJECT_FIELDS.join(", ")}; not "${field}"`);
+  if (typeof text !== "string") throw new ProjectError(`the ${field} is text`);
   const value = text.replace(/\r\n/g, "\n").trim();
   if (field === "name" && value.includes("\n")) throw new ProjectError("a project's name is one line");
   if (value.length > MAX_PROJECT_TEXT) throw new ProjectError(`the ${field} is ${value.length} characters; at most ${MAX_PROJECT_TEXT}`);
+  return value;
+};
+
+/** Set (or, with an empty text, clear) a name, goal or instructions. Nothing is appended when nothing changes. */
+export const setProjectField = (key: string, field: ProjectField, text: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project =>
+  setProjectFields(key, { [field]: text }, writer, env);
+
+/** Set several fields at once: every one is checked before any is written, so a refused one leaves the project as it was. */
+export const setProjectFields = (key: string, fields: Partial<Record<ProjectField, unknown>>, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
+  const values = Object.entries(fields).map(([field, text]) => [field as ProjectField, checkProjectField(field as ProjectField, text)] as const);
   return lockProject(key, env, () => {
-    const project = readProject(key, env);
-    if ((project[field] ?? "") === value) return project;
-    return appendProjectEvent(key, { type: "project.changed", field, value: value || null }, writer, env);
+    let project = readProject(key, env);
+    for (const [field, value] of values) {
+      if ((project[field] ?? "") === value) continue;
+      project = appendProjectEvent(key, { type: "project.changed", field, value: value || null }, writer, env);
+    }
+    return project;
   });
 };
 
@@ -277,8 +293,17 @@ export const checkContextFolder = (key: string, path: string, env: NodeJS.Proces
     // not there
   }
   if (!isDir) throw new ProjectError(`no folder at ${folder}`);
-  if (within(key, folder)) throw new ProjectError(`${folder} is inside the project's own folder: its agents work there already`);
-  if (within(folder, key)) throw new ProjectError(`${folder} holds the project's own folder: name a folder beside it, not above it`);
+  // Where the folders really are: a link to "/" (or to the project) is what it points at, not the name it has.
+  const real = (path: string) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return path;
+    }
+  };
+  const [realFolder, realKey] = [real(folder), real(key)];
+  if (within(realKey, realFolder)) throw new ProjectError(`${folder} is inside the project's own folder: its agents work there already`);
+  if (within(realFolder, realKey)) throw new ProjectError(`${folder} holds the project's own folder: name a folder beside it, not above it`);
   return folder;
 };
 

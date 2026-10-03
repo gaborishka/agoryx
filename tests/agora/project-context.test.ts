@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -41,6 +41,11 @@ test("a context folder is a write with who made it; inside, above or missing is 
     assert.throws(() => addProjectContext(key, join(key, "src"), { by: "Ivan" }, env), /inside the project's own folder/);
     assert.throws(() => addProjectContext(key, home, { by: "Ivan" }, env), /holds the project's own folder/);
     assert.throws(() => addProjectContext(key, "/", { by: "Ivan" }, env), /holds the project's own folder/, "the filesystem root holds every project");
+    // A link is what it points at: one to "/" or to the project's own folder is refused as they are.
+    symlinkSync("/", join(home, "root-link"));
+    symlinkSync(join(key, "src"), join(home, "src-link"));
+    assert.throws(() => addProjectContext(key, join(home, "root-link"), { by: "Ivan" }, env), /holds the project's own folder/);
+    assert.throws(() => addProjectContext(key, join(home, "src-link"), { by: "Ivan" }, env), /inside the project's own folder/);
     assert.throws(() => addProjectContext(key, join(home, "nope"), { by: "Ivan" }, env), /no folder at/);
     assert.throws(() => addProjectContext(key, "lib", { by: "Ivan" }, env), /absolute path/);
 
@@ -53,6 +58,19 @@ test("a context folder is a write with who made it; inside, above or missing is 
     assert.deepEqual(removed.context, []);
     assert.equal(removed.events.at(-1)!.by, "claude");
     assert.throws(() => removeProjectContext(key, lib, { by: "Ivan" }, env), /not a context folder/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a write after a crash mid-write starts on its own line, and is read back", () => {
+  const { home, env, key } = scratch();
+  try {
+    setProjectField(key, "goal", "First", { by: "Ivan" }, env);
+    appendFileSync(join(env.AGORYX_HOME, "projects", projectHash(key), "events.jsonl"), '{"type":"project.chan');
+    setProjectField(key, "goal", "Second", { by: "Ivan" }, env);
+    assert.equal(readProject(key, env).goal, "Second");
+    assert.equal(readProject(key, env).seq, 2);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

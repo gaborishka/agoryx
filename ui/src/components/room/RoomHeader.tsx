@@ -1,6 +1,7 @@
 import {
   EllipsisIcon,
   FolderIcon,
+  GitPullRequestArrowIcon,
   FoldersIcon,
   GitBranchIcon,
   GitCompareArrowsIcon,
@@ -40,7 +41,7 @@ import type { RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Tip } from "./bits";
 import { useShallow } from "zustand/react/shallow";
-import { OpenPr, PrChip } from "./Github";
+import { canOpenPr, OpenPr, PrChip } from "./Github";
 import { t } from "@/lib/i18n";
 
 function Presence({ a }: { a: RoomAgent }) {
@@ -458,7 +459,11 @@ export function RoomHeader() {
   const openChanges = useStore((s) => s.openChanges);
   // A Work room is in its folder's project: its overview and settings are a click away from here.
   const projectHash = useStore((s) => s.rooms.find((entry) => entry.id === s.snap?.state.id)?.projectHash);
+  const driven = useStore((s) => s.snap?.driven);
+  /** Where "Open PR" was opened from: its button, or the menu (the only way to it on a narrow header). */
+  const [pr, setPr] = useState<"button" | "menu" | null>(null);
   if (!room) return null;
+  const prOpenable = room.mode !== "chat" && Boolean(room.repo) && canOpenPr(room, driven);
   return (
     <header className="@container flex h-14 shrink-0 items-center gap-1 border-b border-border/70 bg-background/85 px-2 backdrop-blur @min-[36rem]:gap-1.5 sm:px-4">
       <NavButton />
@@ -473,7 +478,9 @@ export function RoomHeader() {
           <Presence key={a.id} a={a} />
         ))}
       </div>
-      {room.mode !== "chat" ? <OpenPr className="hidden @min-[36rem]:inline-flex" /> : null}
+      {room.mode !== "chat" ? (
+        <OpenPr className="hidden @min-[36rem]:inline-flex" open={pr !== null} setOpen={(open) => setPr(open ? "button" : null)} fromMenu={pr === "menu"} />
+      ) : null}
       <ViewSwitch />
       <span className="mx-1 hidden h-5 w-px bg-border @min-[36rem]:block" />
       {room.mode !== "chat" && projectHash ? <OverviewToggle /> : null}
@@ -490,7 +497,8 @@ export function RoomHeader() {
             <EllipsisIcon className="size-4.5" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-64">
+        {/* Focus going back to "More" would close the pull request's popover the moment the menu opens it. */}
+        <DropdownMenuContent align="end" className="w-64" onCloseAutoFocus={(event) => pr === "menu" && event.preventDefault()}>
           <DropdownMenuItem
             onSelect={() => useStore.getState().openSession()}
             className="items-start gap-2.5 py-2"
@@ -503,6 +511,15 @@ export function RoomHeader() {
               </small>
             </span>
           </DropdownMenuItem>
+          {prOpenable ? (
+            <DropdownMenuItem
+              disabled={room.turns.some((turn) => turn.status === "running")}
+              onSelect={() => setPr("menu")}
+            >
+              <GitPullRequestArrowIcon />
+              Open pull request
+            </DropdownMenuItem>
+          ) : null}
           {room.mode !== "chat" ? <DropdownMenuItem onSelect={() => openChanges({ scope: "room" })}>
             <GitCompareArrowsIcon />
             All room changes

@@ -51,7 +51,8 @@ export const threadReport = (store: RoomStore, runId: string, parent: RoomState,
   const labelOf = (id: string) => state.agents.find((agent) => agent.id === id)?.label ?? state.former.find((agent) => agent.id === id)?.label ?? id;
   const uncommitted = uncommittedFiles(state.workspace)?.filter((path) => !path.startsWith(".agoryx/")) ?? [];
   const items = tableItems(state.table)
-    .filter((item) => item.seq > run.startedSeq)
+    // This run's items only: not what a later run, or the human after it, added before the report is written.
+    .filter((item) => item.seq > run.startedSeq && item.seq <= (run.endedSeq ?? Infinity))
     .sort((a, b) => a.seq - b.seq)
     .map(({ id, text }) => ({ id, text }));
   const open = state.table.questions.find((question) => question.status === "open");
@@ -60,6 +61,7 @@ export const threadReport = (store: RoomStore, runId: string, parent: RoomState,
   const sys: ThreadNote = {
     code: "thread.reported",
     room: state.id,
+    run: runId,
     name: state.name,
     reason: run.endReason ?? "quiet",
     agents: state.agents.map((agent) => agent.label),

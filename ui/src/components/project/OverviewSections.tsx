@@ -439,6 +439,13 @@ export function useOverview(hash: string): { overview: Overview | null; error: s
   const [error, setError] = useState<string | null>(null);
   // After a change made here (+ Add, taking a file out): read again now.
   const [again, setAgain] = useState(0);
+  // And when the project's settings close: context folders added or taken out there are in the library here.
+  const settingsOpen = useStore((s) => s.dialog?.kind === "project" && s.dialog.hash === hash);
+  const wasOpen = useRef(settingsOpen);
+  useEffect(() => {
+    if (wasOpen.current && !settingsOpen) setAgain((n) => n + 1);
+    wasOpen.current = settingsOpen;
+  }, [settingsOpen]);
   useEffect(() => {
     let live = true;
     api<Overview>("GET", `/api/projects/${hash}/overview`)

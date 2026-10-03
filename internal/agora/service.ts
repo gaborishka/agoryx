@@ -75,13 +75,13 @@ const threadParent = (options: CreateRoomOptions, env: NodeJS.ProcessEnv) => {
   if (!key) throw new Error(`"${parent.name}" is a Chat room: a thread works in its project's folder — switch the room to Work first`);
   if (options.mode === "chat") throw new Error("a thread is a Work room");
   const spawner = options.createdBy?.room === parent.id ? parent.agents.find((agent) => agent.id === options.createdBy!.agent) : undefined;
-  const { id, kind, label, model, effort } = spawner ?? parent.agents[0]!;
+  const { id, kind, label, model, effort, profile } = spawner ?? parent.agents[0]!;
   return {
     id: parent.id,
     dir: key,
     // A thread goes on from the parent's branch when the parent has one.
     base: parent.worktree?.branch,
-    agents: [{ id, kind, label, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }],
+    agents: [{ id, kind, label, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(profile === false ? { profile } : {}) }],
   };
 };
 
@@ -324,6 +324,7 @@ export const changeRoomMode = (store: RoomStore, options: ChangeRoomModeOptions,
   const state = store.state;
   if (state.runs.at(-1)?.status === "active" || state.turns.some((turn) => turn.status === "running")) throw new Error("Wait for the agents to finish before switching modes");
   if (options.mode === (state.mode ?? "work")) return;
+  if (options.mode === "chat" && state.parent) throw new Error("a thread is a Work room");
   if (options.mode === "chat" && (options.dir || options.worktree || options.base)) throw new Error("Chat has no project folder");
   let project: RoomProject | undefined = state.project;
   let made: RoomWorktree | undefined;

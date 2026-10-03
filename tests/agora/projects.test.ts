@@ -141,6 +141,12 @@ test("the daemon serves projects: agents write with their key, a stale edit is r
     assert.equal(stale.status, 409);
     assert.equal(stale.body.project.goal, "Projects, the Agoryx way");
 
+    // Every field is checked before any is written: a refused name leaves the goal as it was.
+    const half = await call("PATCH", `/api/projects/${hash}`, { goal: "Half written", name: "Two\nlines", seq: 1 });
+    assert.equal(half.status, 400);
+    assert.match(half.body.error, /one line/);
+    assert.equal((await call("GET", `/api/projects/${hash}`)).body.project.goal, "Projects, the Agoryx way");
+
     assert.equal((await call("PATCH", `/api/projects/${hash}`, { name: "Agoryx", seq: 1 })).status, 200);
     const rooms = (await call("GET", "/api/rooms")).body.rooms;
     assert.equal(rooms.find((entry: any) => entry.id === room.id).projectName, "Agoryx");

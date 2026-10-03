@@ -172,7 +172,12 @@ test("the daemon keeps memory: agents note with their key, promote from their ow
     const stale = await call("PATCH", `/api/projects/${hash}/memory/M1`, { text: "Something else", seq: m1.seq });
     assert.equal(stale.status, 409);
     assert.equal(stale.body.entry.text, "CI runs on push and on PRs.");
-    assert.equal((await call("DELETE", `/api/projects/${hash}/memory/M2`)).status, 200);
+    // A removal is against the version shown: one rewritten since is not removed unseen.
+    const removeStale = await call("DELETE", `/api/projects/${hash}/memory/M1?seq=${m1.seq}`);
+    assert.equal(removeStale.status, 409);
+    assert.equal(removeStale.body.entry.text, "CI runs on push and on PRs.");
+    const m2 = promoted.body.project.memory[1];
+    assert.equal((await call("DELETE", `/api/projects/${hash}/memory/M2?seq=${m2.seq}`)).status, 200);
     assert.deepEqual((await call("GET", `/api/projects/${hash}`)).body.project.memory.map((entry: any) => [entry.id, entry.revisedBy]), [["M1", "Ivan"]]);
   } finally {
     await daemon.close();

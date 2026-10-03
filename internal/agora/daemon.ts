@@ -31,7 +31,7 @@ import { readTurnActivity, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
-import { addLibraryFile, addProjectContext, checkContextFolder, listProjects, MAX_PROJECT_TEXT, PROJECT_FIELDS, ProjectError, projectHash, projectKey, projectKeyOfFolder, readProject, removeLibraryFile, removeProjectContext, setProjectField, type Project, type ProjectWriter } from "./projects.js";
+import { addLibraryFile, addProjectContext, checkContextFolder, listProjects, MAX_PROJECT_TEXT, PROJECT_FIELDS, ProjectError, projectHash, projectKey, projectKeyOfFolder, readProject, removeLibraryFile, removeProjectContext, setProjectFields, type Project, type ProjectWriter } from "./projects.js";
 import { memoryPath, noteMemory, promoteToMemory, removeMemory, reviseMemory } from "./memory.js";
 import { parseSubscription, PushNotes, PushSender } from "./push.js";
 import { qrSvg } from "./qr.js";
@@ -152,6 +152,8 @@ const MIME: Record<string, string> = {
 const MAX_RAW = 25 * 1024 * 1024;
 /** A /raw/ capability for a project's own files, not a room's: `~project-<hash>`. */
 const PROJECT_RAW = "~project-";
+/** How often a thread's report waiting for its busy room is tried again. */
+const REPORT_RETRY_MS = 2_000;
 /** Video and audio stream in ranges, so they may be larger. */
 const MAX_RAW_MEDIA = 512 * 1024 * 1024;
 
@@ -400,6 +402,9 @@ export class AgoraDaemon {
   /** What each push said: the phone fetches it (push.ts), so a push the daemon did not send shows nothing. */
   private readonly pushNotes = new PushNotes();
   private heartbeat?: NodeJS.Timeout;
+  /** Thread reports whose room another process drives: tried again until it can take them (reportThread). */
+  private pendingReports: Array<{ handle: RoomHandle; runId: string }> = [];
+  private reportRetry?: NodeJS.Timeout;
   /** Which rooms wait for the human (attention.ts). */
   private readonly attention: AttentionBoard;
   /** The room's browser: agents' commands to the app's pane (browser.ts). */
@@ -659,6 +664,7 @@ export class AgoraDaemon {
   /** `by`: the agent that stopped the daemon, so each room records that its run was stopped by it. */
   async close(by?: ActorOrigin | { human: true }): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.reportRetry) clearInterval(this.reportRetry);
     for (const client of this.sseClients) client.end();
     this.sseClients.clear();
     // The app's browser host stream is not in sseClients: end it here, or server.close() waits for it.
@@ -782,16 +788,36 @@ export class AgoraDaemon {
     }
   }
 
-  /** A thread's run ended: its report goes into the room it was started from (threads.ts). */
-  private reportThread(handle: RoomHandle, runId: string): void {
+  /**
+   * A thread's run ended: its report goes into the room it was started from (threads.ts). While another process
+   * drives that room (an agent's `agoryx new --from here` in a terminal), the report waits and is tried again.
+   */
+  private reportThread(handle: RoomHandle, runId: string): boolean {
     const parentId = handle.store.state.parent!;
     try {
       const parent = this.room(parentId);
+      if (!parent.engine) {
+        if (!this.pendingReports.some((item) => item.handle === handle && item.runId === runId)) {
+          this.pendingReports.push({ handle, runId });
+          this.log(`[${handle.store.id}] its report waits for ${parentId}: ${parent.lockedBy ?? "the room is busy"}`);
+        }
+        this.reportRetry ??= setInterval(() => this.retryReports(), REPORT_RETRY_MS);
+        this.reportRetry.unref();
+        return false;
+      }
       const report = threadReport(handle.store, runId, parent.store.state, roomWorkspaceDiff(handle.store)?.changes ?? []);
-      if (!report) return;
-      this.engineFor(parent).postThreadReport(report.text, report.sys);
+      if (report) parent.engine.postThreadReport(report.text, report.sys);
     } catch (error) {
       this.log(`[${handle.store.id}] cannot report to ${parentId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return true;
+  }
+
+  private retryReports(): void {
+    this.pendingReports = this.pendingReports.filter(({ handle, runId }) => !this.reportThread(handle, runId));
+    if (!this.pendingReports.length && this.reportRetry) {
+      clearInterval(this.reportRetry);
+      delete this.reportRetry;
     }
   }
 
@@ -1002,10 +1028,12 @@ export class AgoraDaemon {
     let full: string | null;
     if (project !== null) {
       // A file in the project's library, served while it is there.
-      const asked = relPath.startsWith("~abs/") ? `/${relPath.slice("~abs/".length)}` : "";
-      const listed = listProjects(this.env).find((entry) => entry.hash === project)?.library.some((entry) => entry.path === asked);
-      if (!listed || !existsSync(asked) || !statSync(asked).isFile()) throw new HttpError(404, "no such file in the project's library");
-      full = asked;
+      // The UI links a path as `~abs/` + the path without its leading "/": matched the same way back, so a Windows
+      // path (C:\work\a.png, no leading "/") is found as it was written.
+      const ref = relPath.startsWith("~abs/") ? relPath.slice("~abs/".length) : null;
+      const listed = ref === null ? undefined : listProjects(this.env).find((entry) => entry.hash === project)?.library.find((entry) => entry.path.replace(/^\//, "") === ref);
+      if (!listed || !existsSync(listed.path) || !statSync(listed.path).isFile()) throw new HttpError(404, "no such file in the project's library");
+      full = listed.path;
     } else {
       const handle = this.room(roomId);
       if (relPath.startsWith("~block/")) {
@@ -1178,8 +1206,7 @@ export class AgoraDaemon {
     const writer: ProjectWriter = caller.agent ? { by: caller.agent.agent, from: caller.agent } : { by: defaultHumanName(this.env) };
     try {
       const context = [...new Set(((body.context as string[] | undefined) ?? []).map((path) => checkContextFolder(key, path, this.env)))];
-      setProjectField(key, "name", name, writer, this.env);
-      if (goal) setProjectField(key, "goal", goal, writer, this.env);
+      setProjectFields(key, goal ? { name, goal } : { name }, writer, this.env);
       for (const folder of context) addProjectContext(key, folder, writer, this.env);
     } catch (error) {
       if (error instanceof ProjectError) throw new HttpError(400, error.message);
@@ -1339,7 +1366,9 @@ export class AgoraDaemon {
       const project = readProject(key, this.env);
       const entry = project.memory.find((item) => item.id === id.toUpperCase());
       if (!entry) throw new HttpError(404, `no memory entry ${id}`);
-      if (typeof body.seq === "number" && body.seq !== entry.seq) {
+      // A DELETE has no body, so its version comes in the query.
+      const seen = typeof body.seq === "number" ? body.seq : url.searchParams.has("seq") ? Number(url.searchParams.get("seq")) : undefined;
+      if (seen !== undefined && seen !== entry.seq) {
         sendJson(res, 409, { error: `${entry.id} changed since you opened it`, entry, project: { ...view(project), events: project.events } });
         return;
       }
@@ -1359,16 +1388,18 @@ export class AgoraDaemon {
         sendJson(res, 409, { error: "the project changed since you opened it", project: { ...view(project), events: project.events } });
         return;
       }
+      const fields: Partial<Record<(typeof PROJECT_FIELDS)[number], string>> = {};
       for (const field of PROJECT_FIELDS) {
         const value = body[field];
         if (value === undefined) continue;
         if (typeof value !== "string" && value !== null) throw new HttpError(400, `${field} must be a string`);
-        try {
-          setProjectField(key, field, value ?? "", writer, this.env);
-        } catch (error) {
-          if (error instanceof ProjectError) throw new HttpError(400, error.message);
-          throw error;
-        }
+        fields[field] = value ?? "";
+      }
+      try {
+        setProjectFields(key, fields, writer, this.env);
+      } catch (error) {
+        if (error instanceof ProjectError) throw new HttpError(400, error.message);
+        throw error;
       }
     } else if (method !== "GET") throw new HttpError(405, "GET or PATCH");
     const project = readProject(key, this.env);

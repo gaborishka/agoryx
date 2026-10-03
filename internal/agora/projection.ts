@@ -132,6 +132,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       if (run) {
         run.status = "ended";
         run.endReason = event.reason;
+        run.endedSeq = event.seq;
       }
       return;
     }

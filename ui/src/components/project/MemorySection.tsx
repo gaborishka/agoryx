@@ -90,9 +90,13 @@ function EntryCard({ entry, hash, onSaved }: { entry: MemoryEntry; hash: string;
 
   const remove = async () => {
     try {
-      onSaved((await api<{ project: ProjectView }>("DELETE", `/api/projects/${hash}/memory/${entry.id}`)).project);
+      // Against the version shown here: an entry rewritten meanwhile is not removed unseen.
+      onSaved((await api<{ project: ProjectView }>("DELETE", `/api/projects/${hash}/memory/${entry.id}?seq=${base.seq}`)).project);
     } catch (err) {
-      if (!(err instanceof Unauthorized)) toast.error(errText(err));
+      if (err instanceof ApiError && err.status === 409 && err.body.entry) {
+        setTheirs(err.body.entry as MemoryEntry);
+        toast.error(`${entry.id} changed since you opened it; read it before removing`);
+      } else if (!(err instanceof Unauthorized)) toast.error(errText(err));
     }
   };
 

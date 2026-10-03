@@ -4,8 +4,8 @@ import type { RoomSummary } from "./types";
 /**
  * How the room list is laid out: the rooms by the folder they work in, and — when the human keeps it on — the rooms
  * whose agents are busy and ask nothing of the human folded into one Working section at the foot of the list. A room
- * comes back out the moment its run ends or it waits for the human. Only what this browser shows; nothing reaches the
- * agents.
+ * comes back out the moment its run ends or it waits for the human, at the top. Busy rooms keep their places, so the list
+ * moves only when a room comes back. Only what this browser shows; nothing reaches the agents.
  */
 
 /** Rooms in a folder Agoryx made for them (no folder of the human's) are grouped together. */
@@ -30,6 +30,38 @@ export const isBusy = (room: RoomSummary) => room.running || Boolean(room.workin
 
 /** Folds into Working: busy and asking nothing of the human. The open room never folds, so sending never moves it away. */
 export const folds = (room: RoomSummary, current: string | null) => room.id !== current && !room.waiting && isBusy(room);
+
+/**
+ * Where a room stands in the list: the last time it came back to the human — its last word once its agents stop, the
+ * moment it began to wait for the human. While agents work and nothing waits, the room keeps the place it had when the
+ * work began (or when this page first saw it), so a busy room's messages do not shuffle the list under the human's hand.
+ * `held` remembers those places between calls; a page's own list keeps one for its life.
+ */
+const places = new Map<string, number>();
+export const returnTime = (room: RoomSummary, held: Map<string, number> = places) => {
+  const last = Date.parse(room.updatedAt) || 0;
+  const waits = room.waiting ? Date.parse(room.waiting.ts) || 0 : 0;
+  if (!isBusy(room)) {
+    held.delete(room.id);
+    return Math.max(last, waits);
+  }
+  let place = held.get(room.id);
+  if (place === undefined) {
+    place = last;
+    held.set(room.id, place);
+  }
+  return Math.max(place, waits);
+};
+
+/** The rooms by `returnTime`, the latest first; a tie keeps the order they came in. */
+export const orderRooms = (rooms: RoomSummary[], held: Map<string, number> = places) => {
+  const ids = new Set(rooms.map((room) => room.id));
+  for (const id of held.keys()) if (!ids.has(id)) held.delete(id);
+  return rooms
+    .map((room, index) => ({ room, index, at: returnTime(room, held) }))
+    .sort((a, b) => b.at - a.at || a.index - b.index)
+    .map(({ room }) => room);
+};
 
 /** When the room's work began: its earliest running turn, or its last activity. */
 const workSince = (room: RoomSummary) => {
@@ -87,7 +119,8 @@ export interface SidebarLayout {
   working: RoomSummary[];
 }
 
-export const layoutRooms = (rooms: RoomSummary[], current: string | null, fold: boolean): SidebarLayout => {
+export const layoutRooms = (all: RoomSummary[], current: string | null, fold: boolean, held: Map<string, number> = places): SidebarLayout => {
+  const rooms = orderRooms(all, held);
   const shown = (room: RoomSummary) => !fold || !folds(room, current);
   const working = rooms.filter((room) => !shown(room)).sort((a, b) => workSince(b) - workSince(a) || a.id.localeCompare(b.id));
   const grouped = isGrouped(rooms);

@@ -62,3 +62,35 @@ test("a busy thread folds on its own; its idle parent stays", () => {
   assert.deepEqual(view.groups[0]?.rooms.map((r) => r.id), ["parent"]);
   assert.deepEqual(view.working.map((r) => r.id), ["thread"]);
 });
+
+test("a busy room keeps its place while its agents write; it comes back to the top when the run ends", () => {
+  const held = new Map<string, number>();
+  const order = (rooms: RoomSummary[]) => layoutRooms(rooms, "a", true, held).rooms.map((r) => r.id);
+  // The human sends in "a": it rises once, then works.
+  assert.deepEqual(order([room("a", busy("2026-10-03T09:00:00Z", { updatedAt: "2026-10-03T09:00:00Z" })), room("b", { updatedAt: "2026-10-03T08:30:00Z" })]), ["a", "b"]);
+  // "b" gets a word from the human later; "a" writes on, which would lift it again by updatedAt, and does not.
+  assert.deepEqual(
+    order([room("a", busy("2026-10-03T09:00:00Z", { updatedAt: "2026-10-03T09:20:00Z" })), room("b", { updatedAt: "2026-10-03T09:10:00Z" })]),
+    ["b", "a"],
+  );
+  // The run ends: "a" comes back, at the top.
+  assert.deepEqual(order([room("a", { updatedAt: "2026-10-03T09:25:00Z" }), room("b", { updatedAt: "2026-10-03T09:10:00Z" })]), ["a", "b"]);
+  assert.equal(held.size, 0, "nothing is held for rooms at rest");
+});
+
+test("a busy room that begins to wait for the human rises at that moment", () => {
+  const held = new Map<string, number>();
+  const order = (rooms: RoomSummary[]) => layoutRooms(rooms, null, false, held).rooms.map((r) => r.id);
+  assert.deepEqual(order([room("a", { updatedAt: "2026-10-03T09:10:00Z" }), room("w", busy("2026-10-03T09:00:00Z", { updatedAt: "2026-10-03T09:00:00Z" }))]), ["a", "w"]);
+  const asks = { reason: "mention", ts: "2026-10-03T09:15:00Z" } as unknown as AttentionItem;
+  assert.deepEqual(order([room("a", { updatedAt: "2026-10-03T09:10:00Z" }), room("w", busy("2026-10-03T09:00:00Z", { updatedAt: "2026-10-03T09:15:00Z", waiting: asks }))]), ["w", "a"]);
+});
+
+test("groups follow their rooms' places, so a project's busy room does not lift the project", () => {
+  const held = new Map<string, number>();
+  const heads = (rooms: RoomSummary[]) => layoutRooms(rooms, "p", true, held).groups.map((g) => g.key);
+  const p = (updatedAt: string) => room("p", busy("2026-10-03T09:00:00Z", { folder: "/repo/p", projectHash: "hp", updatedAt }));
+  const q = room("q", { folder: "/repo/q", projectHash: "hq", updatedAt: "2026-10-03T09:05:00Z" });
+  assert.deepEqual(heads([p("2026-10-03T09:00:00Z"), q]), ["/repo/q", "/repo/p"]);
+  assert.deepEqual(heads([p("2026-10-03T09:30:00Z"), q]), ["/repo/q", "/repo/p"]);
+});

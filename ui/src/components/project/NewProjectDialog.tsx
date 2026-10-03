@@ -73,7 +73,7 @@ export function NewProjectDialog({
           <DialogDescription>A folder its Work rooms share, with what every agent there starts with.</DialogDescription>
         </DialogHeader>
         <form
-          className="flex min-w-0 flex-col gap-4"
+          className="flex min-w-0 flex-col gap-5"
           onSubmit={(event) => {
             event.preventDefault();
             void create();

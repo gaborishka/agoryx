@@ -1,14 +1,15 @@
-import { FolderIcon, FoldersIcon, PlusIcon, SearchIcon } from "lucide-react";
+import { FoldersIcon, GitBranchIcon, MessagesSquareIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState, ErrorNote, Loading } from "@/components/common/states";
-import { NavButton } from "@/components/room/RoomHeader";
+import { PageBar, PageTitle } from "@/components/common/PageBar";
+import { Facepile } from "@/components/room/bits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api, Unauthorized } from "@/lib/api";
-import { ago, baseName, shortPath } from "@/lib/format";
+import { ago, baseName, plural, shortPath } from "@/lib/format";
 import { errText } from "@/lib/load";
 import { useStore } from "@/lib/store";
-import type { ProjectView, RoomSummary } from "@/lib/types";
+import type { ProjectView, RoomAgent, RoomSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { NewProjectDialog } from "./NewProjectDialog";
 
@@ -43,6 +44,66 @@ const cardOf = (project: ProjectView, rooms: RoomSummary[]): Card => {
     last: lastRoom && lastWrite ? (lastRoom > lastWrite ? lastRoom : lastWrite) : (lastRoom ?? lastWrite),
   };
 };
+
+/** The first letter of the name, set large: a project has no logo, and a folder icon on every card says nothing. */
+function Monogram({ title }: { title: string }) {
+  return (
+    <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-foreground font-display text-[18px] font-semibold text-background" aria-hidden>
+      {(title.match(/[\p{L}\p{N}]/u)?.[0] ?? "·").toUpperCase()}
+    </span>
+  );
+}
+
+function ProjectCard({ card, onOpen }: { card: Card; onOpen: () => void }) {
+  const rooms = card.rooms.length - card.threads;
+  const agents = useMemo(() => {
+    const seen = new Map<string, RoomAgent>();
+    for (const room of card.rooms) for (const agent of room.agents ?? []) if (!seen.has(agent.id)) seen.set(agent.id, agent as RoomAgent);
+    return [...seen.values()];
+  }, [card.rooms]);
+  const working = useMemo(() => new Set(card.rooms.flatMap((room) => (room.working ?? []).map((turn) => turn.agent))), [card.rooms]);
+  const live = card.rooms.some((room) => room.running);
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group flex h-full min-h-[184px] w-full flex-col gap-4 rounded-2xl border border-border bg-card p-5 text-left transition hover:-translate-y-px hover:border-foreground/20 hover:shadow-soft focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+    >
+      <span className="flex items-start gap-3">
+        <Monogram title={card.title} />
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="truncate font-display text-[16px] leading-snug font-semibold">{card.title}</span>
+          <span className="truncate text-meta text-faint" title={card.project.key}>
+            {shortPath(card.project.key)}
+            {card.project.context.length ? ` + ${plural(card.project.context.length, "folder", "folders")}` : ""}
+          </span>
+        </span>
+        {live ? (
+          <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-2 py-0.5 text-micro font-medium">
+            <span className="size-1.5 animate-breathe rounded-full bg-foreground" /> Working
+          </span>
+        ) : null}
+      </span>
+      <span className={cn("line-clamp-2 text-small leading-relaxed", card.project.goal ? "text-muted-foreground" : "text-faint")}>
+        {card.project.goal || "No goal yet. Open it to write what the work here is for."}
+      </span>
+      <span className="mt-auto flex items-center gap-3 border-t border-border/70 pt-3.5 text-meta text-muted-foreground">
+        <Facepile agents={agents} working={working} size={20} ring="ring-card" />
+        <span className="flex items-center gap-1">
+          <MessagesSquareIcon className="size-3.5 text-faint" />
+          {rooms}
+        </span>
+        {card.threads ? (
+          <span className="flex items-center gap-1">
+            <GitBranchIcon className="size-3.5 text-faint" />
+            {card.threads}
+          </span>
+        ) : null}
+        {card.last ? <span className="ml-auto text-faint">{ago(card.last)}</span> : null}
+      </span>
+    </button>
+  );
+}
 
 export function ProjectsPage() {
   const go = useStore((s) => s.go);
@@ -79,31 +140,34 @@ export function ProjectsPage() {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 px-3 sm:px-5">
-        <NavButton />
-        <h1 className="font-display text-lead font-semibold">Projects</h1>
-        <Button className="ml-auto h-8 gap-1.5" onClick={() => setCreating(true)}>
+      <PageBar crumbs={[{ label: "Projects" }]}>
+        <Button size="sm" className="gap-1.5" onClick={() => setCreating(true)}>
           <PlusIcon className="size-4" /> New project
         </Button>
-      </header>
+      </PageBar>
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-[1040px] flex-col gap-5 px-4 py-6 sm:px-6">
+        <div className="mx-auto flex max-w-[1080px] flex-col gap-7 px-5 pt-9 pb-16 sm:px-8">
+          <PageTitle title="Projects" sub="Folders your Work rooms share. Each keeps a goal, instructions and memory that every agent there starts with." />
           {projects && projects.length ? (
             <div className="flex flex-wrap items-center gap-2">
-              <label className="relative min-w-0 flex-1">
+              <label className="relative min-w-0 flex-1 sm:max-w-sm">
                 <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint" />
-                <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search projects" className="pl-9" aria-label="Search projects" />
+                <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, goal or folder" className="pl-9" aria-label="Search projects" />
               </label>
-              <div className="flex rounded-lg border border-border/70 p-0.5" role="group" aria-label="Sort">
+              <span className="ml-auto hidden text-small text-faint sm:inline">{plural(projects.length, "project", "projects")}</span>
+              <div className="flex rounded-lg bg-muted p-0.5" role="group" aria-label="Sort">
                 {(["recent", "name"] as const).map((id) => (
                   <button
                     key={id}
                     type="button"
                     aria-pressed={sort === id}
                     onClick={() => setSort(id)}
-                    className={cn("h-7 rounded-md px-2.5 text-small", sort === id ? "bg-foreground/[0.07] text-foreground" : "text-muted-foreground hover:text-foreground")}
+                    className={cn(
+                      "h-8 rounded-md px-3 text-small font-medium transition",
+                      sort === id ? "bg-background text-foreground shadow-edge ring-1 ring-border/70" : "text-muted-foreground hover:text-foreground",
+                    )}
                   >
-                    {id === "recent" ? "Recent activity" : "Name"}
+                    {id === "recent" ? "Recent" : "Name"}
                   </button>
                 ))}
               </div>
@@ -127,38 +191,10 @@ export function ProjectsPage() {
           ) : !cards.length ? (
             <p className="text-small text-muted-foreground">No project matches “{query.trim()}”.</p>
           ) : (
-            <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {cards.map((card) => (
                 <li key={card.project.hash}>
-                  <button
-                    type="button"
-                    onClick={() => go({ kind: "project", hash: card.project.hash })}
-                    className="flex h-full w-full flex-col gap-2 rounded-xl border border-border/70 bg-card px-4 py-3.5 text-left transition hover:border-foreground/25 hover:shadow-soft"
-                  >
-                    <span className="flex items-center gap-2">
-                      <FolderIcon className="size-4 shrink-0 text-faint" />
-                      <span className="min-w-0 flex-1 truncate font-medium text-ui">{card.title}</span>
-                    </span>
-                    <span className={cn("line-clamp-2 min-h-[2lh] text-small leading-snug", card.project.goal ? "text-muted-foreground" : "text-faint")}>
-                      {card.project.goal || "No goal written"}
-                    </span>
-                    <span className="truncate font-mono text-meta text-faint" title={card.project.key}>
-                      {shortPath(card.project.key)}
-                      {card.project.context.length ? ` + ${card.project.context.length} context` : ""}
-                    </span>
-                    <span className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-faint">
-                      <span>
-                        {card.rooms.length - card.threads} {card.rooms.length - card.threads === 1 ? "room" : "rooms"}
-                      </span>
-                      {card.threads ? (
-                        <span>
-                          {card.threads} {card.threads === 1 ? "thread" : "threads"}
-                          {card.working ? <span className="text-foreground"> · {card.working} working</span> : null}
-                        </span>
-                      ) : null}
-                      {card.last ? <span className="ml-auto">{ago(card.last)}</span> : null}
-                    </span>
-                  </button>
+                  <ProjectCard card={card} onOpen={() => go({ kind: "project", hash: card.project.hash })} />
                 </li>
               ))}
             </ul>

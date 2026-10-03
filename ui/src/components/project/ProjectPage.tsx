@@ -1,16 +1,16 @@
-import { FolderIcon, PlusIcon, Settings2Icon } from "lucide-react";
+import { BookOpenTextIcon, BrainIcon, FolderIcon, FolderPlusIcon, type LucideIcon, PlusIcon, Settings2Icon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorNote, Loading } from "@/components/common/states";
-import { Tip } from "@/components/room/bits";
-import { NavButton } from "@/components/room/RoomHeader";
+import { PageBar } from "@/components/common/PageBar";
+import { Facepile, Tip } from "@/components/room/bits";
 import { Button } from "@/components/ui/button";
 import { api, Unauthorized } from "@/lib/api";
-import { ago, baseName, shortPath } from "@/lib/format";
+import { ago, baseName, plural, shortPath } from "@/lib/format";
 import { errText } from "@/lib/load";
 import { type ProjectTab, useStore } from "@/lib/store";
-import type { ProjectView, RoomSummary } from "@/lib/types";
+import type { ProjectView, RoomAgent, RoomSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Block } from "./Block";
+import { Block, listBox, listRow } from "./Block";
 import { Library, Threads, useOverview } from "./OverviewSections";
 
 /**
@@ -19,42 +19,65 @@ import { Library, Threads, useOverview } from "./OverviewSections";
  * (the gear), where anyone in it can write, and every write says who made it.
  */
 
-/** A line that says what is not there yet, and where to set it. */
-function Placeholder({ children, onClick }: { children: string; onClick?: () => void }) {
-  return onClick ? (
-    <button type="button" onClick={onClick} className="text-left text-small text-faint transition hover:text-muted-foreground">
-      {children}
-    </button>
-  ) : (
-    <p className="text-small text-faint">{children}</p>
-  );
-}
+/** A room's last line, as the sidebar shows it: who said it and what. */
+const lastLine = (room: RoomSummary) => {
+  const last = room.lastMessage;
+  if (!last) return "No messages yet";
+  return `${last.label ?? last.author}: ${last.text.replace(/\s+/g, " ").trim()}`;
+};
 
 function Rooms({ rooms, onNew }: { rooms: RoomSummary[]; onNew: () => void }) {
   const go = useStore((s) => s.go);
   return (
     <Block title="Rooms" aside={rooms.length ? `${rooms.length}` : undefined}>
       {rooms.length ? (
-        <ul className="flex flex-col divide-y divide-border/60 rounded-xl border border-border/70">
-          {rooms.map((room) => (
-            <li key={room.id}>
-              <button
-                type="button"
-                onClick={() => go({ kind: "room", id: room.id })}
-                className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition hover:bg-foreground/[0.03]"
-              >
-                <span className={cn("size-1.5 shrink-0 rounded-full", room.running ? "animate-breathe bg-foreground/60" : "bg-transparent")} />
-                <span className="min-w-0 flex-1 truncate text-ui">{room.name}</span>
-                {room.branch ? <span className="hidden truncate font-mono text-meta text-faint sm:inline">{room.branch}</span> : null}
-                <span className="shrink-0 text-meta text-faint">{ago(room.updatedAt)}</span>
-              </button>
-            </li>
-          ))}
+        <ul className={listBox}>
+          {rooms.map((room) => {
+            const working = new Set((room.working ?? []).map((turn) => turn.agent));
+            return (
+              <li key={room.id}>
+                <button type="button" onClick={() => go({ kind: "room", id: room.id })} className={listRow}>
+                  <Facepile agents={(room.agents ?? []) as RoomAgent[]} working={working} size={24} max={2} ring="ring-card" className="w-[42px]" />
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="min-w-0 truncate text-ui font-medium">{room.name}</span>
+                      {room.running ? <span className="size-1.5 shrink-0 animate-breathe rounded-full bg-foreground" aria-label="Working" /> : null}
+                    </span>
+                    <span className="truncate text-small text-muted-foreground">{lastLine(room)}</span>
+                  </span>
+                  <span className="flex shrink-0 flex-col items-end gap-0.5 self-start pt-0.5">
+                    <span className="text-meta text-faint">{ago(room.updatedAt)}</span>
+                    {room.unread ? <span className="tabular rounded-full bg-foreground px-1.5 text-micro font-semibold text-background">{room.unread}</span> : null}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       ) : (
-        <Placeholder onClick={onNew}>No Work room here yet — start one</Placeholder>
+        <button type="button" onClick={onNew} className="flex items-center gap-3 rounded-xl border border-dashed border-border px-4 py-4 text-left text-small text-muted-foreground transition hover:border-foreground/30 hover:text-foreground">
+          <PlusIcon className="size-4" /> No Work room here yet. Start one.
+        </button>
       )}
     </Block>
+  );
+}
+
+/** What the project holds, at a glance: each a way into the settings where it is written. Missing ones say so. */
+function Fact({ icon: Icon, children, missing, onClick, title }: { icon: LucideIcon; children: string; missing?: boolean; onClick: () => void; title?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={cn(
+        "inline-flex h-8 max-w-full items-center gap-1.5 rounded-lg px-2.5 text-small transition",
+        missing ? "border border-dashed border-border text-faint hover:border-foreground/30 hover:text-foreground" : "border border-border bg-card text-muted-foreground hover:border-foreground/25 hover:text-foreground",
+      )}
+    >
+      <Icon className="size-3.5 shrink-0" />
+      <span className="min-w-0 truncate">{children}</span>
+    </button>
   );
 }
 
@@ -99,59 +122,62 @@ export function ProjectPage({ hash }: { hash: string }) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 px-3 sm:px-5">
-        <NavButton />
-        <FolderIcon className="size-4 shrink-0 text-faint" />
-        <h1 className="min-w-0 shrink truncate font-display text-lead font-semibold">{title}</h1>
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <Tip tip="Project settings">
-            <Button variant="ghost" size="icon" className="size-8" aria-label="Project settings" disabled={!project} onClick={() => settings()}>
-              <Settings2Icon className="size-4" />
-            </Button>
-          </Tip>
-          <Button className="h-8 gap-1.5" disabled={!project} onClick={newRoom}>
-            <PlusIcon className="size-4" /> <span className="hidden sm:inline">New room here</span>
-            <span className="sm:hidden">Room</span>
+      <PageBar crumbs={[{ label: "Projects", onClick: () => go({ kind: "projects" }) }, { label: title }]}>
+        <Tip tip="Project settings">
+          <Button variant="ghost" size="icon" className="size-8" aria-label="Project settings" disabled={!project} onClick={() => settings()}>
+            <Settings2Icon className="size-4" />
           </Button>
-        </div>
-      </header>
+        </Tip>
+        <Button size="sm" className="gap-1.5" disabled={!project} onClick={newRoom}>
+          <PlusIcon className="size-4" /> <span className="hidden sm:inline">New room</span>
+          <span className="sm:hidden">Room</span>
+        </Button>
+      </PageBar>
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-[1100px] flex-col gap-8 px-4 py-6 sm:px-6">
+        <div className="mx-auto flex max-w-[1080px] flex-col gap-10 px-5 pt-9 pb-16 sm:px-8">
           {error ? (
             <ErrorNote>{error}</ErrorNote>
           ) : !project ? (
             <Loading lines={4} />
           ) : (
             <>
-              <section className="flex flex-col gap-2">
-                {project.goal ? (
-                  <p className="max-w-[72ch] text-body leading-relaxed whitespace-pre-wrap">{project.goal}</p>
-                ) : (
-                  <Placeholder onClick={() => settings("general")}>No goal written — what is the work here for?</Placeholder>
-                )}
-                <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-faint">
-                  <span className="font-mono" title={project.key}>
-                    {shortPath(project.key)}
+              <section className="flex flex-col gap-5">
+                <div className="flex items-start gap-4">
+                  <span className="mt-0.5 grid size-12 shrink-0 place-items-center rounded-2xl bg-foreground font-display text-[22px] font-semibold text-background" aria-hidden>
+                    {(title.match(/[\p{L}\p{N}]/u)?.[0] ?? "·").toUpperCase()}
                   </span>
-                  <button type="button" className="transition hover:text-muted-foreground" onClick={() => settings("context")}>
-                    {project.context.length ? `+ ${project.context.length} context ${project.context.length === 1 ? "folder" : "folders"}` : "+ context folder"}
-                  </button>
-                  <button type="button" className="transition hover:text-muted-foreground" onClick={() => settings("memory")}>
-                    {project.memory.length ? `${project.memory.length} in memory` : "nothing in memory"}
-                  </button>
-                  {project.instructions ? null : (
-                    <button type="button" className="transition hover:text-muted-foreground" onClick={() => settings("general")}>
-                      no instructions
-                    </button>
-                  )}
-                </p>
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    <h1 className="font-display text-display leading-tight font-semibold break-words">{title}</h1>
+                    {project.goal ? (
+                      <p className="max-w-[68ch] text-body leading-relaxed whitespace-pre-wrap text-muted-foreground">{project.goal}</p>
+                    ) : (
+                      <button type="button" onClick={() => settings("general")} className="text-left text-body text-faint transition hover:text-muted-foreground">
+                        No goal yet. Write what the work here is for.
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Fact icon={FolderIcon} onClick={() => settings("context")} title={project.key}>
+                    {shortPath(project.key)}
+                  </Fact>
+                  <Fact icon={FolderPlusIcon} missing={!project.context.length} onClick={() => settings("context")}>
+                    {project.context.length ? plural(project.context.length, "context folder", "context folders") : "Add a context folder"}
+                  </Fact>
+                  <Fact icon={BrainIcon} missing={!project.memory.length} onClick={() => settings("memory")}>
+                    {project.memory.length ? `${project.memory.length} in memory` : "Memory is empty"}
+                  </Fact>
+                  <Fact icon={BookOpenTextIcon} missing={!project.instructions} onClick={() => settings("general")}>
+                    {project.instructions ? "Instructions" : "Write instructions"}
+                  </Fact>
+                </div>
               </section>
-              <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)]">
-                <div className="flex min-w-0 flex-col gap-8">
+              <div className="grid gap-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+                <div className="flex min-w-0 flex-col gap-10">
                   <Rooms rooms={members} onNew={newRoom} />
                   {overview ? <Threads threads={overview.threads} /> : overviewError ? <ErrorNote>{overviewError}</ErrorNote> : <Loading lines={2} />}
                 </div>
-                <div className="flex min-w-0 flex-col gap-8">
+                <div className="flex min-w-0 flex-col gap-10">
                   {overview ? <Library entries={overview.library} rawBase={overview.rawBase} hash={hash} onChange={reload} /> : overviewError ? null : <Loading lines={3} />}
                 </div>
               </div>

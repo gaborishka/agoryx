@@ -101,6 +101,48 @@ export function Avatar({
   );
 }
 
+/**
+ * Who sits somewhere, overlapping left to right: those at work first, pulsing. `ring` is the surface it sits on, so
+ * each face is cut out of the one under it. More than `max` is a count.
+ */
+export function Facepile({
+  agents,
+  working,
+  size = 20,
+  max = 3,
+  ring = "ring-background",
+  className,
+}: {
+  agents: RoomAgent[];
+  working?: Set<string>;
+  size?: number;
+  max?: number;
+  ring?: string;
+  className?: string;
+}) {
+  if (!agents.length) return null;
+  const on = working ?? new Set<string>();
+  const shown = [...agents].sort((a, b) => Number(on.has(b.id)) - Number(on.has(a.id))).slice(0, max);
+  const more = agents.length - shown.length;
+  return (
+    <span className={cn("flex shrink-0 items-center", className)} aria-label={agents.map((agent) => agent.label ?? agent.id).join(", ")} role="img">
+      {shown.map((agent, index) => (
+        <span key={agent.id} className={cn("rounded-[34%] ring-2", ring)} style={{ marginLeft: index ? -Math.round(size * 0.22) : 0, zIndex: shown.length - index }}>
+          <Avatar handle={agent.id} roster={agents} size={size} live={on.has(agent.id)} />
+        </span>
+      ))}
+      {more > 0 ? (
+        <span
+          className={cn("grid place-items-center rounded-[34%] bg-muted font-medium text-muted-foreground ring-2", ring)}
+          style={{ width: size, height: size, marginLeft: -Math.round(size * 0.22), fontSize: Math.round(size * 0.45) }}
+        >
+          +{more}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function Name({ handle, className }: { handle: string; className?: string }) {
   const room = useSeating();
   const p = participant(room, handle);

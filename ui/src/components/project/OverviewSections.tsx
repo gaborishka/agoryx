@@ -1,4 +1,4 @@
-import { CheckIcon, CopyIcon, FileTextIcon, FolderIcon, GitBranchIcon, ImageIcon, LayoutGridIcon, ListIcon, PaperclipIcon, PlusIcon, XIcon } from "lucide-react";
+import { CheckIcon, CircleDashedIcon, CopyIcon, FileTextIcon, FolderIcon, GitBranchIcon, ImageIcon, LayoutGridIcon, ListIcon, LoaderIcon, MessageCircleIcon, PaperclipIcon, PlusIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Hint } from "@/components/common/states";
@@ -9,10 +9,10 @@ import { api, local, Unauthorized } from "@/lib/api";
 import { ago, baseName, ext, IMAGE_EXT, plural, took, VISUAL_EXT } from "@/lib/format";
 import { errText } from "@/lib/load";
 import { useStore } from "@/lib/store";
-import { groupThreads, threadGroup } from "@/lib/threads";
+import { groupThreads, THREAD_GROUPS, threadGroup } from "@/lib/threads";
 import { cn } from "@/lib/utils";
 import type { LibraryEntry, LibraryKind, ProjectOverview, ThreadView } from "@agora/overview";
-import { Block } from "./Block";
+import { Block, listBox, listRow } from "./Block";
 
 /**
  * The project page's view across its rooms: the threads with what each last reported, the library (what was
@@ -24,11 +24,22 @@ export type Overview = ProjectOverview & { rawBase: Record<string, string> };
 
 const groupOf = (thread: ThreadView) => threadGroup({ running: thread.running, resolved: thread.resolved, spoke: Boolean(thread.report) });
 
+const GROUP_ICON = { waiting: MessageCircleIcon, working: LoaderIcon, idle: CircleDashedIcon, resolved: CheckIcon };
+
 function ThreadTile({ thread }: { thread: ThreadView }) {
   const go = useStore((s) => s.go);
   const openThread = useStore((s) => s.openThread);
   const report = thread.report;
   const files = report ? report.files.length + (report.more ?? 0) : 0;
+  const group = groupOf(thread);
+  const Icon = GROUP_ICON[group];
+  const summary = report?.open
+    ? `${report.open.id} ${report.open.text.split("\n")[0]}`
+    : report?.last
+      ? `${report.last.by}: ${report.last.text.replace(/\s+/g, " ")}`
+      : thread.resolved
+        ? `Resolved by ${thread.resolved.by}`
+        : null;
   return (
     <li>
       <button
@@ -38,42 +49,44 @@ function ThreadTile({ thread }: { thread: ThreadView }) {
           go({ kind: "room", id: thread.parent });
           openThread(thread.id);
         }}
-        className="flex w-full flex-col gap-1 rounded-xl border border-border/70 bg-card px-3 py-2.5 text-left text-small transition hover:border-border"
+        className={cn(listRow, "items-start")}
       >
-        <span className="flex min-w-0 items-baseline gap-2">
-          <span className="min-w-0 flex-1 truncate font-medium">{thread.name}</span>
-          <span className="shrink-0 text-micro text-faint">{ago(report?.at ?? thread.updatedAt)}</span>
+        <span
+          className={cn(
+            "mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg",
+            group === "waiting" ? "bg-foreground text-background" : group === "working" ? "bg-foreground/[0.07] text-foreground" : "bg-muted text-faint",
+          )}
+          title={THREAD_GROUPS.find((g) => g.id === group)?.head}
+        >
+          <Icon className={cn("size-3.5", group === "working" && "animate-spin [animation-duration:2.4s]")} />
         </span>
-        <span className="truncate text-meta text-muted-foreground">
-          {thread.agents.join(", ")} · from {thread.parentName ?? thread.parent}
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className={cn("min-w-0 flex-1 truncate text-ui font-medium", thread.resolved && "text-muted-foreground")}>{thread.name}</span>
+            <span className="shrink-0 text-meta text-faint">{ago(report?.at ?? thread.updatedAt)}</span>
+          </span>
+          <span className="flex min-w-0 items-center gap-1.5 text-small text-muted-foreground">
+            <span className="truncate">{thread.agents.join(", ")}</span>
+            <span className="text-faint">in</span>
+            <span className="truncate">{thread.parentName ?? thread.parent}</span>
+          </span>
+          {summary ? <span className="line-clamp-1 text-small text-foreground/75">{summary}</span> : null}
+          {thread.branch || report ? (
+            <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-meta text-faint">
+              {thread.branch ? (
+                <span className="flex min-w-0 items-center gap-1">
+                  <GitBranchIcon className="size-3 shrink-0" />
+                  <span className="truncate font-mono">{thread.branch}</span>
+                </span>
+              ) : null}
+              {report ? (
+                <span>
+                  {files ? `${plural(files, "file", "files")} changed${report.uncommitted ? `, ${report.uncommitted} uncommitted` : ""}` : "No changes"}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
         </span>
-        {thread.branch ? (
-          <span className="flex min-w-0 items-center gap-1 text-meta text-muted-foreground">
-            <GitBranchIcon className="size-3 shrink-0" />
-            <span className="truncate font-mono">{thread.branch}</span>
-          </span>
-        ) : null}
-        {report ? (
-          <span className="text-meta text-muted-foreground">
-            {files ? `${plural(files, "file", "files")} changed${report.uncommitted ? `, ${report.uncommitted} uncommitted` : ""}` : "no changes"}
-          </span>
-        ) : null}
-        {report?.open ? (
-          <span className="flex min-w-0 items-baseline gap-1.5 text-meta">
-            <span className="shrink-0 rounded bg-secondary px-1 font-mono text-micro font-semibold">{report.open.id}</span>
-            <span className="truncate">{report.open.text.split("\n")[0]}</span>
-          </span>
-        ) : null}
-        {report?.last ? (
-          <span className="line-clamp-2 text-meta text-muted-foreground">
-            <span className="text-foreground/80">{report.last.by}:</span> {report.last.text}
-          </span>
-        ) : null}
-        {thread.resolved ? (
-          <span className="flex items-center gap-1 text-meta text-faint">
-            <CheckIcon className="size-3 shrink-0" /> Resolved by {thread.resolved.by} {ago(thread.resolved.at)}
-          </span>
-        ) : null}
       </button>
     </li>
   );
@@ -84,13 +97,15 @@ export function Threads({ threads }: { threads: ThreadView[] }) {
   return (
     <Block title="Threads" aside={threads.length ? `${threads.length}` : undefined}>
       {threads.length ? (
-        <div className="grid gap-4 @min-[36rem]:grid-cols-2">
+        <div className="flex flex-col gap-4">
           {columns.map((column) => (
-            <div key={column.id} className="flex min-w-0 flex-col gap-2">
-              <h3 className="text-meta font-medium text-muted-foreground">
-                {column.head} <span className="text-faint">{column.threads.length}</span>
-              </h3>
-              <ul className="flex flex-col gap-2">
+            <div key={column.id} className="flex min-w-0 flex-col gap-1.5">
+              {columns.length > 1 ? (
+                <h3 className="px-1 text-meta font-medium text-muted-foreground">
+                  {column.head} <span className="text-faint">{column.threads.length}</span>
+                </h3>
+              ) : null}
+              <ul className={listBox}>
                 {column.threads.map((thread) => (
                   <ThreadTile key={thread.id} thread={thread} />
                 ))}
@@ -99,10 +114,12 @@ export function Threads({ threads }: { threads: ThreadView[] }) {
           ))}
         </div>
       ) : (
-        <Hint>
-          No threads yet. An agent in a Work room here starts one with <code className="font-mono text-meta">agoryx new --from here</code>: its own branch,
-          reporting back to the room it came from.
-        </Hint>
+        <div className="rounded-xl border border-dashed border-border px-4 py-4">
+          <Hint>
+            No threads yet. An agent in a Work room here starts one with <code className="font-mono text-meta">agoryx new --from here</code>: its own branch,
+            reporting back to the room it came from.
+          </Hint>
+        </div>
       )}
     </Block>
   );
@@ -164,30 +181,30 @@ function useEntry(entry: LibraryEntry, rawBase: string | undefined, onChange: ()
   return { picture, open, copy, remove, Icon: KIND_ICON[entry.kind] };
 }
 
-const quietIcon = "shrink-0 text-faint transition hover:text-foreground";
+const quietIcon = "grid size-7 shrink-0 place-items-center rounded-md text-faint opacity-0 transition group-hover/row:opacity-100 pointer-coarse:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100";
 
 function LibraryRow({ entry, rawBase, hash, onChange }: { entry: LibraryEntry; rawBase?: string; hash?: string; onChange: () => void }) {
   const { picture, open, copy, remove, Icon } = useEntry(entry, rawBase, onChange, hash);
   return (
-    <li className="flex items-center gap-3 px-3.5 py-2.5">
+    <li className="group/row flex items-center gap-3 px-4 py-2.5">
       {picture ? (
-        <img src={picture} alt="" loading="lazy" className="size-9 shrink-0 rounded-md object-cover ring-1 ring-border" />
+        <img src={picture} alt="" loading="lazy" className="size-9 shrink-0 rounded-lg object-cover ring-1 ring-border" />
       ) : (
-        <span className="grid size-9 shrink-0 place-items-center rounded-md bg-secondary text-muted-foreground">
+        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
           <Icon className="size-4" />
         </span>
       )}
       <span className="flex min-w-0 flex-1 flex-col">
         {open ? (
-          <button type="button" onClick={open} className="min-w-0 truncate text-left text-ui hover:underline" title={entry.path}>
+          <button type="button" onClick={open} className="min-w-0 truncate text-left text-ui font-medium hover:underline" title={entry.path}>
             {baseName(entry.path)}
           </button>
         ) : (
-          <span className="min-w-0 truncate text-ui" title={entry.path}>
+          <span className="min-w-0 truncate text-ui font-medium" title={entry.path}>
             {baseName(entry.path)}
           </span>
         )}
-        <span className="truncate text-meta text-faint">{sourceLine(entry)}</span>
+        <span className="truncate text-small text-muted-foreground">{sourceLine(entry)}</span>
       </span>
       {entry.kind !== "doc" ? (
         <button type="button" onClick={() => void copy()} title={`Copy the path: ${entry.path}`} aria-label="Copy the path" className={quietIcon}>
@@ -206,12 +223,12 @@ function LibraryRow({ entry, rawBase, hash, onChange }: { entry: LibraryEntry; r
 function LibraryTile({ entry, rawBase, hash, onChange }: { entry: LibraryEntry; rawBase?: string; hash?: string; onChange: () => void }) {
   const { picture, open, copy, remove, Icon } = useEntry(entry, rawBase, onChange, hash);
   return (
-    <li className="group/tile relative flex min-w-0 flex-col overflow-hidden rounded-xl border border-border/70 bg-card">
+    <li className="group/tile relative flex min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card transition hover:border-foreground/20">
       <button type="button" onClick={open ?? (() => void copy())} title={open ? entry.path : `Copy the path: ${entry.path}`} className="flex min-w-0 flex-col text-left">
         {picture ? (
           <img src={picture} alt="" loading="lazy" className="aspect-[4/3] w-full bg-secondary object-cover" />
         ) : (
-          <span className="grid h-16 w-full place-items-center bg-secondary text-muted-foreground">
+          <span className="grid aspect-[4/3] w-full place-items-center bg-muted text-muted-foreground">
             <Icon className="size-5" />
           </span>
         )}
@@ -298,9 +315,8 @@ export function Library({ entries, rawBase, hash, onChange }: { entries: Library
       title="Library"
       aside={
         <span className="flex items-center gap-1">
-          {entries.length ? <span className="mr-1">{entries.length}</span> : null}
           {entries.length ? (
-            <span className="flex items-center rounded-md border border-border/70 p-0.5">
+            <span className="flex items-center rounded-lg bg-muted p-0.5">
               {(["list", "grid"] as const).map((id) => {
                 const Icon = id === "list" ? ListIcon : LayoutGridIcon;
                 return (
@@ -310,7 +326,7 @@ export function Library({ entries, rawBase, hash, onChange }: { entries: Library
                     onClick={() => pick(id)}
                     aria-pressed={view === id}
                     aria-label={id === "list" ? "As a list" : "As a grid"}
-                    className={cn("grid size-6 place-items-center rounded transition", view === id ? "bg-accent text-foreground" : "text-faint hover:text-foreground")}
+                    className={cn("grid size-6 place-items-center rounded-md transition", view === id ? "bg-background text-foreground shadow-edge ring-1 ring-border/70" : "text-faint hover:text-foreground")}
                   >
                     <Icon className="size-3.5" />
                   </button>
@@ -322,19 +338,21 @@ export function Library({ entries, rawBase, hash, onChange }: { entries: Library
         </span>
       }
     >
-      <p className="text-small leading-relaxed text-muted-foreground">
-        The rooms’ documents, files attached or added here, media the agents linked, and the context folders. Each stays where it is; nothing is copied.
-      </p>
       {counts.length > 1 ? (
-        <div className="flex flex-wrap gap-1">
+        <div className="scroll-thin -mx-1 flex gap-1 overflow-x-auto px-1" role="tablist" aria-label="By source">
           {[{ id: null, n: entries.length }, ...counts].map(({ id, n }) => (
             <button
               key={id ?? "all"}
               type="button"
+              role="tab"
+              aria-selected={kind === id}
               onClick={() => setKind(id)}
-              className={cn("rounded-full px-2.5 py-0.5 text-meta transition", kind === id ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent")}
+              className={cn(
+                "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-small transition",
+                kind === id ? "border-foreground bg-foreground text-background" : "border-border text-muted-foreground hover:border-foreground/25 hover:text-foreground",
+              )}
             >
-              {id ? KIND_LABEL[id] : "All"} {n}
+              {id ? KIND_LABEL[id] : "All"} <span className={cn("tabular text-micro", kind === id ? "text-background/70" : "text-faint")}>{n}</span>
             </button>
           ))}
         </div>
@@ -343,19 +361,21 @@ export function Library({ entries, rawBase, hash, onChange }: { entries: Library
         groups.map((group) => (
           <section key={group.id} className="flex flex-col gap-1.5">
             {groups.length > 1 || kind ? (
-              <h3 className="text-micro font-medium text-faint">
-                {KIND_LABEL[group.id]} {group.entries.length}
+              <h3 className="px-1 text-meta font-medium text-muted-foreground">
+                {KIND_LABEL[group.id]} <span className="text-faint">{group.entries.length}</span>
               </h3>
             ) : null}
             {view === "grid" ? (
               <ul className="grid grid-cols-2 gap-2 @min-[28rem]:grid-cols-3 @min-[44rem]:grid-cols-4">{group.entries.map(item)}</ul>
             ) : (
-              <ul className="flex flex-col divide-y divide-border/60 rounded-xl border border-border/70">{group.entries.map(item)}</ul>
+              <ul className={listBox}>{group.entries.map(item)}</ul>
             )}
           </section>
         ))
       ) : (
-        <Hint>Nothing attached, written or linked yet.</Hint>
+        <div className="rounded-xl border border-dashed border-border px-4 py-4">
+          <Hint>Nothing attached, written or linked yet. The rooms’ documents, files attached or added here and media the agents link show up here, each where it is.</Hint>
+        </div>
       )}
     </Block>
   );
@@ -383,7 +403,7 @@ export function Usage({ usage }: { usage: ProjectOverview["usage"] }) {
               </div>
             ))}
           </dl>
-          <ul className="flex flex-col divide-y divide-border/60 rounded-xl border border-border/70">
+          <ul className={listBox}>
             {top.map((room) => (
               <li key={room.id}>
                 <button type="button" onClick={() => go({ kind: "room", id: room.id })} className="flex w-full items-baseline gap-3 px-3.5 py-2 text-left transition hover:bg-foreground/[0.03]">

@@ -7,12 +7,28 @@ import { type ComponentProps, createContext, useContext, memo, type ReactNode, u
 import { type Components, type CustomRendererProps, defaultRemarkPlugins, parseMarkdownIntoBlocks, Streamdown, type StreamdownTranslations } from "streamdown";
 import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, hashBlock, IMAGE_EXT, TABLE_EXT, VIDEO_EXT, VISUAL_EXT, workspaceRel } from "@/lib/format";
 import { ink, participant, refExists, toneText } from "@/lib/room";
-import { useStore } from "@/lib/store";
+import { useSeating, useStore } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { LiveFrame } from "./LiveFrame";
 import { CsvFile, Player, useRawText } from "./Media";
 import { localPath, messageRefId, remarkAgora, wholeBlocks } from "./remark-agora";
+
+
+/**
+ * An id → seq index of a list (messages, turns, options), built once per list: the store calls every selector on every
+ * streamed token, and a search through the room's messages for each Markdown on screen would cost that much each time.
+ */
+const indexes = new WeakMap<readonly { id: string; seq?: number }[], Map<string, number | undefined>>();
+const indexed = (list: readonly { id: string; seq?: number }[] | undefined) => {
+  if (!list) return undefined;
+  let index = indexes.get(list);
+  if (!index) {
+    index = new Map(list.map((item) => [item.id, item.seq]));
+    indexes.set(list, index);
+  }
+  return index;
+};
 
 const code = createCodePlugin({ themes: ["vitesse-light", "vitesse-dark"] });
 /**
@@ -147,7 +163,7 @@ const makeLiveRenderer = (source: Source, text: string) =>
   };
 
 function Mention({ handle, children }: { handle: string; children: ReactNode }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const known = room && (room.agents.some((a) => a.id === handle) || handle === room.human);
   if (!known) return <>{children}</>;
   const p = participant(room, handle);
@@ -176,7 +192,7 @@ function Ref({ id }: { id: string }) {
 
 /** A quote's source line: the message it came from, one click away. */
 function MessageRef({ id, children }: { id: string; children: ReactNode }) {
-  const exists = useStore((s) => s.snap?.state.messages.some((m) => m.id === id) ?? false);
+  const exists = useStore((s) => indexed(s.snap?.state.messages)?.has(id) ?? false);
   const goToRef = useStore((s) => s.goToRef);
   if (!exists) return <span className="font-medium">{children}</span>;
   return (
@@ -193,7 +209,7 @@ function MessageRef({ id, children }: { id: string; children: ReactNode }) {
 
 /** A quote's source line for lines of a diff: that turn's changes, at that file. */
 function TurnRef({ turn, path, children }: { turn: string; path: string; children: ReactNode }) {
-  const exists = useStore((s) => s.snap?.state.turns.some((t) => t.id === turn) ?? false);
+  const exists = useStore((s) => indexed(s.snap?.state.turns)?.has(turn) ?? false);
   const openChanges = useStore((s) => s.openChanges);
   if (!exists) return <span className="font-medium">{children}</span>;
   let file = path;
@@ -358,7 +374,7 @@ export interface MarkdownProps {
 
 export const Markdown = memo(function Markdown({ text, source, variant = "chat", streaming = false, className }: MarkdownProps) {
   const dark = useTheme((s) => s.dark);
-  const seq = useStore((s) => source?.startsWith("m:") ? s.snap?.state.messages.find((m) => m.id === source.slice(2))?.seq : source?.startsWith("o:") ? s.snap?.state.table.options.find((o) => o.id === source.slice(2))?.seq : undefined);
+  const seq = useStore((s) => (source?.startsWith("m:") ? indexed(s.snap?.state.messages) : source?.startsWith("o:") ? indexed(s.snap?.state.table.options) : undefined)?.get(source!.slice(2)));
   const plugins = useMemo(() => {
     const Live = makeLiveRenderer(source, text);
     return { code, mermaid: dark ? mermaidDark : mermaidLight, renderers: [{ language: ["html", "htm", "svg"], component: Live }] };

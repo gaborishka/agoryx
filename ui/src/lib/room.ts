@@ -98,7 +98,7 @@ export const profileLine = (agent: Pick<RoomAgent, "profile">, profile: { exists
       ? "Your profile is turned off for this agent (\"profile\": false in the roster): not a word of it goes into its prompts. The agent can still read the file itself with its own tools."
       : "Sees your profile (profile.md) — as context about you, not as part of the conversation.";
 
-export const nameOf = (room: RoomState | undefined, handle: string) => {
+export const nameOf = (room: Seating | undefined, handle: string) => {
   const p = participant(room, handle);
   return p.tone === "human" && handle === room?.human ? handle : p.label;
 };

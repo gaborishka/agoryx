@@ -3,7 +3,7 @@ import { MarkMono } from "@/components/brand/Mark";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { clock, fullDate } from "@/lib/format";
 import { ink, nameOf, participant, type Tone, toneText } from "@/lib/room";
-import { useStore } from "@/lib/store";
+import { useSeating } from "@/lib/store";
 import type { MessageEntry, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -59,7 +59,7 @@ export function Avatar({
   badge?: boolean;
   className?: string;
 }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const p = participant(roster ? { agents: roster } : room, handle);
   const inside = Boolean(p.mark) && size < MARK_INSIDE && !badge;
   const corner = Math.max(12, Math.round(size * 0.46));
@@ -102,7 +102,7 @@ export function Avatar({
 }
 
 export function Name({ handle, className }: { handle: string; className?: string }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const p = participant(room, handle);
   return (
     <span className={cn("font-semibold", toneText[p.tone], className)} style={ink(p)}>
@@ -140,7 +140,7 @@ const nativeTone: Record<Tone, string> = {
 };
 
 export function NativeBadge({ agent, label, tip }: { agent: string; label: string; tip: string }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const p = participant(room, agent);
   return (
     <Tip tip={tip}>
@@ -153,7 +153,7 @@ export function NativeBadge({ agent, label, tip }: { agent: string; label: strin
 
 /** A message imported from an agent's own session (outside the room) says where it happened. */
 export function NativeTag({ m }: { m: MessageEntry }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   if (!m.native) return null;
   const who = nameOf(room, m.native.agent);
   return (

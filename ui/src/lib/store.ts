@@ -1,9 +1,10 @@
 import { toast } from "sonner";
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { api, ApiError, local, roomPath, setUnauthorizedHandler, Unauthorized } from "./api";
 import { startAttention } from "./attention";
 import type { Quote } from "./quote";
-import { lastLine } from "./room";
+import { lastLine, type Seating } from "./room";
 import type { AgentPresence, LimitSnapshot, OpEntry, RoomEvent, RoomSummary, RunState, Snapshot, TurnState } from "./types";
 
 /**
@@ -772,3 +773,15 @@ export const boot = async () => {
 // ---------------------------------------------------------------------------
 
 export const useRoom = () => useStore((s) => s.snap?.state);
+
+/**
+ * Who sits in the room — what a name, a face or a colour needs. Not the whole state, which is new with every event:
+ * a message row that reads only this is not drawn again while a turn runs.
+ */
+export const useSeating = (): Seating | undefined =>
+  useStore(
+    useShallow((s) => {
+      const st = s.snap?.state;
+      return st ? { agents: st.agents, human: st.human, guests: st.guests, former: st.former } : undefined;
+    }),
+  );

@@ -110,6 +110,8 @@ function General() {
   const openDialog = useStore((s) => s.openDialog);
   const [budget, setBudget] = useState<number | null>(readBudget);
   const [worktree, setWorktree] = useState(() => local.get("worktree") === "1");
+  const foldWorking = useStore((s) => s.foldWorking);
+  const setFoldWorking = useStore((s) => s.setFoldWorking);
   return (
     <Section title="General" sub="How Agoryx looks and what new rooms start with on this device.">
       <Group title="Appearance">
@@ -172,6 +174,11 @@ function General() {
             }}
             aria-label="Separate branch for a git folder"
           />
+        </Row>
+      </Group>
+      <Group title="Room list">
+        <Row label="Fold rooms while agents work" hint="Rooms where agents are working and nothing waits for you fold into Working at the foot of the list. Each comes back up when it finishes or needs you.">
+          <Switch checked={foldWorking} onCheckedChange={setFoldWorking} aria-label="Fold rooms while agents work" />
         </Row>
       </Group>
       <Group title="Keyboard">

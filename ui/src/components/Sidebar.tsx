@@ -7,8 +7,9 @@ import { Kbd } from "@/components/ui/kbd";
 import { local } from "@/lib/api";
 import { waitingReason } from "@/lib/attention";
 import { keyLabel } from "@/lib/keys";
-import { ago, baseName, names, plural, roomPreviewParts, shortPath } from "@/lib/format";
+import { ago, names, plural, roomPreviewParts } from "@/lib/format";
 import { nestThreads } from "@/lib/room";
+import { isBusy, layoutRooms, OWN, CHATS, type Group } from "@/lib/sidebar";
 import { useStore } from "@/lib/store";
 import { THEME_LABEL, useTheme } from "@/lib/theme";
 import type { RoomAgent, RoomSummary } from "@/lib/types";
@@ -16,22 +17,11 @@ import { cn } from "@/lib/utils";
 
 /**
  * The room list shows where the human is needed: who works in each room and for how long, which rooms wait,
- * and how much was said since the human last looked. It only changes what the human sees; nothing reaches
- * the agents. Unread counts and «waits» come from the daemon (attention.json's seen cursor, the same one the
- * tray and the Dock read); the filter and the folded folders are this browser's.
+ * and how much was said since the human last looked. Rooms whose agents work and ask nothing fold into Working at the
+ * list's foot and come back when they finish or need the human (lib/sidebar). It only changes what the human sees;
+ * nothing reaches the agents. Unread counts and «waits» come from the daemon (attention.json's seen cursor, the same
+ * one the tray and the Dock read); the folded folders and sections are this browser's.
  */
-
-type Filter = "all" | "waiting" | "working";
-const FILTERS: Array<{ id: Filter; label: string }> = [
-  { id: "all", label: "All" },
-  { id: "waiting", label: "For you" },
-  { id: "working", label: "Working" },
-];
-
-/** Rooms in a folder Agoryx made for them (no folder of the human's) are grouped together. */
-const OWN = "";
-const CHATS = "::chats";
-const groupKey = (room: RoomSummary) => room.mode === "chat" ? CHATS : room.folder ?? OWN;
 
 const readFolded = (): Set<string> => {
   try {
@@ -40,11 +30,6 @@ const readFolded = (): Set<string> => {
   } catch {
     return new Set();
   }
-};
-
-const readFilter = (): Filter => {
-  const saved = local.get("sidebar.filter");
-  return saved === "waiting" || saved === "working" ? saved : "all";
 };
 
 /** «2:13», «1:02:13». */
@@ -171,60 +156,20 @@ function RoomRow({ room, on, depth = 0 }: { room: RoomSummary; on: boolean; dept
   );
 }
 
-interface Group {
-  key: string;
-  label: string;
-  title: string;
-  rooms: RoomSummary[];
-  /** A folder's group: its project, by hash (the head opens the project's page). */
-  project?: string;
-}
-
-/** Rooms by the folder they work in, the most recently active folder first (the rooms come sorted so). */
-const groupRooms = (rooms: RoomSummary[]): Group[] => {
-  const groups = new Map<string, Group>();
-  for (const room of rooms) {
-    const key = groupKey(room);
-    let group = groups.get(key);
-    if (!group) {
-      group = { key, rooms: [], ...(key === CHATS ? { label: "Chats", title: "Conversations without a project" } : key === OWN ? { label: "New folders", title: "Folders Agoryx created for rooms" } : { label: baseName(key), title: key }) };
-      groups.set(key, group);
-    }
-    group.rooms.push(room);
-    if (key !== CHATS && key !== OWN && room.projectHash) {
-      group.project = room.projectHash;
-      if (room.projectName) group.label = room.projectName;
-    }
-  }
-  const list = [...groups.values()];
-  // Two folders of one name: say which is which.
-  for (const group of list) {
-    if (group.key !== OWN && group.key !== CHATS && list.some((other) => other !== group && other.label === group.label) && group.label === baseName(group.key)) group.label = shortPath(group.key);
-  }
-  return list;
-};
-
-/** A room the filter shows; the open room never counts as waiting. */
-const passes = (room: RoomSummary, filter: Filter, current: string | null) =>
-  filter === "waiting" ? Boolean(room.waiting) && room.id !== current : filter === "working" ? room.running : true;
-
-/**
- * Grouped when the rooms work in more than one folder, or when one of them works in a folder of the human's (its head
- * opens the project); decided on all rooms, so a filter does not reshape the list.
- */
-const isGrouped = (rooms: RoomSummary[]) => new Set(rooms.map(groupKey)).size > 1 || rooms.some((room) => room.projectHash && room.folder);
-
-/** The rooms as the list shows them, top to bottom (filtered, folded folders left out): what ⌥↑/⌥↓ step through. */
+/** The rooms as the list shows them, top to bottom (folded folders and a closed Working left out): what ⌥↑/⌥↓ step through. */
 export const sidebarOrder = (rooms: RoomSummary[], current: string | null): RoomSummary[] => {
-  const shown = rooms.filter((r) => passes(r, readFilter(), current));
-  if (!isGrouped(rooms)) return nestThreads(shown).map(({ room }) => room);
+  const view = layoutRooms(rooms, current, useStore.getState().foldWorking);
   const folded = readFolded();
-  return groupRooms(shown).flatMap((group) => (folded.has(group.key) ? [] : nestThreads(group.rooms).map(({ room }) => room)));
+  const listed = view.grouped
+    ? view.groups.flatMap((group) => (folded.has(group.key) ? [] : nestThreads(group.rooms).map(({ room }) => room)))
+    : nestThreads(view.rooms).map(({ room }) => room);
+  return [...listed, ...(local.get("sidebar.workingOpen") === "1" ? nestThreads(view.working).map(({ room }) => room) : [])];
 };
 
 function GroupHead({ group, open, onToggle, current, onProject, onNew, on }: { group: Group; open: boolean; onToggle: () => void; current: string | null; onProject?: () => void; onNew?: () => void; on?: boolean }) {
   const waiting = group.rooms.filter((r) => r.waiting && r.id !== current).length;
-  const working = group.rooms.some((r) => r.running);
+  // Folded or not, a group whose work went to Working says so: its rooms are not gone, they are busy.
+  const working = group.busy > 0 || group.rooms.some(isBusy);
   return (
     <div className="group/head relative flex w-full items-center gap-0.5 pt-4 pb-1 pl-0.5">
       <button
@@ -251,13 +196,13 @@ function GroupHead({ group, open, onToggle, current, onProject, onNew, on }: { g
           <span className="size-2 shrink-0 rounded-full bg-amber">
             <span className="sr-only">{plural(waiting, "room is waiting for you", "rooms are waiting for you")}</span>
           </span>
-        ) : !open && working ? (
-          <span className="size-1.5 shrink-0 animate-breathe rounded-full bg-foreground">
-            <span className="sr-only">Agents are working</span>
+        ) : (!open || group.busy) && working ? (
+          <span className="size-1.5 shrink-0 animate-breathe rounded-full bg-foreground" title={group.busy ? `${plural(group.busy, "room", "rooms")} in Working` : undefined}>
+            <span className="sr-only">{group.busy ? `${plural(group.busy, "room", "rooms")} in Working` : "Agents are working"}</span>
           </span>
         ) : null}
       </button>
-      <span className="tabular px-1 text-micro text-faint group-hover/head:hidden group-focus-within/head:hidden pointer-coarse:hidden">{group.rooms.length}</span>
+      {group.rooms.length ? <span className="tabular px-1 text-micro text-faint group-hover/head:hidden group-focus-within/head:hidden pointer-coarse:hidden">{group.rooms.length}</span> : null}
       {onNew ? (
         <Tip tip={`New room in ${group.label}`}>
           <button
@@ -271,6 +216,56 @@ function GroupHead({ group, open, onToggle, current, onProject, onNew, on }: { g
         </Tip>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Working: the rooms whose agents are busy and ask nothing of the human, folded into one bar over the sidebar's foot —
+ * who is at work, and how many rooms. Open, it lists them with who works and for how long; each leaves on its own the
+ * moment its run ends or it waits for the human.
+ */
+function WorkingShelf({ rooms, current }: { rooms: RoomSummary[]; current: string | null }) {
+  const [open, setOpenState] = useState(() => local.get("sidebar.workingOpen") === "1");
+  const setOpen = (next: boolean) => {
+    setOpenState(next);
+    local.set("sidebar.workingOpen", next ? "1" : null);
+  };
+  // Who is at work across them, each once.
+  const agents = useMemo(() => {
+    const seen = new Map<string, RoomAgent>();
+    for (const room of rooms) {
+      for (const w of room.working ?? []) {
+        const agent = room.agents?.find((a) => a.id === w.agent);
+        if (agent && !seen.has(agent.id)) seen.set(agent.id, agent as RoomAgent);
+      }
+    }
+    return [...seen.values()];
+  }, [rooms]);
+  return (
+    <section aria-label="Working" className="flex max-h-[45%] shrink-0 flex-col border-t border-border/70 px-2 pt-1.5 pb-1">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        title={open ? "Fold the rooms at work" : "Rooms whose agents are working and need nothing from you. Each comes back up when it finishes or needs you."}
+        className="group/shelf flex h-8 w-full shrink-0 items-center gap-2 rounded-lg px-2 text-left transition hover:bg-foreground/[0.05]"
+      >
+        <span className="size-1.5 shrink-0 animate-breathe rounded-full bg-foreground" aria-hidden />
+        <span className="text-small font-medium text-foreground/85">Working</span>
+        <span className="tabular text-micro text-faint">{rooms.length}</span>
+        <span className="ml-auto flex items-center gap-1.5">
+          {agents.length ? <Facepile agents={agents} working={new Set(agents.map((a) => a.id))} size={16} max={3} ring="ring-sidebar" /> : null}
+          <ChevronRightIcon className={cn("size-3.5 text-faint transition-transform", open ? "rotate-90" : "-rotate-90")} aria-hidden />
+        </span>
+      </button>
+      {open ? (
+        <div className="scroll-thin -mx-2 flex min-h-0 flex-col gap-px overflow-y-auto px-2 pt-0.5">
+          {nestThreads(rooms).map(({ room, depth }) => (
+            <RoomRow key={room.id} room={room} on={room.id === current} depth={depth} />
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -304,14 +299,9 @@ export function Sidebar() {
   const setNavOpen = useStore((s) => s.setNavOpen);
   const { pref, cycle } = useTheme();
   const ThemeIcon = pref === "dark" ? MoonIcon : pref === "light" ? SunIcon : MonitorIcon;
-  const [filter, setFilterState] = useState<Filter>(readFilter);
+  const foldWorking = useStore((s) => s.foldWorking);
   const [folded, setFolded] = useState<Set<string>>(readFolded);
   const current = route.kind === "room" ? route.id : null;
-
-  const setFilter = (next: Filter) => {
-    setFilterState(next);
-    local.set("sidebar.filter", next === "all" ? null : next);
-  };
   const toggleFolder = (key: string) => {
     const next = new Set(folded);
     if (next.has(key)) next.delete(key);
@@ -320,12 +310,7 @@ export function Sidebar() {
     local.set("sidebar.folded", next.size ? JSON.stringify([...next]) : null);
   };
 
-  const counts = useMemo(
-    () => ({ all: rooms.length, waiting: rooms.filter((r) => r.waiting && r.id !== current).length, working: rooms.filter((r) => r.running).length }),
-    [rooms, current],
-  );
-  const shown = rooms.filter((r) => passes(r, filter, current));
-  const grouped = isGrouped(rooms);
+  const view = useMemo(() => layoutRooms(rooms, current, foldWorking), [rooms, current, foldWorking]);
   const rows = (list: RoomSummary[]) => nestThreads(list).map(({ room, depth }) => <RoomRow key={room.id} room={room} on={room.id === current} depth={depth} />);
 
   return (
@@ -354,43 +339,13 @@ export function Sidebar() {
         <NavRow icon={SearchIcon} label="Search" hint={keyLabel("palette")} onClick={() => setPaletteOpen(true)} />
         <NavRow icon={FoldersIcon} label="Projects" on={route.kind === "projects"} onClick={() => go({ kind: "projects" })} />
       </div>
-      {rooms.length ? (
-        <div className="mx-3 mb-1 grid grid-cols-3 rounded-lg bg-foreground/[0.045] p-0.5" role="group" aria-label="Which rooms to show">
-          {FILTERS.map(({ id, label }) => {
-            const count = counts[id];
-            const active = filter === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                aria-pressed={active}
-                onClick={() => setFilter(id)}
-                className={cn(
-                  "inline-flex h-6.5 min-w-0 items-center justify-center gap-1 rounded-md px-1.5 text-meta font-medium transition",
-                  active ? "bg-background text-foreground shadow-edge ring-1 ring-border/70" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <span className="truncate">{label}</span>
-                {id !== "all" && count ? (
-                  <span className={cn("tabular text-micro", id === "waiting" ? "font-semibold text-amber-ink" : "text-faint")}>{count}</span>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
       <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2 pb-3">
         {!rooms.length ? (
           <p className="px-3 py-2 text-small text-muted-foreground">No rooms yet.</p>
-        ) : !shown.length ? (
-          <p className="px-3 py-2 text-small text-muted-foreground">
-            {filter === "waiting" ? "No room is waiting for you." : "No one is working right now."}{" "}
-            <button type="button" className="font-medium text-foreground underline underline-offset-2" onClick={() => setFilter("all")}>
-              Show all
-            </button>
-          </p>
-        ) : grouped ? (
-          groupRooms(shown).map((group) => {
+        ) : !view.grouped && !view.rooms.length ? (
+          <p className="px-3 py-2 text-small leading-relaxed text-muted-foreground">Every room is at work. Each comes back here when it finishes or needs you.</p>
+        ) : view.grouped ? (
+          view.groups.map((group) => {
             const open = !folded.has(group.key);
             return (
               <section key={group.key || "own"} aria-label={group.label} className="flex flex-col gap-px">
@@ -407,9 +362,10 @@ export function Sidebar() {
             );
           })
         ) : (
-          rows(shown)
+          rows(view.rooms)
         )}
       </div>
+      {view.working.length ? <WorkingShelf rooms={view.working} current={current} /> : null}
       <div className="flex items-center gap-0.5 border-t border-border/70 px-2 py-1.5">
         <Tip tip={`Settings · ${keyLabel("settings")}`}>
           <Button

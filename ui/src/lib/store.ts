@@ -117,6 +117,8 @@ interface Store {
   navOpen: boolean;
   /** Desktop room list visibility, independent of the mobile drawer. */
   navCollapsed: boolean;
+  /** The room list folds rooms whose agents work and ask nothing into one Working section (this browser's choice). */
+  foldWorking: boolean;
   dialog: DialogState | null;
   /** Doc panel: bumped when the canonical file changed, so the panel refetches. */
   docTick: number;
@@ -161,6 +163,7 @@ interface Store {
   setPanelWidth: (width: number | null) => void;
   setNavOpen: (open: boolean) => void;
   setNavCollapsed: (collapsed: boolean) => void;
+  setFoldWorking: (fold: boolean) => void;
   openDialog: (dialog: DialogState | null) => void;
   goToRef: (ref: string) => void;
   /** Put a draft into the composer for the human to edit and send; nothing is sent. */
@@ -209,6 +212,7 @@ export const useStore = create<Store>((set, get) => ({
   panelWidth: Number(local.get("panelWidth")) || null,
   navOpen: false,
   navCollapsed: local.get("navCollapsed") === "1",
+  foldWorking: local.get("sidebar.foldWorking") !== "0",
   dialog: null,
   docTick: 0,
   docReset: 0,
@@ -351,6 +355,10 @@ export const useStore = create<Store>((set, get) => ({
   setPanelWidth(panelWidth) {
     local.set("panelWidth", panelWidth ? String(panelWidth) : null);
     set({ panelWidth });
+  },
+  setFoldWorking(foldWorking) {
+    local.set("sidebar.foldWorking", foldWorking ? null : "0");
+    set({ foldWorking });
   },
   setNavCollapsed(navCollapsed) {
     local.set("navCollapsed", navCollapsed ? "1" : null);

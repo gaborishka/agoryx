@@ -153,7 +153,7 @@ export function Palette() {
         ? { id: "chat", label: "Conversation", icon: MessagesSquareIcon, run: () => s.setView("chat"), keywords: "view chat", hint: <Keys id="chat" /> }
         : { id: "table", label: "Table", icon: ScaleIcon, run: () => s.setView("table"), keywords: "view", hint: <Keys id="table" /> },
       { id: "panel", label: panel ? "Hide panel" : "Show panel", icon: PanelRightIcon, run: () => s.togglePanel(), hint: <Keys id="panel" /> },
-      ...panelTabs().map((tab) => ({
+      ...panelTabs(false, room.mode !== "chat" && Boolean(s.rooms.find((entry) => entry.id === room.id)?.projectHash)).map((tab) => ({
         id: `tab-${tab}`,
         label: TABS[tab].label,
         icon: TABS[tab].icon,

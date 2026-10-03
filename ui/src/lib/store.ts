@@ -1,18 +1,20 @@
 import { toast } from "sonner";
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { api, ApiError, local, roomPath, setUnauthorizedHandler, Unauthorized } from "./api";
 import { startAttention } from "./attention";
 import type { Quote } from "./quote";
-import { lastLine } from "./room";
+import { lastLine, type Seating } from "./room";
 import type { AgentPresence, LimitSnapshot, OpEntry, RoomEvent, RoomSummary, RunState, Snapshot, TurnState } from "./types";
 
 /**
  * The right-hand panel's tabs: an agent's own session, the shared document, the room's browser (in the app),
  * what turns changed, the workspace's files, and the table beside the conversation (it is also a view of its own,
- * but never both at once).
+ * but never both at once). `thread`: a thread of this room, opened from its card; it is not one of the tabs an
+ * address or the toggle brings back, since it shows another room.
  */
-export type PanelTab = "session" | "doc" | "browser" | "diff" | "files" | "table";
-export const PANEL_TABS: readonly PanelTab[] = ["session", "doc", "browser", "diff", "files", "table"];
+export type PanelTab = "session" | "doc" | "browser" | "diff" | "files" | "table" | "project" | "thread";
+export const PANEL_TABS: readonly PanelTab[] = ["session", "doc", "browser", "diff", "files", "table", "project"];
 
 /** Which changes the Changes tab shows: one turn's, the whole room's against where it began, or one checkpoint. */
 export type ChangeScope = "turn" | "room" | "commit";
@@ -43,7 +45,12 @@ export type DialogState =
   | { kind: "keys" }
   | { kind: "usage" }
   | { kind: "phone" }
-  | { kind: "table-form"; op: TableFormOp; target?: string; q?: string };
+  | { kind: "table-form"; op: TableFormOp; target?: string; q?: string }
+  /** A project's settings, by its hash. */
+  | { kind: "project"; hash: string; tab?: ProjectTab };
+
+export const PROJECT_TABS = ["general", "context", "memory", "usage", "changes"] as const;
+export type ProjectTab = (typeof PROJECT_TABS)[number];
 
 export type TableFormOp = "ask" | "propose" | "object" | "support" | "evidence" | "decide" | "settle" | "next";
 
@@ -51,7 +58,16 @@ export type TableFormOp = "ask" | "propose" | "object" | "support" | "evidence" 
 export const SETTINGS_SECTIONS = ["general", "profile", "agents", "phone", "limits", "about"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
-export type Route = { kind: "room"; id: string } | { kind: "new" } | { kind: "settings"; section: SettingsSection } | { kind: "boot" };
+export type Route =
+  | { kind: "room"; id: string }
+  /** The start screen; `dir`: a Work room in this folder (a project's "New room here"). */
+  | { kind: "new"; dir?: string }
+  | { kind: "settings"; section: SettingsSection }
+  /** A project (a Work folder), by its hash. */
+  | { kind: "project"; hash: string }
+  /** Every project. */
+  | { kind: "projects" }
+  | { kind: "boot" };
 
 type Upsertable = { id: string };
 const upsert = <T extends Upsertable>(list: T[], item: T): T[] => {
@@ -80,6 +96,8 @@ interface Store {
   lastTab: PanelTab;
   /** Whose session the session panel shows. */
   sessionAgent: string | null;
+  /** The thread the thread tab shows: a room started from this one. */
+  thread: string | null;
   changes: ChangesFocus;
   /** The file the Files tab shows; null: the list. */
   filePath: string | null;
@@ -99,6 +117,8 @@ interface Store {
   navOpen: boolean;
   /** Desktop room list visibility, independent of the mobile drawer. */
   navCollapsed: boolean;
+  /** The room list folds rooms whose agents work and ask nothing into one Working section (this browser's choice). */
+  foldWorking: boolean;
   dialog: DialogState | null;
   /** Doc panel: bumped when the canonical file changed, so the panel refetches. */
   docTick: number;
@@ -112,6 +132,8 @@ interface Store {
   compose: { text: string; at: number } | null;
   /** A passage quoted from a message or a diff, on its way to the composer; `at` makes a repeat count; `to`: whom it is for by default. */
   quoting: { quote: Quote; at: number; to?: string } | null;
+  /** A passage on its way to a thread's steer box, as `quoting` is to the composer: the human sends it. `pick`: which thread is the human's to choose. */
+  steering: { quote: Quote; at: number; pick?: boolean } | null;
   paletteOpen: boolean;
 
   loadRooms: () => Promise<void>;
@@ -133,18 +155,23 @@ interface Store {
   setDocFocus: (seq: number | null) => void;
   /** Show an agent's session in the side panel (the first agent's when none is named); again for the same agent closes it. */
   openSession: (agent?: string, toggle?: boolean) => void;
+  /** Show a thread of this room in the side panel. */
+  openThread: (id: string) => void;
   setView: (view: RoomView) => void;
   setWide: (wide: boolean) => void;
   setNavWidth: (width: number | null) => void;
   setPanelWidth: (width: number | null) => void;
   setNavOpen: (open: boolean) => void;
   setNavCollapsed: (collapsed: boolean) => void;
+  setFoldWorking: (fold: boolean) => void;
   openDialog: (dialog: DialogState | null) => void;
   goToRef: (ref: string) => void;
   /** Put a draft into the composer for the human to edit and send; nothing is sent. */
   composeDraft: (text: string) => void;
   /** Add a quoted passage above the composer's draft (the draft stays); nothing is sent. `to` is @-addressed when the draft names no one yet. */
   quote: (quote: Quote, to?: string) => void;
+  /** Put a quoted passage into the open thread's steer box (the room's threads to pick from when none is open); nothing is sent. */
+  steerQuote: (quote: Quote) => void;
   openDocRevision: (seq: number) => void;
   setPaletteOpen: (open: boolean) => void;
   post: (suffix: string, body?: unknown) => Promise<Record<string, unknown>>;
@@ -172,6 +199,7 @@ export const useStore = create<Store>((set, get) => ({
   panel: null,
   lastTab: PANEL_TABS.includes(local.get("panelTab") as PanelTab) ? (local.get("panelTab") as PanelTab) : "session",
   sessionAgent: null,
+  thread: null,
   changes: { scope: "turn" },
   filePath: null,
   fileTabs: [],
@@ -184,6 +212,7 @@ export const useStore = create<Store>((set, get) => ({
   panelWidth: Number(local.get("panelWidth")) || null,
   navOpen: false,
   navCollapsed: local.get("navCollapsed") === "1",
+  foldWorking: local.get("sidebar.foldWorking") !== "0",
   dialog: null,
   docTick: 0,
   docReset: 0,
@@ -192,6 +221,7 @@ export const useStore = create<Store>((set, get) => ({
   flash: null,
   compose: null,
   quoting: null,
+  steering: null,
   paletteOpen: false,
 
   async loadRooms() {
@@ -251,14 +281,15 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   setPanel(panel) {
-    if (panel) local.set("panelTab", panel);
+    if (panel === "thread" && !get().thread) panel = null;
+    if (panel && panel !== "thread") local.set("panelTab", panel);
     // The table beside the conversation: the room's column goes back to the conversation.
     if (panel === "table" && get().view === "table") get().setView("chat");
     set(panel ? { panel, lastTab: panel } : { panel });
   },
   togglePanel(tab) {
-    const { panel, lastTab } = get();
-    if (!tab) get().setPanel(panel ? null : lastTab);
+    const { panel, lastTab, thread } = get();
+    if (!tab) get().setPanel(panel ? null : lastTab === "thread" && !thread ? "session" : lastTab);
     else get().setPanel(panel === tab ? null : tab);
   },
   openChanges(focus) {
@@ -303,6 +334,10 @@ export const useStore = create<Store>((set, get) => ({
     get().setPanel("session");
     set({ sessionAgent: target });
   },
+  openThread(id) {
+    set({ thread: id });
+    get().setPanel("thread");
+  },
   setView(view) {
     const route = get().route;
     if (route.kind === "room") local.set(`view.${route.id}`, view === "table" ? "table" : null);
@@ -320,6 +355,10 @@ export const useStore = create<Store>((set, get) => ({
   setPanelWidth(panelWidth) {
     local.set("panelWidth", panelWidth ? String(panelWidth) : null);
     set({ panelWidth });
+  },
+  setFoldWorking(foldWorking) {
+    local.set("sidebar.foldWorking", foldWorking ? null : "0");
+    set({ foldWorking });
   },
   setNavCollapsed(navCollapsed) {
     local.set("navCollapsed", navCollapsed ? "1" : null);
@@ -342,6 +381,15 @@ export const useStore = create<Store>((set, get) => ({
   },
   quote(quote, to) {
     set({ quoting: { quote, at: Date.now(), ...(to ? { to } : {}) } });
+  },
+  steerQuote(quote) {
+    const { thread, rooms, snap } = get();
+    const threads = rooms.filter((room) => room.parent && room.parent === snap?.state.id);
+    const open = thread && threads.some((room) => room.id === thread) ? thread : null;
+    const latest = [...threads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    set({ steering: { quote, at: Date.now(), ...(!open && threads.length > 1 ? { pick: true } : {}) } });
+    if (open) get().setPanel("thread");
+    else if (latest) get().openThread(latest.id);
   },
   openDocRevision(seq) {
     get().setPanel("doc");
@@ -387,6 +435,8 @@ type Patch = {
   agents?: Snapshot["state"]["agents"];
   former?: Snapshot["state"]["former"];
   resume?: Snapshot["resume"];
+  /** null: the thread is open again. */
+  resolved?: Snapshot["state"]["resolved"] | null;
   activity?: { turnId: string; activity: TurnState["activity"][number] };
 };
 
@@ -417,6 +467,8 @@ const applyPatch = (event: RoomEvent, patch: Patch) => {
   if (patch.repo === null) delete st.repo;
   else if (patch.repo) st.repo = patch.repo;
   if (patch.prs) st.prs = patch.prs;
+  if (patch.resolved === null) delete st.resolved;
+  else if (patch.resolved) st.resolved = patch.resolved;
   if (patch.guests) st.guests = patch.guests;
   if (patch.agents) st.agents = patch.agents;
   if (patch.former) st.former = patch.former;
@@ -504,7 +556,8 @@ function connect(roomId: string, after: number) {
 }
 
 // ---------------------------------------------------------------------------
-// Routing: #<room id>, then what the room shows (?view=table&panel=diff&turn=t3&path=…); #new = start screen; #settings[/<section>] = settings.
+// Routing: #<room id>, then what the room shows (?view=table&panel=diff&turn=t3&path=…); #new = start screen; #settings[/<section>] = settings;
+// #projects = every project; #project/<hash> = a project's page.
 // Room changes are history entries; the panel, its tab and what it shows only replace the address.
 // ---------------------------------------------------------------------------
 
@@ -521,7 +574,10 @@ const parseHash = (): { route: Route | null; params: URLSearchParams } => {
   } catch {
     return { route: null, params };
   }
-  if (head === "new") return { route: { kind: "new" }, params };
+  // New room in a project's folder (from its page): the folder comes back with the address, on reload or Back.
+  if (head === "new") return { route: params.get("dir") ? { kind: "new", dir: params.get("dir")! } : { kind: "new" }, params };
+  if (head === "projects") return { route: { kind: "projects" }, params };
+  if (/^project\/[0-9a-f]{12}$/.test(head)) return { route: { kind: "project", hash: head.slice("project/".length) }, params };
   if (head === "settings" || head.startsWith("settings/")) {
     const section = head.slice("settings/".length) as SettingsSection;
     return { route: { kind: "settings", section: SETTINGS_SECTIONS.includes(section) ? section : "general" }, params };
@@ -529,12 +585,14 @@ const parseHash = (): { route: Route | null; params: URLSearchParams } => {
   return { route: head ? { kind: "room", id: head } : null, params };
 };
 
-type Addressed = Pick<Store, "route" | "view" | "panel" | "changes" | "filePath" | "sessionAgent" | "docFocus">;
+type Addressed = Pick<Store, "route" | "view" | "panel" | "changes" | "filePath" | "sessionAgent" | "docFocus" | "thread">;
 
 /** The address of what the page shows. */
 const hashFor = (s: Addressed): string => {
-  if (s.route.kind === "new") return "#new";
+  if (s.route.kind === "new") return s.route.dir ? `#new?${new URLSearchParams({ dir: s.route.dir })}` : "#new";
   if (s.route.kind === "settings") return s.route.section === "general" ? "#settings" : `#settings/${s.route.section}`;
+  if (s.route.kind === "project") return `#project/${s.route.hash}`;
+  if (s.route.kind === "projects") return "#projects";
   if (s.route.kind !== "room") return "";
   const p = new URLSearchParams();
   if (s.view === "table") p.set("view", "table");
@@ -549,13 +607,14 @@ const hashFor = (s: Addressed): string => {
     } else if (s.panel === "files" && s.filePath) p.set("path", s.filePath);
     else if (s.panel === "session" && s.sessionAgent) p.set("agent", s.sessionAgent);
     else if (s.panel === "doc" && s.docFocus != null) p.set("rev", String(s.docFocus));
+    else if (s.panel === "thread" && s.thread) p.set("thread", s.thread);
   }
   const query = p.toString();
   return `#${encodeURIComponent(s.route.id)}${query ? `?${query}` : ""}`;
 };
 
 /** Nothing of another room's selected: its own turns, files and revisions. */
-const FRESH = { changes: { scope: "turn" } as ChangesFocus, filePath: null, fileTabs: [] as string[], docFocus: null };
+const FRESH = { changes: { scope: "turn" } as ChangesFocus, filePath: null, fileTabs: [] as string[], docFocus: null, thread: null, steering: null };
 
 /**
  * What entering a room sets besides the route. From an address (`params`): what it says, the view otherwise
@@ -567,13 +626,15 @@ const routeState = (route: Route, params: URLSearchParams | null): Partial<Store
   const same = s.route.kind === "room" && s.route.id === route.id;
   const remembered: RoomView = local.get(`view.${route.id}`) === "table" ? "table" : "chat";
   // A bare #<room> (the app opening a room it is already on) leaves what is shown as it is.
-  if (!params || (same && !params.size)) return same ? {} : { view: remembered, ...FRESH };
+  // Another room's thread is not this one's: that tab closes.
+  if (!params || (same && !params.size)) return same ? {} : { view: remembered, ...FRESH, ...(s.panel === "thread" ? { panel: null } : {}) };
   const view = params.get("view");
   // The view an address names is the one now shown here, so it is remembered: the rewritten address omits chat.
   if (view === "table" || view === "chat") local.set(`view.${route.id}`, view === "table" ? "table" : null);
   const tab = params.get("panel") as PanelTab | null;
   // An address without a panel closes it in this room; another room's address keeps the tab open.
-  const panel = tab && PANEL_TABS.includes(tab) ? tab : same ? null : s.panel;
+  const thread = tab === "thread" ? params.get("thread") : null;
+  const panel = thread ? "thread" : tab && PANEL_TABS.includes(tab) ? tab : same || s.panel === "thread" ? null : s.panel;
   const turn = params.get("turn");
   const sha = params.get("commit");
   const scope = params.get("scope");
@@ -594,6 +655,7 @@ const routeState = (route: Route, params: URLSearchParams | null): Partial<Store
     fileTabs: same ? s.fileTabs : [],
     sessionAgent: params.get("agent") || s.sessionAgent,
     docFocus: panel === "doc" && Number.isFinite(rev) ? rev : null,
+    thread,
   };
 };
 
@@ -605,12 +667,12 @@ function applyRoute(route: Route, extra: Partial<Store> = {}) {
   if (route.kind === "room") {
     if (prev.kind !== "room" || prev.id !== route.id || !useStore.getState().snap) {
       closeStream();
-      useStore.setState({ snap: null, compose: null, quoting: null });
+      useStore.setState({ snap: null, compose: null, quoting: null, steering: null });
       void useStore.getState().openRoom(route.id);
     }
   } else {
     closeStream();
-    useStore.setState({ snap: null, compose: null, quoting: null });
+    useStore.setState({ snap: null, compose: null, quoting: null, steering: null });
     document.title = "Agoryx";
   }
 }
@@ -641,7 +703,8 @@ const followAddress = () =>
       s.changes === prev.changes &&
       s.filePath === prev.filePath &&
       s.sessionAgent === prev.sessionAgent &&
-      s.docFocus === prev.docFocus
+      s.docFocus === prev.docFocus &&
+      s.thread === prev.thread
     )
       return;
     const hash = hashFor(s);
@@ -702,7 +765,9 @@ export const boot = async () => {
     },
     (fn) => useStore.subscribe(fn),
   );
-  setInterval(() => void useStore.getState().loadRooms(), 5000);
+  // The room list is asked for while it can be seen; a hidden tab asks once when it is shown again.
+  setInterval(() => document.visibilityState === "visible" && void useStore.getState().loadRooms(), 5000);
+  document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && void useStore.getState().loadRooms());
   listenToServiceWorker();
   try {
     const info = await api<{ device: { id: string; name: string } | null }>("GET", "/api/info");
@@ -717,3 +782,15 @@ export const boot = async () => {
 // ---------------------------------------------------------------------------
 
 export const useRoom = () => useStore((s) => s.snap?.state);
+
+/**
+ * Who sits in the room — what a name, a face or a colour needs. Not the whole state, which is new with every event:
+ * a message row that reads only this is not drawn again while a turn runs.
+ */
+export const useSeating = (): Seating | undefined =>
+  useStore(
+    useShallow((s) => {
+      const st = s.snap?.state;
+      return st ? { agents: st.agents, human: st.human, guests: st.guests, former: st.former } : undefined;
+    }),
+  );

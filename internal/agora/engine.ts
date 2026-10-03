@@ -11,12 +11,14 @@ import { activeRun } from "./projection.js";
 import { inTurnAt, wakesAgent } from "./wakes.js";
 import { limitAccount } from "./limits-store.js";
 import { profileBriefing, profileUpdate, readProfile, seesProfile } from "./profile.js";
+import { contextFolders, projectBriefing, projectKey, projectUpdate, readProject } from "./projects.js";
 import { BRIEFING_VERSION, buildTurnPrompt, forHumanOnly, paragraphs, parseMentions, passNote } from "./prompts.js";
 import { JEV_ENV, type ReadMessage, type SecondLook } from "./jev.js";
 import { cleanRole, MAX_ROLE_CHARS, parseAgents, validEffort, validModel } from "./roster.js";
 import { truncate, type AgentRunner, type LiveProcess, type TurnRequest, type TurnResult } from "./runners/types.js";
 import { MAX_REVERT_CHANGES, REVERT_FAILURE, RevertError, revertTarget, type RevertRequest } from "./revert.js";
 import { RoomStore } from "./store.js";
+import { threadBriefing } from "./threads.js";
 import { fromWorkspace, namesFile, shellWriteTargets, shellWrites, type ShellCwd } from "./shell-writes.js";
 import { workspaceAt } from "./room-mode.js";
 import { planStepCommit, stepOf, StepCommitError, stepTurns } from "./step-commit.js";
@@ -660,6 +662,38 @@ export class RoomEngine {
     return message;
   }
 
+  /**
+   * A thread of this room reported back (threads.ts): Agoryx's line, verbatim. It wakes the agent that started the
+   * thread (`sys.wakes`), if it still sits here, and no one else; one the human started wakes nobody.
+   */
+  postThreadReport(text: string, sys: Extract<SystemNote, { code: "thread.reported" }>): MessageEntry | null {
+    // A report tried again (its room was busy the first time) is posted once.
+    const said = (message: MessageEntry) => message.sys?.code === "thread.reported" && message.sys.room === sys.room && message.sys.run === sys.run;
+    if (sys.run && this.state.messages.some(said)) return null;
+    const spawner = sys.wakes ? this.state.agents.find((agent) => agent.id === sys.wakes) : undefined;
+    const { wakes: _wakes, ...rest } = sys;
+    const message = this.postMessage({
+      author: "agoryx",
+      kind: "system",
+      text,
+      sys: spawner ? { ...rest, wakes: spawner.id } : rest,
+      mentions: spawner ? [spawner.id] : [],
+      wakes: Boolean(spawner),
+    });
+    if (spawner) this.startWork(message.id);
+    return message;
+  }
+
+  /** A thread's parent room's name, read from its log; undefined when it cannot be read. */
+  private parentName(): string | undefined {
+    if (!this.state.parent) return undefined;
+    try {
+      return RoomStore.open(dirname(this.store.dir), this.state.parent).state.name;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** "One more round": every agent gets another turn even with nothing new. */
   continueRun(by?: string | Actor): void {
     const actor = this.actor(by);
@@ -904,6 +938,18 @@ export class RoomEngine {
       const who = actorLabel(this.state, actor.by);
       this.postNote(actor, `${who} renamed the room to "${clean}".`, { code: "room.renamed", by: who, name: clean });
     }
+  }
+
+  /**
+   * Mark this thread resolved, or open again. The human's alone: it moves the thread on the board and changes nothing
+   * for its agents — no note, no wake.
+   */
+  resolveThread(resolved: boolean, by?: string | Actor): void {
+    const actor = this.actor(by);
+    if (!this.state.parent) throw new Error("only a thread is resolved");
+    if (!this.byHuman(actor)) throw new Error("resolving a thread is the human's");
+    if (Boolean(this.state.resolved) === resolved) return;
+    this.store.append({ type: resolved ? "thread.resolved" : "thread.reopened", by: actor.by });
   }
 
   /**
@@ -1656,6 +1702,12 @@ export class RoomEngine {
     // Read once per turn: the version given is the version recorded. An agent it is off for never gets a word of it.
     const profile = seesProfile(agent) ? readProfile(this.profilePath) : null;
     const held = this.state.profiles[agent.id] ?? "";
+    // The project (Work only), likewise read once: the seq given is the seq recorded.
+    const key = projectKey(this.state);
+    const project = key ? readProject(key, this.env) : null;
+    // Its context folders, for the CLI to open to the agent beside the workspace.
+    const addDirs = project ? contextFolders(project) : [];
+    const cli = this.agentCliHint().command;
     const promptFor = (fresh: boolean, rejoin: boolean) =>
       buildTurnPrompt({
         state: this.state,
@@ -1668,6 +1720,7 @@ export class RoomEngine {
         rejoin,
         doc: this.docDelta(agent, fromSeq, fresh),
         profile: fresh ? (profile ? profileBriefing(profile, this.state.human) : null) : profileUpdate(profile, held, this.state.human),
+        project: !project ? null : fresh ? `${projectBriefing(project, cli, this.env)}\n${threadBriefing(this.state, cli, this.parentName())}` : projectUpdate(project, this.state.projectSeen?.[agent.id] ?? 0, { room: this.state.id, agent: agent.id }, cli),
         tracking: fresh ? workspaceTracking(this.state.workspace) : undefined,
       });
     const prompt = promptFor(!sessionId, false);
@@ -1682,6 +1735,7 @@ export class RoomEngine {
       sessionId,
       promptChars: prompt.length,
       ...(profile ? { profile: profile.hash } : {}),
+      ...(project ? { project: project.seq } : {}),
       limitMs: this.state.settings.turnTimeoutMs,
     });
 
@@ -1728,6 +1782,7 @@ export class RoomEngine {
       const request = {
         prompt,
         cwd: this.state.workspace,
+        ...(addDirs.length ? { addDirs } : {}),
         sessionId,
         roomName: this.state.name,
         ...(agent.model ? { model: agent.model } : {}),

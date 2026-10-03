@@ -2,7 +2,7 @@ import { CheckIcon, CircleDashedIcon, GitMergeIcon, GitPullRequestArrowIcon, Git
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { api, roomPath, Unauthorized } from "@/lib/api";
 import { plural } from "@/lib/format";
 import { nameOf } from "@/lib/room";
@@ -154,11 +154,10 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
  * The human's "Open PR": gh, signed in as them, pushes the branch and opens the pull request. The daemon says first
  * what it would push (branch, commit, base); it pushes only that, and refuses if the folder moved on since.
  */
-export function OpenPr({ className }: { className?: string }) {
+export function OpenPr({ className, open, setOpen, fromMenu }: { className?: string; open: boolean; setOpen: (open: boolean) => void; fromMenu?: boolean }) {
   const room = useStore((s) => s.snap?.state);
   const driven = useStore((s) => s.snap?.driven);
   const post = useStore((s) => s.post);
-  const [open, setOpen] = useState(false);
   const [plan, setPlan] = useState<PrPlan | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -209,6 +208,8 @@ export function OpenPr({ className }: { className?: string }) {
           <span className={cn("hidden", !busyTurn && "@min-[44rem]:inline")}>Open PR</span>
         </Button>
       </PopoverTrigger>
+      {/* Opened from the menu, where the button may be hidden (a narrow header): it hangs from this place instead. */}
+      {fromMenu ? <PopoverAnchor className="size-0 self-end" /> : null}
       <PopoverContent align="end" className="w-80 text-small">
         <p className="font-medium">Open a pull request</p>
         {plan ? (

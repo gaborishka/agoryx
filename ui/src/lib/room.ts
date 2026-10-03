@@ -98,7 +98,7 @@ export const profileLine = (agent: Pick<RoomAgent, "profile">, profile: { exists
       ? "Your profile is turned off for this agent (\"profile\": false in the roster): not a word of it goes into its prompts. The agent can still read the file itself with its own tools."
       : "Sees your profile (profile.md) — as context about you, not as part of the conversation.";
 
-export const nameOf = (room: RoomState | undefined, handle: string) => {
+export const nameOf = (room: Seating | undefined, handle: string) => {
   const p = participant(room, handle);
   return p.tone === "human" && handle === room?.human ? handle : p.label;
 };
@@ -564,4 +564,26 @@ export const refAnchor = (st: RoomState, ref: string) => {
     return d ? `opt-${d.option}` : null;
   }
   return `ti-${ref}`;
+};
+
+/**
+ * The rooms with each thread right under the room it came from, in the order given; a thread whose room is not in
+ * the list stays where it is. `depth`: how many threads deep.
+ */
+export const nestThreads = (rooms: RoomSummary[]): Array<{ room: RoomSummary; depth: number }> => {
+  const ids = new Set(rooms.map((room) => room.id));
+  const nested = (room: RoomSummary) => Boolean(room.parent && room.parent !== room.id && ids.has(room.parent));
+  const children = new Map<string, RoomSummary[]>();
+  for (const room of rooms) if (nested(room)) children.set(room.parent!, [...(children.get(room.parent!) ?? []), room]);
+  const out: Array<{ room: RoomSummary; depth: number }> = [];
+  const seen = new Set<string>();
+  const visit = (room: RoomSummary, depth: number) => {
+    if (seen.has(room.id)) return;
+    seen.add(room.id);
+    out.push({ room, depth });
+    for (const child of children.get(room.id) ?? []) visit(child, depth + 1);
+  };
+  for (const room of rooms) if (!nested(room)) visit(room, 0);
+  for (const room of rooms) visit(room, 0);
+  return out;
 };

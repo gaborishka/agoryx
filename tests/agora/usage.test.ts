@@ -37,6 +37,10 @@ test("a room's wakes read back from its turns: per agent, how they ended, who wo
       assert.equal(agent.outcomes.passed.ms, passed.reduce((sum, turn) => sum + (turn.durationMs ?? 0), 0));
     }
     assert.equal(usage.total.turns, 4);
+    // An agent sent out of the room keeps its kind for the turns it took.
+    const out = state.agents.find((agent) => agent.id === "codex")!;
+    const after = roomUsage({ ...state, agents: state.agents.filter((agent) => agent !== out), former: [out] }, room.store.since(0));
+    assert.equal(after.agents.find((agent) => agent.agent === "codex")?.kind, "codex");
     assert.equal(usage.outcomes.passed.turns, 2);
     assert.equal(usage.from, state.turns[0]!.startedAt);
   } finally {

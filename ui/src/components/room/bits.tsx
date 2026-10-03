@@ -3,7 +3,7 @@ import { MarkMono } from "@/components/brand/Mark";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { clock, fullDate } from "@/lib/format";
 import { ink, nameOf, participant, type Tone, toneText } from "@/lib/room";
-import { useStore } from "@/lib/store";
+import { useSeating } from "@/lib/store";
 import type { MessageEntry, RoomAgent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -59,7 +59,7 @@ export function Avatar({
   badge?: boolean;
   className?: string;
 }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const p = participant(roster ? { agents: roster } : room, handle);
   const inside = Boolean(p.mark) && size < MARK_INSIDE && !badge;
   const corner = Math.max(12, Math.round(size * 0.46));
@@ -101,8 +101,50 @@ export function Avatar({
   );
 }
 
+/**
+ * Who sits somewhere, overlapping left to right: those at work first, pulsing. `ring` is the surface it sits on, so
+ * each face is cut out of the one under it. More than `max` is a count.
+ */
+export function Facepile({
+  agents,
+  working,
+  size = 20,
+  max = 3,
+  ring = "ring-background",
+  className,
+}: {
+  agents: RoomAgent[];
+  working?: Set<string>;
+  size?: number;
+  max?: number;
+  ring?: string;
+  className?: string;
+}) {
+  if (!agents.length) return null;
+  const on = working ?? new Set<string>();
+  const shown = [...agents].sort((a, b) => Number(on.has(b.id)) - Number(on.has(a.id))).slice(0, max);
+  const more = agents.length - shown.length;
+  return (
+    <span className={cn("flex shrink-0 items-center", className)} aria-label={agents.map((agent) => agent.label ?? agent.id).join(", ")} role="img">
+      {shown.map((agent, index) => (
+        <span key={agent.id} className={cn("rounded-[34%] ring-2", ring)} style={{ marginLeft: index ? -Math.round(size * 0.22) : 0, zIndex: shown.length - index }}>
+          <Avatar handle={agent.id} roster={agents} size={size} live={on.has(agent.id)} />
+        </span>
+      ))}
+      {more > 0 ? (
+        <span
+          className={cn("grid place-items-center rounded-[34%] bg-muted font-medium text-muted-foreground ring-2", ring)}
+          style={{ width: size, height: size, marginLeft: -Math.round(size * 0.22), fontSize: Math.round(size * 0.45) }}
+        >
+          +{more}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function Name({ handle, className }: { handle: string; className?: string }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const p = participant(room, handle);
   return (
     <span className={cn("font-semibold", toneText[p.tone], className)} style={ink(p)}>
@@ -140,7 +182,7 @@ const nativeTone: Record<Tone, string> = {
 };
 
 export function NativeBadge({ agent, label, tip }: { agent: string; label: string; tip: string }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const p = participant(room, agent);
   return (
     <Tip tip={tip}>
@@ -153,7 +195,7 @@ export function NativeBadge({ agent, label, tip }: { agent: string; label: strin
 
 /** A message imported from an agent's own session (outside the room) says where it happened. */
 export function NativeTag({ m }: { m: MessageEntry }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   if (!m.native) return null;
   const who = nameOf(room, m.native.agent);
   return (

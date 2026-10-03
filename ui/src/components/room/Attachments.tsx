@@ -7,7 +7,7 @@ import { ext, IMAGE_EXT, kb } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** The daemon's bound on one file (uploads.ts MAX_UPLOAD). */
-const MAX_FILE = 20 * 1024 * 1024;
+export const MAX_FILE = 20 * 1024 * 1024;
 
 type Attachment = { id: string; file: File; name: string; preview: string | null };
 
@@ -20,7 +20,7 @@ const nameOf = (file: File) => {
   return `pasted-${stamp}.${file.type.split("/")[1]?.replace("jpeg", "jpg") || "png"}`;
 };
 
-const base64 = (file: File) =>
+export const base64 = (file: File) =>
   new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));

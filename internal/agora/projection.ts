@@ -27,6 +27,7 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   sessions: {},
   cursors: Object.fromEntries(event.agents.map((agent) => [agent.id, 0])),
   profiles: {},
+  projectSeen: {},
   table: emptyTable(),
   commits: [],
   reverts: [],
@@ -34,6 +35,7 @@ export const initialState = (event: RoomCreatedEvent & { seq: number; ts: string
   counters: { m: 0, t: 0, r: 0 },
   guests: event.createdBy ? { [guestHandle(event.createdBy)]: event.createdBy } : {},
   ...(event.createdBy ? { createdBy: event.createdBy } : {}),
+  ...(event.parent ? { parent: event.parent } : {}),
 });
 
 /** The agent of another room an event names, if any: remembered so its handle can be named later. */
@@ -98,6 +100,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       state.sessions = {};
       state.cursors = Object.fromEntries(state.agents.map((agent) => [agent.id, 0]));
       state.profiles = {};
+      state.projectSeen = {};
       delete state.repo;
       return;
     }
@@ -129,6 +132,7 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       if (run) {
         run.status = "ended";
         run.endReason = event.reason;
+        run.endedSeq = event.seq;
       }
       return;
     }
@@ -148,10 +152,12 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
         activity: [],
         profile: event.profile ?? "",
         profileBefore: state.profiles[event.agent] ?? "",
+        ...(event.project !== undefined ? { project: event.project, projectBefore: state.projectSeen?.[event.agent] ?? 0 } : {}),
         ...(event.limitMs !== undefined ? { limitMs: event.limitMs } : {}),
       });
       state.cursors[event.agent] = Math.max(state.cursors[event.agent] ?? 0, event.cursor);
       state.profiles[event.agent] = event.profile ?? "";
+      if (event.project !== undefined) (state.projectSeen ??= {})[event.agent] = event.project;
       const run = findRun(state, event.runId);
       if (run) run.used += 1;
       return;
@@ -187,6 +193,9 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       if ((event.status === "error" || event.unseen) && state.profiles[turn.agent] === turn.profile && turn.profileBefore !== undefined) {
         state.profiles[turn.agent] = turn.profileBefore;
       }
+      if ((event.status === "error" || event.unseen) && turn.project !== undefined && state.projectSeen?.[turn.agent] === turn.project) {
+        state.projectSeen[turn.agent] = turn.projectBefore ?? 0;
+      }
       for (const entry of turn.activity) {
         if (entry.status === "running") entry.status = event.status === "ok" || event.status === "pass" ? "ok" : "fail";
       }
@@ -206,6 +215,12 @@ export const applyEvent = (state: RoomState, event: RoomEvent): void => {
       return;
     case "room.renamed":
       state.name = event.name;
+      return;
+    case "thread.resolved":
+      state.resolved = { by: event.by, at: event.ts };
+      return;
+    case "thread.reopened":
+      delete state.resolved;
       return;
     case "agent.changed":
       state.agents = state.agents.map((agent) => {

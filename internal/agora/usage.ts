@@ -85,7 +85,8 @@ export const roomUsage = (state: RoomState, events: readonly RoomEvent[]): RoomU
   const entry = (id: string): AgentUsage => {
     let found = agents.get(id);
     if (!found) {
-      const agent = state.agents.find((candidate) => candidate.id === id);
+      // One sent out of the room keeps its name and kind for the turns it took (`former`).
+      const agent = state.agents.find((candidate) => candidate.id === id) ?? state.former?.find((candidate) => candidate.id === id);
       found = {
         agent: id,
         label: agent?.label ?? id,

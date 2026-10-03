@@ -15,6 +15,7 @@ import { join, resolve, sep } from "node:path";
 import { originName } from "./actor.js";
 import { type AgentLook, agentLook } from "./look.js";
 import { applyEvent, initialState } from "./projection.js";
+import { projectHash, projectKey } from "./projects.js";
 import { unquoted } from "./quote.js";
 import type {
   ActorOrigin,
@@ -29,6 +30,7 @@ import type {
   RoomState,
   RoomWorktree,
   SystemNote,
+  ThreadResolution,
 } from "./types.js";
 
 export type StoreListener = (event: RoomEvent | EphemeralEvent) => void;
@@ -46,6 +48,10 @@ export interface CreateRoomInput {
   id?: string;
   /** An agent opened the room from another room. */
   createdBy?: ActorOrigin;
+  /** A thread: the room it was started from. */
+  parent?: string;
+  /** A thread the human marked resolved: by whom, when. */
+  resolved?: ThreadResolution;
 }
 
 export interface RoomSummary {
@@ -71,9 +77,18 @@ export interface RoomSummary {
   folder?: string;
   /** The room's own branch, when it works in a worktree. */
   branch?: string;
+  /** Work rooms: the project (their folder) they belong to, by its hash in <AGORYX_HOME>/projects. */
+  projectHash?: string;
+  /** The name written for that project, when one was (the daemon adds it). */
+  projectName?: string;
+  /** A thread: the room it was started from. */
+  parent?: string;
 }
 
 const EVENTS_FILE = "events.jsonl";
+
+/** Rooms' summaries by event log, with the log's mtime and size when it was read (RoomStore.list). */
+const summaries = new Map<string, { mtimeMs: number; size: number; summary: RoomSummary }>();
 
 /** Events that are no activity of the room's: a room is as recent as its last other event (see summary). */
 const QUIET_EVENTS = new Set<RoomEvent["type"]>(["repo.seen", "repo.gone", "pr.status"]);
@@ -156,6 +171,7 @@ export class RoomStore {
       agents: input.agents,
       settings: input.settings,
       ...(input.createdBy ? { createdBy: input.createdBy } : {}),
+      ...(input.parent ? { parent: input.parent } : {}),
     };
     const event = { ...created, seq: 1, ts: new Date().toISOString() };
     appendFileSync(store.file, `${JSON.stringify(event)}\n`);
@@ -186,15 +202,27 @@ export class RoomStore {
   static list(root: string): RoomSummary[] {
     if (!existsSync(root)) return [];
     const rooms: RoomSummary[] = [];
+    const listed = new Set<string>();
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
+      const file = join(root, entry.name, EVENTS_FILE);
+      listed.add(file);
       try {
-        const store = RoomStore.open(root, entry.name);
-        rooms.push(store.summary());
+        // A room's summary is its event log's: read again only when the log changed.
+        const { mtimeMs, size } = statSync(file);
+        const cached = summaries.get(file);
+        if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+          rooms.push(cached.summary);
+          continue;
+        }
+        const summary = RoomStore.open(root, entry.name).summary();
+        summaries.set(file, { mtimeMs, size, summary });
+        rooms.push(summary);
       } catch {
         // skip unreadable rooms
       }
     }
+    for (const file of summaries.keys()) if (file.startsWith(`${root}${sep}`) && !listed.has(file)) summaries.delete(file);
     return rooms.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
@@ -248,6 +276,7 @@ export class RoomStore {
     const lastGuest = last && !lastBy ? this.state.guests?.[last.author] : undefined;
     const lastLabel = lastBy ? lastBy.label : lastGuest ? originName(lastGuest) : undefined;
     const working = this.state.turns.filter((turn) => turn.status === "running").map((turn) => ({ agent: turn.agent, since: turn.startedAt }));
+    const key = projectKey(this.state);
     return {
       id: this.state.id,
       mode: this.state.mode ?? "work",
@@ -265,6 +294,9 @@ export class RoomStore {
         : this.state.createdWorkspace
           ? {}
           : { folder: this.state.workspace }),
+      ...(key ? { projectHash: projectHash(key) } : {}),
+      ...(this.state.parent ? { parent: this.state.parent } : {}),
+      ...(this.state.resolved ? { resolved: this.state.resolved } : {}),
     };
   }
 

@@ -171,6 +171,29 @@ export type SystemNote =
   | { code: "pr.closed"; n: number; repo?: string }
   | { code: "pr.reopened"; n: number; repo?: string }
   /**
+   * A thread of this room ended a run (see threads.ts): what it left, as the thread holds it — no summary. `room`/`name`:
+   * the thread; `files`: its branch against its base plus what is uncommitted (`uncommitted` of them); `items`: what its
+   * table got in that run; `open`: its first open question; `last`: its last message, verbatim; `wakes`: the agent woken.
+   */
+  | {
+      code: "thread.reported";
+      room: string;
+      /** The thread's run this reports; absent in logs from before. */
+      run?: string;
+      name: string;
+      reason: "quiet" | "budget" | "stopped";
+      agents: string[];
+      branch?: string;
+      base?: string;
+      files: Array<{ path: string; status: string; added: number | null; removed: number | null }>;
+      more?: number;
+      uncommitted: number;
+      items: Array<{ id: string; text: string }>;
+      open?: { id: string; text: string };
+      last?: { by: string; text: string };
+      wakes?: string;
+    }
+  /**
    * An agent's push rewrote remote branches (`refs`, as `origin/feat`, or `feat at ../fork.git` pushed to by URL or
    * path), as git said in its output; `rewrote: false`: git said nothing of it (a quiet push), the push forced.
    * `failed`: and the command failed, or git printed an error — it may not have pushed at all.
@@ -470,6 +493,8 @@ export interface RoomCreatedEvent {
    * human is still `human`; absent for rooms the human opened.
    */
   createdBy?: ActorOrigin;
+  /** A thread: the Work room it was started from (`agoryx new --from`), which gets its report when a run ends. */
+  parent?: string;
 }
 
 export type RoomEventBody =
@@ -502,6 +527,8 @@ export type RoomEventBody =
        * Only the hash: the profile itself is never written to the room.
        */
       profile?: string;
+      /** The project's seq (projects.ts) this agent's session holds once it has read this prompt; absent: no project (Chat). */
+      project?: number;
       /** The turn's time limit as it started (the room's setting then); absent in logs from before. */
       limitMs?: number;
     }
@@ -529,6 +556,9 @@ export type RoomEventBody =
   /** `by`: who changed them (absent in logs from before authors were recorded). */
   | { type: "settings.changed"; patch: Partial<RoomSettings>; by?: string; from?: ActorOrigin }
   | { type: "room.renamed"; name: string; by?: string; from?: ActorOrigin }
+  /** A thread marked resolved, or open again: the human's, never an agent's. */
+  | { type: "thread.resolved"; by: string }
+  | { type: "thread.reopened"; by: string }
   /**
    * An agent's model or effort changed; null: back to the CLI's own default. Its next turn uses them. Also its
    * role (null: none), its name, and whether it is given the human's profile.
@@ -659,6 +689,9 @@ export interface TurnState {
   /** The profile hash this turn's prompt left the agent with, and the one it held before (restored like the cursor). */
   profile?: string;
   profileBefore?: string;
+  /** The project's seq this turn's prompt carried, and what the agent held before it. */
+  project?: number;
+  projectBefore?: number;
   seq: number;
   /** The seq of its turn.ended event: what was posted before it, the turn was there for. */
   endSeq?: number;
@@ -715,6 +748,8 @@ export interface RunState {
   budget: number | null;
   used: number;
   startedSeq: number;
+  /** The seq of its run.ended. */
+  endedSeq?: number;
   status: "active" | "ended";
   endReason?: "quiet" | "budget" | "stopped";
 }
@@ -753,6 +788,8 @@ export interface RoomState {
   cursors: Record<string, number>;
   /** Hash of the human's profile each agent's session holds ("" or absent: none). */
   profiles: Record<string, string>;
+  /** The project's seq each agent's session holds (absent: it got none of it). */
+  projectSeen?: Record<string, number>;
   table: TableState;
   commits: Array<{ sha: string; subject: string; files: number; seq: number; folder?: string; workspace?: string; internal?: boolean }>;
   /** Returns of the folder to a checkpoint and their undos, oldest first. */
@@ -764,10 +801,19 @@ export interface RoomState {
   guests: Record<string, ActorOrigin>;
   /** The agent that opened this room from another room, if one did. */
   createdBy?: ActorOrigin;
+  /** A thread: the room it was started from. */
+  parent?: string;
+  /** A thread the human marked resolved (it changes nothing for its agents; it moves the thread on the board). */
+  resolved?: ThreadResolution;
   /** The folder's GitHub repository, when gh is there and the folder has a github.com remote. */
   repo?: RepoState;
   /** Pull requests that came into the room, oldest first. */
   prs?: PrState[];
+}
+
+export interface ThreadResolution {
+  by: string;
+  at: string;
 }
 
 export interface RepoState {
@@ -913,7 +959,7 @@ export type AgentModels = Record<AgentKind, KindModels>;
 // Attention: a room that waits for the human (internal/agora/attention.ts)
 // ---------------------------------------------------------------------------
 
-export type AttentionReason = "done" | "budget" | "stopped" | "error" | "mention";
+export type AttentionReason = "done" | "budget" | "stopped" | "error" | "mention" | "thread";
 
 /** A room that waits for the human: at most one per room, until the human sees it. */
 export interface AttentionItem {

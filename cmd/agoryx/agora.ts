@@ -11,14 +11,18 @@ import { AgoraDaemon, findDaemon, readDaemonInfo, type DaemonInfo } from "../../
 import { deviceLabel, DeviceRegistry, type DeviceInfo } from "../../internal/agora/devices.js";
 import { isExposed, readExposure, writeExposure, type Exposure } from "../../internal/agora/exposure.js";
 import { qrTerminal } from "../../internal/agora/qr.js";
-import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
+import { RoomLockedError, roomTurnPatch, roomWorkspaceDiff, type RoomEngine } from "../../internal/agora/engine.js";
+import { deliverWaitingReports, queueThreadReport, threadReport } from "../../internal/agora/threads.js";
 import { jevEnvFrom, JEV_ENV } from "../../internal/agora/jev.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { type AgentLook, agentLook } from "../../internal/agora/look.js";
 import { activeRun } from "../../internal/agora/projection.js";
 import { describeProfile, profilePath, readProfile } from "../../internal/agora/profile.js";
+import { addProjectContext, describeProject, PROJECT_FIELDS, projectHash, projectKey, projectKeyOfFolder, readProject, removeProjectContext, setProjectField, type ProjectField } from "../../internal/agora/projects.js";
+import { resolveFolder } from "../../internal/agora/folders.js";
+import { NOTED_KINDS, noteMemory, promoteToMemory, removeMemory, renderMemoryMarkdown, reviseMemory } from "../../internal/agora/memory.js";
 import { readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
-import { createRoom, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
+import { createRoom, defaultHumanName, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
 import { limitText } from "../../internal/agora/duration.js";
 import { describeRevert, planRevert, RevertError, undoableRevert, type RevertRequest } from "../../internal/agora/revert.js";
@@ -53,6 +57,8 @@ export const AGORA_COMMANDS = new Set([
   "diff",
   "revert",
   "profile",
+  "project",
+  "memory",
   "usage",
   "pair",
   "devices",
@@ -74,6 +80,8 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx down                        Stop the background daemon",
       "  agoryx open [room]                 Open the web UI (starts the daemon if needed)",
       '  agoryx new ["name"] [--dir D [--worktree [--base BRANCH]]] [--budget N|none] [--doc PATH|none] [--agents FILE|JSON] [-m "first message"]   (no name: the message names it)',
+      '  agoryx new --from <room|here> ["name"] [--agents FILE|JSON] [--base BRANCH] -m "brief"   A thread: a Work room on its own branch of',
+      "                                     that room's folder (one agent unless --agents); it reports back there when a run ends",
       "  agoryx rooms                       List rooms",
       '  agoryx say [-r room] "text"        Post to the room and follow the run until it goes quiet',
       "  agoryx tail [-r room] [-f] [-n N] [--trace]   Print the conversation (and follow it)",
@@ -86,6 +94,10 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "  agoryx revert [-r room] [SHA | --undo [N]] [--yes]   Return the folder to a checkpoint (no SHA: list them), or undo a return",
       "  agoryx usage [room] [--json]      Your agents' subscription limits, as their CLIs last reported them, and what the room's wakes cost",
       "  agoryx profile [-r room]           Your profile (who you are, for the agents): where it is, and who in the room sees it",
+      '  agoryx project [-r room | --dir D] [set name|goal|instructions "text"]   The project of a Work room (its folder): show it, or write to it',
+      "  agoryx project [-r room | --dir D] add-dir|remove-dir PATH   A context folder: its Work rooms' agents may read and write it too",
+      '  agoryx memory [-r room | --dir D] [note "text" [--kind K] [--why "…"] | promote S3|F2|D1|Q1 | revise M2 "text" [--why "…"] | remove M2]',
+      "                                     The project's memory: show it, note something, keep a table item as the table holds it, or take one out",
       "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--access workspace|readonly] [--doc PATH|none]",
       "",
       "Table ops:",
@@ -460,15 +472,52 @@ const localConn = (ref: string | undefined): Conn => {
   const agent = localAgent();
   const actor: Actor | undefined = agent ? actorIn(store.state, agent) : undefined;
   let engine: RoomEngine | null = null;
+  // A thread driven here reports each run to the room it was started from, as the daemon does (threads.ts); the parent
+  // is driven here too for the turn the report wakes, unless another process drives it.
+  let parent: RoomEngine | null = null;
+  let reporting: Promise<void> = Promise.resolve();
+  const report = (runId: string) => {
+    const parentId = store.state.parent!;
+    try {
+      // Made now, as the run left the branch; it goes in now if the parent is free here, else when it next is.
+      const parentStore = parent?.store ?? RoomStore.open(roomsDir(), parentId);
+      const made = threadReport(store, runId, parentStore.state, roomWorkspaceDiff(store)?.changes ?? []);
+      if (!made) return;
+      try {
+        if (!parent) {
+          parent = openEngine(parentStore);
+          const live = parent;
+          deliverWaitingReports(parentStore.dir, (waiting) => live.postThreadReport(waiting.text, waiting.sys));
+        }
+        parent.postThreadReport(made.text, made.sys);
+      } catch (error) {
+        if (!(error instanceof RoomLockedError)) throw error;
+        queueThreadReport(parentStore.dir, made);
+        process.stderr.write(pc.dim(`(${parentId} is driven elsewhere: this run's report waits there and goes in when that room is next driven here or by the daemon)\n`));
+      }
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      process.stderr.write(pc.dim(`(this run's report could not go to ${parentId}: ${why})\n`));
+    }
+  };
   const drive = (): RoomEngine => {
     if (engine) return engine;
     try {
       engine = openEngine(store);
+      // Reports of this room's threads that waited while it was driven elsewhere.
+      const live = engine;
+      deliverWaitingReports(store.dir, (waiting) => live.postThreadReport(waiting.text, waiting.sys));
     } catch (error) {
       if (error instanceof RoomLockedError) {
         throw new Error(`${error.message}. Start the daemon (\`agoryx up -d\`) so several terminals can share the room.`);
       }
       throw error;
+    }
+    if (store.state.parent) {
+      store.subscribe((event: RoomEvent | EphemeralEvent) => {
+        // After the engine is done ending the run, as in the daemon: git is asked about the thread's branch.
+        if (event.type === "run.ended") reporting = reporting.then(() => new Promise<void>((done) => setImmediate(() => (report(event.runId), done()))));
+      });
     }
     return engine;
   };
@@ -531,12 +580,17 @@ const localConn = (ref: string | undefined): Conn => {
       process.on("SIGINT", onSigint);
       try {
         await live.waitIdle();
+        await reporting;
+        // The turn the report woke in the parent, before this process lets go of it.
+        if (parent) await parent.waitIdle();
       } finally {
         process.off("SIGINT", onSigint);
         unsubscribe();
       }
     },
     async close() {
+      await reporting;
+      if (parent) await parent.close();
       if (engine) await (engine as RoomEngine).close();
     },
   };
@@ -815,6 +869,7 @@ const runNew = async (argv: string[]): Promise<number> => {
     { long: "budget", takesValue: true },
     { long: "doc", takesValue: true },
     { long: "agents", takesValue: true },
+    { long: "from", takesValue: true },
     { long: "message", short: "m", takesValue: true },
   ]);
   // No name: the first message names the room (rename it later in the web UI).
@@ -842,6 +897,7 @@ const runNew = async (argv: string[]): Promise<number> => {
     ...(parsed.options.base ? { base: parsed.options.base } : {}),
     ...(budget !== undefined ? { budget } : {}),
     ...(doc !== undefined ? { doc } : {}),
+    ...(parsed.options.from ? { from: parsed.options.from } : {}),
   };
   const info = await findDaemon();
   let roomId: string;
@@ -851,17 +907,21 @@ const runNew = async (argv: string[]): Promise<number> => {
   } else {
     // Opened from an agent's turn: the room says which agent, from which room.
     const agent = localAgent();
-    roomId = createRoom({ ...input, ...(agent ? { createdBy: agent } : {}) }).id;
+    if (input.from === "here" && !agent) throw new CliUsageError("--from here: only an agent in a room's turn has a room here; name the room");
+    const from = input.from === "here" ? agent!.room : input.from;
+    roomId = createRoom({ ...input, ...(from ? { from } : {}), ...(agent ? { createdBy: agent } : {}) }).id;
   }
   const store = RoomStore.open(roomsDir(), roomId);
   console.log(`${pc.bold(store.state.name)} ${pc.dim(`(${roomId})`)}`);
   console.log(`  ${store.state.mode === "chat" ? "materials" : "workspace"}  ${store.state.workspace}${store.state.createdWorkspace ? pc.dim(" (new git repo)") : ""}`);
   if (store.state.worktree) console.log(`  worktree   ${store.state.worktree.branch} ${pc.dim(`from ${store.state.worktree.base}, in ${store.state.worktree.repo}`)}`);
+  if (store.state.parent) console.log(`  thread of  ${store.state.parent} ${pc.dim("(it reports there when a run ends)")}`);
   console.log(`  here       ${store.state.agents.map((agent) => agent.label).join(", ")} and ${store.state.human}`);
   console.log(`  budget     ${budgetLine(store.state.settings.budget)}`);
   if (store.state.settings.doc) console.log(`  doc        ${store.state.settings.doc} ${pc.dim("(the room's canonical file)")}`);
   if (parsed.options.message) {
-    return say(roomId, parsed.options.message, { trace: true });
+    // A thread runs on its own and reports back to its parent: the daemon carries it, nobody waits for it here.
+    return say(roomId, parsed.options.message, { trace: true, ...(store.state.parent ? { noWait: true } : {}) });
   }
   console.log(pc.dim(`\nnext: agoryx say -r ${roomId} "what we are doing"   ·   agoryx open ${roomId}`));
   return 0;
@@ -1394,6 +1454,106 @@ const runProfile = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+/** The project a command is about: `--dir`'s folder, else the room's (none in Chat). */
+const projectKeyFor = (options: { room?: string; dir?: string }, positional?: string): string => {
+  if (options.dir) return projectKeyOfFolder(resolveFolder(resolve(options.dir)), RoomStore.list(roomsDir()));
+  const state = RoomStore.open(roomsDir(), resolveRoom(options.room ?? positional)).state;
+  const key = projectKey(state);
+  if (!key) throw new CliUsageError(`"${state.name}" is a Chat room: no project connected (switch it to Work, or name a folder with --dir)`);
+  return key;
+};
+
+const runProject = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, [ROOM_OPT, { long: "dir", takesValue: true }]);
+  if (parsed.options.help) {
+    printAgoraUsage();
+    return 0;
+  }
+  const [verb, field, ...rest] = parsed.positionals;
+  const setting = verb === "set";
+  const context = verb === "add-dir" || verb === "remove-dir";
+  const key = projectKeyFor(parsed.options, setting || context ? undefined : verb);
+  if (context) {
+    if (!field) throw new CliUsageError(`agoryx project ${verb} PATH`);
+    // A relative path is the caller's: from where it runs.
+    const path = field.startsWith("~") ? field : resolve(field);
+    const info = await findDaemon();
+    if (info) {
+      const client = daemonClient(info);
+      if (verb === "add-dir") await client.request("POST", `/api/projects/${projectHash(key)}/context`, { key, path });
+      else await client.request("DELETE", `/api/projects/${projectHash(key)}/context?key=${encodeURIComponent(key)}&path=${encodeURIComponent(path)}`);
+    } else {
+      const agent = localAgent();
+      const writer = agent ? { by: agent.agent, from: agent } : { by: defaultHumanName() };
+      if (verb === "add-dir") addProjectContext(key, path, writer);
+      else removeProjectContext(key, path, writer);
+    }
+  }
+  if (setting) {
+    if (!field || !PROJECT_FIELDS.includes(field as ProjectField)) throw new CliUsageError(`agoryx project set ${PROJECT_FIELDS.join("|")} "text" (an empty text clears it)`);
+    const text = rest.join(" ");
+    const info = await findDaemon();
+    if (info) {
+      await daemonClient(info).request("PATCH", `/api/projects/${projectHash(key)}`, { key, [field]: text });
+    } else {
+      const agent = localAgent();
+      setProjectField(key, field as ProjectField, text, agent ? { by: agent.agent, from: agent } : { by: defaultHumanName() });
+    }
+  }
+  const rooms = RoomStore.list(roomsDir()).filter((room) => room.projectHash === projectHash(key));
+  for (const line of describeProject(readProject(key), rooms)) console.log(line);
+  return 0;
+};
+
+const runMemory = async (argv: string[]): Promise<number> => {
+  const parsed = parse(argv, [ROOM_OPT, { long: "dir", takesValue: true }, { long: "kind", takesValue: true }, { long: "why", takesValue: true }]);
+  if (parsed.options.help) {
+    printAgoraUsage();
+    return 0;
+  }
+  const [verb, ref, ...rest] = parsed.positionals;
+  const verbs = ["note", "promote", "revise", "remove"];
+  if (verb && !verbs.includes(verb)) throw new CliUsageError(`agoryx memory [${verbs.join("|")}] — not "${verb}"`);
+  if (verb === "promote" && parsed.options.dir) throw new CliUsageError("promote keeps an item of a room's table: name the room with -r, not a folder");
+  const key = projectKeyFor(parsed.options);
+  const hash = projectHash(key);
+  const text = [ref, ...rest].filter((part) => part !== undefined).join(" ");
+  const why = parsed.options.why;
+  if (verb) {
+    if (verb === "note" && !text.trim()) throw new CliUsageError('agoryx memory note "text" [--kind decision|fact|person|preference] [--why "…"]');
+    if (verb !== "note" && !ref) throw new CliUsageError(`agoryx memory ${verb} ${verb === "promote" ? "S3|F2|D1|Q1" : "M2"}`);
+    const room = verb === "promote" ? RoomStore.open(roomsDir(), resolveRoom(parsed.options.room)).state : null;
+    const info = await findDaemon();
+    if (info) {
+      const client = daemonClient(info);
+      if (verb === "note") await client.request("POST", `/api/projects/${hash}/memory`, { key, note: { text, kind: parsed.options.kind, why } });
+      else if (verb === "promote") await client.request("POST", `/api/projects/${hash}/memory`, { key, promote: { room: room!.id, ref } });
+      else if (verb === "revise") await client.request("PATCH", `/api/projects/${hash}/memory/${ref}?key=${encodeURIComponent(key)}`, { text: rest.length ? rest.join(" ") : undefined, why, kind: parsed.options.kind });
+      else await client.request("DELETE", `/api/projects/${hash}/memory/${ref}?key=${encodeURIComponent(key)}`);
+    } else {
+      const agent = localAgent();
+      const writer = agent ? { by: agent.agent, from: agent } : { by: defaultHumanName() };
+      if (verb === "note") noteMemory(key, { text, kind: parsed.options.kind, why }, writer);
+      else if (verb === "promote") promoteToMemory(key, { id: room!.id, name: room!.name, table: room!.table }, ref!, writer);
+      else if (verb === "revise") reviseMemory(key, ref!, { text: rest.length ? rest.join(" ") : undefined, why, kind: parsed.options.kind }, writer);
+      else removeMemory(key, ref!, writer);
+    }
+  }
+  const project = readProject(key);
+  if (verb && verb !== "remove") {
+    const entry = verb === "note" || verb === "promote" ? project.memory.at(-1) : project.memory.find((item) => item.id === ref!.toUpperCase());
+    if (entry) console.log(`${verb === "revise" ? "Revised" : "Kept"} ${entry.id} (${entry.kind}).`);
+    return 0;
+  }
+  if (verb === "remove") {
+    console.log(`Removed ${ref!.toUpperCase()}.`);
+    return 0;
+  }
+  process.stdout.write(renderMemoryMarkdown(project));
+  if (!project.memory.length) console.log(`(kinds: ${NOTED_KINDS.join(", ")}; a disagreement comes from promoting an open question)`);
+  return 0;
+};
+
 /** "1h 05m", "4m 10s", "12s". */
 const span = (ms: number): string => {
   const seconds = Math.round(ms / 1000);
@@ -1629,6 +1789,10 @@ export const runAgora = async (command: string, argv: string[]): Promise<number>
       return runRevert(argv);
     case "profile":
       return runProfile(argv);
+    case "project":
+      return runProject(argv);
+    case "memory":
+      return runMemory(argv);
     case "usage":
       return runUsage(argv);
     case "pair":

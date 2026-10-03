@@ -9,12 +9,13 @@ import { useNow } from "@/hooks/use-now";
 import { clock, names, plural, secs } from "@/lib/format";
 import { unquoted } from "../../../../internal/agora/quote";
 import { buildFeed, type FeedItem, type FeedModel, type FeedRow, ink, nameOf, participant } from "@/lib/room";
-import { useStore } from "@/lib/store";
+import { useSeating, useStore } from "@/lib/store";
 import type { TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Name, Tip } from "./bits";
 import { AgentMessage, CommitLine, DecisionLine, DocLine, Fresh, HumanMessage, PassLine, RevertLine, StandaloneOp, StepCommitLine, SystemLine, UpdateLine } from "./Messages";
 import { PrCard } from "./Github";
+import { isThreadReport, ThreadCard } from "@/components/thread/ThreadCard";
 import { ActivityList } from "./Trace";
 import { QuoteSelection } from "./QuoteSelection";
 
@@ -41,7 +42,7 @@ const liveTone = { claude: "bg-claude", codex: "bg-codex", human: "bg-human", sy
 
 function LiveTurn({ turn, ops }: { turn: TurnState; ops?: TableOp[] }) {
   const stream = useStore((s) => s.snap?.streams[turn.id]?.text ?? "");
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const now = useNow(true);
   const elapsed = secs(now - new Date(turn.startedAt).getTime());
   const last = turn.activity.slice(-4);
@@ -88,6 +89,7 @@ function Item({ item, model, fresh, card, clamp }: { item: FeedItem; model: Feed
   const docs = m.turnId ? model.docByTurn.get(m.turnId) : undefined;
   let body;
   if (m.kind === "pass") body = <PassLine m={m} turn={turn} ops={ops} docs={docs} />;
+  else if (isThreadReport(m)) body = <ThreadCard m={m} />;
   else if (m.kind === "system") body = <SystemLine m={m} />;
   else if (m.kind === "decision") body = <DecisionLine m={m} />;
   else if (m.kind === "update") body = <UpdateLine m={m} />;
@@ -185,7 +187,7 @@ const lastWords = (text: string) =>
  * table items they were about. The human opens it to read the exchange; a link to one of its messages opens it too.
  */
 function Between({ row, model, isFresh }: { row: Extract<FeedRow, { type: "between" }>; model: FeedModel; isFresh: (id: string) => boolean }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const flashAt = useStore((s) => (s.flash && row.items.some((g) => g.key === s.flash!.ref) ? s.flash.at : 0));
   const [open, setOpen] = useState(false);
   const [opened, setOpened] = useState(0);

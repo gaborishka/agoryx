@@ -138,6 +138,10 @@ const sys: Say = {
   "pr.merged": (n) => `PR ${prRef(n)} merged into \`${n.base}\`${n.by ? ` by ${n.by}` : ""}.`,
   "pr.closed": (n) => `PR ${prRef(n)} closed without merging.`,
   "pr.reopened": (n) => `PR ${prRef(n)} reopened.`,
+  "thread.reported": (n) => {
+    const files = n.files.length + (n.more ?? 0);
+    return `Thread “${n.name}” ${n.reason === "quiet" ? "went quiet" : n.reason === "budget" ? "spent its turn limit" : "was stopped"}${n.branch ? ` on \`${n.branch}\`` : ""}: ${files ? `${plural(files, "file", "files")} changed${n.uncommitted ? `, ${n.uncommitted} uncommitted` : ""}` : "no changes"}.`;
+  },
   "git.force_pushed": (n) =>
     n.rewrote === false
       ? `${n.agent} pushed with force${n.refs?.length ? ` to ${n.refs.map((ref) => `\`${ref}\``).join(", ")}` : " to its remote"}${n.failed ? `, or tried to (${n.failed === "command" ? "the command failed" : "git printed an error"}; git did not say whether it rewrote history)` : " (git did not say whether it rewrote history)"}: \`${n.command}\``

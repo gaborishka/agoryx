@@ -17,7 +17,7 @@ import { Avatar } from "@/components/room/bits";
 import { LimitsCard } from "@/components/room/Limits";
 import { ModelMenu } from "@/components/room/ModelMenu";
 import { RoleField } from "@/components/room/RoleField";
-import { NavButton } from "@/components/room/RoomHeader";
+import { PageBar } from "@/components/common/PageBar";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -110,6 +110,8 @@ function General() {
   const openDialog = useStore((s) => s.openDialog);
   const [budget, setBudget] = useState<number | null>(readBudget);
   const [worktree, setWorktree] = useState(() => local.get("worktree") === "1");
+  const foldWorking = useStore((s) => s.foldWorking);
+  const setFoldWorking = useStore((s) => s.setFoldWorking);
   return (
     <Section title="General" sub="How Agoryx looks and what new rooms start with on this device.">
       <Group title="Appearance">
@@ -172,6 +174,11 @@ function General() {
             }}
             aria-label="Separate branch for a git folder"
           />
+        </Row>
+      </Group>
+      <Group title="Room list">
+        <Row label="Fold rooms while agents work" hint="Rooms where agents are working and nothing waits for you fold into Working at the foot of the list. Each comes back up when it finishes or needs you.">
+          <Switch checked={foldWorking} onCheckedChange={setFoldWorking} aria-label="Fold rooms while agents work" />
         </Row>
       </Group>
       <Group title="Keyboard">
@@ -596,14 +603,11 @@ export function Settings({ section }: { section: SettingsSection }) {
   }, [section]);
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 px-3 sm:px-5">
-        <NavButton />
-        <h1 className="font-display text-lead font-semibold">Settings</h1>
-      </header>
+      <PageBar crumbs={[{ label: "Settings", onClick: () => go({ kind: "settings", section: "general" }) }, { label: SECTIONS.find(({ id }) => id === section)?.label ?? "" }]} />
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <nav
           aria-label="Settings sections"
-          className="scroll-thin flex shrink-0 gap-1 overflow-x-auto border-b border-border/70 px-3 py-2 md:w-52 md:flex-col md:overflow-visible md:border-r md:border-b-0 md:px-2 md:py-4"
+          className="scroll-thin flex shrink-0 gap-1 overflow-x-auto border-b border-border/70 px-3 py-2 md:w-56 md:flex-col md:overflow-visible md:border-r md:border-b-0 md:bg-sidebar/50 md:px-3 md:py-5"
         >
           {SECTIONS.map(({ id, label, icon: Icon }) => (
             <button
@@ -613,7 +617,7 @@ export function Settings({ section }: { section: SettingsSection }) {
               onClick={() => go({ kind: "settings", section: id })}
               className={cn(
                 "flex h-8 shrink-0 items-center gap-2 rounded-lg px-2.5 text-small whitespace-nowrap transition",
-                section === id ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground",
+                section === id ? "bg-background font-medium text-foreground shadow-edge ring-1 ring-border/70" : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground",
               )}
             >
               <Icon className="size-4" />
@@ -622,7 +626,7 @@ export function Settings({ section }: { section: SettingsSection }) {
           ))}
         </nav>
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-          <div key={section} className="mx-auto flex w-full max-w-[720px] flex-col px-4 py-8 sm:px-8">
+          <div key={section} className="mx-auto flex w-full max-w-[720px] flex-col px-5 pt-9 pb-16 sm:px-8">
             {BODY[section]()}
           </div>
         </div>

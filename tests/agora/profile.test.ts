@@ -189,7 +189,7 @@ test("with no profile file the prompts are what they were", async () => {
   const dir = scratch();
   const withPath = createTestRoom({ agents: AGENTS, profilePath: join(dir, "profile.md") });
   const without = createTestRoom({ agents: AGENTS });
-  const strip = (text: string) => text.replace(/\d\d:\d\d/g, "HH:MM").replace(/Workspace: .*/g, "").replace(/"[^"]*agoryx"/g, "").replace(/test-room-[a-z0-9]+/g, "ROOM");
+  const strip = (text: string) => text.replace(/\d\d:\d\d/g, "HH:MM").replace(/Workspace: .*/g, "").replace(/"[^"]*agoryx"/g, "").replace(/test-room-[a-z0-9]+/g, "ROOM").replace(/agora-test-[A-Za-z0-9]+/g, "HOME");
   try {
     for (const room of [withPath, without]) {
       room.engine.postHuman("How should we store rooms?");

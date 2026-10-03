@@ -311,6 +311,23 @@ export function StartScreen() {
     setBase(null);
     local.set("folder", path);
   };
+  // "New room here" from a project: a Work room in its folder, for this room only — the saved folder stays. A plain
+  // New room after it starts from the saved folder again, as a chat.
+  const startIn = useStore((s) => (s.route.kind === "new" ? s.route.dir : undefined));
+  const wasIn = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const before = wasIn.current;
+    wasIn.current = startIn;
+    if (startIn) {
+      setFolder(startIn);
+      setBase(null);
+      setMode("work");
+    } else if (before) {
+      setFolder(local.get("folder"));
+      setBase(null);
+      setMode("chat");
+    }
+  }, [startIn]);
   const git = useFolderGit(folder, () => pickFolder(null));
   const toggleWorktree = (on: boolean) => {
     setWorktree(on);
@@ -475,7 +492,7 @@ export function StartScreen() {
                 className="scroll-thin block min-h-[108px] w-full resize-none bg-transparent px-5 pt-4 text-lead leading-relaxed outline-none placeholder:text-faint"
               />
               <AttachmentList items={files.items} onRemove={files.remove} className="px-5 pb-2" />
-              <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2.5">
+              <div className="flex flex-wrap items-center gap-1.5 px-2.5 pb-2.5">
                 <AttachButton onFiles={files.add} />
                 {seated.map((agent) => (
                   <span key={agent.id} className="group/seat relative inline-flex items-center">
@@ -484,7 +501,7 @@ export function StartScreen() {
                       seating={{ agents: seated }}
                       models={models}
                       side="bottom"
-                      className="h-8 rounded-full px-2.5 text-small text-muted-foreground hover:text-foreground"
+                      className="h-8 rounded-full border border-border/80 px-2.5 text-small text-foreground hover:bg-accent"
                       onSet={(change) => pick(agent.id, change)}
                       onLeave={seated.length > 1 ? () => leave(agent.id) : undefined}
                     />
@@ -494,15 +511,15 @@ export function StartScreen() {
                         onClick={() => leave(agent.id)}
                         aria-label={`Start without ${agent.label}`}
                         title={`Start without ${agent.label}`}
-                        className="-ml-1 grid size-6 place-items-center rounded-full text-faint opacity-0 transition group-hover/seat:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100 pointer-coarse:opacity-100"
+                        className="absolute -top-1 -right-1 z-10 grid size-4 place-items-center rounded-full bg-card text-muted-foreground opacity-0 shadow-edge ring-1 ring-border transition group-hover/seat:opacity-100 hover:bg-foreground hover:text-background focus-visible:opacity-100 pointer-coarse:opacity-100"
                       >
-                        <XIcon className="size-3" />
+                        <XIcon className="size-2.5" />
                       </button>
                     ) : null}
                   </span>
                 ))}
                 <AddSeat roster={agents} seated={seated} onAdd={(agent) => seat([...seated, agent])} />
-                <span aria-hidden className="mx-0.5 hidden h-4 w-px bg-border sm:block" />
+                <span aria-hidden className="mx-1 hidden h-4 w-px bg-border sm:block" />
                 <BudgetChip budget={budget} onBudget={changeBudget} />
                 <Button
                   type="submit"
@@ -529,9 +546,9 @@ export function StartScreen() {
               <span>
                 The room is named after the first line; you can rename it any time
               </span>
-              <span className="hidden items-center gap-1 sm:inline-flex">
-                <Kbd>Enter</Kbd> start · <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd>{" "}
-                new line
+              <span className="hidden items-center gap-1.5 sm:inline-flex">
+                <Kbd>Enter</Kbd> to start
+                <Kbd className="ml-2">Shift Enter</Kbd> for a new line
               </span>
             </div>
           </div>

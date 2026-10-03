@@ -1,0 +1,29 @@
+Implement project memory and threads in Agoryx per docs/plans/2026-10-02-projects.md. It is a route: go step to step without asking, one commit per step, tests + typecheck green first. Don't push or open a PR.
+
+Main already has Chat/Work rooms (#31): "project" = a Work room's folder (RoomState.project), Chat has none, room.mode.changed resets sessions/profiles, no automatic commits. Don't add a second meaning of project.
+
+Concept, non-negotiable:
+- Evolution of the room: the value is what agents know when a Work room starts.
+- No coordinator, main room or routing role.
+- Agoryx never acts for agents: no auto-summaries, no copies, nothing auto-written. Every write records `by`.
+- Memory must not feed polite convergence: open disagreements come first in the index, each entry shown as someone's claim with its reason, never as a room fact.
+- No migration.
+
+Model:
+- Key = project.worktree?.source ?? project.workspace. Membership is derived; rooms get no stored field. Chat rooms get nothing.
+- Stored in <agoraHome>/projects/<keyHash>/{project.json, events.jsonl, MEMORY.md}. Nothing exists until someone writes.
+- New code goes in internal/agora/projects.ts and memory.ts. Don't touch the legacy internal/memory.
+- Memory entry: {id, kind: decision|fact|disagreement|person|preference, text, why?, positions?, source{room,tableRef?}, by, at}.
+
+Steps:
+1. Project data. Store + events, GET /api/projects, GET|PATCH /api/projects/:keyHash, `agoryx project [--dir]`, `project set goal|instructions|name`. Derived RoomSummary.projectName; the sidebar folder group shows it and opens a minimal project page (Route {kind:"project"}). Tests: key from a folder and from its worktree, nothing written until set, Chat has no key.
+2. It reaches agents. In the Work branch of buildBriefing: goal, instructions, memory path, a capped index, one line on `agoryx memory`. Per-agent projectSeen hash like state.profiles, reset on room.mode.changed. A running session gets one delta line on change. Don't bump BRIEFING_VERSION. Tests: fresh Work, running Work after a change, Chat (nothing), Chat→Work.
+3. Memory. Events, MEMORY.md, `agoryx memory`, `memory note <text> [--kind] [--why]`, `memory promote S#|D#|Q#`, `memory remove <id>`; Chat refuses. Promoting an open Q builds positions verbatim: each open option with its author, plus its standing objections (`contested` in table.ts). Others see "memory: +1 <kind> by <who>" in their next delta. Memory editor on the project page (T3 editor autosave + 409), disagreements first. Tests: promote S/D/Q, `by`, delta line to others only.
+4. Threads, server side. `agoryx new --from <room> --worktree` = Work, dir defaults to the parent's key, `parent` recorded; a Chat parent is refused; no `thread new` command. When the thread's run ends, the parent gets thread.reported: last message verbatim, new table item ids, branch, diff stat vs base including uncommitted changes, no summary. It wakes only the spawner (createdBy); if the human spawned it, no one wakes and it shows in Attention. The spawner picks the roster explicitly. Test: an agent spawns a thread, it passes, only the spawner wakes.
+5. Threads, UI. A card in the parent feed (title, roster, branch + diff stat, file chips, first open question, "View thread"). The thread opens as an ordinary Room in the right split with a "Threads › <title>" breadcrumb, nested under its parent in the sidebar.
+6. Project page extras: a library of uploads + docs + agents' media across the project's rooms (by path, no copies), a thread board, usage summed from the rooms' /usage.
+
+Done when:
+- All 6 steps are committed, tests and typecheck are green, and the UI builds.
+- A real claude+codex E2E passed: set a goal; in a Work room an agent runs `memory note` and `promote`; a second Work room's agent sees it in its briefing; a Chat room doesn't; an agent-spawned thread reports back and wakes its spawner.
+- Plan doc marked done with SHAs; a short report of what was verified and skipped.

@@ -70,6 +70,8 @@ export class DaemonClient {
     doc?: string | null;
     text?: string;
     agents?: RoomAgent[];
+    /** Start a thread of this room ("here": the calling agent's room). */
+    from?: string;
   }): Promise<{ room: RoomSummary }> {
     return this.request("POST", "/api/rooms", input);
   }

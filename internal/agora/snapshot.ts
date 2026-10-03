@@ -61,6 +61,9 @@ export const eventPatch = (state: RoomState, event: RoomEvent): Record<string, u
       return { ...base, settings: state.settings };
     case "room.renamed":
       return { ...base, name: state.name };
+    case "thread.resolved":
+    case "thread.reopened":
+      return { ...base, resolved: state.resolved ?? null };
     case "agent.changed":
       return { ...base, agents: state.agents };
     case "agent.added":

@@ -58,6 +58,10 @@ export const attentionOf = (state: RoomState, event: RoomEvent): Omit<AttentionI
   const at = { seq: event.seq, ts: event.ts };
   if (event.type === "message.posted") {
     const message = event.message;
+    // A thread the human started reported back, waking nobody: it waits for the human.
+    if (message.sys?.code === "thread.reported" && !message.wakes) {
+      return { ...at, reason: "thread", by: message.sys.name, text: oneLine(message.sys.last?.text ?? message.text) };
+    }
     if ((message.kind !== "agent" && message.kind !== "update") || message.native) return null;
     if (!message.mentions.includes(state.human.toLowerCase())) return null;
     return { ...at, reason: "mention", by: whoLabel(state, message.author, Boolean(message.from)), text: oneLine(message.text) };

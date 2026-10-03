@@ -9,7 +9,7 @@ import { cost, passNote, plural, secs } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import { decisionOf, sysError, sysLine, sysRisk } from "@/lib/system";
 import { ink, nameOf, participant } from "@/lib/room";
-import { useStore } from "@/lib/store";
+import { useSeating, useStore } from "@/lib/store";
 import type { DocRevision, MessageEntry, RevertEntry, TableItem, TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Name, NativeBadge, NativeTag, Stats, Time, Tip } from "./bits";
@@ -69,8 +69,8 @@ export const AgentMessage = memo(function AgentMessage({
   /** Fold a long reply to this height (px); the rest opens on demand. */
   clamp?: number;
 }) {
-  const room = useStore((s) => s.snap?.state);
-  const p = participant(room, m.author);
+  const seating = useSeating();
+  const p = participant(seating, m.author);
   const text = (
     <div data-quote={m.id} data-author={m.author}>
       <Markdown text={m.text} source={`m:${m.id}`} />
@@ -164,7 +164,7 @@ export function UpdateLine({ m }: { m: MessageEntry }) {
 }
 
 export function SystemLine({ m }: { m: MessageEntry }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   // A line an agent's action wrote (it is the author): say who, by the name the UI gives it.
   const who = m.author !== "agoryx" && m.author !== room?.human ? nameOf(room, m.author) : undefined;
   const err = sysError(m);
@@ -354,7 +354,7 @@ export function RevertLine({ r }: { r: RevertEntry }) {
 
 export function DocLine({ r }: { r: DocRevision }) {
   const openDocRevision = useStore((s) => s.openDocRevision);
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const who = participant(room, r.by);
   return (
     <div className="flex flex-wrap items-center gap-2 text-small text-muted-foreground">
@@ -388,7 +388,7 @@ export function DocLine({ r }: { r: DocRevision }) {
 }
 
 export function StandaloneOp({ op }: { op: TableOp }) {
-  const room = useStore((s) => s.snap?.state);
+  const room = useSeating();
   const who = participant(room, op.by);
   return (
     <div>

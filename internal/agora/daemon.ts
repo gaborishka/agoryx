@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, closeSync, createReadStream, existsSync, watch, type FSWatcher, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, createReadStream, existsSync, watch, type FSWatcher, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
@@ -18,17 +18,21 @@ import { planStepCommit, StepCommitError } from "./step-commit.js";
 import { deviceLabel, DeviceRegistry, formatCode, isDeviceToken, PairingError, type DeviceInfo } from "./devices.js";
 import { lanInterfaces, normalizeHosts, writeExposure, type Exposure } from "./exposure.js";
 import { linkedMedia, markdownTexts } from "./media.js";
-import { MAX_UPLOAD, saveUpload, UploadError } from "./uploads.js";
+import { MAX_UPLOAD, saveUpload, UploadError, uploadsDir } from "./uploads.js";
+import { projectOverview } from "./overview.js";
 import { agentModels } from "./models.js";
 import { roomSkills, resolveSkillInvocation } from "./skills.js";
 import { locateNativeSession } from "./native.js";
 import { readLimits, recordLimits } from "./limits-store.js";
 import { roomUsage } from "./usage.js";
+import { cacheControl, pickEncoding, staticBody } from "./static.js";
 import { readTranscript } from "./transcript.js";
 import { readTurnActivity, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
+import { addLibraryFile, addProjectContext, checkContextFolder, listProjects, MAX_PROJECT_TEXT, PROJECT_FIELDS, ProjectError, projectHash, projectKey, projectKeyOfFolder, readProject, removeLibraryFile, removeProjectContext, setProjectFields, type Project, type ProjectWriter } from "./projects.js";
+import { memoryPath, noteMemory, promoteToMemory, removeMemory, reviseMemory, StaleMemoryError } from "./memory.js";
 import { parseSubscription, PushNotes, PushSender } from "./push.js";
 import { qrSvg } from "./qr.js";
 import { defaultRoster, parseAgents, rosterPath, RosterError } from "./roster.js";
@@ -36,7 +40,8 @@ import { eventPatch, presenceOf, roomSnapshot, runningTurnsPresence, type Stream
 import type { AgentRunner } from "./runners/types.js";
 import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js";
 import { workspaceAt } from "./room-mode.js";
-import { changeRoomMode, createRoom, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
+import { changeRoomMode, createRoom, defaultHumanName, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
+import { deliverWaitingReports, hasWaitingReports, queueThreadReport, threadReport } from "./threads.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
@@ -145,6 +150,10 @@ const MIME: Record<string, string> = {
 };
 
 const MAX_RAW = 25 * 1024 * 1024;
+/** A /raw/ capability for a project's own files, not a room's: `~project-<hash>`. */
+const PROJECT_RAW = "~project-";
+/** How often a thread's report waiting for its busy room is tried again. */
+const REPORT_RETRY_MS = 2_000;
 /** Video and audio stream in ranges, so they may be larger. */
 const MAX_RAW_MEDIA = 512 * 1024 * 1024;
 
@@ -393,6 +402,9 @@ export class AgoraDaemon {
   /** What each push said: the phone fetches it (push.ts), so a push the daemon did not send shows nothing. */
   private readonly pushNotes = new PushNotes();
   private heartbeat?: NodeJS.Timeout;
+  /** Rooms with thread reports waiting while another process drives them: tried again until they can take them. */
+  private reportsWaiting = new Set<string>();
+  private reportRetry?: NodeJS.Timeout;
   /** Which rooms wait for the human (attention.ts). */
   private readonly attention: AttentionBoard;
   /** The room's browser: agents' commands to the app's pane (browser.ts). */
@@ -628,6 +640,12 @@ export class AgoraDaemon {
       this.log(`phones: ${url}${iface ? ` (${iface})` : ""} — pair one with \`agoryx pair\``);
     }
     this.watchRecentRooms();
+    // Reports left waiting for a room busy elsewhere, by this daemon before it stopped or by a terminal without it.
+    try {
+      for (const id of readdirSync(roomsDir(this.env))) if (hasWaitingReports(join(roomsDir(this.env), id))) this.waitReports(id);
+    } catch {
+      // no rooms yet
+    }
     return info;
   }
 
@@ -652,6 +670,7 @@ export class AgoraDaemon {
   /** `by`: the agent that stopped the daemon, so each room records that its run was stopped by it. */
   async close(by?: ActorOrigin | { human: true }): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.reportRetry) clearInterval(this.reportRetry);
     for (const client of this.sseClients) client.end();
     this.sseClients.clear();
     // The app's browser host stream is not in sseClients: end it here, or server.close() waits for it.
@@ -693,7 +712,9 @@ export class AgoraDaemon {
     const root = roomsDir(this.env);
     let id: string;
     try {
-      id = RoomStore.resolveId(root, decodeURIComponent(ref), process.cwd());
+      // A room already open, by its id, needs no lookup among all of them.
+      const decoded = decodeURIComponent(ref);
+      id = this.rooms.has(decoded) ? decoded : RoomStore.resolveId(root, decoded, process.cwd());
     } catch (error) {
       throw new HttpError(404, error instanceof Error ? error.message : String(error));
     }
@@ -739,6 +760,8 @@ export class AgoraDaemon {
         delete handle.followTimer;
       }
       fresh.subscribe((event) => this.onRoomEvent(handle, event));
+      // Thread reports that waited while another process drove the room.
+      deliverWaitingReports(fresh.dir, (report) => engine.postThreadReport(report.text, report.sys));
     } catch (error) {
       if (!(error instanceof RoomLockedError)) throw error;
       handle.lockedBy = error.message;
@@ -767,6 +790,55 @@ export class AgoraDaemon {
     } else if (event.type === "settings.changed" && event.patch.network === false) {
       // The room's network went off, and its browser with it.
       this.browser.closeRoom(handle.store.id);
+    } else if (event.type === "run.ended" && handle.store.state.parent) {
+      // After the engine is done ending the run: git is asked about the thread's branch.
+      setImmediate(() => this.reportThread(handle, event.runId));
+    }
+  }
+
+  /**
+   * A thread's run ended: its report goes into the room it was started from (threads.ts), made now — the diff as the
+   * run left it. While another process drives that room (an agent's `agoryx new --from here` in a terminal), the
+   * report waits in that room's folder and goes in once the room can be driven here.
+   */
+  private reportThread(handle: RoomHandle, runId: string): void {
+    const parentId = handle.store.state.parent!;
+    try {
+      const parent = this.room(parentId);
+      const report = threadReport(handle.store, runId, parent.store.state, roomWorkspaceDiff(handle.store)?.changes ?? []);
+      if (!report) return;
+      if (parent.engine) {
+        parent.engine.postThreadReport(report.text, report.sys);
+        return;
+      }
+      queueThreadReport(parent.store.dir, report);
+      this.log(`[${handle.store.id}] its report waits for ${parentId}: ${parent.lockedBy ?? "the room is busy"}`);
+      this.waitReports(parentId);
+    } catch (error) {
+      this.log(`[${handle.store.id}] cannot report to ${parentId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** Try `roomId` again for its waiting reports until it can take them. */
+  private waitReports(roomId: string): void {
+    this.reportsWaiting.add(roomId);
+    this.reportRetry ??= setInterval(() => this.retryReports(), REPORT_RETRY_MS);
+    this.reportRetry.unref();
+  }
+
+  private retryReports(): void {
+    for (const roomId of this.reportsWaiting) {
+      try {
+        // Opening it drives it when it is free; driving it delivers what waits (tryDrive).
+        const handle = this.room(roomId);
+        if (handle.engine || !hasWaitingReports(handle.store.dir)) this.reportsWaiting.delete(roomId);
+      } catch {
+        this.reportsWaiting.delete(roomId);
+      }
+    }
+    if (!this.reportsWaiting.size && this.reportRetry) {
+      clearInterval(this.reportRetry);
+      delete this.reportRetry;
     }
   }
 
@@ -904,7 +976,7 @@ export class AgoraDaemon {
       res.end();
       return;
     }
-    this.serveStatic(res, path);
+    this.serveStatic(req, res, path);
   }
 
   /**
@@ -965,37 +1037,49 @@ export class AgoraDaemon {
     } catch {
       // Not a room id; falls through to 404.
     }
-    if (!/^[\w.-]+$/.test(roomId) || !this.rawKeyOpens(roomId, key, reach)) throw new HttpError(404, "not found");
+    // A project's own files (its library) have a capability of their own: no room links a file added to the project.
+    const project = roomId.startsWith(PROJECT_RAW) ? roomId.slice(PROJECT_RAW.length) : null;
+    if (!(project === null ? /^[\w.-]+$/.test(roomId) : /^[0-9a-f]+$/.test(project)) || !this.rawKeyOpens(roomId, key, reach)) throw new HttpError(404, "not found");
     let relPath: string;
     try {
       relPath = rest.map((part) => decodeURIComponent(part)).join("/");
     } catch {
       throw new HttpError(400, "bad path");
     }
-    const handle = this.room(roomId);
-    if (relPath.startsWith("~block/")) {
-      this.serveBlock(req, res, handle, relPath.slice("~block/".length));
-      return;
-    }
     let full: string | null;
-    if (relPath.startsWith("~at/")) {
-      const [, seqPart, ...fileParts] = relPath.split("/");
-      const seq = Number(seqPart);
-      if (!Number.isSafeInteger(seq) || seq < 1 || seq > handle.store.state.seq) throw new HttpError(404, "no such conversation file");
-      const root = workspaceAt(handle.store.state, seq);
-      full = resolveInside(root, fileParts.join("/"));
-      if (!full || inGitDir(root, full) || !existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such conversation file");
-    } else if (relPath.startsWith("~abs/")) {
-      // A media file outside the workspace, served only while a text in the room links it.
-      // relPath is decoded already: the path is taken as is, not decoded again.
-      const ref = relPath.slice("~abs/".length);
-      full = linkedMedia(markdownTexts(handle.store.state), ref.startsWith("~/") ? ref : `/${ref}`);
-      if (!full) throw new HttpError(404, "no such file, or nothing in the room links it");
+    if (project !== null) {
+      // A file in the project's library, served while it is there.
+      // The UI links a path as `~abs/` + the path without its leading "/": matched the same way back, so a Windows
+      // path (C:\work\a.png, no leading "/") is found as it was written.
+      const ref = relPath.startsWith("~abs/") ? relPath.slice("~abs/".length) : null;
+      const listed = ref === null ? undefined : listProjects(this.env).find((entry) => entry.hash === project)?.library.find((entry) => entry.path.replace(/^\//, "") === ref);
+      if (!listed || !existsSync(listed.path) || !statSync(listed.path).isFile()) throw new HttpError(404, "no such file in the project's library");
+      full = listed.path;
     } else {
-      if (!relPath || relPath.endsWith("/")) relPath += "index.html";
-      full = resolveInside(handle.store.state.workspace, relPath);
-      if (!full || inGitDir(handle.store.state.workspace, full)) throw new HttpError(404, "no such file in the workspace");
-      if (!existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
+      const handle = this.room(roomId);
+      if (relPath.startsWith("~block/")) {
+        this.serveBlock(req, res, handle, relPath.slice("~block/".length));
+        return;
+      }
+      if (relPath.startsWith("~at/")) {
+        const [, seqPart, ...fileParts] = relPath.split("/");
+        const seq = Number(seqPart);
+        if (!Number.isSafeInteger(seq) || seq < 1 || seq > handle.store.state.seq) throw new HttpError(404, "no such conversation file");
+        const root = workspaceAt(handle.store.state, seq);
+        full = resolveInside(root, fileParts.join("/"));
+        if (!full || inGitDir(root, full) || !existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such conversation file");
+      } else if (relPath.startsWith("~abs/")) {
+        // A media file outside the workspace, served only while a text in the room links it.
+        // relPath is decoded already: the path is taken as is, not decoded again.
+        const ref = relPath.slice("~abs/".length);
+        full = linkedMedia(markdownTexts(handle.store.state), ref.startsWith("~/") ? ref : `/${ref}`);
+        if (!full) throw new HttpError(404, "no such file, or nothing in the room links it");
+      } else {
+        if (!relPath || relPath.endsWith("/")) relPath += "index.html";
+        full = resolveInside(handle.store.state.workspace, relPath);
+        if (!full || inGitDir(handle.store.state.workspace, full)) throw new HttpError(404, "no such file in the workspace");
+        if (!existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
+      }
     }
     const size = statSync(full).size;
     const type = MIME[extname(full).toLowerCase()] ?? "text/plain; charset=utf-8";
@@ -1062,7 +1146,7 @@ export class AgoraDaemon {
     res.end(req.method === "HEAD" ? undefined : body);
   }
 
-  private serveStatic(res: ServerResponse, path: string): void {
+  private serveStatic(req: IncomingMessage, res: ServerResponse, path: string): void {
     if (!this.webDir) {
       res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
       res.end("agoryx daemon is running. The web UI was not found next to this build.\n");
@@ -1070,14 +1154,17 @@ export class AgoraDaemon {
     }
     const relative = path === "/" || !extname(path) ? "index.html" : decodeURIComponent(path).replace(/^\/+/, "");
     const full = resolve(this.webDir, relative);
-    if (!full.startsWith(`${this.webDir}${sep}`) || !existsSync(full) || !statSync(full).isFile()) {
-      throw new HttpError(404, "not found");
-    }
-    const body = readFileSync(full);
+    const stat = full.startsWith(`${this.webDir}${sep}`) && existsSync(full) ? statSync(full) : null;
+    if (!stat?.isFile()) throw new HttpError(404, "not found");
+    const encoding = pickEncoding(full, stat.size, req.headers["accept-encoding"] as string | undefined);
+    const body = staticBody(full, encoding);
     const type = MIME[extname(full).toLowerCase()] ?? "application/octet-stream";
     res.writeHead(200, {
       "content-type": type,
-      "cache-control": relative === "index.html" ? "no-store" : "no-cache",
+      "content-length": body.length,
+      "cache-control": cacheControl(relative),
+      ...(encoding ? { "content-encoding": encoding } : {}),
+      vary: "accept-encoding",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       ...(relative === "index.html"
@@ -1087,7 +1174,7 @@ export class AgoraDaemon {
           }
         : {}),
     });
-    res.end(body);
+    res.end(req.method === "HEAD" ? undefined : body);
   }
 
   /** Who a new room seats unless told otherwise, for the start screen; a broken roster file is reported, not hidden. */
@@ -1097,6 +1184,249 @@ export class AgoraDaemon {
     } catch (error) {
       return { rosterError: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /**
+   * Projects: the folders Work rooms work in, with a name, a goal, instructions and memory that outlive one room.
+   * `GET /api/projects`, `GET|PATCH /api/projects/<hash>` (a folder nothing was written for yet is named by
+   * `key`, its path), `POST /api/projects/<hash>/memory` (`note` or `promote`), `PATCH|DELETE …/memory/<id>`,
+   * `GET /api/projects/<hash>/overview` (its library, threads and usage, read from its rooms),
+   * `POST|DELETE …/context` and `…/library` (`path`: a context folder, a file added to the library).
+   * Agents write with their own key, and every write says who made it.
+   */
+  /**
+   * New project: the name, goal and context folders written for a folder, by whoever asks. Nothing is written unless
+   * all of it can be; a folder that has a name already is not written over (the caller opens it instead).
+   */
+  private createProject(body: Record<string, unknown>, rooms: ReturnType<typeof RoomStore.list>, caller: Caller): Project | { taken: Project } {
+    const field = (name: string): string => {
+      const value = body[name] ?? "";
+      if (typeof value !== "string") throw new HttpError(400, `${name} must be a string`);
+      return value.trim();
+    };
+    const dir = field("dir");
+    const name = field("name");
+    const goal = field("goal");
+    if (!dir) throw new HttpError(400, "dir: the project's folder");
+    if (!name) throw new HttpError(400, "name: what to call the project");
+    if (name.includes("\n")) throw new HttpError(400, "a project's name is one line");
+    for (const [label, text] of [["name", name], ["goal", goal]] as const) {
+      if (text.length > MAX_PROJECT_TEXT) throw new HttpError(400, `the ${label} is ${text.length} characters; at most ${MAX_PROJECT_TEXT}`);
+    }
+    if (body.context !== undefined && !(Array.isArray(body.context) && body.context.every((entry) => typeof entry === "string"))) {
+      throw new HttpError(400, "context must be a list of folders");
+    }
+    let key: string;
+    try {
+      key = projectKeyOfFolder(resolveFolder(dir, this.env), rooms);
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : String(error));
+    }
+    const existing = readProject(key, this.env);
+    if (existing.name) return { taken: existing };
+    const writer: ProjectWriter = caller.agent ? { by: caller.agent.agent, from: caller.agent } : { by: defaultHumanName(this.env) };
+    try {
+      const context = [...new Set(((body.context as string[] | undefined) ?? []).map((path) => checkContextFolder(key, path, this.env)))];
+      setProjectFields(key, goal ? { name, goal } : { name }, writer, this.env);
+      for (const folder of context) addProjectContext(key, folder, writer, this.env);
+    } catch (error) {
+      if (error instanceof ProjectError) throw new HttpError(400, error.message);
+      throw error;
+    }
+    return readProject(key, this.env);
+  }
+
+  private async projectsApi(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[], method: string, caller: Caller): Promise<void> {
+    const rooms = RoomStore.list(roomsDir(this.env));
+    const keys = new Map<string, string>();
+    for (const project of listProjects(this.env)) keys.set(project.hash, project.key);
+    for (const room of rooms) {
+      if (!room.projectHash || keys.has(room.projectHash)) continue;
+      const handle = this.rooms.get(room.id);
+      const state = handle ? handle.store.state : RoomStore.open(roomsDir(this.env), room.id).state;
+      keys.set(room.projectHash, state.worktree?.source ?? state.workspace);
+    }
+    const view = (project: Project) => ({
+      hash: project.hash,
+      key: project.key,
+      ...(project.name ? { name: project.name } : {}),
+      ...(project.goal ? { goal: project.goal } : {}),
+      ...(project.instructions ? { instructions: project.instructions } : {}),
+      context: project.context,
+      library: project.library,
+      ...(project.events.length ? { updatedAt: project.events.at(-1)!.ts } : {}),
+      seq: project.seq,
+      fieldsSeq: project.fieldsSeq,
+      memory: project.memory,
+      memoryPath: memoryPath(project.key, this.env),
+      rooms: rooms.filter((room) => room.projectHash === project.hash).map((room) => room.id),
+    });
+    if (parts.length === 0 && method === "POST") {
+      const body = ((await readBody(req)) ?? {}) as Record<string, unknown>;
+      const project = this.createProject(body, rooms, caller);
+      if ("taken" in project) {
+        sendJson(res, 409, { error: `${project.taken.key} is the project "${project.taken.name}" already: open it`, project: view(project.taken) });
+        return;
+      }
+      sendJson(res, 200, { project: { ...view(project), events: project.events } });
+      return;
+    }
+    if (parts.length === 0) {
+      if (method !== "GET") throw new HttpError(405, "GET or POST");
+      sendJson(res, 200, { projects: [...keys.values()].map((key) => view(readProject(key, this.env))) });
+      return;
+    }
+    const memory = parts[1] === "memory";
+    const overview = parts[1] === "overview" && parts.length === 2;
+    const context = parts[1] === "context" && parts.length === 2;
+    const library = parts[1] === "library" && parts.length === 2;
+    if (parts.length !== 1 && !(memory && parts.length <= 3) && !overview && !context && !library) throw new HttpError(404, "unknown endpoint");
+    const hash = parts[0]!;
+    const body = method === "GET" || method === "DELETE" ? {} : (((await readBody(req)) ?? {}) as Record<string, unknown>);
+    const asked = typeof body.key === "string" ? body.key : url.searchParams.get("key");
+    let key = keys.get(hash);
+    if (!key && asked) {
+      let folder: string;
+      try {
+        folder = resolveFolder(asked, this.env);
+      } catch (error) {
+        throw new HttpError(404, error instanceof Error ? error.message : String(error));
+      }
+      if (projectHash(folder) === hash) key = folder;
+    }
+    if (!key) throw new HttpError(404, "no such project: no Work room works in that folder and nothing was written for it");
+    const writer: ProjectWriter = caller.agent ? { by: caller.agent.agent, from: caller.agent } : { by: defaultHumanName(this.env) };
+    const fail = (error: unknown): never => {
+      if (error instanceof ProjectError) throw new HttpError(400, error.message);
+      throw error;
+    };
+    const text = (value: unknown, field: string): string | undefined => {
+      if (value === undefined) return undefined;
+      if (typeof value !== "string") throw new HttpError(400, `${field} must be a string`);
+      return value;
+    };
+    if (overview) {
+      if (method !== "GET") throw new HttpError(405, "GET");
+      const stateOf = (id: string): { state: RoomState; events: readonly RoomEvent[] } | null => {
+        const handle = this.rooms.get(id);
+        if (handle) return { state: handle.store.state, events: handle.store.since(0) };
+        try {
+          const store = RoomStore.open(roomsDir(this.env), id);
+          return { state: store.state, events: store.since(0) };
+        } catch {
+          return null;
+        }
+      };
+      const members = rooms.filter((room) => room.projectHash === hash);
+      const read = members.flatMap((room) => {
+        const got = stateOf(room.id);
+        return got ? [{ ...got, updatedAt: room.updatedAt }] : [];
+      });
+      const all = new Map(read.map(({ state }) => [state.id, state]));
+      for (const { state } of read) {
+        if (state.parent && !all.has(state.parent)) {
+          const parent = stateOf(state.parent);
+          if (parent) all.set(parent.state.id, parent.state);
+        }
+      }
+      const device = caller.agent ? undefined : caller.device;
+      sendJson(res, 200, {
+        ...projectOverview(read, uploadsDir(this.env), all, readProject(key, this.env)),
+        // Where each room serves its files from, for this page: a library entry opens through the room that links it.
+        // A file added to the project itself (no room links it) opens through the project's own: under "".
+        rawBase: { ...Object.fromEntries(read.map(({ state }) => [state.id, this.rawBase(state.id, device)])), "": this.rawBase(`${PROJECT_RAW}${hash}`, device) },
+      });
+      return;
+    }
+    if (context) {
+      const path = method === "DELETE" ? url.searchParams.get("path") : text(body.path, "path");
+      if (!path) throw new HttpError(400, "path: the context folder");
+      try {
+        if (method === "POST") addProjectContext(key, path, writer, this.env);
+        else if (method === "DELETE") removeProjectContext(key, path, writer, this.env);
+        else throw new HttpError(405, "POST or DELETE");
+      } catch (error) {
+        fail(error);
+      }
+    } else if (library) {
+      const path = method === "DELETE" ? url.searchParams.get("path") : text(body.path, "path");
+      if (!path) throw new HttpError(400, "path: the file");
+      try {
+        if (method === "POST") addLibraryFile(key, path, writer, this.env);
+        else if (method === "DELETE") removeLibraryFile(key, path, writer, this.env);
+        else throw new HttpError(405, "POST or DELETE");
+      } catch (error) {
+        fail(error);
+      }
+    } else if (memory && parts.length === 2) {
+      if (method !== "POST") throw new HttpError(405, "POST");
+      const note = body.note as Record<string, unknown> | undefined;
+      const promote = body.promote as Record<string, unknown> | undefined;
+      try {
+        if (note && typeof note === "object") {
+          noteMemory(key, { text: text(note.text, "text") ?? "", kind: text(note.kind, "kind"), why: text(note.why, "why") }, writer, this.env);
+        } else if (promote && typeof promote === "object") {
+          const roomId = text(promote.room, "room") ?? caller.agent?.room;
+          const ref = text(promote.ref, "ref");
+          if (!roomId || !ref) throw new HttpError(400, "promote needs a room and a table ref (S3, F2, D1, Q1)");
+          const state = this.rooms.get(roomId)?.store.state ?? (() => {
+            try {
+              return RoomStore.open(roomsDir(this.env), roomId).state;
+            } catch {
+              throw new HttpError(404, `no room ${roomId}`);
+            }
+          })();
+          if (projectKey(state) !== key) throw new HttpError(400, `"${state.name}" is not a Work room of this project`);
+          promoteToMemory(key, { id: state.id, name: state.name, table: state.table }, ref, writer, this.env);
+        } else throw new HttpError(400, 'send { note: { text, kind?, why? } } or { promote: { room, ref } }');
+      } catch (error) {
+        fail(error);
+      }
+    } else if (memory) {
+      const id = parts[2]!;
+      const project = readProject(key, this.env);
+      const entry = project.memory.find((item) => item.id === id.toUpperCase());
+      if (!entry) throw new HttpError(404, `no memory entry ${id}`);
+      // A DELETE has no body, so its version comes in the query.
+      const seen = typeof body.seq === "number" ? body.seq : url.searchParams.has("seq") ? Number(url.searchParams.get("seq")) : undefined;
+      try {
+        // The version is checked under the project's lock, with the write: not before it, where another write could slip between.
+        if (method === "PATCH") {
+          const why = body.why === null ? null : text(body.why, "why");
+          reviseMemory(key, entry.id, { text: text(body.text, "text"), why, kind: text(body.kind, "kind") }, writer, this.env, seen);
+        } else if (method === "DELETE") removeMemory(key, entry.id, writer, this.env, seen);
+        else throw new HttpError(405, "PATCH or DELETE");
+      } catch (error) {
+        if (error instanceof StaleMemoryError) {
+          const now = readProject(key, this.env);
+          sendJson(res, 409, { error: error.message, entry: error.entry, project: { ...view(now), events: now.events } });
+          return;
+        }
+        fail(error);
+      }
+    } else if (method === "PATCH") {
+      const project = readProject(key, this.env);
+      // Against the fields' own version: a memory entry written meanwhile does not make this edit stale.
+      if (typeof body.seq === "number" && body.seq !== project.fieldsSeq) {
+        sendJson(res, 409, { error: "the project changed since you opened it", project: { ...view(project), events: project.events } });
+        return;
+      }
+      const fields: Partial<Record<(typeof PROJECT_FIELDS)[number], string>> = {};
+      for (const field of PROJECT_FIELDS) {
+        const value = body[field];
+        if (value === undefined) continue;
+        if (typeof value !== "string" && value !== null) throw new HttpError(400, `${field} must be a string`);
+        fields[field] = value ?? "";
+      }
+      try {
+        setProjectFields(key, fields, writer, this.env);
+      } catch (error) {
+        if (error instanceof ProjectError) throw new HttpError(400, error.message);
+        throw error;
+      }
+    } else if (method !== "GET") throw new HttpError(405, "GET or PATCH");
+    const project = readProject(key, this.env);
+    sendJson(res, 200, { project: { ...view(project), events: project.events }, rooms: rooms.filter((room) => room.projectHash === hash) });
   }
 
   private async api(req: IncomingMessage, res: ServerResponse, url: URL, caller: Caller = { agent: null }): Promise<void> {
@@ -1235,20 +1565,26 @@ export class AgoraDaemon {
     }
 
     if (parts[0] === "attention") return this.attentionApi(req, res, parts.slice(1), method, caller);
+    if (parts[0] === "projects") return this.projectsApi(req, res, url, parts.slice(1), method, caller);
     if (parts[0] === "browser") return this.browserApi(req, res, parts.slice(1), method, caller);
 
     if (parts[0] !== "rooms") throw new HttpError(404, "unknown endpoint");
 
     if (parts.length === 1) {
       if (method === "GET") {
-        const rooms = RoomStore.list(roomsDir(this.env)).map((summary) => {
+        const names = new Map(listProjects(this.env).filter((project) => project.name).map((project) => [project.hash, project.name!]));
+        const named = <T extends { projectHash?: string }>(summary: T): T & { projectName?: string } => {
+          const name = summary.projectHash ? names.get(summary.projectHash) : undefined;
+          return name ? { ...summary, projectName: name } : summary;
+        };
+        const rooms = RoomStore.list(roomsDir(this.env)).map(named).map((summary) => {
           const handle = this.rooms.get(summary.id);
           if (!handle) return summary;
           // What the human has not seen is the human's: an agent key never learns it.
-          if (caller.agent) return { ...handle.store.summary(), driven: Boolean(handle.engine) };
+          if (caller.agent) return { ...named(handle.store.summary()), driven: Boolean(handle.engine) };
           const unread = this.attention.unread(summary.id);
           return {
-            ...handle.store.summary(),
+            ...named(handle.store.summary()),
             driven: Boolean(handle.engine),
             waiting: this.attention.item(summary.id),
             ...(unread !== undefined ? { unread } : {}),
@@ -1282,6 +1618,8 @@ export class AgoraDaemon {
             ...(typeof body.doc === "string" ? { doc: body.doc.trim() || null } : body.doc === null ? { doc: null } : {}),
             // Opened from an agent's turn: the room says so; its human is still the human.
             ...(caller.agent ? { createdBy: caller.agent } : {}),
+            // A thread: "here" is the calling agent's own room.
+            ...(typeof body.from === "string" && body.from.trim() ? { from: body.from.trim() === "here" && caller.agent ? caller.agent.room : body.from.trim() } : {}),
             env: this.env,
           });
         } catch (error) {
@@ -1513,6 +1851,16 @@ export class AgoraDaemon {
       case "rename": {
         try {
           engine.rename(typeof body.name === "string" ? body.name : "", actor);
+        } catch (error) {
+          throw new HttpError(400, error instanceof Error ? error.message : String(error));
+        }
+        sendJson(res, 200, { room: handle.store.summary() });
+        return;
+      }
+      case "resolve": {
+        if (caller.agent) throw new HttpError(403, "resolving a thread is the human's");
+        try {
+          engine.resolveThread(body.resolved !== false, actor);
         } catch (error) {
           throw new HttpError(400, error instanceof Error ? error.message : String(error));
         }

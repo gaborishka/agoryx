@@ -17,6 +17,9 @@ import type { ActorOrigin, RoomState } from "./types.js";
  * material). Agents of its Work rooms get access to them and are told where they are. Added and removed by
  * someone, like everything else here.
  *
+ * Its library: files someone added to the project (an attached file, a paper), by path, where they are; nothing is
+ * copied. Its agents are told where they are.
+ *
  * Kept in <AGORYX_HOME>/projects/<hash>/: `events.jsonl` (append-only, every write with who made it) is the
  * truth; `project.json` is what it adds up to, for reading by hand.
  */
@@ -31,6 +34,8 @@ export type ProjectEventBody =
   | { type: "project.changed"; field: ProjectField; value: string | null }
   | { type: "context.added"; path: string }
   | { type: "context.removed"; path: string }
+  | { type: "library.added"; path: string }
+  | { type: "library.removed"; path: string }
   | MemoryEventBody;
 
 export type ProjectEvent = ProjectEventBody & {
@@ -50,6 +55,8 @@ export interface Project {
   instructions?: string;
   /** Context folders, absolute, in the order they were added. */
   context: string[];
+  /** Files added to the project, absolute, oldest first: who added each, when. */
+  library: LibraryFile[];
   /** What its rooms keep (memory.ts), in the order it was written. */
   memory: MemoryEntry[];
   /** The last event's seq; 0: nothing written yet. */
@@ -57,6 +64,13 @@ export interface Project {
   /** The last name/goal/instructions change's seq: an edit of them made against an older one is refused. */
   fieldsSeq: number;
   events: ProjectEvent[];
+}
+
+export interface LibraryFile {
+  path: string;
+  by: string;
+  from?: ActorOrigin;
+  at: string;
 }
 
 /** Who writes: the human (by name), or an agent from one of its rooms. */
@@ -95,7 +109,7 @@ const readEvents = (file: string): ProjectEvent[] => {
 
 /** The project as its events add up to. */
 export const foldProject = (key: string, events: ProjectEvent[]): Project => {
-  const project: Project = { key, hash: projectHash(key), context: [], memory: [], seq: 0, fieldsSeq: 0, events };
+  const project: Project = { key, hash: projectHash(key), context: [], library: [], memory: [], seq: 0, fieldsSeq: 0, events };
   for (const event of events) {
     project.seq = Math.max(project.seq, event.seq);
     if (event.type === "project.changed") {
@@ -106,6 +120,12 @@ export const foldProject = (key: string, events: ProjectEvent[]): Project => {
       if (!project.context.includes(event.path)) project.context = [...project.context, event.path];
     } else if (event.type === "context.removed") {
       project.context = project.context.filter((path) => path !== event.path);
+    } else if (event.type === "library.added") {
+      if (!project.library.some((file) => file.path === event.path)) {
+        project.library = [...project.library, { path: event.path, by: event.by, ...(event.from ? { from: event.from } : {}), at: event.ts }];
+      }
+    } else if (event.type === "library.removed") {
+      project.library = project.library.filter((file) => file.path !== event.path);
     } else project.memory = foldMemoryEvent(project.memory, event);
   }
   return project;
@@ -122,6 +142,7 @@ const summaryOf = (project: Project) => ({
   ...(project.goal ? { goal: project.goal } : {}),
   ...(project.instructions ? { instructions: project.instructions } : {}),
   ...(project.context.length ? { context: project.context } : {}),
+  ...(project.library.length ? { library: project.library.map((file) => file.path) } : {}),
   memory: project.memory.length,
   seq: project.seq,
 });
@@ -197,6 +218,36 @@ export const removeProjectContext = (key: string, path: string, writer: ProjectW
   return appendProjectEvent(key, { type: "context.removed", path: folder }, writer, env);
 };
 
+/** A file added to the library: absolute, `~` expanded. */
+const libraryPath = (path: string, env: NodeJS.ProcessEnv): string => {
+  const home = env.HOME ?? process.env.HOME ?? "";
+  const raw = path.trim().replace(/^~(?=$|[\\/])/, home);
+  if (!raw || !isAbsolute(raw)) throw new ProjectError(`a library file is an absolute path (or ~/…); not "${path}"`);
+  return resolve(raw);
+};
+
+/** Add a file to the project's library, where it is; nothing is appended for a file already there. */
+export const addLibraryFile = (key: string, path: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
+  const file = libraryPath(path, env);
+  let isFile = false;
+  try {
+    isFile = statSync(file).isFile();
+  } catch {
+    // not there
+  }
+  if (!isFile) throw new ProjectError(`no file at ${file}`);
+  const project = readProject(key, env);
+  if (project.library.some((entry) => entry.path === file)) return project;
+  return appendProjectEvent(key, { type: "library.added", path: file }, writer, env);
+};
+
+/** Take a file out of the library; the file itself stays where it is. */
+export const removeLibraryFile = (key: string, path: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
+  const file = libraryPath(path, env);
+  if (!readProject(key, env).library.some((entry) => entry.path === file)) throw new ProjectError(`${path} is not in this project's library`);
+  return appendProjectEvent(key, { type: "library.removed", path: file }, writer, env);
+};
+
 /** The context folders the project's agents are given: those still there. */
 export const contextFolders = (project: Pick<Project, "context">): string[] =>
   project.context.filter((folder) => {
@@ -254,6 +305,10 @@ export const describeProject = (project: Project, rooms: Array<{ id: string; nam
     lines.push("", "context folders (its agents work with them too):");
     for (const folder of project.context) lines.push(`  ${folder}${existsSync(folder) ? "" : "  (not there now)"}`);
   }
+  if (project.library.length) {
+    lines.push("", "library (files added to the project, where they are):");
+    for (const file of project.library) lines.push(`  ${file.path}${existsSync(file.path) ? "" : "  (not there now)"}`);
+  }
   if (project.memory.length) lines.push("", `memory: ${project.memory.length} entr${project.memory.length === 1 ? "y" : "ies"} — \`agoryx memory\``);
   lines.push("", rooms.length ? `Work rooms in it: ${rooms.map((room) => `"${room.name}" (${room.id})`).join(", ")}` : "No Work room works in it yet.");
   return lines;
@@ -289,6 +344,11 @@ export const projectBriefing = (project: Project, cli: string, env: NodeJS.Proce
     lines.push("  Context folders — you can read and write them as you do this folder:");
     for (const folder of context) lines.push(`    ${folder}`);
   }
+  const library = project.library.filter((file) => existsSync(file.path));
+  if (library.length) {
+    lines.push("  Library — files added to the project, each where it is:");
+    for (const file of library) lines.push(`    ${file.path} — added by ${file.from ? `${file.by} in "${file.from.roomName}"` : file.by}`);
+  }
   lines.push(`  \`${cli} project\` shows it; \`${cli} project set goal|instructions|name "…"\` changes it for every Work room in this folder.`);
   lines.push(...memoryBriefing(project, cli, env));
   return lines.join("\n");
@@ -313,6 +373,8 @@ export const projectUpdate = (project: Project, seen: number, reader: { room: st
   for (const event of fresh) {
     if (event.type === "context.added") lines.push(`  ${writerOf(event)} added the context folder ${event.path} — you can read and write it from this turn on.`);
     if (event.type === "context.removed") lines.push(`  ${writerOf(event)} removed the context folder ${event.path}.`);
+    if (event.type === "library.added") lines.push(`  ${writerOf(event)} added ${event.path} to the project's library.`);
+    if (event.type === "library.removed") lines.push(`  ${writerOf(event)} took ${event.path} out of the project's library (the file stays where it is).`);
   }
   const memory = memoryUpdateLine(fresh, cli);
   if (memory) lines.push(memory);

@@ -1,23 +1,28 @@
 import { existsSync } from "node:fs";
 import { extname, join, sep } from "node:path";
 import { fileRefs, MEDIA_EXTS } from "./media.js";
+import type { Project } from "./projects.js";
 import type { ThreadNote } from "./threads.js";
 import type { RoomEvent, RoomState, ThreadResolution } from "./types.js";
 import { emptyTotals, roomUsage, type UsageTotals } from "./usage.js";
 
 /**
  * What a project's page shows across its rooms, read from the rooms as they are: the library (files the human
- * attached, the rooms' documents, media the agents linked — each by its path, where it is; nothing is copied), the
+ * attached or added to the project, the rooms' documents, media the agents linked, the context folders — each by its
+ * path, where it is; nothing is copied), the
  * threads with what each last reported, and what the rooms' turns cost, summed from each room's own usage.
  */
 
-export type LibraryKind = "upload" | "doc" | "media";
+export type LibraryKind = "upload" | "doc" | "media" | "context";
 
 export interface LibraryEntry {
   kind: LibraryKind;
-  /** Absolute for uploads and media; a document's is relative to its room's folder. */
+  /** Absolute for uploads, media and context folders; a document's is relative to its room's folder. */
   path: string;
-  /** The room that first linked it (a document: its room), and who linked or last revised it, when. */
+  /**
+   * The room that first linked it (a document: its room), and who linked or last revised it, when. Empty for what was
+   * added to the project itself (`added`) and for a context folder: then who added it.
+   */
   room: string;
   roomName: string;
   by: string;
@@ -28,6 +33,8 @@ export interface LibraryEntry {
   revisions?: number;
   /** The file is still where it was linked. */
   exists: boolean;
+  /** Added to the project's library (it can be taken out again), not only linked in a room. */
+  added?: boolean;
 }
 
 export interface ThreadView {
@@ -83,7 +90,12 @@ const labelOf = (state: RoomState, id: string): string =>
  * The overview of a project's rooms. `uploads`: the folder attached files are kept in. `all`: every room, to name a
  * thread's parent and find its reports (a parent is a room of the same project, but read it wherever it is).
  */
-export const projectOverview = (rooms: OverviewRoom[], uploads: string, all: Map<string, RoomState> = new Map(rooms.map((room) => [room.state.id, room.state]))): ProjectOverview => {
+export const projectOverview = (
+  rooms: OverviewRoom[],
+  uploads: string,
+  all: Map<string, RoomState> = new Map(rooms.map((room) => [room.state.id, room.state])),
+  project?: Pick<Project, "library" | "context" | "events">,
+): ProjectOverview => {
   const uploadsPrefix = uploads.endsWith(sep) ? uploads : uploads + sep;
   // Oldest room first: a file belongs to the room that linked it first.
   const ordered = [...rooms].sort((a, b) => a.state.createdAt.localeCompare(b.state.createdAt));
@@ -122,7 +134,16 @@ export const projectOverview = (rooms: OverviewRoom[], uploads: string, all: Map
     }
   }
   for (const entry of linked.values()) entry.alsoIn = (linkedIn.get(entry.path)?.size ?? 1) - 1;
-  const library = [...docs, ...linked.values()].sort((a, b) => b.at.localeCompare(a.at));
+  // Added to the project: one entry, whoever added it; the rooms that link it too are counted, not listed again.
+  const added: LibraryEntry[] = (project?.library ?? []).map((file) => {
+    linked.delete(file.path);
+    return { kind: "upload", path: file.path, room: "", roomName: "", by: file.from?.label ?? file.by, at: file.at, alsoIn: linkedIn.get(file.path)?.size ?? 0, exists: existsSync(file.path), added: true };
+  });
+  const context: LibraryEntry[] = (project?.context ?? []).map((folder) => {
+    const event = [...(project?.events ?? [])].reverse().find((e) => e.type === "context.added" && e.path === folder);
+    return { kind: "context", path: folder, room: "", roomName: "", by: event?.from?.label ?? event?.by ?? "", at: event?.ts ?? "", alsoIn: 0, exists: existsSync(folder) };
+  });
+  const library = [...docs, ...added, ...linked.values(), ...context].sort((a, b) => b.at.localeCompare(a.at));
 
   const threads: ThreadView[] = rooms
     .filter(({ state }) => state.parent)

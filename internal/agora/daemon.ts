@@ -30,7 +30,7 @@ import { readTurnActivity, turnSession } from "./turn-activity.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
-import { addProjectContext, checkContextFolder, listProjects, MAX_PROJECT_TEXT, PROJECT_FIELDS, ProjectError, projectHash, projectKey, projectKeyOfFolder, readProject, removeProjectContext, setProjectField, type Project, type ProjectWriter } from "./projects.js";
+import { addLibraryFile, addProjectContext, checkContextFolder, listProjects, MAX_PROJECT_TEXT, PROJECT_FIELDS, ProjectError, projectHash, projectKey, projectKeyOfFolder, readProject, removeLibraryFile, removeProjectContext, setProjectField, type Project, type ProjectWriter } from "./projects.js";
 import { memoryPath, noteMemory, promoteToMemory, removeMemory, reviseMemory } from "./memory.js";
 import { parseSubscription, PushNotes, PushSender } from "./push.js";
 import { qrSvg } from "./qr.js";
@@ -1128,7 +1128,8 @@ export class AgoraDaemon {
    * Projects: the folders Work rooms work in, with a name, a goal, instructions and memory that outlive one room.
    * `GET /api/projects`, `GET|PATCH /api/projects/<hash>` (a folder nothing was written for yet is named by
    * `key`, its path), `POST /api/projects/<hash>/memory` (`note` or `promote`), `PATCH|DELETE …/memory/<id>`,
-   * `GET /api/projects/<hash>/overview` (its library, threads and usage, read from its rooms).
+   * `GET /api/projects/<hash>/overview` (its library, threads and usage, read from its rooms),
+   * `POST|DELETE …/context` and `…/library` (`path`: a context folder, a file added to the library).
    * Agents write with their own key, and every write says who made it.
    */
   /**
@@ -1191,6 +1192,7 @@ export class AgoraDaemon {
       ...(project.goal ? { goal: project.goal } : {}),
       ...(project.instructions ? { instructions: project.instructions } : {}),
       context: project.context,
+      library: project.library,
       ...(project.events.length ? { updatedAt: project.events.at(-1)!.ts } : {}),
       seq: project.seq,
       fieldsSeq: project.fieldsSeq,
@@ -1216,7 +1218,8 @@ export class AgoraDaemon {
     const memory = parts[1] === "memory";
     const overview = parts[1] === "overview" && parts.length === 2;
     const context = parts[1] === "context" && parts.length === 2;
-    if (parts.length !== 1 && !(memory && parts.length <= 3) && !overview && !context) throw new HttpError(404, "unknown endpoint");
+    const library = parts[1] === "library" && parts.length === 2;
+    if (parts.length !== 1 && !(memory && parts.length <= 3) && !overview && !context && !library) throw new HttpError(404, "unknown endpoint");
     const hash = parts[0]!;
     const body = method === "GET" || method === "DELETE" ? {} : (((await readBody(req)) ?? {}) as Record<string, unknown>);
     const asked = typeof body.key === "string" ? body.key : url.searchParams.get("key");
@@ -1267,7 +1270,7 @@ export class AgoraDaemon {
       }
       const device = caller.agent ? undefined : caller.device;
       sendJson(res, 200, {
-        ...projectOverview(read, uploadsDir(this.env), all),
+        ...projectOverview(read, uploadsDir(this.env), all, readProject(key, this.env)),
         // Where each room serves its files from, for this page: a library entry opens through the room that links it.
         rawBase: Object.fromEntries(read.map(({ state }) => [state.id, this.rawBase(state.id, device)])),
       });
@@ -1279,6 +1282,16 @@ export class AgoraDaemon {
       try {
         if (method === "POST") addProjectContext(key, path, writer, this.env);
         else if (method === "DELETE") removeProjectContext(key, path, writer, this.env);
+        else throw new HttpError(405, "POST or DELETE");
+      } catch (error) {
+        fail(error);
+      }
+    } else if (library) {
+      const path = method === "DELETE" ? url.searchParams.get("path") : text(body.path, "path");
+      if (!path) throw new HttpError(400, "path: the file");
+      try {
+        if (method === "POST") addLibraryFile(key, path, writer, this.env);
+        else if (method === "DELETE") removeLibraryFile(key, path, writer, this.env);
         else throw new HttpError(405, "POST or DELETE");
       } catch (error) {
         fail(error);

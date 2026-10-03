@@ -65,7 +65,7 @@ export function ProjectPage({ hash }: { hash: string }) {
   const settingsOpen = useStore((s) => s.dialog?.kind === "project");
   const [project, setProject] = useState<ProjectView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { overview, error: overviewError } = useOverview(hash);
+  const { overview, error: overviewError, reload } = useOverview(hash);
 
   const load = useCallback(async () => {
     try {
@@ -152,7 +152,7 @@ export function ProjectPage({ hash }: { hash: string }) {
                   {overview ? <Threads threads={overview.threads} /> : overviewError ? <ErrorNote>{overviewError}</ErrorNote> : <Loading lines={2} />}
                 </div>
                 <div className="flex min-w-0 flex-col gap-8">
-                  {overview ? <Library entries={overview.library} rawBase={overview.rawBase} /> : overviewError ? null : <Loading lines={3} />}
+                  {overview ? <Library entries={overview.library} rawBase={overview.rawBase} hash={hash} onChange={reload} /> : overviewError ? null : <Loading lines={3} />}
                 </div>
               </div>
             </>

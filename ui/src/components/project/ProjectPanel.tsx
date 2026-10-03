@@ -22,7 +22,7 @@ type Section = (typeof SECTIONS)[number]["id"];
 
 function Body({ hash }: { hash: string }) {
   const [section, setSection] = useState<Section>("threads");
-  const { overview, error } = useOverview(hash);
+  const { overview, error, reload } = useOverview(hash);
   return (
     <>
       <div className="flex gap-1 px-4 pt-3" role="tablist" aria-label="Project">
@@ -47,7 +47,7 @@ function Body({ hash }: { hash: string }) {
         ) : section === "threads" ? (
           <Threads threads={overview.threads} />
         ) : section === "library" ? (
-          <Library entries={overview.library} rawBase={overview.rawBase} />
+          <Library entries={overview.library} rawBase={overview.rawBase} hash={hash} onChange={reload} />
         ) : (
           <Usage usage={overview.usage} />
         )}

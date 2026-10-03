@@ -51,6 +51,12 @@ const USAGE = `agoryx — room tools for agents
   agoryx read new          what the others said since your turn began
 
   agoryx table show
+  agoryx table brief "where we are" [--change "important change"] [--next "next step"] [--ref P1]
+                   --change and --ref can repeat; --awaiting Q1 --recommend P1 asks for the human's decision
+  agoryx table component "title" --kind comparison|plan|checks|artifact|custom [--ref P1]
+                   [--body "markdown" | --body-file preview.md | --body -] [--file path] [--target W1]
+                   publish a component; --target replaces your own component, --ref can repeat
+  agoryx table archive W1 | restore W1
   agoryx table ask "question" [--many]
                    --many: the options are not alternatives — any number of them can be chosen
                    (a list of things to do, not "which one"); without it, choosing one closes the question
@@ -169,14 +175,18 @@ const SWITCHES = ["many", "one"];
 const parseArgs = (argv) => {
   const positional = [];
   const flags = {};
+  const put = (key, value) => {
+    if (key === "change" || key === "ref") flags[key] = [...(flags[key] ?? []), value];
+    else flags[key] = value;
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg.startsWith("--")) {
       const eq = arg.indexOf("=");
-      if (eq < 0 && SWITCHES.includes(arg.slice(2))) flags[arg.slice(2)] = "true";
-      else if (eq > 0) flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-      else if (i + 1 < argv.length) flags[arg.slice(2)] = argv[++i];
-      else flags[arg.slice(2)] = "";
+      if (eq < 0 && SWITCHES.includes(arg.slice(2))) put(arg.slice(2), "true");
+      else if (eq > 0) put(arg.slice(2, eq), arg.slice(eq + 1));
+      else if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) put(arg.slice(2), argv[++i]);
+      else put(arg.slice(2), "");
     } else {
       positional.push(arg);
     }
@@ -209,6 +219,8 @@ const signer = (flags) => {
 
 /** The flags each verb takes (same as internal/agora/table-cli.ts); anything else is a typo, not something to drop. */
 const TABLE_FLAGS = {
+  brief: ["change", "next", "ref", "awaiting", "recommend"],
+  component: ["kind", "ref", "body", "file", "target"],
   ask: ["many"],
   propose: ["body", "file", "q"],
   edit: ["body", "file", "q", "source", "many", "one"],
@@ -224,11 +236,24 @@ const TABLE_FLAGS = {
 const buildOp = (verb, positional, flags) => {
   const allowed = TABLE_FLAGS[verb] ?? [];
   const unknown = Object.keys(flags).filter((flag) => !allowed.includes(flag));
-  if (unknown.length > 0 && ["ask", "fact", "settle", "concede", "next", "propose", "object", "support", "evidence", "review", "done", "withdraw", "reopen", "decide", "edit", "delete"].includes(verb)) {
+  if (unknown.length > 0 && ["brief", "component", "archive", "restore", "ask", "fact", "settle", "concede", "next", "propose", "object", "support", "evidence", "review", "done", "withdraw", "reopen", "decide", "edit", "delete"].includes(verb)) {
     fail(`'${verb}' does not take ${unknown.map((flag) => `--${flag}`).join(", ")}${allowed.length ? ` (it takes ${allowed.map((flag) => `--${flag}`).join(", ")})` : ""}`);
   }
   const rest = positional.join(" ").trim();
+  if (verb === "brief" || verb === "component") {
+    for (const [flag, values] of Object.entries(flags)) {
+      if ((Array.isArray(values) ? values : [values]).some(value => !String(value).trim())) fail(`--${flag} needs a value`);
+    }
+  }
   switch (verb) {
+    case "brief":
+      if (!rest) fail("'brief' needs a short description of where work stands");
+      if (flags.recommend && !flags.awaiting) fail("--recommend needs --awaiting Q1");
+      return { op: verb, now: rest, changes: flags.change, next: flags.next, refs: flags.ref,
+        awaiting: flags.awaiting ? { q: flags.awaiting, ...(flags.recommend ? { recommendation: flags.recommend } : {}) } : undefined };
+    case "component":
+      if (!rest || !flags.kind) fail("'component' needs a title and --kind comparison|plan|checks|artifact|custom");
+      return { op: verb, title: rest, kind: flags.kind, refs: flags.ref ?? [], body: flags.body, file: flags.file, target: flags.target };
     case "ask":
       if (!rest) fail("'ask' needs text");
       return { op: "ask", text: rest, many: flags.many ? true : undefined };
@@ -261,10 +286,13 @@ const buildOp = (verb, positional, flags) => {
       return { op: verb, target, text: text.join(" "), source: flags.source };
     }
     case "done":
+    case "archive":
+    case "restore":
     case "review":
     case "withdraw":
     case "reopen":
       if (!positional[0]) fail(`'${verb}' needs an id`);
+      if ((verb === "archive" || verb === "restore") && positional.length !== 1) fail(`'${verb}' takes one component id`);
       return { op: verb, target: positional[0] };
     case "edit": {
       const [target, ...text] = positional;
@@ -498,6 +526,7 @@ const main = async () => {
   delete flags.room;
   // A long markdown body (diagrams, html) is easier to pass as a file or on stdin than as one shell argument.
   if (flags["body-file"]) {
+    if (flags.body !== undefined) fail("use --body or --body-file, not both");
     try {
       flags.body = readFileSync(resolve(flags["body-file"]), "utf8");
     } catch (error) {

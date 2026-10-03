@@ -7,6 +7,9 @@ import { readFileSync } from "node:fs";
  */
 export const TABLE_USAGE = [
   "agoryx table [show]",
+  'agoryx table brief "where we are" [--change "important change"] [--next "next step"] [--ref P1] [--awaiting Q1 --recommend P1]   (--change and --ref can repeat)',
+  'agoryx table component "title" --kind comparison|plan|checks|artifact|custom [--ref P1] [--body … | --body-file f.md] [--file path] [--target W1]   (--ref can repeat; target replaces your component)',
+  "agoryx table archive W1 | restore W1",
   'agoryx table ask "question" [--many]   (--many: its options don\'t exclude each other; any number can be chosen)',
   'agoryx table propose "short title" [--body "what and why" | --body-file notes.md] [--file path] [--q Q1]',
   'agoryx table object|support P1|X1|S1|F1 "reason"   (on a step X1: a finding of its check, or that the check passed)',
@@ -27,6 +30,8 @@ export class TableCommandError extends Error {}
 
 /** The flags each verb takes; anything else is a typo that would otherwise be dropped silently. */
 export const TABLE_FLAGS: Record<string, string[]> = {
+  brief: ["change", "next", "ref", "awaiting", "recommend"],
+  component: ["kind", "ref", "body", "body-file", "file", "target"],
   ask: ["many"],
   propose: ["body", "body-file", "file", "q"],
   edit: ["body", "body-file", "file", "q", "source", "many", "one"],
@@ -45,14 +50,17 @@ export const TABLE_SWITCHES = ["many", "one"];
 export const parseTableCommand = (verb: string, argv: string[]): Record<string, unknown> => {
   const positional: string[] = [];
   const flags: Record<string, string> = {};
+  const repeated: Record<string, string[]> = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!;
     if (arg.startsWith("--")) {
       const eq = arg.indexOf("=");
-      if (eq < 0 && TABLE_SWITCHES.includes(arg.slice(2))) flags[arg.slice(2)] = "true";
-      else if (eq > 0) flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-      else if (index + 1 < argv.length) flags[arg.slice(2)] = argv[++index]!;
-      else flags[arg.slice(2)] = "";
+      const name = eq > 0 ? arg.slice(2, eq) : arg.slice(2);
+      const value = eq > 0 ? arg.slice(eq + 1)
+        : TABLE_SWITCHES.includes(name) ? "true"
+          : index + 1 < argv.length && !argv[index + 1]!.startsWith("--") ? argv[++index]! : "";
+      flags[name] = value;
+      if (name === "ref" || name === "change") (repeated[name] ??= []).push(value);
     } else {
       positional.push(arg);
     }
@@ -70,6 +78,40 @@ export const parseTableCommand = (verb: string, argv: string[]): Record<string, 
     return op;
   };
   switch (verb) {
+    case "brief": {
+      if (!rest) throw new TableCommandError("'brief' needs text describing where the work is now");
+      if (flags.recommend !== undefined && !flags.awaiting) throw new TableCommandError("--recommend needs --awaiting Q1");
+      for (const name of Object.keys(flags)) if (!flags[name]) throw new TableCommandError(`--${name} needs a value`);
+      for (const name of Object.keys(repeated)) if (repeated[name]!.some((value) => !value)) throw new TableCommandError(`--${name} needs a value`);
+      return clean({
+        op: verb,
+        now: rest,
+        changes: repeated.change,
+        next: flags.next,
+        refs: repeated.ref,
+        awaiting: flags.awaiting ? { q: flags.awaiting, ...(flags.recommend ? { recommendation: flags.recommend } : {}) } : undefined,
+      });
+    }
+    case "component": {
+      if (!rest) throw new TableCommandError("'component' needs a title");
+      if (!flags.kind) throw new TableCommandError("'component' needs --kind comparison|plan|checks|artifact|custom");
+      if (flags.body !== undefined && flags["body-file"] !== undefined) throw new TableCommandError("use --body or --body-file, not both");
+      for (const name of Object.keys(flags)) if (!flags[name]) throw new TableCommandError(`--${name} needs a value`);
+      for (const name of Object.keys(repeated)) if (repeated[name]!.some((value) => !value)) throw new TableCommandError(`--${name} needs a value`);
+      return clean({
+        op: verb,
+        title: rest,
+        kind: flags.kind,
+        refs: repeated.ref ?? [],
+        body: flags["body-file"] ? readFileSync(flags["body-file"], "utf8") : flags.body,
+        file: flags.file,
+        target: flags.target,
+      });
+    }
+    case "archive":
+    case "restore":
+      if (positional.length !== 1) throw new TableCommandError(`'${verb}' needs one component id, e.g. ${verb} W1`);
+      return { op: verb, target: positional[0] };
     case "ask":
       if (!rest) throw new TableCommandError("'ask' needs text");
       return { op: "ask", text: rest, ...(flags.many ? { many: true } : {}) };

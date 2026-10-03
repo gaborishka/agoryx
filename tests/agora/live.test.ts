@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { locateNativeSession } from "../../internal/agora/native.js";
+import { BRIEFING_VERSION } from "../../internal/agora/prompts.js";
 import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { buildCodexThreadParams, createCodexRunner, execShapedItem, describeCodexItem } from "../../internal/agora/runners/codex.js";
 import { runJsonlProcess } from "../../internal/agora/runners/process.js";
@@ -461,7 +462,7 @@ test("a CLI without a live mode falls back to a process per turn, silently", asy
 test("a lost session is rejoined in a live process too", async () => {
   const room = createTestRoom({ agents: CLAUDE_ONLY, live: true, rules: [] });
   try {
-    room.store.append({ type: "session.bound", briefingVersion: 2, agent: "claude", sessionId: "00000000-0000-4000-8000-000000000000" });
+    room.store.append({ type: "session.bound", briefingVersion: BRIEFING_VERSION, agent: "claude", sessionId: "00000000-0000-4000-8000-000000000000" });
     await say(room, "hello again");
     const calls = room.invocations("claude");
     assert.ok(turnsOf(room, "claude").every((turn) => turn.status !== "error"));

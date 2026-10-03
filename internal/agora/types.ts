@@ -331,7 +331,51 @@ export interface LimitSnapshot extends LimitReport {
 // Table
 // ---------------------------------------------------------------------------
 
+/** An agent's concise account of the work, backed by references to the table. */
+export interface TableBriefContent {
+  now: string;
+  changes?: string[];
+  next?: string;
+  refs?: string[];
+  /** A request for the human: both the question and recommended option must still be open. */
+  awaiting?: { q: string; recommendation?: string };
+}
+
+export interface TableBrief extends TableBriefContent {
+  by: string;
+  seq: number;
+  /** Highest room event this account had seen; supplied by the engine, never the client. */
+  asOfSeq: number;
+}
+
+export type TableComponentKind = "comparison" | "plan" | "checks" | "artifact" | "custom";
+
+export interface TableComponentContent {
+  title: string;
+  kind: TableComponentKind;
+  refs: string[];
+  body?: string;
+  file?: string;
+}
+
+export interface TableComponent extends TableComponentContent {
+  id: string;
+  /** Its creator, who may continue maintaining it after a human edit. */
+  by: string;
+  seq: number;
+  updatedSeq: number;
+  /** Event at which this body/file was last published; lifecycle changes retain its workspace origin. */
+  contentSeq?: number;
+  /** Who last replaced, archived or restored it; absent in older component events. */
+  updatedBy?: string;
+  archived?: boolean;
+}
+
 export type TableOpInput =
+  | ({ op: "brief" } & TableBriefContent)
+  /** A complete replacement of the component content; omit target to create a W* item. */
+  | ({ op: "component"; target?: string } & TableComponentContent)
+  | { op: "archive" | "restore"; target: string }
   | { op: "ask"; text: string; many?: boolean }
   | { op: "propose"; title: string; body?: string; q?: string; file?: string }
   | { op: "object" | "support" | "evidence"; target: string; text: string; source?: string }
@@ -356,11 +400,15 @@ export type TableOpName = TableOpInput["op"];
 /** A table op as stored: input plus who made it and the id it created (if any). */
 export type TableOp = TableOpInput & {
   by: string;
-  /** Id assigned to the created entity (Q3, P2, N7, F1, S2, X4, D1, C1). */
+  /** Id assigned to the created entity (Q3, P2, N7, F1, S2, X4, D1, C1, W1). */
   id?: string;
   turnId?: string;
   /** Client nonce, echoed back so the agent-side CLI can learn the assigned id. */
   nonce?: string;
+  /** Engine-assigned freshness cursor for a brief. Ignored in raw client input. */
+  asOfSeq?: number;
+  /** Engine-assigned canonical request hash for idempotent nonce retries. */
+  requestHash?: string;
   /** Made by an agent of another room (its key used here). */
   from?: ActorOrigin;
 };
@@ -444,6 +492,9 @@ export interface TableDecision {
 }
 
 export interface TableState {
+  /** Absent in logs written before the Heads-up surface was introduced. */
+  brief?: TableBrief;
+  components?: TableComponent[];
   questions: TableQuestion[];
   options: TableOption[];
   notes: TableNote[];

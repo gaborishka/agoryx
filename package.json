@@ -16,6 +16,7 @@
     "build:core": "tsc -p tsconfig.json",
     "build:ui": "npm --prefix ui install --no-audit --no-fund && npm --prefix ui run build",
     "desktop": "npm --prefix desktop start",
+    "demo:table": "npm run build && node scripts/table-demo.mjs",
     "prepare": "npm run build:core",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node scripts/test-guard.mjs tsx --test 'tests/**/*.test.ts'",

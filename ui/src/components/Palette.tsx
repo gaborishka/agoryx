@@ -74,7 +74,7 @@ function Snippet({ text, words, around = 48 }: { text: string; words: string[]; 
 
 type Hit<T> = { item: T; hay: string };
 
-const TABLE_KIND = { question: "Question", option: "Option", settled: "Conclusion", fact: "Fact", step: "Step", shift: "Change of mind", note: "Argument" } as const;
+const TABLE_KIND = { question: "Question", option: "Option", settled: "Conclusion", fact: "Fact", step: "Step", shift: "Change of mind", note: "Argument", component: "Component" } as const;
 
 /** What the table holds, each with the text a search looks in: its id and its words. */
 const tableItems = (room: RoomState) => {
@@ -87,6 +87,7 @@ const tableItems = (room: RoomState) => {
     ...t.next.map((n) => ({ id: n.id, kind: "step" as const, text: n.text })),
     ...(t.shifts ?? []).map((c) => ({ id: c.id, kind: "shift" as const, text: c.text })),
     ...t.notes.map((n) => ({ id: n.id, kind: "note" as const, text: n.text })),
+    ...(t.components ?? []).map((w) => ({ id: w.id, kind: "component" as const, text: `${w.title} ${w.body ?? ""}` })),
   ];
   return list.map((item) => ({ item, hay: `${item.id.toLowerCase()} ${item.text.toLowerCase()}` }));
 };

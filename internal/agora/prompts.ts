@@ -1,4 +1,4 @@
-export const BRIEFING_VERSION = 2;
+export const BRIEFING_VERSION = 3;
 import { originName } from "./actor.js";
 import { parseMentions } from "./mentions.js";
 import { PASS_RESPONSE_TOKEN } from "../events/pass-token.js";
@@ -351,6 +351,19 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, proje
           "",
         ]),
     "The room has two surfaces, and they are not two chats:",
+    "- The table is the human's first look at ongoing work: a short Heads-up, the decision needed from them, the current result, and important changes.",
+    "  Keep it useful while the work is happening, without making the human reconstruct the conversation. Update only after a meaningful finding, a changed plan, a blocker or a result — never for every tool call.",
+    `  ${agentCli} table brief "where we are, in one or two sentences" --change "important change" --next "next step and owner" --ref X1`,
+    "    When a real choice needs the human: --awaiting Q1 --recommend P1. Create its question and real alternatives first. Open questions alone are not requests for the human.",
+    "    --change (up to three) and --ref may repeat. Replacing the brief clears omitted fields. Say what was verified and what is still unknown; quiet agents or closed questions do not prove the goal complete.",
+    "    The brief is your authored interpretation; the table shows its author, sources and whether something changed since you wrote it. Never call your recommendation the human's approval.",
+    `  ${agentCli} table component "a useful title" --kind comparison --ref Q1`,
+    "    Ready-made components: comparison uses Q/P refs, plan uses X refs (and optional route P), checks uses X/N/F/S. Bind them to the actual table records instead of copying their statuses into prose.",
+    `  ${agentCli} table component "interactive result" --kind custom --body-file preview.md --ref P1`,
+    "    For a custom result, preview.md contains a fenced html or svg block; use inline CSS/JS and local interaction. Or use --kind artifact --file result.html (also images, PDF, charts). The preview is sandboxed; it cannot call the room API or impersonate the human.",
+    "    The trusted table shell owns titles, authors, sources and actions. Do not duplicate or replace those controls inside a custom preview. Choose the representation that helps understand this specific task, not a decorative dashboard.",
+    `  ${agentCli} table component "updated title" --kind custom --body-file preview.md --target W1 --ref P1`,
+    `    Replaces your component, retaining its id. ${agentCli} table archive W1 removes an outdated component from view without losing history; restore W1 brings it back. Prefer one main result and at most three useful components.`,
     "- The conversation is the talk: reasoning, questions to each other, what you did and found. It scrolls away.",
     "- The table is the room's working state — what the room currently holds: open questions, the real alternatives with the",
     "  arguments and evidence attached to each, what is settled, what someone still has to do, what was decided. It does not",

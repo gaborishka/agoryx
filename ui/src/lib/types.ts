@@ -1,5 +1,5 @@
 import type { AgentLook } from "@agora/look";
-import type { AgentPresence, AttentionItem, LimitSnapshot, RoomAgent, RoomState, SystemNote, TableOp } from "@agora/types";
+import type { AgentPresence, AttentionItem, LimitSnapshot, RoomAgent, RoomEvent, RoomState, SystemNote, TableOp } from "@agora/types";
 
 export type * from "@agora/types";
 
@@ -118,6 +118,8 @@ export interface Snapshot {
   presence: Record<string, AgentPresence>;
   streams: Record<string, StreamBuffer>;
   ops: OpEntry[];
+  /** A bounded semantic event log for the table, independent of messages and token streaming. */
+  events?: RoomEvent[];
   rawBase: string;
   resume: Record<string, string>;
   driven: boolean;

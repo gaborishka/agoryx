@@ -1,4 +1,6 @@
 import type {
+  TableBriefContent,
+  TableComponentKind,
   TableItem,
   TableOp,
   TableOpName,
@@ -35,11 +37,38 @@ const TABLE_OPS: ReadonlySet<TableOpName> = new Set([
   "concede",
   "edit",
   "delete",
+  "brief",
+  "component",
+  "archive",
+  "restore",
 ]);
 
 const MAX_TEXT = 4000;
 /** A proposal body can carry a diagram or a whole html page. */
 const MAX_BODY = 24_000;
+
+/** Presentation stays short, and a room cannot accumulate an unbounded component registry. */
+export const TABLE_PRESENTATION_LIMITS = {
+  now: 400,
+  next: 280,
+  change: 240,
+  changes: 3,
+  briefRefs: 12,
+  title: 160,
+  componentRefs: 24,
+  body: MAX_BODY,
+  file: MAX_TEXT,
+  activeComponents: 12,
+  components: 128,
+} as const;
+
+const boundedText = (value: unknown, field: string, max: number, required = true, oneLine = false): string | undefined => {
+  const text = cleanText(value, field, required, Infinity);
+  if (text === undefined || !text) return undefined;
+  const clean = oneLine ? text.replace(/\s+/g, " ") : text;
+  if (clean.length > max) throw new TableOpError(`${field} must be at most ${max} characters`);
+  return clean;
+};
 
 const cleanText = (value: unknown, field: string, required = true, max = MAX_TEXT): string | undefined => {
   if (value === undefined || value === null || value === "") {
@@ -67,7 +96,7 @@ const latestOpenQuestion = (table: TableState): string | null => {
 
 /** Any item on the table with this id. */
 const refOnTable = (table: TableState, ref: string): boolean =>
-  [table.questions, table.options, table.notes, table.facts, table.settled, table.next, table.decisions, table.shifts].some((list) =>
+  [table.questions, table.options, table.notes, table.facts, table.settled, table.next, table.decisions, table.shifts, table.components ?? []].some((list) =>
     list.some((entry) => entry.id === ref),
   );
 
@@ -129,6 +158,24 @@ export const prepareTableOp = (
   const nonce = typeof input.nonce === "string" ? input.nonce.slice(0, 64) : undefined;
   const base = { by, ...(nonce ? { nonce } : {}) };
 
+  const refsOf = (value: unknown, max: number): string[] => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) throw new TableOpError("refs must be an array of table ids");
+    if (value.length > max) throw new TableOpError(`refs takes at most ${max} items`);
+    return [...new Set(value.map((value) => {
+      const ref = normalizeRef(value);
+      if (!refOnTable(table, ref)) throw new TableOpError(`no ${ref} on the table`);
+      return ref;
+    }))];
+  };
+  const componentOf = (value: unknown) => {
+    const target = normalizeRef(value);
+    const found = table.components?.find((entry) => entry.id === target);
+    if (!found) throw new TableOpError(`no component ${target} on the table`);
+    if (!isHuman && found.by !== by) throw new TableOpError(`${target} is ${found.by}'s; only they or the human can maintain it`);
+    return found;
+  };
+
   const option = (ref: string) => {
     const found = table.options.find((o) => o.id === ref);
     if (!found) throw new TableOpError(`no option ${ref} on the table`);
@@ -144,6 +191,67 @@ export const prepareTableOp = (
   };
 
   switch (op) {
+    case "brief": {
+      const content: TableBriefContent = { now: boundedText(input.now, "now", TABLE_PRESENTATION_LIMITS.now, true, true)! };
+      if (input.changes !== undefined) {
+        if (!Array.isArray(input.changes) || input.changes.length > TABLE_PRESENTATION_LIMITS.changes) {
+          throw new TableOpError(`changes must be an array of at most ${TABLE_PRESENTATION_LIMITS.changes} short lines`);
+        }
+        content.changes = input.changes.map((value) => boundedText(value, "change", TABLE_PRESENTATION_LIMITS.change, true, true)!);
+      }
+      const next = boundedText(input.next, "next", TABLE_PRESENTATION_LIMITS.next, false, true);
+      if (next) content.next = next;
+      if (input.refs !== undefined) content.refs = refsOf(input.refs, TABLE_PRESENTATION_LIMITS.briefRefs);
+      if (input.awaiting !== undefined) {
+        if (!input.awaiting || typeof input.awaiting !== "object" || Array.isArray(input.awaiting)) throw new TableOpError("awaiting must name an open question");
+        const awaiting = input.awaiting as Record<string, unknown>;
+        const q = normalizeRef(awaiting.q);
+        const question = table.questions.find((entry) => entry.id === q);
+        if (!question || question.status !== "open") throw new TableOpError(`${q} is not an open question`);
+        content.awaiting = { q };
+        if (awaiting.recommendation !== undefined) {
+          const recommendation = normalizeRef(awaiting.recommendation);
+          const found = table.options.find((entry) => entry.id === recommendation);
+          if (!found || found.q !== q || found.status !== "open") throw new TableOpError(`${recommendation} is not an open option for ${q}`);
+          content.awaiting.recommendation = recommendation;
+        }
+      }
+      return { ...base, op, ...content };
+    }
+    case "component": {
+      const kinds: readonly TableComponentKind[] = ["comparison", "plan", "checks", "artifact", "custom"];
+      const kind = input.kind as TableComponentKind;
+      if (!kinds.includes(kind)) throw new TableOpError(`component kind must be ${kinds.join(", ")}`);
+      const refs = refsOf(input.refs, TABLE_PRESENTATION_LIMITS.componentRefs);
+      const allowed: Partial<Record<TableComponentKind, string>> = { comparison: "QP", plan: "XP", checks: "XNFS" };
+      if (allowed[kind]) {
+        if (!refs.length) throw new TableOpError(`${kind} needs at least one table reference`);
+        if (refs.some((ref) => !allowed[kind]!.includes(ref[0]!))) throw new TableOpError(`${kind} takes ${allowed[kind]!.split("").join("/")} references`);
+        if (kind === "plan" && !refs.some((ref) => ref.startsWith("X"))) throw new TableOpError("plan needs at least one step (X) reference");
+      }
+      const title = boundedText(input.title, "title", TABLE_PRESENTATION_LIMITS.title, true, true)!;
+      const body = boundedText(input.body, "body", TABLE_PRESENTATION_LIMITS.body, false);
+      const file = boundedText(input.file, "file", TABLE_PRESENTATION_LIMITS.file, false);
+      if ((kind === "artifact" || kind === "custom") && !body && !file) throw new TableOpError(`${kind} needs a body or file to preview`);
+      const content = { title, kind, refs, ...(body ? { body } : {}), ...(file ? { file } : {}) };
+      if (input.target !== undefined) {
+        const found = componentOf(input.target);
+        return { ...base, op, target: found.id, ...content };
+      }
+      const components = table.components ?? [];
+      if (components.length >= TABLE_PRESENTATION_LIMITS.components) throw new TableOpError(`the table holds at most ${TABLE_PRESENTATION_LIMITS.components} components; update an existing one`);
+      if (components.filter((entry) => !entry.archived).length >= TABLE_PRESENTATION_LIMITS.activeComponents) throw new TableOpError(`at most ${TABLE_PRESENTATION_LIMITS.activeComponents} components can be active; archive an old one first`);
+      return { ...base, op, id: nextId(table, "W", components), ...content };
+    }
+    case "archive":
+    case "restore": {
+      const found = componentOf(input.target);
+      if (op === "archive" && found.archived) throw new TableOpError(`${found.id} is already archived`);
+      if (op === "restore" && !found.archived) throw new TableOpError(`${found.id} is already active`);
+      if (op === "restore") refsOf(found.refs, TABLE_PRESENTATION_LIMITS.componentRefs);
+      if (op === "restore" && (table.components ?? []).filter((entry) => !entry.archived).length >= TABLE_PRESENTATION_LIMITS.activeComponents) throw new TableOpError(`at most ${TABLE_PRESENTATION_LIMITS.activeComponents} components can be active`);
+      return { ...base, op, target: found.id };
+    }
     case "ask":
       return {
         ...base,
@@ -388,6 +496,39 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number, room: 
     table.issued = { ...table.issued, [letter]: Math.max(table.issued?.[letter] ?? 0, Number(op.id.slice(1)) || 0) };
   }
   switch (op.op) {
+    case "brief":
+      table.brief = {
+        now: op.now,
+        ...(op.changes !== undefined ? { changes: [...op.changes] } : {}),
+        ...(op.next ? { next: op.next } : {}),
+        ...(op.refs !== undefined ? { refs: [...op.refs] } : {}),
+        ...(op.awaiting ? { awaiting: { ...op.awaiting } } : {}),
+        by: op.by,
+        seq,
+        asOfSeq: op.asOfSeq ?? Math.max(0, seq - 1),
+      };
+      return;
+    case "component": {
+      table.components ??= [];
+      const found = op.target ? table.components.find((entry) => entry.id === op.target) : undefined;
+      const content = { title: op.title, kind: op.kind, refs: [...op.refs], ...(op.body ? { body: op.body } : {}), ...(op.file ? { file: op.file } : {}) };
+      if (found) {
+        const replacement = { ...content, id: found.id, by: found.by, seq: found.seq, updatedSeq: seq, contentSeq: seq, updatedBy: op.by, ...(found.archived ? { archived: true } : {}) };
+        table.components.splice(table.components.indexOf(found), 1, replacement);
+      } else if (!op.target) table.components.push({ ...content, id: op.id!, by: op.by, seq, updatedSeq: seq, contentSeq: seq, updatedBy: op.by });
+      return;
+    }
+    case "archive":
+    case "restore": {
+      const found = table.components?.find((entry) => entry.id === op.target);
+      if (found) {
+        if (op.op === "archive") found.archived = true;
+        else delete found.archived;
+        found.updatedSeq = seq;
+        found.updatedBy = op.by;
+      }
+      return;
+    }
     case "ask":
       table.questions.push({ id: op.id!, text: op.text, by: op.by, seq, status: "open", ...(op.many ? { many: true } : {}) });
       return;
@@ -577,6 +718,14 @@ export const describeTableOp = (op: TableOp, table?: TableState, options: { whol
     return point ? ` ${quote(point.text, 60)}` : "";
   };
   switch (op.op) {
+    case "brief":
+      return `updated the Heads-up: ${quote(op.now)}${op.awaiting ? ` — waiting for a choice on ${op.awaiting.q}` : ""}`;
+    case "component":
+      return `${op.target ? "updated" : "added"} component ${op.target ?? op.id} ${quote(op.title, 80)} (${op.kind})`;
+    case "archive":
+      return `archived component ${op.target}`;
+    case "restore":
+      return `restored component ${op.target}`;
     case "ask":
       return `asked ${op.id} ${quote(op.text)}`;
     case "propose":
@@ -633,10 +782,36 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
     table.facts.length === 0 &&
     table.settled.length === 0 &&
     table.shifts.length === 0 &&
-    table.next.length === 0;
+    table.next.length === 0 &&
+    !table.brief &&
+    !(table.components ?? []).length;
   if (isEmpty) {
     lines.push("The table is empty. `agoryx table ask \"...\"` opens a question.");
     return `${lines.join("\n")}\n`;
+  }
+
+  if (table.brief) {
+    const brief = table.brief;
+    lines.push("## Heads-up", `_by ${brief.by} · event ${brief.seq} · context through ${brief.asOfSeq}_`, "", `Now: ${brief.now}`);
+    for (const change of brief.changes ?? []) lines.push(`- Changed: ${change}`);
+    if (brief.awaiting) {
+      const q = table.questions.find((entry) => entry.id === brief.awaiting!.q);
+      const recommendation = table.options.find((entry) => entry.id === brief.awaiting!.recommendation);
+      const current = q?.status === "open" && (!brief.awaiting.recommendation || (recommendation?.status === "open" && recommendation.q === q.id));
+      lines.push(`${current ? "Needs your choice" : "Previous request (changed since this Heads-up)"}: ${brief.awaiting.q}${brief.awaiting.recommendation ? ` · recommends ${brief.awaiting.recommendation}` : ""}`);
+    }
+    if (brief.next) lines.push(`Next: ${brief.next}`);
+    if (brief.refs?.length) lines.push(`Sources: ${brief.refs.join(", ")}`);
+    lines.push("");
+  }
+  if ((table.components ?? []).length) {
+    lines.push("## Work surface", "");
+    for (const component of table.components ?? []) {
+      lines.push(`- **${component.id}** ${component.title} (${component.kind}; by ${component.by}; updated at ${component.updatedSeq}${component.updatedBy && component.updatedBy !== component.by ? ` by ${component.updatedBy}` : ""}${component.archived ? "; archived" : ""})`);
+      if (component.refs.length) lines.push(`  Sources: ${component.refs.join(", ")}`);
+      if (component.file) lines.push(`  preview: ${component.file}`);
+    }
+    lines.push("");
   }
 
   const renderNotes = (ref: string) => {
@@ -771,7 +946,7 @@ export const summarizeTable = (table: TableState): string | null => {
   const empty = [openQuestions, liveOptions, pending, table.decisions, table.facts, table.settled, table.shifts].every(
     (list) => list.length === 0,
   );
-  if (empty) return null;
+  if (empty && !table.brief && !(table.components ?? []).some((entry) => !entry.archived)) return null;
 
   const standing = (option: TableState["options"][number]): string => {
     const notes = table.notes.filter((note) => note.target === option.id);
@@ -785,6 +960,14 @@ export const summarizeTable = (table: TableState): string | null => {
   };
 
   const lines: string[] = [];
+  if (table.brief) {
+    lines.push(`  Heads-up (${table.brief.by}; context through ${table.brief.asOfSeq}): ${quote(table.brief.now, 400)}`);
+    if (table.brief.next) lines.push(`  next: ${quote(table.brief.next, 280)}`);
+    if (table.brief.refs?.length) lines.push(`  Heads-up sources: ${table.brief.refs.join(", ")}`);
+  }
+  for (const component of (table.components ?? []).filter((entry) => !entry.archived).slice(-TABLE_PRESENTATION_LIMITS.activeComponents)) {
+    lines.push(`  ${component.id} ${quote(component.title, 80)} (${component.kind}; by ${component.by}; refs: ${component.refs.join(", ") || "none"}${component.file ? `; preview ${component.file}` : ""})`);
+  }
   for (const question of openQuestions) {
     const options = liveOptions.filter((option) => option.q === question.id);
     const chosen = question.many ? table.options.filter((option) => option.q === question.id && option.status === "chosen").map((option) => option.id) : [];

@@ -5,7 +5,7 @@ import { PageBar } from "@/components/common/PageBar";
 import { Facepile, Tip } from "@/components/room/bits";
 import { Button } from "@/components/ui/button";
 import { api, Unauthorized } from "@/lib/api";
-import { ago, baseName, plural, shortPath } from "@/lib/format";
+import { ago, baseName, plural, roomPreview, shortPath } from "@/lib/format";
 import { errText } from "@/lib/load";
 import { type ProjectTab, useStore } from "@/lib/store";
 import type { ProjectView, RoomAgent, RoomSummary } from "@/lib/types";
@@ -20,11 +20,7 @@ import { Library, Threads, useOverview } from "./OverviewSections";
  */
 
 /** A room's last line, as the sidebar shows it: who said it and what. */
-const lastLine = (room: RoomSummary) => {
-  const last = room.lastMessage;
-  if (!last) return "No messages yet";
-  return `${last.label ?? last.author}: ${last.text.replace(/\s+/g, " ").trim()}`;
-};
+const lastLine = (room: RoomSummary) => roomPreview(room.lastMessage);
 
 function Rooms({ rooms, onNew }: { rooms: RoomSummary[]; onNew: () => void }) {
   const go = useStore((s) => s.go);

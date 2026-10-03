@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, Unauthorized } from "@/lib/api";
-import { ago, baseName } from "@/lib/format";
+import { ago, baseName, shortPath } from "@/lib/format";
 import { errText } from "@/lib/load";
 import { type ProjectTab, PROJECT_TABS, useStore } from "@/lib/store";
 import type { ProjectEvent, ProjectView } from "@/lib/types";
@@ -205,8 +205,8 @@ export function ProjectSettingsDialog({ hash, tab: first = "general" }: { hash: 
   }, [load]);
 
   return (
-    <Shell title={project ? `${project.name || baseName(project.key)} · settings` : "Project settings"} sub={project?.key}>
-      <div className="-mx-1 flex flex-wrap gap-1" role="tablist" aria-label="Project settings">
+    <Shell title={project ? `${project.name || baseName(project.key)} settings` : "Project settings"} sub={project ? <span title={project.key}>{shortPath(project.key)}</span> : undefined}>
+      <div className="flex w-fit max-w-full flex-wrap gap-0.5 rounded-lg bg-muted p-0.5" role="tablist" aria-label="Project settings">
         {PROJECT_TABS.map((id) => (
           <button
             key={id}
@@ -214,7 +214,7 @@ export function ProjectSettingsDialog({ hash, tab: first = "general" }: { hash: 
             role="tab"
             aria-selected={tab === id}
             onClick={() => setTab(id)}
-            className={cn("h-7 rounded-md px-2.5 text-small transition", tab === id ? "bg-foreground/[0.07] text-foreground" : "text-muted-foreground hover:text-foreground")}
+            className={cn("h-7 rounded-md px-3 text-small transition", tab === id ? "bg-background font-medium text-foreground shadow-edge ring-1 ring-border/70" : "text-muted-foreground hover:text-foreground")}
           >
             {TAB_LABEL[id]}
           </button>

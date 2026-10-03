@@ -6,7 +6,7 @@ import { rawUrl } from "@/components/md/Markdown";
 import { base64, MAX_FILE } from "@/components/room/Attachments";
 import { Button } from "@/components/ui/button";
 import { api, local, Unauthorized } from "@/lib/api";
-import { ago, baseName, ext, IMAGE_EXT, plural, took, VISUAL_EXT } from "@/lib/format";
+import { ago, baseName, ext, IMAGE_EXT, plural, preview, took, VISUAL_EXT } from "@/lib/format";
 import { errText } from "@/lib/load";
 import { useStore } from "@/lib/store";
 import { groupThreads, THREAD_GROUPS, threadGroup } from "@/lib/threads";
@@ -34,9 +34,9 @@ function ThreadTile({ thread }: { thread: ThreadView }) {
   const group = groupOf(thread);
   const Icon = GROUP_ICON[group];
   const summary = report?.open
-    ? `${report.open.id} ${report.open.text.split("\n")[0]}`
+    ? `${report.open.id} ${preview(report.open.text.split("\n")[0] ?? "")}`
     : report?.last
-      ? `${report.last.by}: ${report.last.text.replace(/\s+/g, " ")}`
+      ? `${report.last.by}: ${preview(report.last.text)}`
       : thread.resolved
         ? `Resolved by ${thread.resolved.by}`
         : null;
@@ -66,7 +66,7 @@ function ThreadTile({ thread }: { thread: ThreadView }) {
             <span className="shrink-0 text-meta text-faint">{ago(report?.at ?? thread.updatedAt)}</span>
           </span>
           <span className="flex min-w-0 items-center gap-1.5 text-small text-muted-foreground">
-            <span className="truncate">{thread.agents.join(", ")}</span>
+            <span className="max-w-[45%] shrink-0 truncate">{thread.agents.join(", ")}</span>
             <span className="text-faint">in</span>
             <span className="truncate">{thread.parentName ?? thread.parent}</span>
           </span>

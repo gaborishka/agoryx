@@ -3,6 +3,8 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { api, ApiError, local, roomPath, setUnauthorizedHandler, Unauthorized } from "./api";
 import { startAttention } from "./attention";
+import { requestNonce } from "./request-nonce";
+import { isWorkTableEvent } from "@agora/work-table";
 import type { Quote } from "./quote";
 import { lastLine, type Seating } from "./room";
 import type { AgentPresence, LimitSnapshot, OpEntry, RoomEvent, RoomSummary, RunState, Snapshot, TurnState } from "./types";
@@ -89,6 +91,8 @@ interface Store {
   /** Why a pairing code from the link or the form did not work. */
   pairError: string | null;
   snap: Snapshot | null;
+  /** Snapshot freshness: an open room may still show its last known state during reconnect. */
+  connection: "connecting" | "live" | "reconnecting" | "offline";
   /** Messages already shown once — only newer ones animate in. */
   seen: Set<string>;
   panel: PanelTab | null;
@@ -195,6 +199,7 @@ export const useStore = create<Store>((set, get) => ({
   device: null,
   pairError: null,
   snap: null,
+  connection: "offline",
   seen: new Set(),
   panel: null,
   lastTab: PANEL_TABS.includes(local.get("panelTab") as PanelTab) ? (local.get("panelTab") as PanelTab) : "session",
@@ -243,12 +248,17 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   async openRoom(id, quiet = false) {
+    if (!quiet || get().snap?.state.id !== id) set({ connection: "connecting" });
     try {
-      const snap = await api<Snapshot>("GET", roomPath(id));
+      let snap = await api<Snapshot>("GET", roomPath(id));
       snap.ops ??= [];
       snap.streams ??= {};
+      snap.events ??= [];
       if (get().route.kind !== "room" || (get().route as { id: string }).id !== id) return;
       const fresh = !quiet || get().snap?.state.id !== id;
+      // A GET started before a live event must not roll the room back to an older snapshot.
+      const current = get().snap;
+      if (quiet && current?.state.id === id && current.state.seq > snap.state.seq) snap = current;
       set({
         snap,
         ...(fresh
@@ -273,9 +283,11 @@ export const useStore = create<Store>((set, get) => ({
         return;
       }
       if (quiet) {
+        set({ connection: "offline" });
         reopenTimer = setTimeout(() => void get().openRoom(id, true), 3000);
         return;
       }
+      set({ connection: "offline" });
       toast.error(error instanceof Error ? error.message : String(error));
     }
   },
@@ -401,13 +413,26 @@ export const useStore = create<Store>((set, get) => ({
   async post(suffix, body = {}) {
     const snap = get().snap;
     if (!snap) throw new Error("no room");
-    return api("POST", roomPath(snap.state.id, suffix), body);
+    const request = suffix === "/table" && body && typeof body === "object" ? { nonce: requestNonce(), ...body } : body;
+    const result = await api("POST", roomPath(snap.state.id, suffix), request);
+    // Update from the server's committed event even if SSE is reconnecting. Later delivery is deduplicated by seq.
+    if (suffix === "/table" && get().snap?.state.id === snap.state.id && result.event && result.table) {
+      const event = result.event as RoomEvent;
+      const cursor = get().snap!.state.seq;
+      if (event.seq === cursor + 1) {
+        applyPatch(event, { seq: event.seq, table: result.table as Snapshot["state"]["table"] });
+      } else if (event.seq > cursor) {
+        // A disconnected stream may have missed messages/turns before this action. A table-only ack cannot skip them.
+        await get().openRoom(snap.state.id, true);
+      }
+    }
+    return result;
   },
 }));
 
 setUnauthorizedHandler(() => {
   closeStream();
-  useStore.setState({ gate: true });
+  useStore.setState({ gate: true, connection: "offline" });
 });
 
 // ---------------------------------------------------------------------------
@@ -452,6 +477,7 @@ const applyPatch = (event: RoomEvent, patch: Patch) => {
   if (!snap || event.seq <= snap.state.seq) return;
   const st = { ...snap.state, seq: event.seq };
   const next: Snapshot = { ...snap, state: st };
+  if (isWorkTableEvent(event)) next.events = [...(snap.events ?? []), event].slice(-100);
   const extra: Partial<Store> = {};
   if (patch.runs) st.runs = patch.runs;
   if (patch.presence) next.presence = patch.presence;
@@ -525,6 +551,7 @@ function connect(roomId: string, after: number) {
   closeStream();
   const es = new EventSource(`${roomPath(roomId, "/events")}?after=${after}`);
   source = es;
+  es.onopen = () => { if (source === es) useStore.setState({ connection: "live" }); };
   es.addEventListener("room", (event) => {
     const { event: roomEvent, patch } = JSON.parse((event as MessageEvent).data) as { event: RoomEvent; patch: Patch };
     applyPatch(roomEvent, patch);
@@ -547,6 +574,7 @@ function connect(roomId: string, after: number) {
   });
   es.onerror = () => {
     if (source !== es) return;
+    useStore.setState({ connection: "reconnecting" });
     closeStream();
     reopenTimer = setTimeout(() => {
       const route = useStore.getState().route;

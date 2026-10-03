@@ -143,6 +143,61 @@ A CLI is slow to start (Claude ~8 s of hooks, plugins and MCP on some machines, 
 
 ## The table (Стіл)
 
+The table opens on the state of work. Its short **Heads-up** says where the room stands, what changed,
+whether the human has an explicit decision to make, and what comes next. It remains available in an empty
+or older room: the fallback comes from real turns, steps and decisions. Quiet agents and closed questions
+are not evidence that the goal was achieved. Runtime state is shown separately, with stop/continue and
+a way to give the team a direction through the ordinary composer.
+
+Agents publish a concise authored overview with:
+
+```bash
+agoryx table brief "Comparisons are ready; checking mobile" --change "The navigation issue is fixed" --next "Codex checks the narrow layout" --ref X1
+agoryx table brief "Need your choice" --awaiting Q1 --recommend P1 --ref Q1
+```
+
+`--change` (up to three) and `--ref` can repeat. Replacing the brief clears omitted fields, including an
+old awaiting request. Only an explicit awaiting question puts a choice in the human's attention area;
+open questions remain available under **Arguments**. The server supplies authorship and the agent's known
+turn cursor. A material change the author had not seen, or one after publication, marks the overview as
+needing an update; streaming tokens do not rearrange it. Sources, current decisions and the full argument
+remain accessible. The UI distinguishes the human's decisions, agents' decisions and recommendations,
+and retains previous decisions when a question is reopened.
+
+The work surface supports agent-created components with stable `W` ids:
+
+```bash
+agoryx table component "Compare approaches" --kind comparison --ref Q1
+agoryx table component "Implementation plan" --kind plan --ref X1 --ref X2
+agoryx table component "Checks" --kind checks --ref X1 --ref F1
+agoryx table component "Result" --kind artifact --file result.html --ref P1
+agoryx table component "Interactive diagram" --kind custom --body-file preview.md --ref P1
+agoryx table component "Updated diagram" --kind custom --body-file preview.md --ref P1 --target W1
+agoryx table archive W1
+agoryx table restore W1
+```
+
+Native comparison/plan/check components read current table records. `preview.md` may contain fenced
+HTML/SVG, with local JavaScript interaction, or markdown with an artifact embed. Custom previews use
+the existing opaque-origin sandbox and never receive authority over room actions. The trusted shell
+owns provenance, source links, choose/archive/restore controls and delivery errors. The creator or the
+human can replace a component; replacements clear omitted fields and record who actually updated it.
+Archiving keeps history, and an archived component can be repaired before restoring it. Edited or missing
+sources mark authored content as changed rather than quietly presenting an old result as current.
+File links retain the workspace where that component's content was created or replaced, even across
+mode changes and archive/restore. Freshness uses the complete table-operation history, including changes
+older than the short event list.
+
+The main view shows the principal components first; the rest and their archive can be expanded. Full
+questions, alternatives, arguments, evidence and step controls are preserved under **Arguments**.
+When the connection drops, the last received state is explicitly labelled and actions are disabled until
+the room reconnects. Table actions use server acknowledgments and request ids; an acknowledgment across
+a missing event range reloads the complete state instead of dropping unseen messages or turns.
+
+`npm run demo:table` builds and opens an isolated test daemon (the printed URL) with a reproducible
+example room and test runners. It makes no model requests and does not use personal rooms. Set
+`AGORYX_TABLE_DEMO_HOME` to retain that demo's state or `AGORYX_TABLE_DEMO_PORT` to choose its local port.
+
 The conversation and the table are not two chats. The conversation is the talk — reasoning, questions,
 what someone did — and it scrolls away. The table is the room's working state: open questions, the real
 alternatives with the arguments and evidence attached to each, facts, settled points, steps someone owns,

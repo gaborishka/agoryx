@@ -30,11 +30,13 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { plural } from "@/lib/format";
 import { inkColor, participant, refAnchor } from "@/lib/room";
 import { disputeOf } from "@agora/table";
+import { currentDecisionIds } from "@agora/work-table";
 import { type TableFormOp, useStore } from "@/lib/store";
-import type { RoomState, TableItem, TableNote, TableOption, TableQuestion, TableState } from "@/lib/types";
+import type { RoomState, TableDecision, TableItem, TableNote, TableOption, TableQuestion, TableState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { FilePreview, NoteItem, noteCounts, RefChip } from "./OpCard";
 import { RouteCards, StepRow } from "./RouteCard";
+import { WorkTable } from "./WorkTable";
 
 const band = { claude: "border-l-claude", codex: "border-l-codex", human: "border-l-human", sys: "border-l-border" } as const;
 
@@ -42,6 +44,12 @@ const band = { claude: "border-l-claude", codex: "border-l-codex", human: "borde
 const shiftsOf = (table: TableState): TableItem[] => table.shifts ?? [];
 
 const questionOf = (table: TableState, o: TableOption) => (o.q ? table.questions.find((q) => q.id === o.q) : undefined);
+
+type ChoiceIndex = {
+  ids: ReadonlySet<string>;
+  byQuestion: ReadonlyMap<string, TableDecision[]>;
+  options: ReadonlyMap<string, TableOption>;
+};
 
 /** Still waiting for a decision: open, and not under a question that is already closed. */
 const isLive = (table: TableState, o: TableOption) => o.status === "open" && (questionOf(table, o)?.status ?? "open") === "open";
@@ -211,7 +219,7 @@ function TallyRow({ who, t }: { who: string; t: Tally }) {
 }
 
 /** “Where we are”: the state of the argument in one sentence, the hottest point, and who pushed back on whom. */
-function Standing({ table, room }: { table: TableState; room: RoomState }) {
+function Standing({ table, room, choices }: { table: TableState; room: RoomState; choices: ChoiceIndex }) {
   const goToRef = useStore((s) => s.goToRef);
   const composeDraft = useStore((s) => s.composeDraft);
   const driven = useStore((s) => s.snap?.driven);
@@ -220,15 +228,15 @@ function Standing({ table, room }: { table: TableState; room: RoomState }) {
   // A settled point or a fact someone still objects to is a dispute, not common ground.
   const contested = [...table.settled, ...table.facts].filter((s) => disputeOf(table, s).length);
   const openQ = table.questions.filter((q) => q.status === "open");
-  const agreed = table.settled.length + table.facts.filter((f) => !f.withdrawn).length + table.decisions.length - contested.length;
+  const recorded = [...table.settled, ...table.facts].filter(point => !point.withdrawn && !disputeOf(table, point).length).length + choices.ids.size;
   const shifts = shiftsOf(table).length;
   const parts: Array<[string, string]> = [];
-  if (agreed) parts.push([`Agreed on ${plural(agreed, "point", "points")}`, "text-meet-ink"]);
+  if (recorded) parts.push([`Recorded ${plural(recorded, "point", "points")}`, "text-meet-ink"]);
   const quarrels = disputes.length + contested.length;
   if (quarrels) parts.push([plural(quarrels, "open dispute", "open disputes"), "text-destructive"]);
   if (openQ.length) parts.push([plural(openQ.length, "unanswered question", "unanswered questions"), "text-amber"]);
   if (shifts) parts.push([plural(shifts, "change of mind", "changes of mind"), "text-shift"]);
-  const settled = !quarrels && !openQ.length && !live.length;
+  const settled = !quarrels && !openQ.length && !live.length && table.next.every(step => step.done);
   const hot = [...disputes].sort((a, b) => noteCounts(table, b.id).obj - noteCounts(table, a.id).obj || b.seq - a.seq)[0];
   const hotPoint = !hot ? contested.sort((a, b) => b.seq - a.seq)[0] : undefined;
   const waiting = !hot && !hotPoint ? openQ.find((q) => !table.options.some((o) => o.q === q.id && o.status === "open")) : undefined;
@@ -628,10 +636,10 @@ function Recommendations({ q, table, room }: { q: TableQuestion; table: TableSta
 }
 
 /** How a closed question was closed: the chosen option(s), or the settled answer. */
-function Resolution({ q, table, room }: { q: TableQuestion; table: TableState; room: RoomState }) {
+function Resolution({ q, table, room, choices }: { q: TableQuestion; table: TableState; room: RoomState; choices: ChoiceIndex }) {
   if (q.many) {
     // Every option chosen so far, also while the question is still open.
-    const chosen = table.decisions.filter((d) => d.q === q.id && table.options.find((o) => o.id === d.option)?.status === "chosen");
+    const chosen = choices.byQuestion.get(q.id) ?? [];
     if (!chosen.length) return null;
     return (
       <div className="flex flex-col gap-2 rounded-2xl bg-secondary/70 p-3.5 ring-1 ring-meet/20">
@@ -643,7 +651,7 @@ function Resolution({ q, table, room }: { q: TableQuestion; table: TableState; r
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-1.5 text-body font-semibold">
                 <RefChip id={decision.option} />
-                {table.options.find((o) => o.id === decision.option)?.title ?? decision.option}
+                {choices.options.get(decision.option)?.title ?? decision.option}
               </div>
               <div className="text-meta text-faint">
                 decision #{decision.n} · {participant(room, decision.by).label}
@@ -655,10 +663,10 @@ function Resolution({ q, table, room }: { q: TableQuestion; table: TableState; r
       </div>
     );
   }
-  const decision = q.status === "decided" ? table.decisions.filter((d) => d.q === q.id).at(-1) : undefined;
+  const decision = q.status === "decided" ? choices.byQuestion.get(q.id)?.find(d => d.id === q.decision) : undefined;
   const answer = q.status === "answered" ? table.settled.find((s) => s.id === q.answer) : undefined;
   if (!decision && !answer) return null;
-  const chosen = decision ? table.options.find((o) => o.id === decision.option) : undefined;
+  const chosen = decision ? choices.options.get(decision.option) : undefined;
   return (
     <div className="flex gap-3 rounded-2xl bg-secondary/70 p-3.5 ring-1 ring-meet/20">
       <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-meet text-background">
@@ -696,7 +704,7 @@ function Resolution({ q, table, room }: { q: TableQuestion; table: TableState; r
   );
 }
 
-function Question({ q, table, room }: { q: TableQuestion; table: TableState; room: RoomState }) {
+function Question({ q, table, room, choices }: { q: TableQuestion; table: TableState; room: RoomState; choices: ChoiceIndex }) {
   const flash = useStore((s) => s.flash);
   const options = table.options.filter((o) => o.q === q.id).sort((a, b) => a.seq - b.seq);
   const shifts = shiftsOf(table).filter((c) => c.target === q.id);
@@ -733,7 +741,7 @@ function Question({ q, table, room }: { q: TableQuestion; table: TableState; roo
         </div>
         <Markdown text={q.text} className={cn("leading-snug font-semibold tracking-tight text-balance", closed ? "text-lead" : "text-title")} />
       </header>
-      {closed || q.many ? <Resolution q={q} table={table} room={room} /> : null}
+      {closed || q.many ? <Resolution q={q} table={table} room={room} choices={choices} /> : null}
       <Recommendations q={q} table={table} room={room} />
       {shifts.map((c) => (
         <Shift key={c.id} c={c} />
@@ -776,46 +784,45 @@ function RailSection({ id, title, Icon, aside, children }: { id: string; title: 
   );
 }
 
-function CommonGround({ table, room }: { table: TableState; room: RoomState }) {
-  const decisions = [...table.decisions].reverse();
+function CommonGround({ table, room, choices }: { table: TableState; room: RoomState; choices: ChoiceIndex }) {
+  const allDecisions = [...table.decisions].reverse();
+  const decisions = allDecisions.filter(decision => choices.ids.has(decision.id));
+  const history = allDecisions.filter(decision => !choices.ids.has(decision.id));
   const ground = [...table.settled.map((s) => ({ ...s, fact: false })), ...table.facts.map((f) => ({ ...f, fact: true }))].sort((a, b) => a.seq - b.seq);
   const shifts = shiftsOf(table);
   // Steps on a route are on its card; here, the ones on none (or on an option no longer on the table).
   const steps = table.next.filter((n) => !n.target || !table.options.some((o) => o.id === n.target));
   const done = steps.filter((n) => n.done).length;
-  const empty = !ground.length && !shifts.length && !decisions.length && !table.next.length;
+  const empty = !ground.length && !shifts.length && !allDecisions.length && !table.next.length;
+  const decisionRows = (entries: TableDecision[], historical = false) => <ol className="flex flex-col gap-3">
+    {entries.map(d => {
+      const option = choices.options.get(d.option);
+      return <li key={d.id} className={cn("flex gap-2.5", historical && "text-muted-foreground")}>
+        <span className={cn("tabular mt-0.5 grid h-5 min-w-5 shrink-0 place-items-center rounded-md px-1 text-micro font-bold", historical ? "bg-secondary text-muted-foreground" : "bg-meet text-background")}>{d.n}</span>
+        <div className="min-w-0 text-ui"><div className="leading-snug font-semibold">{option ? <RefChip id={d.option} className="mr-1 align-[1px]" /> : null}{option?.title ?? d.option}</div>
+          <div className="mt-0.5 text-meta text-faint">{participant(room, d.by).label}{historical ? " · historical, no longer current" : ""}</div>
+          {d.note ? <Clamp max={80} more="Reason"><Markdown text={d.note} className="mt-1 text-small text-muted-foreground" /></Clamp> : null}
+        </div>
+      </li>;
+    })}
+  </ol>;
   return (
     <aside className="flex flex-col gap-4 rounded-3xl border border-border bg-card p-4 shadow-soft sm:p-5">
       <header className="flex flex-col gap-0.5">
-        <h2 className="font-display text-title font-semibold">Common ground</h2>
-        <p className="text-small text-muted-foreground">What no longer needs proving.</p>
+        <h2 className="font-display text-title font-semibold">Recorded context</h2>
+        <p className="text-small text-muted-foreground">Current decisions and attributed claims.</p>
       </header>
       {empty ? (
         <p className="rounded-2xl border border-dashed border-border px-3.5 py-3 text-small leading-relaxed text-muted-foreground">
-          Nothing is agreed yet. As soon as the agents agree on something, it appears here.
+          Nothing is recorded yet. Decisions, facts and conclusions appear here with their authors.
         </p>
       ) : null}
       {decisions.length ? (
-        <RailSection id="board-decisions" title="Decisions" Icon={GavelIcon} aside={<span className="tabular text-faint">{decisions.length}</span>}>
-          <ol className="flex flex-col gap-3">
-            {decisions.map((d) => {
-              const o = table.options.find((x) => x.id === d.option);
-              return (
-                <li key={d.id} className="flex gap-2.5">
-                  <span className="tabular mt-0.5 grid h-5 min-w-5 shrink-0 place-items-center rounded-md bg-meet px-1 text-micro font-bold text-background">{d.n}</span>
-                  <div className="min-w-0 text-ui">
-                    <div className="leading-snug font-semibold">
-                      <RefChip id={d.option} className="mr-1 align-[1px]" />
-                      {o?.title ?? d.option}
-                    </div>
-                    <div className="mt-0.5 text-meta text-faint">{participant(room, d.by).label}</div>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
+        <RailSection id="board-decisions" title="Current decisions" Icon={GavelIcon} aside={<span className="tabular text-faint">{decisions.length}</span>}>
+          {decisionRows(decisions)}
         </RailSection>
       ) : null}
+      {history.length ? <details className="border-t border-border/70 pt-3"><summary className="mb-3 cursor-pointer text-small font-semibold text-muted-foreground">Decision history · {history.length}</summary>{decisionRows(history, true)}</details> : null}
       {ground.length ? (
         <RailSection id="board-settled" title="Settled and facts" Icon={PinIcon} aside={<span className="tabular text-faint">{ground.length}</span>}>
           <ul className="flex flex-col gap-3">
@@ -1020,7 +1027,7 @@ function Empty() {
 }
 
 /** The room's table: as the room's view, or `beside` the conversation in the side panel, where its tab names it. */
-export function TableBoard({ beside = false }: { beside?: boolean }) {
+function ArgumentBoard({ beside = false }: { beside?: boolean }) {
   const room = useStore((s) => s.snap?.state);
   const setPanel = useStore((s) => s.setPanel);
   const flash = useStore((s) => s.flash);
@@ -1049,7 +1056,17 @@ export function TableBoard({ beside = false }: { beside?: boolean }) {
   }, [flash]);
   if (!room) return null;
   const table = room.table;
-  const empty = !table.questions.length && !table.options.length && !table.settled.length && !table.facts.length && !table.next.length && !shiftsOf(table).length;
+  // Build this once per board render: old decisions stay in history, never in current counts or resolutions.
+  const ids = currentDecisionIds(table);
+  const byQuestion = new Map<string, TableDecision[]>();
+  for (const decision of table.decisions) {
+    if (!decision.q || !ids.has(decision.id)) continue;
+    const entries = byQuestion.get(decision.q) ?? [];
+    entries.push(decision);
+    byQuestion.set(decision.q, entries);
+  }
+  const choices: ChoiceIndex = { ids, byQuestion, options: new Map(table.options.map(option => [option.id, option])) };
+  const empty = !table.questions.length && !table.options.length && !table.settled.length && !table.facts.length && !table.next.length && !table.decisions.length && !shiftsOf(table).length;
   const open = table.questions.filter((q) => q.status === "open").sort((a, b) => a.seq - b.seq);
   const closed = table.questions.filter((q) => q.status !== "open").sort((a, b) => b.seq - a.seq);
   const loose = table.options.filter((o) => !o.q).sort((a, b) => a.seq - b.seq);
@@ -1078,12 +1095,12 @@ export function TableBoard({ beside = false }: { beside?: boolean }) {
             <span className="flex-1" />
             <Toolbar />
           </header>
-          <Standing table={table} room={room} />
+          <Standing table={table} room={room} choices={choices} />
           <div className="grid items-start gap-5 @4xl:grid-cols-[minmax(0,1fr)_minmax(280px,340px)]">
             <div id="board-open" className="flex min-w-0 scroll-mt-6 flex-col gap-4">
               <RouteCards table={table} room={room} />
               {open.map((q) => (
-                <Question key={q.id} q={q} table={table} room={room} />
+                <Question key={q.id} q={q} table={table} room={room} choices={choices} />
               ))}
               {loose.length ? (
                 <section className="flex flex-col gap-3 rounded-3xl border border-border bg-background/75 p-3 sm:p-4">
@@ -1098,7 +1115,7 @@ export function TableBoard({ beside = false }: { beside?: boolean }) {
               {!open.length && !loose.length ? (
                 <div className="flex items-center gap-3 rounded-3xl border border-dashed border-border px-5 py-4 text-ui text-muted-foreground">
                   <CheckIcon className="size-4 text-primary" />
-                  No open questions — everything on the table is closed.
+                  {table.next.some(step => !step.done) ? "No open questions — next steps are still in progress." : "No open questions — everything on the table is closed."}
                 </div>
               ) : null}
               {closed.length ? (
@@ -1108,15 +1125,36 @@ export function TableBoard({ beside = false }: { beside?: boolean }) {
                     Closed questions
                   </h2>
                   {closed.map((q) => (
-                    <Question key={q.id} q={q} table={table} room={room} />
+                    <Question key={q.id} q={q} table={table} room={room} choices={choices} />
                   ))}
                 </>
               ) : null}
             </div>
-            <CommonGround table={table} room={room} />
+            <CommonGround table={table} room={room} choices={choices} />
           </div>
         </div>
       )}
     </div>
   );
+}
+
+/** Keep every existing table reference and argument reachable without making it the first screen. */
+export function TableBoard({ beside = false }: { beside?: boolean }) {
+  const flash = useStore(s => s.flash);
+  const roomId = useStore(s => s.snap?.state.id);
+  const [argumentsOpen, setArgumentsOpen] = useState(false);
+  useEffect(() => { setArgumentsOpen(false); }, [roomId]);
+  useEffect(() => {
+    if (!flash || flash.ref.startsWith("m-")) return;
+    setArgumentsOpen(!flash.ref.startsWith("W") && flash.ref !== "brief");
+  }, [flash]);
+  return <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    {argumentsOpen ? <>
+      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-canvas px-3 py-2 sm:px-5">
+        <Button size="sm" variant="ghost" onClick={() => { useStore.setState({ flash: null }); setArgumentsOpen(false); }}><ArrowRightIcon className="size-3.5 rotate-180" />До огляду роботи</Button>
+        <span className="ml-auto text-meta text-muted-foreground">Питання, варіанти й повні аргументи</span>
+      </div>
+      <ArgumentBoard beside={beside} />
+    </> : <WorkTable key={roomId} beside={beside} onArguments={() => setArgumentsOpen(true)} />}
+  </div>;
 }

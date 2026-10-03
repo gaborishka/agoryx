@@ -1,5 +1,6 @@
 import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { clearTurnContext, TURN_FILE_ENV, turnContextPath, writeTurnContext } from "./turn-context.js";
 import { actorFields, actorLabel, AGENT_KEY_ENV, describeSettings, originName } from "./actor.js";
 import { checkpointSubject, runSteps, stepCommitBody, stepsInSubject } from "./checkpoint-message.js";
@@ -80,6 +81,17 @@ import {
   type ChangeSnapshot,
   type WorkspacePaths,
 } from "./workspace.js";
+
+/** Stable request identity survives JSON key order and daemon restarts. Authority is supplied by the engine. */
+const tableRequestHash = (raw: unknown): string => {
+  const sorted = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(sorted);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, sorted(v)]));
+    return value;
+  };
+  const input = raw && typeof raw === "object" ? Object.fromEntries(Object.entries(raw).filter(([key]) => !["nonce", "asOfSeq", "requestHash", "by", "from", "turnId", "id"].includes(key))) : raw;
+  return createHash("sha256").update(JSON.stringify(sorted(input)) ?? "").digest("hex");
+};
 
 export interface EngineOptions {
   store: RoomStore;
@@ -713,10 +725,20 @@ export class RoomEngine {
 
   tableOp(raw: unknown, by?: string | Actor): TableOp {
     const actor = this.actor(by);
+    if (raw && typeof raw === "object" && "nonce" in raw && typeof raw.nonce === "string" && raw.nonce) {
+      const prior = this.appliedOp(raw.nonce.slice(0, 64));
+      if (prior) {
+        if (prior.by !== actor.by || JSON.stringify(prior.from) !== JSON.stringify(actor.from) || prior.requestHash !== tableRequestHash(raw)) {
+          throw new TableOpError("this request id was already used for a different action");
+        }
+        return prior;
+      }
+    }
     const isHuman = this.byHuman(actor);
-    const op = this.applyTableOp(raw, actor, isHuman, undefined);
+    const active = isHuman ? undefined : [...this.state.turns].reverse().find((turn) => turn.agent === actor.by && turn.status === "running");
+    const op = this.applyTableOp(raw, actor, isHuman, active?.id);
     // The human's move, or one from another room (it has no reply here to ride on), is news for the agents.
-    if (isHuman || actor.from) {
+    if ((isHuman || actor.from) && !["brief", "component", "archive", "restore"].includes(op.op)) {
       if (isHuman) this.benched.clear();
       this.startWork(null, undefined, actor);
     }
@@ -2514,7 +2536,10 @@ export class RoomEngine {
   private applyTableOp(raw: unknown, actor: Actor, isHuman: boolean, turnId: string | undefined): TableOp {
     const by = actor.by;
     const prepared = prepareTableOp(this.state.table, raw, by, isHuman);
-    const op: TableOp = { ...prepared, ...(turnId ? { turnId } : {}), ...(actor.from ? { from: actor.from } : {}) };
+    const contextSeq = !isHuman && turnId ? this.state.turns.find((turn) => turn.id === turnId)?.cursor : undefined;
+    const op: TableOp = { ...prepared, ...(turnId ? { turnId } : {}), ...(actor.from ? { from: actor.from } : {}),
+      ...(prepared.op === "brief" ? { asOfSeq: contextSeq ?? this.state.seq } : {}),
+      ...(prepared.nonce ? { requestHash: tableRequestHash(raw) } : {}) };
     this.store.append({ type: "table.op", op });
     this.writeTableFile();
     if (op.op === "decide") {

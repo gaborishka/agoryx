@@ -43,6 +43,7 @@ import { workspaceAt } from "./room-mode.js";
 import { changeRoomMode, createRoom, defaultHumanName, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
 import { deliverWaitingReports, hasWaitingReports, queueThreadReport, threadReport } from "./threads.js";
 import { RoomStore } from "./store.js";
+import { isWorkTableEvent } from "./work-table.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
@@ -1122,7 +1123,7 @@ export class AgoraDaemon {
     stream.pipe(res);
   }
 
-  /** An ```html / ```svg fence from a message (m:<id>) or a proposal body (o:<id>), as its own sandboxed page. */
+  /** An ```html / ```svg fence from a message, proposal or component (m:/o:/w:), as its own sandboxed page. */
   private serveBlock(req: IncomingMessage, res: ServerResponse, handle: RoomHandle, spec: string): void {
     const [source = "", hash = ""] = spec.split("/");
     const colon = source.indexOf(":");
@@ -1130,7 +1131,7 @@ export class AgoraDaemon {
     const id = source.slice(colon + 1);
     const state = handle.store.state;
     const text =
-      kind === "m" ? state.messages.find((m) => m.id === id)?.text : kind === "o" ? state.table.options.find((o) => o.id === id)?.body : undefined;
+      kind === "m" ? state.messages.find((m) => m.id === id)?.text : kind === "o" ? state.table.options.find((o) => o.id === id)?.body : kind === "w" ? state.table.components?.find((w) => w.id === id)?.body : undefined;
     const block = text ? findLiveBlock(text, hash) : undefined;
     if (!block) throw new HttpError(404, "no such block");
     const body = block.lang === "svg" ? Buffer.from(block.body, "utf8") : Buffer.concat([Buffer.from(block.body, "utf8"), FRAME_REPORTER]);
@@ -1837,9 +1838,18 @@ export class AgoraDaemon {
         return;
       }
       case "table": {
-        const seq = engine.state.seq + 1;
+        const before = engine.state.seq;
         const op = engine.tableOp(body, actor);
-        sendJson(res, 201, { op, seq, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, engine.state.table)}` });
+        const event = (() => {
+          for (let i = handle.store.events.length - 1; i >= 0; i--) {
+            const entry = handle.store.events[i]!;
+            if (entry.type === "table.op" && (op.nonce
+              ? entry.op.nonce === op.nonce && entry.op.by === op.by && entry.op.requestHash === op.requestHash
+              : entry.seq === before + 1)) return entry;
+          }
+          return undefined;
+        })();
+        sendJson(res, 201, { op, seq: event?.seq ?? engine.state.seq, event, table: engine.state.table, text: `${op.id ? `${op.id} · ` : ""}${describeTableOp(op, engine.state.table)}` });
         return;
       }
       case "continue": {
@@ -1999,6 +2009,7 @@ export class AgoraDaemon {
       ...roomSnapshot(handle.store.state, handle.streams),
       presence: this.presence(handle),
       ops,
+      events: handle.store.events.filter(isWorkTableEvent).slice(-100),
       rawBase: this.rawBase(handle.store.id, device),
       resume: resumeCommands(handle.store, this.runners),
       driven: Boolean(handle.engine),

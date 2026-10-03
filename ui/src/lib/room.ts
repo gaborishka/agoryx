@@ -352,7 +352,7 @@ export const betweenAgents = (st: Pick<RoomState, "agents" | "former" | "human">
   return to.length > 0 && to.every((h) => ids.has(h)) && !toHuman(st, m) && !showsMedia(m.text);
 };
 
-const REF = /\b([QPDNXSFC]\d{1,3})\b/g;
+const REF = /\b([QPDNXSFCW]\d{1,3})\b/g;
 
 /** The human's own word: a message of theirs (under whatever name they had then), or their decision on the table. */
 const byHuman = (st: Pick<RoomState, "human">, m: MessageEntry): boolean =>
@@ -548,11 +548,13 @@ export const refExists = (st: RoomState, ref: string) => {
   if (k === "S") return t.settled.some((x) => x.id === ref);
   if (k === "X") return t.next.some((x) => x.id === ref);
   if (k === "C") return (t.shifts ?? []).some((x) => x.id === ref);
+  if (k === "W") return (t.components ?? []).some((x) => x.id === ref);
   return false;
 };
 
 /** The table element id a ref scrolls to (notes and decisions point at their option). */
 export const refAnchor = (st: RoomState, ref: string) => {
+  if (ref.startsWith("W")) return `component-${ref}`;
   if (ref.startsWith("Q")) return `q-${ref}`;
   if (ref.startsWith("P")) return `opt-${ref}`;
   if (ref.startsWith("N")) {

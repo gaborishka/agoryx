@@ -365,7 +365,7 @@ const plain = (Tag: "h1" | "h2" | "h3" | "h4") =>
 
 export interface MarkdownProps {
   text: string;
-  /** m:<id> or o:<id>: lets ```html / ```svg fences render live. */
+  /** m:<id>, o:<id> or w:<id>: lets ```html / ```svg fences render live. */
   source?: string;
   variant?: "chat" | "doc";
   streaming?: boolean;
@@ -374,7 +374,13 @@ export interface MarkdownProps {
 
 export const Markdown = memo(function Markdown({ text, source, variant = "chat", streaming = false, className }: MarkdownProps) {
   const dark = useTheme((s) => s.dark);
-  const seq = useStore((s) => (source?.startsWith("m:") ? indexed(s.snap?.state.messages) : source?.startsWith("o:") ? indexed(s.snap?.state.table.options) : undefined)?.get(source!.slice(2)));
+  const seq = useStore((s) => {
+    if (source?.startsWith("w:")) {
+      const component = s.snap?.state.table.components?.find(item => item.id === source.slice(2));
+      return component?.contentSeq ?? component?.seq;
+    }
+    return (source?.startsWith("m:") ? indexed(s.snap?.state.messages) : source?.startsWith("o:") ? indexed(s.snap?.state.table.options) : undefined)?.get(source!.slice(2));
+  });
   const plugins = useMemo(() => {
     const Live = makeLiveRenderer(source, text);
     return { code, mermaid: dark ? mermaidDark : mermaidLight, renderers: [{ language: ["html", "htm", "svg"], component: Live }] };

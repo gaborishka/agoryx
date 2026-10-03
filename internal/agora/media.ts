@@ -75,6 +75,7 @@ export const markdownTexts = (state: Pick<RoomState, "messages" | "table">): str
     ...table.notes.map((n) => n.text),
     ...[...table.facts, ...table.settled, ...table.next, ...table.shifts].map((item) => item.text),
     ...table.decisions.map((d) => d.note ?? ""),
+    ...(table.components ?? []).map((component) => component.body ?? ""),
   ].filter(Boolean);
 };
 

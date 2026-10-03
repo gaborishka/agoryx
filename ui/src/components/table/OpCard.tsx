@@ -1,5 +1,6 @@
 import { workspaceAt } from "@agora/room-mode";
 import {
+  ArchiveIcon,
   BadgeCheckIcon,
   CheckIcon,
   CircleHelpIcon,
@@ -9,6 +10,8 @@ import {
   LightbulbIcon,
   type LucideIcon,
   MicroscopeIcon,
+  MessageSquareTextIcon,
+  PanelsTopLeftIcon,
   PencilIcon,
   RefreshCcwIcon,
   RotateCcwIcon,
@@ -46,6 +49,10 @@ export const TC_KIND: Record<TableOp["op"], string> = {
   concede: "Changes their mind",
   edit: "Rewritten",
   delete: "Deleted",
+  brief: "Heads-up",
+  component: "Component",
+  archive: "Archived",
+  restore: "Restored",
 };
 
 export const KIND_ICON: Record<TableOp["op"], LucideIcon> = {
@@ -65,6 +72,10 @@ export const KIND_ICON: Record<TableOp["op"], LucideIcon> = {
   concede: RefreshCcwIcon,
   edit: PencilIcon,
   delete: Trash2Icon,
+  brief: MessageSquareTextIcon,
+  component: PanelsTopLeftIcon,
+  archive: ArchiveIcon,
+  restore: RotateCcwIcon,
 };
 
 export const KIND_TONE: Record<TableOp["op"], string> = {
@@ -84,6 +95,10 @@ export const KIND_TONE: Record<TableOp["op"], string> = {
   concede: "text-shift",
   edit: "text-muted-foreground",
   delete: "text-muted-foreground",
+  brief: "text-primary",
+  component: "text-primary",
+  archive: "text-muted-foreground",
+  restore: "text-primary",
 };
 
 export function Kind({ op, label }: { op: TableOp["op"]; label?: string }) {
@@ -249,6 +264,10 @@ export function OpCard({ o }: { o: TableOp }) {
   const table = useStore((s) => s.snap?.state.table);
   if (!table) return null;
   switch (o.op) {
+    case "brief":
+      return <div className={cn(card, "border-l-[3px] border-l-primary/60")}><Kind op="brief" /><div className="mt-1.5 text-ui">{o.now}</div>{o.next ? <p className="mt-1 text-small text-muted-foreground">Далі: {o.next}</p> : null}{o.awaiting ? <div className="mt-2"><RefChip id={o.awaiting.q} /> · потрібне рішення людини</div> : null}</div>;
+    case "component":
+      return <div className={cn(card, "flex items-baseline gap-2.5 py-2")}><Kind op="component" /><RefChip id={o.target ?? o.id ?? "W?"} /><span className="min-w-0 text-ui">{o.title}</span></div>;
     case "propose": {
       const found = table.options.find((x) => x.id === o.id);
       const opt: TableOption = found ?? { id: o.id ?? "?", q: o.q ?? null, title: o.title, body: o.body, file: o.file, by: o.by, seq: 0, status: "open" };
@@ -475,6 +494,10 @@ const TC_MANY: Record<TableOp["op"], [string, string]> = {
   concede: ["change of mind", "changes of mind"],
   edit: ["rewritten", "rewritten"],
   delete: ["deleted", "deleted"],
+  brief: ["heads-up", "heads-ups"],
+  component: ["component", "components"],
+  archive: ["archived component", "archived components"],
+  restore: ["restored component", "restored components"],
 };
 
 /** A turn's table moves in one line: what kinds, how many, and a way to open them. */

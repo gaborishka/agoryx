@@ -18,7 +18,7 @@ export type ThreadNote = Extract<SystemNote, { code: "thread.reported" }>;
 const MAX_FILES = 30;
 
 /** Everything on a table, with the text it is known by. */
-const tableItems = (table: TableState): Array<{ id: string; text: string; seq: number }> => [
+export const tableItems = (table: TableState): Array<{ id: string; text: string; seq: number }> => [
   ...table.questions,
   ...table.options.map((option) => ({ ...option, text: option.title })),
   ...table.facts,
@@ -26,6 +26,12 @@ const tableItems = (table: TableState): Array<{ id: string; text: string; seq: n
   ...table.next,
   ...table.shifts,
   ...table.notes.map((note) => ({ ...note, text: `${note.kind} on ${note.target}: ${note.text}` })),
+  // A decision is its own record; the option it chose keeps its older seq.
+  ...table.decisions.map((decision) => {
+    const option = table.options.find((entry) => entry.id === decision.option);
+    const chose = `${decision.by} chose ${decision.option}${option ? ` "${option.title}"` : ""}${decision.q ? ` for ${decision.q}` : ""}`;
+    return { ...decision, text: decision.note ? `${chose}: ${decision.note}` : chose };
+  }),
 ];
 
 const indent = (text: string): string => text.split("\n").map((line) => `    ${line}`).join("\n");

@@ -107,10 +107,12 @@ export const createRoom = (options: CreateRoomOptions): RoomStore => {
   if (!name) throw new Error("a room needs a name");
   const parent = options.from ? threadParent(options, env) : undefined;
   if (parent) {
+    // A thread works in its room's project: another folder would make it a thread of one project working in another.
+    if (options.dir && resolve(options.dir) !== resolve(parent.dir)) throw new Error(`a thread works in its room's folder (${parent.dir}); leave out --dir`);
     options = {
       ...options,
       mode: "work",
-      dir: options.dir ?? parent.dir,
+      dir: parent.dir,
       worktree: true,
       ...(options.base || !parent.base ? {} : { base: parent.base }),
       agents: options.agents ?? parent.agents,

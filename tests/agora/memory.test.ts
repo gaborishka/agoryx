@@ -96,6 +96,7 @@ test("memory says who wrote each entry, lists disagreements first, and renders e
     assert.equal(project.memory.find((entry) => entry.id === "M2")!.revisedBy, "claude");
     assert.equal(project.memory.find((entry) => entry.id === "M2")!.why, "she owns the runners");
     assert.throws(() => reviseMemory(key, "M1", { kind: "disagreement" }, { by: "Ivan" }, env), /only an entry with positions/);
+    assert.throws(() => noteMemory(key, { text: "We disagree", kind: "disagreement" }, { by: "Ivan" }, env), /comes from an open question/);
     project = removeMemory(key, "M1", { by: "Ivan" }, env);
     assert.deepEqual(project.memory.map((entry) => entry.id), ["M2", "M3"]);
     // An id is never given out again.

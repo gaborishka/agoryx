@@ -11,7 +11,8 @@ import { AgoraDaemon, findDaemon, readDaemonInfo, type DaemonInfo } from "../../
 import { deviceLabel, DeviceRegistry, type DeviceInfo } from "../../internal/agora/devices.js";
 import { isExposed, readExposure, writeExposure, type Exposure } from "../../internal/agora/exposure.js";
 import { qrTerminal } from "../../internal/agora/qr.js";
-import { RoomLockedError, roomTurnPatch, type RoomEngine } from "../../internal/agora/engine.js";
+import { RoomLockedError, roomTurnPatch, roomWorkspaceDiff, type RoomEngine } from "../../internal/agora/engine.js";
+import { threadReport } from "../../internal/agora/threads.js";
 import { jevEnvFrom, JEV_ENV } from "../../internal/agora/jev.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { type AgentLook, agentLook } from "../../internal/agora/look.js";
@@ -19,7 +20,7 @@ import { activeRun } from "../../internal/agora/projection.js";
 import { describeProfile, profilePath, readProfile } from "../../internal/agora/profile.js";
 import { addProjectContext, describeProject, PROJECT_FIELDS, projectHash, projectKey, projectKeyOfFolder, readProject, removeProjectContext, setProjectField, type ProjectField } from "../../internal/agora/projects.js";
 import { resolveFolder } from "../../internal/agora/folders.js";
-import { MEMORY_KINDS, noteMemory, promoteToMemory, removeMemory, renderMemoryMarkdown, reviseMemory } from "../../internal/agora/memory.js";
+import { NOTED_KINDS, noteMemory, promoteToMemory, removeMemory, renderMemoryMarkdown, reviseMemory } from "../../internal/agora/memory.js";
 import { readRoster, RosterError, rosterPath } from "../../internal/agora/roster.js";
 import { createRoom, defaultHumanName, openEngine, resumeCommands, roomNameFrom } from "../../internal/agora/service.js";
 import { readDoc, renderDiff } from "../../internal/agora/doc.js";
@@ -471,6 +472,21 @@ const localConn = (ref: string | undefined): Conn => {
   const agent = localAgent();
   const actor: Actor | undefined = agent ? actorIn(store.state, agent) : undefined;
   let engine: RoomEngine | null = null;
+  // A thread driven here reports each run to the room it was started from, as the daemon does (threads.ts); the parent
+  // is driven here too for the turn the report wakes, unless another process drives it.
+  let parent: RoomEngine | null = null;
+  let reporting: Promise<void> = Promise.resolve();
+  const report = (runId: string) => {
+    const parentId = store.state.parent!;
+    try {
+      parent ??= openEngine(RoomStore.open(roomsDir(), parentId));
+      const made = threadReport(store, runId, parent.state, roomWorkspaceDiff(store)?.changes ?? []);
+      if (made) parent.postThreadReport(made.text, made.sys);
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      process.stderr.write(pc.dim(`(this run's report could not go to ${parentId}: ${why}${error instanceof RoomLockedError ? " — start the daemon (`agoryx up -d`) so rooms can report to each other" : ""})\n`));
+    }
+  };
   const drive = (): RoomEngine => {
     if (engine) return engine;
     try {
@@ -480,6 +496,12 @@ const localConn = (ref: string | undefined): Conn => {
         throw new Error(`${error.message}. Start the daemon (\`agoryx up -d\`) so several terminals can share the room.`);
       }
       throw error;
+    }
+    if (store.state.parent) {
+      store.subscribe((event: RoomEvent | EphemeralEvent) => {
+        // After the engine is done ending the run, as in the daemon: git is asked about the thread's branch.
+        if (event.type === "run.ended") reporting = reporting.then(() => new Promise<void>((done) => setImmediate(() => (report(event.runId), done()))));
+      });
     }
     return engine;
   };
@@ -542,12 +564,17 @@ const localConn = (ref: string | undefined): Conn => {
       process.on("SIGINT", onSigint);
       try {
         await live.waitIdle();
+        await reporting;
+        // The turn the report woke in the parent, before this process lets go of it.
+        if (parent) await parent.waitIdle();
       } finally {
         process.off("SIGINT", onSigint);
         unsubscribe();
       }
     },
     async close() {
+      await reporting;
+      if (parent) await parent.close();
       if (engine) await (engine as RoomEngine).close();
     },
   };
@@ -1507,7 +1534,7 @@ const runMemory = async (argv: string[]): Promise<number> => {
     return 0;
   }
   process.stdout.write(renderMemoryMarkdown(project));
-  if (!project.memory.length) console.log(`(kinds: ${MEMORY_KINDS.join(", ")})`);
+  if (!project.memory.length) console.log(`(kinds: ${NOTED_KINDS.join(", ")}; a disagreement comes from promoting an open question)`);
   return 0;
 };
 

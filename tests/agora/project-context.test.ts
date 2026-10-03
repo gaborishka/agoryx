@@ -40,6 +40,7 @@ test("a context folder is a write with who made it; inside, above or missing is 
     assert.equal(addProjectContext(key, "~/lib", { by: "codex" }, env).seq, added.seq, "the same folder again writes nothing");
     assert.throws(() => addProjectContext(key, join(key, "src"), { by: "Ivan" }, env), /inside the project's own folder/);
     assert.throws(() => addProjectContext(key, home, { by: "Ivan" }, env), /holds the project's own folder/);
+    assert.throws(() => addProjectContext(key, "/", { by: "Ivan" }, env), /holds the project's own folder/, "the filesystem root holds every project");
     assert.throws(() => addProjectContext(key, join(home, "nope"), { by: "Ivan" }, env), /no folder at/);
     assert.throws(() => addProjectContext(key, "lib", { by: "Ivan" }, env), /absolute path/);
 

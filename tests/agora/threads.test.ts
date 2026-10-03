@@ -9,7 +9,8 @@ import { AgoraDaemon } from "../../internal/agora/daemon.js";
 import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { createCodexRunner } from "../../internal/agora/runners/codex.js";
 import { createRoom } from "../../internal/agora/service.js";
-import { threadText } from "../../internal/agora/threads.js";
+import { applyTableOp, emptyTable, prepareTableOp } from "../../internal/agora/table.js";
+import { tableItems, threadText } from "../../internal/agora/threads.js";
 import { writeFakeBins } from "./helpers.js";
 
 let home: string;
@@ -174,6 +175,9 @@ test("a thread the human starts wakes nobody when it reports and waits in Attent
   const refused = await call("POST", "/api/rooms", { name: "No", from: chat.id });
   assert.equal(refused.status, 400);
   assert.match(refused.body.error, /Chat room: a thread works in its project's folder/);
+  const elsewhere = await call("POST", "/api/rooms", { name: "Elsewhere", from: parent.id, dir: makeRepo("other-repo") });
+  assert.equal(elsewhere.status, 400);
+  assert.match(elsewhere.body.error, /a thread works in its room's folder/);
 });
 
 test("resolving a thread is the human's: it moves the thread on the board, posts nothing and wakes nobody", async () => {
@@ -251,4 +255,16 @@ test("the report's text says what the thread left and how to reach it", () => {
   assert.match(text, /Still open there: Q4 Which format\?/);
   assert.match(text, /Nobody in it said anything this run\./);
   assert.match(text, /`agoryx tail -r r1` reads it; `agoryx say -r r1 "…"` steers it\./);
+});
+
+test("a report names a decision taken in the run: the decision is its own record, the option it chose is older", () => {
+  const table = emptyTable();
+  let seq = 0;
+  const play = (by: string, op: Record<string, unknown>) => applyTableOp(table, prepareTableOp(table, op, by, by === "Ivan"), (seq += 1), { human: by === "Ivan" });
+  play("claude", { op: "ask", text: "Which port?" });
+  play("codex", { op: "propose", title: "7777", q: "Q1" });
+  const before = seq;
+  play("Ivan", { op: "decide", target: "P1", note: "easy to remember" });
+  const gained = tableItems(table).filter((item) => item.seq > before);
+  assert.deepEqual(gained.map(({ id, text }) => ({ id, text })), [{ id: "D1", text: 'Ivan chose P1 "7777" for Q1: easy to remember' }]);
 });

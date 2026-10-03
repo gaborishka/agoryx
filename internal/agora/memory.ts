@@ -1,6 +1,6 @@
 import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { appendProjectEvent, projectDir, ProjectError, readProject, type Project, type ProjectWriter } from "./projects.js";
+import { appendProjectEvent, lockProject, projectDir, ProjectError, readProject, type Project, type ProjectWriter } from "./projects.js";
 import { disputeOf } from "./table.js";
 import type { TableState } from "./types.js";
 
@@ -17,6 +17,8 @@ import type { TableState } from "./types.js";
 
 export type MemoryKind = "decision" | "fact" | "disagreement" | "person" | "preference";
 export const MEMORY_KINDS: readonly MemoryKind[] = ["disagreement", "decision", "fact", "person", "preference"];
+/** What can be noted by hand: all but a disagreement. */
+export const NOTED_KINDS = MEMORY_KINDS.filter((kind) => kind !== "disagreement");
 
 /** Someone's words, verbatim. */
 export interface MemoryVoice {
@@ -137,10 +139,13 @@ export const noteMemory = (
   const text = clean(input.text, "text");
   if (!text) throw new ProjectError('nothing to note: `agoryx memory note "text"`');
   const kind = input.kind ?? "fact";
-  if (!isKind(kind)) throw new ProjectError(`a memory entry is a ${MEMORY_KINDS.join(", ")}; not "${kind}"`);
+  // A disagreement is an open question's sides, so it only comes from the table (`agoryx memory promote Q…`).
+  if (kind === "disagreement") throw new ProjectError("a disagreement comes from an open question on a room's table: `agoryx memory promote Q1`");
+  if (!isKind(kind)) throw new ProjectError(`a memory entry is a ${NOTED_KINDS.join(", ")}; not "${kind}"`);
   const why = input.why === undefined ? undefined : clean(input.why, "reason");
-  const project = readProject(key, env);
-  return append(key, { type: "memory.noted", id: nextId(project), entry: { kind, text, author: writer.by, ...(why ? { why } : {}) } }, writer, env);
+  return lockProject(key, env, () =>
+    append(key, { type: "memory.noted", id: nextId(readProject(key, env)), entry: { kind, text, author: writer.by, ...(why ? { why } : {}) } }, writer, env),
+  );
 };
 
 /** Standing objections to a table item: from everyone who objected and has not conceded on it, verbatim. */
@@ -217,11 +222,13 @@ export const promoteToMemory = (
   env: NodeJS.ProcessEnv = process.env,
 ): Project => {
   const draft = draftFromTable(room.table, ref);
-  const project = readProject(key, env);
   const tableRef = ref.trim().toUpperCase();
-  const again = project.memory.find((entry) => entry.source?.room === room.id && entry.source.ref === tableRef);
-  if (again) throw new ProjectError(`${tableRef} of "${room.name}" is already in memory as ${again.id}; \`agoryx memory remove ${again.id}\` first to keep it as it stands now`);
-  return append(key, { type: "memory.noted", id: nextId(project), entry: { ...draft, source: { room: room.id, roomName: room.name, ref: tableRef } } }, writer, env);
+  return lockProject(key, env, () => {
+    const project = readProject(key, env);
+    const again = project.memory.find((entry) => entry.source?.room === room.id && entry.source.ref === tableRef);
+    if (again) throw new ProjectError(`${tableRef} of "${room.name}" is already in memory as ${again.id}; \`agoryx memory remove ${again.id}\` first to keep it as it stands now`);
+    return append(key, { type: "memory.noted", id: nextId(project), entry: { ...draft, source: { room: room.id, roomName: room.name, ref: tableRef } } }, writer, env);
+  });
 };
 
 const entryOf = (project: Project, id: string): MemoryEntry => {
@@ -237,32 +244,31 @@ export const reviseMemory = (
   change: { text?: string; why?: string | null; kind?: string },
   writer: ProjectWriter,
   env: NodeJS.ProcessEnv = process.env,
-): Project => {
-  const project = readProject(key, env);
-  const entry = entryOf(project, id);
-  const body: MemoryEventBody & { type: "memory.revised" } = { type: "memory.revised", id: entry.id };
-  if (change.kind !== undefined && change.kind !== entry.kind) {
-    if (!isKind(change.kind)) throw new ProjectError(`a memory entry is a ${MEMORY_KINDS.join(", ")}; not "${change.kind}"`);
-    if ((change.kind === "disagreement") !== Boolean(entry.positions)) throw new ProjectError("only an entry with positions is a disagreement");
-    body.kind = change.kind;
-  }
-  if (change.text !== undefined) {
-    const text = clean(change.text, "text");
-    if (!text) throw new ProjectError(`an entry needs its text; \`agoryx memory remove ${entry.id}\` removes it`);
-    if (text !== entry.text) body.text = text;
-  }
-  if (change.why !== undefined) {
-    const why = change.why === null ? "" : clean(change.why, "reason");
-    if (why !== (entry.why ?? "")) body.why = why || null;
-  }
-  if (Object.keys(body).length === 2) return project;
-  return append(key, body, writer, env);
-};
+): Project =>
+  lockProject(key, env, () => {
+    const project = readProject(key, env);
+    const entry = entryOf(project, id);
+    const body: MemoryEventBody & { type: "memory.revised" } = { type: "memory.revised", id: entry.id };
+    if (change.kind !== undefined && change.kind !== entry.kind) {
+      if (!isKind(change.kind)) throw new ProjectError(`a memory entry is a ${MEMORY_KINDS.join(", ")}; not "${change.kind}"`);
+      if ((change.kind === "disagreement") !== Boolean(entry.positions)) throw new ProjectError("only an entry with positions is a disagreement");
+      body.kind = change.kind;
+    }
+    if (change.text !== undefined) {
+      const text = clean(change.text, "text");
+      if (!text) throw new ProjectError(`an entry needs its text; \`agoryx memory remove ${entry.id}\` removes it`);
+      if (text !== entry.text) body.text = text;
+    }
+    if (change.why !== undefined) {
+      const why = change.why === null ? "" : clean(change.why, "reason");
+      if (why !== (entry.why ?? "")) body.why = why || null;
+    }
+    if (Object.keys(body).length === 2) return project;
+    return append(key, body, writer, env);
+  });
 
-export const removeMemory = (key: string, id: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
-  const entry = entryOf(readProject(key, env), id);
-  return append(key, { type: "memory.removed", id: entry.id }, writer, env);
-};
+export const removeMemory = (key: string, id: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project =>
+  lockProject(key, env, () => append(key, { type: "memory.removed", id: entryOf(readProject(key, env), id).id }, writer, env));
 
 // --- reading it ---------------------------------------------------------------------------------
 

@@ -150,6 +150,8 @@ const MIME: Record<string, string> = {
 };
 
 const MAX_RAW = 25 * 1024 * 1024;
+/** A /raw/ capability for a project's own files, not a room's: `~project-<hash>`. */
+const PROJECT_RAW = "~project-";
 /** Video and audio stream in ranges, so they may be larger. */
 const MAX_RAW_MEDIA = 512 * 1024 * 1024;
 
@@ -988,37 +990,47 @@ export class AgoraDaemon {
     } catch {
       // Not a room id; falls through to 404.
     }
-    if (!/^[\w.-]+$/.test(roomId) || !this.rawKeyOpens(roomId, key, reach)) throw new HttpError(404, "not found");
+    // A project's own files (its library) have a capability of their own: no room links a file added to the project.
+    const project = roomId.startsWith(PROJECT_RAW) ? roomId.slice(PROJECT_RAW.length) : null;
+    if (!(project === null ? /^[\w.-]+$/.test(roomId) : /^[0-9a-f]+$/.test(project)) || !this.rawKeyOpens(roomId, key, reach)) throw new HttpError(404, "not found");
     let relPath: string;
     try {
       relPath = rest.map((part) => decodeURIComponent(part)).join("/");
     } catch {
       throw new HttpError(400, "bad path");
     }
-    const handle = this.room(roomId);
-    if (relPath.startsWith("~block/")) {
-      this.serveBlock(req, res, handle, relPath.slice("~block/".length));
-      return;
-    }
     let full: string | null;
-    if (relPath.startsWith("~at/")) {
-      const [, seqPart, ...fileParts] = relPath.split("/");
-      const seq = Number(seqPart);
-      if (!Number.isSafeInteger(seq) || seq < 1 || seq > handle.store.state.seq) throw new HttpError(404, "no such conversation file");
-      const root = workspaceAt(handle.store.state, seq);
-      full = resolveInside(root, fileParts.join("/"));
-      if (!full || inGitDir(root, full) || !existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such conversation file");
-    } else if (relPath.startsWith("~abs/")) {
-      // A media file outside the workspace, served only while a text in the room links it.
-      // relPath is decoded already: the path is taken as is, not decoded again.
-      const ref = relPath.slice("~abs/".length);
-      full = linkedMedia(markdownTexts(handle.store.state), ref.startsWith("~/") ? ref : `/${ref}`);
-      if (!full) throw new HttpError(404, "no such file, or nothing in the room links it");
+    if (project !== null) {
+      // A file in the project's library, served while it is there.
+      const asked = relPath.startsWith("~abs/") ? `/${relPath.slice("~abs/".length)}` : "";
+      const listed = listProjects(this.env).find((entry) => entry.hash === project)?.library.some((entry) => entry.path === asked);
+      if (!listed || !existsSync(asked) || !statSync(asked).isFile()) throw new HttpError(404, "no such file in the project's library");
+      full = asked;
     } else {
-      if (!relPath || relPath.endsWith("/")) relPath += "index.html";
-      full = resolveInside(handle.store.state.workspace, relPath);
-      if (!full || inGitDir(handle.store.state.workspace, full)) throw new HttpError(404, "no such file in the workspace");
-      if (!existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
+      const handle = this.room(roomId);
+      if (relPath.startsWith("~block/")) {
+        this.serveBlock(req, res, handle, relPath.slice("~block/".length));
+        return;
+      }
+      if (relPath.startsWith("~at/")) {
+        const [, seqPart, ...fileParts] = relPath.split("/");
+        const seq = Number(seqPart);
+        if (!Number.isSafeInteger(seq) || seq < 1 || seq > handle.store.state.seq) throw new HttpError(404, "no such conversation file");
+        const root = workspaceAt(handle.store.state, seq);
+        full = resolveInside(root, fileParts.join("/"));
+        if (!full || inGitDir(root, full) || !existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such conversation file");
+      } else if (relPath.startsWith("~abs/")) {
+        // A media file outside the workspace, served only while a text in the room links it.
+        // relPath is decoded already: the path is taken as is, not decoded again.
+        const ref = relPath.slice("~abs/".length);
+        full = linkedMedia(markdownTexts(handle.store.state), ref.startsWith("~/") ? ref : `/${ref}`);
+        if (!full) throw new HttpError(404, "no such file, or nothing in the room links it");
+      } else {
+        if (!relPath || relPath.endsWith("/")) relPath += "index.html";
+        full = resolveInside(handle.store.state.workspace, relPath);
+        if (!full || inGitDir(handle.store.state.workspace, full)) throw new HttpError(404, "no such file in the workspace");
+        if (!existsSync(full) || !statSync(full).isFile()) throw new HttpError(404, "no such file in the workspace");
+      }
     }
     const size = statSync(full).size;
     const type = MIME[extname(full).toLowerCase()] ?? "text/plain; charset=utf-8";
@@ -1273,7 +1285,8 @@ export class AgoraDaemon {
       sendJson(res, 200, {
         ...projectOverview(read, uploadsDir(this.env), all, readProject(key, this.env)),
         // Where each room serves its files from, for this page: a library entry opens through the room that links it.
-        rawBase: Object.fromEntries(read.map(({ state }) => [state.id, this.rawBase(state.id, device)])),
+        // A file added to the project itself (no room links it) opens through the project's own: under "".
+        rawBase: { ...Object.fromEntries(read.map(({ state }) => [state.id, this.rawBase(state.id, device)])), "": this.rawBase(`${PROJECT_RAW}${hash}`, device) },
       });
       return;
     }

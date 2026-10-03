@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { pidAlive } from "./daemoninfo.js";
 import { foldMemoryEvent, memoryBriefing, memoryUpdateLine, type MemoryEntry, type MemoryEventBody } from "./memory.js";
 import { agoraHome } from "./paths.js";
 import type { ActorOrigin, RoomState } from "./types.js";
@@ -147,23 +148,97 @@ const summaryOf = (project: Project) => ({
   seq: project.seq,
 });
 
-/** Append one event; returns the project after it. */
-export const appendProjectEvent = (key: string, body: ProjectEventBody, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
+export class ProjectError extends Error {}
+
+/** A lock its holder left behind: the holder is gone, or has held it far longer than any write takes. */
+const STALE_LOCK_MS = 30_000;
+const LOCK_WAIT_MS = 10_000;
+const held = new Set<string>();
+const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * Runs `fn` while this process alone writes the project's log: rooms driven by separate processes (no daemon) share it,
+ * and each write reads the log, numbers its event (and a memory entry's id) and appends — two at once would number
+ * alike. Reentrant within a process. A lock left by a process that died is taken over.
+ */
+export const lockProject = <T>(key: string, env: NodeJS.ProcessEnv, fn: () => T): T => {
   const dir = projectDir(key, env);
+  if (held.has(dir)) return fn();
   mkdirSync(dir, { recursive: true });
-  const file = join(dir, "events.jsonl");
-  const before = readEvents(file);
-  const seq = before.reduce((max, event) => Math.max(max, event.seq), 0) + 1;
-  const event = { ...body, seq, ts: new Date().toISOString(), by: writer.by, ...(writer.from ? { from: writer.from } : {}) } as ProjectEvent;
-  appendFileSync(file, `${JSON.stringify(event)}\n`);
-  const project = foldProject(key, [...before, event]);
-  const tmp = join(dir, "project.json.tmp");
-  writeFileSync(tmp, `${JSON.stringify(summaryOf(project), null, 2)}\n`);
-  renameSync(tmp, join(dir, "project.json"));
-  return project;
+  const lock = join(dir, "events.lock");
+  const until = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const fd = openSync(lock, "wx");
+      try {
+        writeSync(fd, String(process.pid));
+      } finally {
+        closeSync(fd);
+      }
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    let text = "";
+    let age = 0;
+    try {
+      text = readFileSync(lock, "utf8");
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue; // released meanwhile
+    }
+    const pid = Number(text);
+    if ((text && Number.isInteger(pid) && pid !== process.pid && !pidAlive(pid)) || age > STALE_LOCK_MS) {
+      // Set aside, and delete only if it is still the lock judged stale; a fresh one another process took meanwhile goes back.
+      const aside = `${lock}.stale-${process.pid}-${Date.now()}`;
+      try {
+        renameSync(lock, aside);
+      } catch {
+        continue;
+      }
+      let moved = "";
+      try {
+        moved = readFileSync(aside, "utf8");
+      } catch {
+        // gone
+      }
+      if (moved !== text) {
+        try {
+          linkSync(aside, lock);
+        } catch {
+          // the lock there now stands
+        }
+      }
+      rmSync(aside, { force: true });
+      continue;
+    }
+    if (Date.now() > until) throw new ProjectError(`another process (${text || "?"}) is writing this project; try again`);
+    pause(15);
+  }
+  held.add(dir);
+  try {
+    return fn();
+  } finally {
+    held.delete(dir);
+    rmSync(lock, { force: true });
+  }
 };
 
-export class ProjectError extends Error {}
+/** Append one event; returns the project after it. */
+export const appendProjectEvent = (key: string, body: ProjectEventBody, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project =>
+  lockProject(key, env, () => {
+    const dir = projectDir(key, env);
+    const file = join(dir, "events.jsonl");
+    const before = readEvents(file);
+    const seq = before.reduce((max, event) => Math.max(max, event.seq), 0) + 1;
+    const event = { ...body, seq, ts: new Date().toISOString(), by: writer.by, ...(writer.from ? { from: writer.from } : {}) } as ProjectEvent;
+    appendFileSync(file, `${JSON.stringify(event)}\n`);
+    const project = foldProject(key, [...before, event]);
+    const tmp = join(dir, "project.json.tmp");
+    writeFileSync(tmp, `${JSON.stringify(summaryOf(project), null, 2)}\n`);
+    renameSync(tmp, join(dir, "project.json"));
+    return project;
+  });
 
 /** Set (or, with an empty text, clear) a name, goal or instructions. Nothing is appended when nothing changes. */
 export const setProjectField = (key: string, field: ProjectField, text: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
@@ -171,9 +246,11 @@ export const setProjectField = (key: string, field: ProjectField, text: string, 
   const value = text.replace(/\r\n/g, "\n").trim();
   if (field === "name" && value.includes("\n")) throw new ProjectError("a project's name is one line");
   if (value.length > MAX_PROJECT_TEXT) throw new ProjectError(`the ${field} is ${value.length} characters; at most ${MAX_PROJECT_TEXT}`);
-  const project = readProject(key, env);
-  if ((project[field] ?? "") === value) return project;
-  return appendProjectEvent(key, { type: "project.changed", field, value: value || null }, writer, env);
+  return lockProject(key, env, () => {
+    const project = readProject(key, env);
+    if ((project[field] ?? "") === value) return project;
+    return appendProjectEvent(key, { type: "project.changed", field, value: value || null }, writer, env);
+  });
 };
 
 /** A context folder as written: absolute, `~` expanded, no trailing separator. */
@@ -182,6 +259,12 @@ const contextPath = (path: string, env: NodeJS.ProcessEnv): string => {
   const raw = path.trim().replace(/^~(?=$|[\\/])/, home);
   if (!raw || !isAbsolute(raw)) throw new ProjectError(`a context folder is an absolute path (or ~/…); not "${path}"`);
   return resolve(raw).replace(/[\\/]+$/, "") || sep;
+};
+
+/** `path` is `dir` or inside it — by `relative`, so a root (`/`, `C:\\`) holds everything under it. */
+const within = (dir: string, path: string): boolean => {
+  const rel = relative(dir, path);
+  return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 };
 
 /** The folder `path` names, if it can be a context folder of the project in `key`; else why not. */
@@ -194,8 +277,8 @@ export const checkContextFolder = (key: string, path: string, env: NodeJS.Proces
     // not there
   }
   if (!isDir) throw new ProjectError(`no folder at ${folder}`);
-  if (folder === key || folder.startsWith(`${key}${sep}`)) throw new ProjectError(`${folder} is inside the project's own folder: its agents work there already`);
-  if (key.startsWith(`${folder}${sep}`)) throw new ProjectError(`${folder} holds the project's own folder: name a folder beside it, not above it`);
+  if (within(key, folder)) throw new ProjectError(`${folder} is inside the project's own folder: its agents work there already`);
+  if (within(folder, key)) throw new ProjectError(`${folder} holds the project's own folder: name a folder beside it, not above it`);
   return folder;
 };
 
@@ -205,17 +288,20 @@ export const checkContextFolder = (key: string, path: string, env: NodeJS.Proces
  */
 export const addProjectContext = (key: string, path: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
   const folder = checkContextFolder(key, path, env);
-  const project = readProject(key, env);
-  if (project.context.includes(folder)) return project;
-  return appendProjectEvent(key, { type: "context.added", path: folder }, writer, env);
+  return lockProject(key, env, () => {
+    const project = readProject(key, env);
+    if (project.context.includes(folder)) return project;
+    return appendProjectEvent(key, { type: "context.added", path: folder }, writer, env);
+  });
 };
 
 export const removeProjectContext = (key: string, path: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
-  const project = readProject(key, env);
   const asked = contextPath(path, env);
-  const folder = project.context.find((entry) => entry === asked);
-  if (!folder) throw new ProjectError(`${path} is not a context folder of this project`);
-  return appendProjectEvent(key, { type: "context.removed", path: folder }, writer, env);
+  return lockProject(key, env, () => {
+    const folder = readProject(key, env).context.find((entry) => entry === asked);
+    if (!folder) throw new ProjectError(`${path} is not a context folder of this project`);
+    return appendProjectEvent(key, { type: "context.removed", path: folder }, writer, env);
+  });
 };
 
 /** A file added to the library: absolute, `~` expanded. */
@@ -236,16 +322,20 @@ export const addLibraryFile = (key: string, path: string, writer: ProjectWriter,
     // not there
   }
   if (!isFile) throw new ProjectError(`no file at ${file}`);
-  const project = readProject(key, env);
-  if (project.library.some((entry) => entry.path === file)) return project;
-  return appendProjectEvent(key, { type: "library.added", path: file }, writer, env);
+  return lockProject(key, env, () => {
+    const project = readProject(key, env);
+    if (project.library.some((entry) => entry.path === file)) return project;
+    return appendProjectEvent(key, { type: "library.added", path: file }, writer, env);
+  });
 };
 
 /** Take a file out of the library; the file itself stays where it is. */
 export const removeLibraryFile = (key: string, path: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project => {
   const file = libraryPath(path, env);
-  if (!readProject(key, env).library.some((entry) => entry.path === file)) throw new ProjectError(`${path} is not in this project's library`);
-  return appendProjectEvent(key, { type: "library.removed", path: file }, writer, env);
+  return lockProject(key, env, () => {
+    if (!readProject(key, env).library.some((entry) => entry.path === file)) throw new ProjectError(`${path} is not in this project's library`);
+    return appendProjectEvent(key, { type: "library.removed", path: file }, writer, env);
+  });
 };
 
 /** The context folders the project's agents are given: those still there. */

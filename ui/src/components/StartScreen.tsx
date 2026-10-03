@@ -311,13 +311,22 @@ export function StartScreen() {
     setBase(null);
     local.set("folder", path);
   };
-  // "New room here" from a project: a Work room in its folder.
+  // "New room here" from a project: a Work room in its folder, for this room only — the saved folder stays. A plain
+  // New room after it starts from the saved folder again, as a chat.
   const startIn = useStore((s) => (s.route.kind === "new" ? s.route.dir : undefined));
+  const wasIn = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!startIn) return;
-    pickFolder(startIn);
-    setMode("work");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const before = wasIn.current;
+    wasIn.current = startIn;
+    if (startIn) {
+      setFolder(startIn);
+      setBase(null);
+      setMode("work");
+    } else if (before) {
+      setFolder(local.get("folder"));
+      setBase(null);
+      setMode("chat");
+    }
   }, [startIn]);
   const git = useFolderGit(folder, () => pickFolder(null));
   const toggleWorktree = (on: boolean) => {

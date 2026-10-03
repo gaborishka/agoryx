@@ -53,6 +53,10 @@ const changeText = (event: ProjectEvent): string => {
       return `added the context folder ${event.path}`;
     case "context.removed":
       return `removed the context folder ${event.path}`;
+    case "library.added":
+      return `added ${baseName(event.path)} to the library`;
+    case "library.removed":
+      return `took ${baseName(event.path)} out of the library`;
   }
 };
 

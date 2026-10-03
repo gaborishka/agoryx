@@ -78,6 +78,7 @@ export type ProjectEvent = ProjectWriteMeta &
     | { type: "memory.revised"; id: string }
     | { type: "memory.removed"; id: string }
     | { type: "context.added" | "context.removed"; path: string }
+    | { type: "library.added" | "library.removed"; path: string }
   );
 
 export interface ProjectView {

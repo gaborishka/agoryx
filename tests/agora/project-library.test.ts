@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -102,6 +102,15 @@ test("the daemon adds and takes out library files by whoever asks; the overview 
         ["upload", paper, "Codex", true],
       ],
     );
+
+    // A file added to the project itself opens through the project's own capability (overview.rawBase[""]): no room links it.
+    const raw = (path: string) => fetch(`${info.url}${overview.rawBase[""]}~abs/${path.replace(/^\//, "").split("/").map(encodeURIComponent).join("/")}`);
+    const served = await raw(paper);
+    assert.equal(served.status, 200);
+    assert.equal(await served.text(), readFileSync(paper, "utf8"));
+    writeFileSync(join(key, "notes.txt"), "not in the library");
+    assert.equal((await raw(join(key, "notes.txt"))).status, 404, "only the library's files");
+    assert.equal((await fetch(`${info.url}${overview.rawBase[""].replace(/\/[^/]+\/$/, "/0000/")}~abs/${paper.slice(1)}`)).status, 404, "not without the key");
 
     const removed = await call("DELETE", `/api/projects/${hash}/library?path=${encodeURIComponent(paper)}`);
     assert.equal(removed.status, 200, JSON.stringify(removed.body));

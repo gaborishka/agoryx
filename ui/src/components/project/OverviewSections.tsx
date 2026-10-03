@@ -427,12 +427,12 @@ export function Usage({ usage }: { usage: ProjectOverview["usage"] }) {
 
 /** The project's overview, read again when one of its rooms changes. */
 export function useOverview(hash: string): { overview: Overview | null; error: string | null; reload: () => void } {
-  // Read again when what it shows can have changed: a room's messages (reports, files linked), a run starting or
-  // ending (its usage) — not with every step of a run. The room list is not read while the tab is hidden, so neither is this.
+  // Read again when what it shows can have changed: anything written in one of its rooms (a message, a pass that still
+  // spent usage, a table or doc change), a run starting or ending. The room list is not read while the tab is hidden, so neither is this.
   const tick = useStore((s) =>
     s.rooms
       .filter((room) => room.projectHash === hash)
-      .map((room) => `${room.id}:${room.messages}:${room.running}:${room.resolved?.at ?? ""}`)
+      .map((room) => `${room.id}:${room.updatedAt}:${room.running}:${room.resolved?.at ?? ""}`)
       .join(","),
   );
   const [overview, setOverview] = useState<Overview | null>(null);

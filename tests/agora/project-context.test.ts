@@ -8,6 +8,7 @@ import { AgoraDaemon } from "../../internal/agora/daemon.js";
 import {
   addProjectContext,
   contextFolders,
+  listProjects,
   projectBriefing,
   projectHash,
   projectUpdate,
@@ -58,6 +59,33 @@ test("a context folder is a write with who made it; inside, above or missing is 
     assert.deepEqual(removed.context, []);
     assert.equal(removed.events.at(-1)!.by, "claude");
     assert.throws(() => removeProjectContext(key, lib, { by: "Ivan" }, env), /not a context folder/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a link granted as a context folder and then pointed at the project's own folder is not given to agents", () => {
+  const { home, env, key, lib } = scratch();
+  try {
+    const link = join(home, "lib-link");
+    symlinkSync(lib, link);
+    addProjectContext(key, link, { by: "Ivan" }, env);
+    assert.deepEqual(contextFolders(readProject(key, env)), [link]);
+    rmSync(link);
+    symlinkSync(join(key, "src"), link);
+    assert.deepEqual(contextFolders(readProject(key, env)), [], "checked where it points now, not where it pointed when granted");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a project whose first event could not be written is still listed", () => {
+  const { home, env, key } = scratch();
+  try {
+    // events.jsonl as a folder: the first append fails, as a crash right before it would leave things.
+    mkdirSync(join(env.AGORYX_HOME, "projects", projectHash(key), "events.jsonl"), { recursive: true });
+    assert.throws(() => setProjectField(key, "goal", "First", { by: "Ivan" }, env));
+    assert.ok(listProjects(env).some((project) => project.key === key), "its folder is known from project.json");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

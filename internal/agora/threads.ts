@@ -1,3 +1,5 @@
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { findRun } from "./projection.js";
 import type { RoomStore } from "./store.js";
 import type { FileChange, RoomState, SystemNote, TableState } from "./types.js";
@@ -109,3 +111,53 @@ export const threadBriefing = (state: RoomState, cli: string, parentName?: strin
   state.parent
     ? `Thread: this room is a thread of "${parentName ?? state.parent}" (${state.parent})${state.worktree ? `, on its own branch ${state.worktree.branch}` : ""}. When a run here ends, Agoryx shows that room what this one left — the last message, verbatim; what the table got; the diff, uncommitted files too — and wakes the agent there that started it. Nothing else is summarised for you or for them.`
     : `Threads: \`${cli} new --from here --agents '[{"kind":"codex"}]' -m "<brief>"\` starts a Work room on its own branch of this folder (you alone, without --agents), to work in parallel; when its run ends it reports back here and wakes you. Steer one with \`${cli} say -r <thread> "…"\`; merging its branch is your own git work.`;
+
+/** A report as made when its run ended: what it says then, whenever it goes in. */
+export interface MadeReport {
+  text: string;
+  sys: ThreadNote;
+}
+
+/** Reports waiting for a room another process drives: one file each, in that room's own folder. */
+const waitingDir = (roomDir: string) => join(roomDir, "reports-waiting");
+
+/**
+ * Keep a report for a room that cannot take it now (another process drives it). It goes in when the room is next
+ * driven, here or by the daemon (deliverWaitingReports) — the run's end is not seen again, so it is not lost with it.
+ */
+export const queueThreadReport = (roomDir: string, report: MadeReport): void => {
+  const dir = waitingDir(roomDir);
+  mkdirSync(dir, { recursive: true });
+  const name = `${Date.now()}-${report.sys.room}-${report.sys.run ?? "run"}.json`;
+  writeFileSync(join(dir, `${name}.tmp`), JSON.stringify(report));
+  renameSync(join(dir, `${name}.tmp`), join(dir, name));
+};
+
+export const hasWaitingReports = (roomDir: string): boolean => {
+  try {
+    return readdirSync(waitingDir(roomDir)).some((name) => name.endsWith(".json"));
+  } catch {
+    return false;
+  }
+};
+
+/** Post every report waiting for this room, oldest first (the engine posts a run's report once). */
+export const deliverWaitingReports = (roomDir: string, post: (report: MadeReport) => void): number => {
+  const dir = waitingDir(roomDir);
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    const file = join(dir, name);
+    try {
+      post(JSON.parse(readFileSync(file, "utf8")) as MadeReport);
+    } catch {
+      // Unreadable: dropped rather than tried forever.
+    }
+    rmSync(file, { force: true });
+  }
+  return names.length;
+};

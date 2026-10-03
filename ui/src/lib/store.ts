@@ -574,7 +574,8 @@ const parseHash = (): { route: Route | null; params: URLSearchParams } => {
   } catch {
     return { route: null, params };
   }
-  if (head === "new") return { route: { kind: "new" }, params };
+  // New room in a project's folder (from its page): the folder comes back with the address, on reload or Back.
+  if (head === "new") return { route: params.get("dir") ? { kind: "new", dir: params.get("dir")! } : { kind: "new" }, params };
   if (head === "projects") return { route: { kind: "projects" }, params };
   if (/^project\/[0-9a-f]{12}$/.test(head)) return { route: { kind: "project", hash: head.slice("project/".length) }, params };
   if (head === "settings" || head.startsWith("settings/")) {
@@ -588,7 +589,7 @@ type Addressed = Pick<Store, "route" | "view" | "panel" | "changes" | "filePath"
 
 /** The address of what the page shows. */
 const hashFor = (s: Addressed): string => {
-  if (s.route.kind === "new") return "#new";
+  if (s.route.kind === "new") return s.route.dir ? `#new?${new URLSearchParams({ dir: s.route.dir })}` : "#new";
   if (s.route.kind === "settings") return s.route.section === "general" ? "#settings" : `#settings/${s.route.section}`;
   if (s.route.kind === "project") return `#project/${s.route.hash}`;
   if (s.route.kind === "projects") return "#projects";

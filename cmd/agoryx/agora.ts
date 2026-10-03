@@ -12,7 +12,7 @@ import { deviceLabel, DeviceRegistry, type DeviceInfo } from "../../internal/ago
 import { isExposed, readExposure, writeExposure, type Exposure } from "../../internal/agora/exposure.js";
 import { qrTerminal } from "../../internal/agora/qr.js";
 import { RoomLockedError, roomTurnPatch, roomWorkspaceDiff, type RoomEngine } from "../../internal/agora/engine.js";
-import { threadReport } from "../../internal/agora/threads.js";
+import { deliverWaitingReports, queueThreadReport, threadReport } from "../../internal/agora/threads.js";
 import { jevEnvFrom, JEV_ENV } from "../../internal/agora/jev.js";
 import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "../../internal/agora/paths.js";
 import { type AgentLook, agentLook } from "../../internal/agora/look.js";
@@ -479,18 +479,34 @@ const localConn = (ref: string | undefined): Conn => {
   const report = (runId: string) => {
     const parentId = store.state.parent!;
     try {
-      parent ??= openEngine(RoomStore.open(roomsDir(), parentId));
-      const made = threadReport(store, runId, parent.state, roomWorkspaceDiff(store)?.changes ?? []);
-      if (made) parent.postThreadReport(made.text, made.sys);
+      // Made now, as the run left the branch; it goes in now if the parent is free here, else when it next is.
+      const parentStore = parent?.store ?? RoomStore.open(roomsDir(), parentId);
+      const made = threadReport(store, runId, parentStore.state, roomWorkspaceDiff(store)?.changes ?? []);
+      if (!made) return;
+      try {
+        if (!parent) {
+          parent = openEngine(parentStore);
+          const live = parent;
+          deliverWaitingReports(parentStore.dir, (waiting) => live.postThreadReport(waiting.text, waiting.sys));
+        }
+        parent.postThreadReport(made.text, made.sys);
+      } catch (error) {
+        if (!(error instanceof RoomLockedError)) throw error;
+        queueThreadReport(parentStore.dir, made);
+        process.stderr.write(pc.dim(`(${parentId} is driven elsewhere: this run's report waits there and goes in when that room is next driven here or by the daemon)\n`));
+      }
     } catch (error) {
       const why = error instanceof Error ? error.message : String(error);
-      process.stderr.write(pc.dim(`(this run's report could not go to ${parentId}: ${why}${error instanceof RoomLockedError ? " — start the daemon (`agoryx up -d`) so rooms can report to each other" : ""})\n`));
+      process.stderr.write(pc.dim(`(this run's report could not go to ${parentId}: ${why})\n`));
     }
   };
   const drive = (): RoomEngine => {
     if (engine) return engine;
     try {
       engine = openEngine(store);
+      // Reports of this room's threads that waited while it was driven elsewhere.
+      const live = engine;
+      deliverWaitingReports(store.dir, (waiting) => live.postThreadReport(waiting.text, waiting.sys));
     } catch (error) {
       if (error instanceof RoomLockedError) {
         throw new Error(`${error.message}. Start the daemon (\`agoryx up -d\`) so several terminals can share the room.`);

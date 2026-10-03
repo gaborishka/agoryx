@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pidAlive } from "./daemoninfo.js";
-import { foldMemoryEvent, memoryBriefing, memoryUpdateLine, type MemoryEntry, type MemoryEventBody } from "./memory.js";
+import { foldMemoryEvent, memoryBriefing, memoryUpdateLine, renderMemoryMarkdown, type MemoryEntry, type MemoryEventBody } from "./memory.js";
 import { agoraHome } from "./paths.js";
 import type { ActorOrigin, RoomState } from "./types.js";
 
@@ -232,6 +232,13 @@ export const appendProjectEvent = (key: string, body: ProjectEventBody, writer: 
     const before = readEvents(file);
     const seq = before.reduce((max, event) => Math.max(max, event.seq), 0) + 1;
     const event = { ...body, seq, ts: new Date().toISOString(), by: writer.by, ...(writer.from ? { from: writer.from } : {}) } as ProjectEvent;
+    // The folder's path is kept only in project.json: written before the first event, so a crash between the two
+    // leaves a project that is still listed (and read from its events), not an orphaned log.
+    if (!existsSync(join(dir, "project.json"))) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "project.json.tmp"), `${JSON.stringify(summaryOf(foldProject(key, before)), null, 2)}\n`);
+      renameSync(join(dir, "project.json.tmp"), join(dir, "project.json"));
+    }
     // A crash mid-write can leave a partial last line: the new event starts on a line of its own, not glued onto it.
     const partial = existsSync(file) && statSync(file).size > 0 && !readFileSync(file, "utf8").endsWith("\n");
     appendFileSync(file, `${partial ? "\n" : ""}${JSON.stringify(event)}\n`);
@@ -239,6 +246,11 @@ export const appendProjectEvent = (key: string, body: ProjectEventBody, writer: 
     const tmp = join(dir, "project.json.tmp");
     writeFileSync(tmp, `${JSON.stringify(summaryOf(project), null, 2)}\n`);
     renameSync(tmp, join(dir, "project.json"));
+    // MEMORY.md is headed by the project's name: a new name is written there too, not only with the next memory write.
+    if (event.type === "project.changed" && event.field === "name" && existsSync(join(dir, "MEMORY.md"))) {
+      writeFileSync(join(dir, "MEMORY.md.tmp"), renderMemoryMarkdown(project));
+      renameSync(join(dir, "MEMORY.md.tmp"), join(dir, "MEMORY.md"));
+    }
     return project;
   });
 
@@ -283,6 +295,25 @@ const within = (dir: string, path: string): boolean => {
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 };
 
+/**
+ * Why `folder` cannot be one of the project's context folders, if it cannot: inside the project's own folder, or above
+ * it. Asked where the folders really are — a link to "/" (or into the project) is what it points at, not its name —
+ * and asked again each time the agents are given the folders, since a link can be pointed elsewhere after it was added.
+ */
+const contextClash = (key: string, folder: string): string | null => {
+  const real = (path: string) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return path;
+    }
+  };
+  const [realFolder, realKey] = [real(folder), real(key)];
+  if (within(realKey, realFolder)) return `${folder} is inside the project's own folder: its agents work there already`;
+  if (within(realFolder, realKey)) return `${folder} holds the project's own folder: name a folder beside it, not above it`;
+  return null;
+};
+
 /** The folder `path` names, if it can be a context folder of the project in `key`; else why not. */
 export const checkContextFolder = (key: string, path: string, env: NodeJS.ProcessEnv = process.env): string => {
   const folder = contextPath(path, env);
@@ -293,17 +324,8 @@ export const checkContextFolder = (key: string, path: string, env: NodeJS.Proces
     // not there
   }
   if (!isDir) throw new ProjectError(`no folder at ${folder}`);
-  // Where the folders really are: a link to "/" (or to the project) is what it points at, not the name it has.
-  const real = (path: string) => {
-    try {
-      return realpathSync(path);
-    } catch {
-      return path;
-    }
-  };
-  const [realFolder, realKey] = [real(folder), real(key)];
-  if (within(realKey, realFolder)) throw new ProjectError(`${folder} is inside the project's own folder: its agents work there already`);
-  if (within(realFolder, realKey)) throw new ProjectError(`${folder} holds the project's own folder: name a folder beside it, not above it`);
+  const clash = contextClash(key, folder);
+  if (clash) throw new ProjectError(clash);
   return folder;
 };
 
@@ -363,11 +385,11 @@ export const removeLibraryFile = (key: string, path: string, writer: ProjectWrit
   });
 };
 
-/** The context folders the project's agents are given: those still there. */
-export const contextFolders = (project: Pick<Project, "context">): string[] =>
+/** The context folders the project's agents are given: those still there, and still apart from its own folder (a link is checked where it points now). */
+export const contextFolders = (project: Pick<Project, "key" | "context">): string[] =>
   project.context.filter((folder) => {
     try {
-      return statSync(folder).isDirectory();
+      return statSync(folder).isDirectory() && !contextClash(project.key, folder);
     } catch {
       return false;
     }

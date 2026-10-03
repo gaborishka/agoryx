@@ -238,16 +238,29 @@ const entryOf = (project: Project, id: string): MemoryEntry => {
 };
 
 /** Rewrite an entry's text, reason or kind. Nothing is appended when nothing changes. */
+/** An entry changed since `seen` (its seq as the writer last read it): the write is refused, not made over it. */
+export class StaleMemoryError extends Error {
+  constructor(readonly entry: MemoryEntry) {
+    super(`${entry.id} changed since you opened it`);
+  }
+}
+
+const checkSeen = (entry: MemoryEntry, seen: number | undefined) => {
+  if (seen !== undefined && seen !== entry.seq) throw new StaleMemoryError(entry);
+};
+
 export const reviseMemory = (
   key: string,
   id: string,
   change: { text?: string; why?: string | null; kind?: string },
   writer: ProjectWriter,
   env: NodeJS.ProcessEnv = process.env,
+  seen?: number,
 ): Project =>
   lockProject(key, env, () => {
     const project = readProject(key, env);
     const entry = entryOf(project, id);
+    checkSeen(entry, seen);
     const body: MemoryEventBody & { type: "memory.revised" } = { type: "memory.revised", id: entry.id };
     if (change.kind !== undefined && change.kind !== entry.kind) {
       if (!isKind(change.kind)) throw new ProjectError(`a memory entry is a ${MEMORY_KINDS.join(", ")}; not "${change.kind}"`);
@@ -267,8 +280,12 @@ export const reviseMemory = (
     return append(key, body, writer, env);
   });
 
-export const removeMemory = (key: string, id: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env): Project =>
-  lockProject(key, env, () => append(key, { type: "memory.removed", id: entryOf(readProject(key, env), id).id }, writer, env));
+export const removeMemory = (key: string, id: string, writer: ProjectWriter, env: NodeJS.ProcessEnv = process.env, seen?: number): Project =>
+  lockProject(key, env, () => {
+    const entry = entryOf(readProject(key, env), id);
+    checkSeen(entry, seen);
+    return append(key, { type: "memory.removed", id: entry.id }, writer, env);
+  });
 
 // --- reading it ---------------------------------------------------------------------------------
 

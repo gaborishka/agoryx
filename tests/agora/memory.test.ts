@@ -5,8 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { agentKey } from "../../internal/agora/actor.js";
 import { AgoraDaemon } from "../../internal/agora/daemon.js";
-import { draftFromTable, memoryOrder, memoryPath, noteMemory, promoteToMemory, removeMemory, reviseMemory } from "../../internal/agora/memory.js";
-import { projectBriefing, projectHash, readProject } from "../../internal/agora/projects.js";
+import { draftFromTable, memoryOrder, memoryPath, noteMemory, promoteToMemory, removeMemory, reviseMemory, StaleMemoryError } from "../../internal/agora/memory.js";
+import { projectBriefing, projectHash, readProject, setProjectField } from "../../internal/agora/projects.js";
 import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
 import { createCodexRunner } from "../../internal/agora/runners/codex.js";
 import { applyTableOp, emptyTable, prepareTableOp } from "../../internal/agora/table.js";
@@ -102,6 +102,42 @@ test("memory says who wrote each entry, lists disagreements first, and renders e
     // An id is never given out again.
     assert.equal(noteMemory(key, { text: "Prefers short updates.", kind: "preference" }, { by: "Ivan" }, env).memory.at(-1)!.id, "M4");
     assert.doesNotMatch(readFileSync(memoryPath(key, env), "utf8"), /7777/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("MEMORY.md is headed by the project's name as it is now: renamed or cleared, it is written again", () => {
+  const home = mkdtempSync(join(tmpdir(), "agoryx-memory-"));
+  const env = { ...process.env, AGORYX_HOME: join(home, "agora") };
+  const key = join(home, "repo");
+  mkdirSync(key);
+  try {
+    setProjectField(key, "name", "Old", { by: "Ivan" }, env);
+    noteMemory(key, { text: "Ask Olena before touching CI.", kind: "person" }, { by: "Ivan" }, env);
+    assert.match(readFileSync(memoryPath(key, env), "utf8"), /^# Memory — Old/);
+    setProjectField(key, "name", "New", { by: "Ivan" }, env);
+    assert.match(readFileSync(memoryPath(key, env), "utf8"), /^# Memory — New/);
+    setProjectField(key, "name", "", { by: "Ivan" }, env);
+    assert.ok(readFileSync(memoryPath(key, env), "utf8").startsWith(`# Memory — ${key}`));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("an edit or removal made against an older version of an entry is refused, under the same lock as the write", () => {
+  const home = mkdtempSync(join(tmpdir(), "agoryx-memory-"));
+  const env = { ...process.env, AGORYX_HOME: join(home, "agora") };
+  const key = join(home, "repo");
+  mkdirSync(key);
+  try {
+    const seen = noteMemory(key, { text: "Ask Olena before touching CI.", kind: "person" }, { by: "Ivan" }, env).memory[0]!.seq;
+    reviseMemory(key, "M1", { text: "Ask Olena or Taras before touching CI." }, { by: "claude" }, env, seen);
+    assert.throws(() => reviseMemory(key, "M1", { text: "Ask nobody." }, { by: "Ivan" }, env, seen), StaleMemoryError);
+    assert.throws(() => removeMemory(key, "M1", { by: "Ivan" }, env, seen), StaleMemoryError);
+    assert.equal(readProject(key, env).memory.length, 1);
+    removeMemory(key, "M1", { by: "Ivan" }, env, readProject(key, env).memory[0]!.seq);
+    assert.equal(readProject(key, env).memory.length, 0);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

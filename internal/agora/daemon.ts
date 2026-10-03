@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, closeSync, createReadStream, existsSync, watch, type FSWatcher, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, createReadStream, existsSync, watch, type FSWatcher, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
@@ -32,7 +32,7 @@ import { agoraHome, daemonInfoPath, DEFAULT_PORT, roomsDir } from "./paths.js";
 import type { DaemonInfo } from "./daemoninfo.js";
 import { MAX_PROFILE_CHARS, profilePath, readProfile } from "./profile.js";
 import { addLibraryFile, addProjectContext, checkContextFolder, listProjects, MAX_PROJECT_TEXT, PROJECT_FIELDS, ProjectError, projectHash, projectKey, projectKeyOfFolder, readProject, removeLibraryFile, removeProjectContext, setProjectFields, type Project, type ProjectWriter } from "./projects.js";
-import { memoryPath, noteMemory, promoteToMemory, removeMemory, reviseMemory } from "./memory.js";
+import { memoryPath, noteMemory, promoteToMemory, removeMemory, reviseMemory, StaleMemoryError } from "./memory.js";
 import { parseSubscription, PushNotes, PushSender } from "./push.js";
 import { qrSvg } from "./qr.js";
 import { defaultRoster, parseAgents, rosterPath, RosterError } from "./roster.js";
@@ -41,7 +41,7 @@ import type { AgentRunner } from "./runners/types.js";
 import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js";
 import { workspaceAt } from "./room-mode.js";
 import { changeRoomMode, createRoom, defaultHumanName, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
-import { threadReport } from "./threads.js";
+import { deliverWaitingReports, hasWaitingReports, queueThreadReport, threadReport } from "./threads.js";
 import { RoomStore } from "./store.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
@@ -402,8 +402,8 @@ export class AgoraDaemon {
   /** What each push said: the phone fetches it (push.ts), so a push the daemon did not send shows nothing. */
   private readonly pushNotes = new PushNotes();
   private heartbeat?: NodeJS.Timeout;
-  /** Thread reports whose room another process drives: tried again until it can take them (reportThread). */
-  private pendingReports: Array<{ handle: RoomHandle; runId: string }> = [];
+  /** Rooms with thread reports waiting while another process drives them: tried again until they can take them. */
+  private reportsWaiting = new Set<string>();
   private reportRetry?: NodeJS.Timeout;
   /** Which rooms wait for the human (attention.ts). */
   private readonly attention: AttentionBoard;
@@ -640,6 +640,12 @@ export class AgoraDaemon {
       this.log(`phones: ${url}${iface ? ` (${iface})` : ""} — pair one with \`agoryx pair\``);
     }
     this.watchRecentRooms();
+    // Reports left waiting for a room busy elsewhere, by this daemon before it stopped or by a terminal without it.
+    try {
+      for (const id of readdirSync(roomsDir(this.env))) if (hasWaitingReports(join(roomsDir(this.env), id))) this.waitReports(id);
+    } catch {
+      // no rooms yet
+    }
     return info;
   }
 
@@ -754,6 +760,8 @@ export class AgoraDaemon {
         delete handle.followTimer;
       }
       fresh.subscribe((event) => this.onRoomEvent(handle, event));
+      // Thread reports that waited while another process drove the room.
+      deliverWaitingReports(fresh.dir, (report) => engine.postThreadReport(report.text, report.sys));
     } catch (error) {
       if (!(error instanceof RoomLockedError)) throw error;
       handle.lockedBy = error.message;
@@ -789,33 +797,46 @@ export class AgoraDaemon {
   }
 
   /**
-   * A thread's run ended: its report goes into the room it was started from (threads.ts). While another process
-   * drives that room (an agent's `agoryx new --from here` in a terminal), the report waits and is tried again.
+   * A thread's run ended: its report goes into the room it was started from (threads.ts), made now — the diff as the
+   * run left it. While another process drives that room (an agent's `agoryx new --from here` in a terminal), the
+   * report waits in that room's folder and goes in once the room can be driven here.
    */
-  private reportThread(handle: RoomHandle, runId: string): boolean {
+  private reportThread(handle: RoomHandle, runId: string): void {
     const parentId = handle.store.state.parent!;
     try {
       const parent = this.room(parentId);
-      if (!parent.engine) {
-        if (!this.pendingReports.some((item) => item.handle === handle && item.runId === runId)) {
-          this.pendingReports.push({ handle, runId });
-          this.log(`[${handle.store.id}] its report waits for ${parentId}: ${parent.lockedBy ?? "the room is busy"}`);
-        }
-        this.reportRetry ??= setInterval(() => this.retryReports(), REPORT_RETRY_MS);
-        this.reportRetry.unref();
-        return false;
-      }
       const report = threadReport(handle.store, runId, parent.store.state, roomWorkspaceDiff(handle.store)?.changes ?? []);
-      if (report) parent.engine.postThreadReport(report.text, report.sys);
+      if (!report) return;
+      if (parent.engine) {
+        parent.engine.postThreadReport(report.text, report.sys);
+        return;
+      }
+      queueThreadReport(parent.store.dir, report);
+      this.log(`[${handle.store.id}] its report waits for ${parentId}: ${parent.lockedBy ?? "the room is busy"}`);
+      this.waitReports(parentId);
     } catch (error) {
       this.log(`[${handle.store.id}] cannot report to ${parentId}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    return true;
+  }
+
+  /** Try `roomId` again for its waiting reports until it can take them. */
+  private waitReports(roomId: string): void {
+    this.reportsWaiting.add(roomId);
+    this.reportRetry ??= setInterval(() => this.retryReports(), REPORT_RETRY_MS);
+    this.reportRetry.unref();
   }
 
   private retryReports(): void {
-    this.pendingReports = this.pendingReports.filter(({ handle, runId }) => !this.reportThread(handle, runId));
-    if (!this.pendingReports.length && this.reportRetry) {
+    for (const roomId of this.reportsWaiting) {
+      try {
+        // Opening it drives it when it is free; driving it delivers what waits (tryDrive).
+        const handle = this.room(roomId);
+        if (handle.engine || !hasWaitingReports(handle.store.dir)) this.reportsWaiting.delete(roomId);
+      } catch {
+        this.reportsWaiting.delete(roomId);
+      }
+    }
+    if (!this.reportsWaiting.size && this.reportRetry) {
       clearInterval(this.reportRetry);
       delete this.reportRetry;
     }
@@ -1368,17 +1389,19 @@ export class AgoraDaemon {
       if (!entry) throw new HttpError(404, `no memory entry ${id}`);
       // A DELETE has no body, so its version comes in the query.
       const seen = typeof body.seq === "number" ? body.seq : url.searchParams.has("seq") ? Number(url.searchParams.get("seq")) : undefined;
-      if (seen !== undefined && seen !== entry.seq) {
-        sendJson(res, 409, { error: `${entry.id} changed since you opened it`, entry, project: { ...view(project), events: project.events } });
-        return;
-      }
       try {
+        // The version is checked under the project's lock, with the write: not before it, where another write could slip between.
         if (method === "PATCH") {
           const why = body.why === null ? null : text(body.why, "why");
-          reviseMemory(key, entry.id, { text: text(body.text, "text"), why, kind: text(body.kind, "kind") }, writer, this.env);
-        } else if (method === "DELETE") removeMemory(key, entry.id, writer, this.env);
+          reviseMemory(key, entry.id, { text: text(body.text, "text"), why, kind: text(body.kind, "kind") }, writer, this.env, seen);
+        } else if (method === "DELETE") removeMemory(key, entry.id, writer, this.env, seen);
         else throw new HttpError(405, "PATCH or DELETE");
       } catch (error) {
+        if (error instanceof StaleMemoryError) {
+          const now = readProject(key, this.env);
+          sendJson(res, 409, { error: error.message, entry: error.entry, project: { ...view(now), events: now.events } });
+          return;
+        }
         fail(error);
       }
     } else if (method === "PATCH") {

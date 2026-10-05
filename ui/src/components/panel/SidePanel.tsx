@@ -1,0 +1,249 @@
+import { FileTextIcon, FolderIcon, FoldersIcon, GitBranchIcon, GitCompareArrowsIcon, GlobeIcon, type LucideIcon, Maximize2Icon, Minimize2Icon, ScaleIcon, SquareTerminalIcon, XIcon } from "lucide-react";
+import { lazy, type KeyboardEvent, type ReactNode, Suspense, useEffect, useRef } from "react";
+import { browserWidth, navWidthOf, PANEL_MIN, ResizeHandle, ROOM_MIN, useViewportWidth } from "@/components/common/ResizeHandle";
+import { EmptyState, Loading } from "@/components/common/states";
+import { Tip } from "@/components/room/bits";
+import { TableBoard } from "@/components/table/TableBoard";
+import { Button } from "@/components/ui/button";
+import { browserBridge, useBrowserState } from "@/lib/desktop";
+import { ink, participant } from "@/lib/room";
+import { type PanelTab, useStore } from "@/lib/store";
+import { cn } from "@/lib/utils";
+import { t } from "@/lib/i18n";
+
+// The room's one side panel: its tabs show an agent's session, the shared document, the room's browser
+// (in the app), what turns changed, the workspace's files, and the table beside the conversation. Diffs and
+// file views (Pierre + Shiki) are the heavy part of the page: each tab loads with its first opening, and all
+// are fetched while idle. The table is in the page already, as the room's other view.
+
+const loaders = {
+  session: () => import("@/components/session/SessionPanel"),
+  doc: () => import("@/components/doc/DocPanel"),
+  browser: () => import("@/components/browser/BrowserPanel"),
+  diff: () => import("@/components/panel/ChangesPanel"),
+  files: () => import("@/components/panel/FilesPanel"),
+  thread: () => import("@/components/thread/ThreadPanel"),
+  project: () => import("@/components/project/ProjectPanel"),
+};
+const SessionPanel = lazy(() => loaders.session().then((m) => ({ default: m.SessionPanel })));
+const DocPanel = lazy(() => loaders.doc().then((m) => ({ default: m.DocPanel })));
+const BrowserPanel = lazy(() => loaders.browser().then((m) => ({ default: m.BrowserPanel })));
+const ChangesPanel = lazy(() => loaders.diff().then((m) => ({ default: m.ChangesPanel })));
+const FilesPanel = lazy(() => loaders.files().then((m) => ({ default: m.FilesPanel })));
+const ThreadPanel = lazy(() => loaders.thread().then((m) => ({ default: m.ThreadPanel })));
+const ProjectPanel = lazy(() => loaders.project().then((m) => ({ default: m.ProjectPanel })));
+
+export const warmPanels = () =>
+  Promise.all(
+    (Object.keys(loaders) as (keyof typeof loaders)[]).filter((tab) => tab !== "browser" || browserBridge()).map((tab) => loaders[tab]()),
+  );
+
+export const TABS: Record<PanelTab, { label: string; icon: LucideIcon; tip: string }> = {
+  session: { label: "Session", icon: SquareTerminalIcon, tip: `The agent’s session: everything it did; ${t.model.and}` },
+  doc: { label: "Document", icon: FileTextIcon, tip: "The room’s shared document and its versions" },
+  browser: { label: "Browser", icon: GlobeIcon, tip: "The room’s shared browser: agents open pages in it, and you see every step" },
+  diff: { label: "Changes", icon: GitCompareArrowsIcon, tip: "What turns changed in the files" },
+  files: { label: "Files", icon: FolderIcon, tip: "Files in the working folder" },
+  table: { label: "Table", icon: ScaleIcon, tip: "The table beside the conversation: questions, options and conclusions while you read and write" },
+  project: { label: "Project", icon: FoldersIcon, tip: "The room’s project: its threads, its library and what its rooms took" },
+  thread: { label: "Thread", icon: GitBranchIcon, tip: "A thread of this room: its own room on its own branch, read as it goes" },
+};
+
+/** The tabs this page has: the browser only in the Agoryx app; the project's in a Work room; a thread's once one is open. */
+export const panelTabs = (thread = false, project = false): PanelTab[] => [
+  "session",
+  "doc",
+  ...(browserBridge() ? (["browser"] as const) : []),
+  "diff",
+  "files",
+  "table",
+  ...(project ? (["project"] as const) : []),
+  ...(thread ? (["thread"] as const) : []),
+];
+
+/** The dot on the browser's tab: an agent is driving the page. */
+export function Driver() {
+  const room = useStore((s) => s.snap?.state);
+  const state = useBrowserState(room?.id);
+  const driver = state?.driver ?? null;
+  if (!room || !driver) return null;
+  const who = participant(room, driver.agent);
+  return (
+    <span
+      className={cn("absolute -top-0.5 -right-0.5 size-2 animate-breathe rounded-full ring-2 ring-background", who.tone === "codex" ? "bg-codex" : "bg-claude")}
+      style={ink(who)}
+    />
+  );
+}
+
+function TabStrip({ current }: { current: PanelTab }) {
+  const setPanel = useStore((s) => s.setPanel);
+  const chat = useStore((s) => s.snap?.state.mode === "chat");
+  const thread = useStore((s) => Boolean(s.thread));
+  const project = useStore((s) => Boolean(s.rooms.find((room) => room.id === s.snap?.state.id)?.projectHash));
+  const tabs = panelTabs(thread, project).filter((tab) => !chat || tab !== "diff");
+  const strip = useRef<HTMLDivElement>(null);
+  // Arrows move between tabs, as in any tab list.
+  const keys = (event: KeyboardEvent) => {
+    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const next = tabs[(tabs.indexOf(current) + step + tabs.length) % tabs.length]!;
+    setPanel(next);
+    requestAnimationFrame(() => strip.current?.querySelector<HTMLElement>(`[data-tab=${next}]`)?.focus());
+  };
+  return (
+    <div ref={strip} role="tablist" aria-label="Panel" onKeyDown={keys} className="flex min-w-0 items-center gap-0.5 overflow-x-auto rounded-lg bg-muted p-0.5 [scrollbar-width:none]">
+      {tabs.map((tab) => {
+        const { label, icon: Icon, tip } = TABS[tab];
+        const on = tab === current;
+        return (
+          <Tip key={tab} tip={tip} side="bottom">
+            <button
+              type="button"
+              role="tab"
+              data-tab={tab}
+              id={`panel-tab-${tab}`}
+              aria-selected={on}
+              aria-controls="panel-body"
+              aria-label={label}
+              tabIndex={on ? 0 : -1}
+              onClick={() => setPanel(tab)}
+              className={cn(
+                "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-small font-medium transition",
+                on ? "bg-background text-foreground shadow-edge ring-1 ring-border/70" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <span className="relative">
+                <Icon className="size-4" />
+                {tab === "browser" ? <Driver /> : null}
+              </span>
+              <span className={cn(on ? "inline" : "hidden @min-[34rem]:inline")}>{label}</span>
+            </button>
+          </Tip>
+        );
+      })}
+    </div>
+  );
+}
+
+function Body({ tab }: { tab: PanelTab }) {
+  let body: ReactNode;
+  if (tab === "session") body = <SessionPanel />;
+  else if (tab === "browser") {
+    body = browserBridge() ? <BrowserPanel /> : <EmptyState icon={GlobeIcon} title="Only in the app" text="The room’s shared browser is in the Agoryx app for macOS." />;
+  } else if (tab === "diff") body = <ChangesPanel />;
+  else if (tab === "files") body = <FilesPanel />;
+  else if (tab === "table") body = <TableBoard beside />;
+  else if (tab === "thread") body = <ThreadPanel />;
+  else if (tab === "project") body = <ProjectPanel />;
+  else {
+    body = (
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+        <DocPanel />
+      </div>
+    );
+  }
+  return (
+    <div id="panel-body" role="tabpanel" aria-labelledby={`panel-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">
+      <Suspense fallback={<Loading className="p-4" />}>{body}</Suspense>
+    </div>
+  );
+}
+
+/**
+ * Docked beside the room on a wide screen; below that it slides over the room, and on a phone it is
+ * a full-screen sheet with a plain “Close”.
+ */
+export function SidePanel({ overlay, phone }: { overlay: boolean; phone: boolean }) {
+  const panel = useStore((s) => s.panel);
+  const wide = useStore((s) => s.wide);
+  const setWide = useStore((s) => s.setWide);
+  const setPanel = useStore((s) => s.setPanel);
+  const navWidth = useStore((s) => s.navWidth);
+  const navCollapsed = useStore((s) => s.navCollapsed);
+  const panelWidth = useStore((s) => s.panelWidth);
+  const setPanelWidth = useStore((s) => s.setPanelWidth);
+  const viewport = useViewportWidth();
+  const aside = useRef<HTMLElement>(null);
+  const open = !!panel;
+  // Closed, the focus goes back where it came from (or to the header's panel button), not to the page's top.
+  const opener = useRef<HTMLElement | null | undefined>(undefined);
+  useEffect(() => {
+    if (open) {
+      const from = document.activeElement;
+      opener.current = from instanceof HTMLElement && from !== document.body && !aside.current?.contains(from) ? from : null;
+      return;
+    }
+    const from = opener.current;
+    if (from === undefined) return; // never opened here: nothing to give back
+    opener.current = undefined;
+    if (document.activeElement && document.activeElement !== document.body) return;
+    const back = from?.isConnected ? from : document.querySelector<HTMLElement>("[data-panel-toggle]");
+    back?.focus({ preventScroll: true });
+  }, [open]);
+  // Over the room, the panel takes the focus, so typing and Esc do not go to the composer hidden under it.
+  useEffect(() => {
+    const el = aside.current;
+    if (!open || !overlay || !el || el.contains(document.activeElement)) return;
+    el.focus({ preventScroll: true });
+  }, [open, overlay]);
+  if (!panel) return null;
+  // The browser's page is laid out 1280 px wide and scaled in: docked, it takes the wide width the room leaves.
+  const browser = panel === "browser";
+  // Docked, its width is dragged by its left edge; the room keeps room for a readable conversation.
+  const min = PANEL_MIN;
+  const max = Math.max(min, viewport - (viewport < 640 ? 58 : 68) - (navCollapsed ? 0 : navWidthOf(navWidth)) - ROOM_MIN);
+  const width = Math.round(Math.min(max, Math.max(min, wide || browser ? browserWidth(viewport) : (panelWidth ?? (viewport >= 1280 ? 480 : 440)))));
+  const resize = (next: number) => {
+    if (wide) setWide(false);
+    setPanelWidth(next);
+  };
+  const reset = () => {
+    setWide(false);
+    setPanelWidth(null);
+  };
+  return (
+    <>
+      {overlay && !phone ? <button type="button" aria-label="Close panel" className="fixed inset-0 z-30 bg-black/25 backdrop-blur-[1px]" onClick={() => setPanel(null)} /> : null}
+      <aside
+        ref={aside}
+        tabIndex={-1}
+        aria-label={TABS[panel].label}
+        data-side-panel
+        className={cn(
+          "@container flex min-h-0 flex-col border-l outline-none border-border bg-background animate-in duration-200 fade-in-0",
+          phone
+            ? "fixed inset-0 z-40 slide-in-from-bottom-8"
+            : overlay
+              ? "fixed inset-y-0 right-0 z-40 w-[min(560px,100vw)] shadow-lift slide-in-from-right-8"
+              : "relative slide-in-from-right-8 in-data-resizing:transition-none",
+        )}
+        style={overlay || phone ? undefined : { width }}
+      >
+        {!overlay && !phone && !browser ? <ResizeHandle label="Panel width" value={width} min={min} max={max} grows="right" onChange={resize} onReset={reset} /> : null}
+        <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 px-2 sm:px-3">
+          <TabStrip current={panel} />
+          <div className="ml-auto flex shrink-0 items-center">
+            {!overlay && !browser ? (
+              <Button variant="ghost" size="icon" className="size-8" onClick={() => setWide(!wide)} aria-label={wide ? "Narrower" : "Wider"} title={wide ? "Narrower" : "Wider"}>
+                {wide ? <Minimize2Icon className="size-4" /> : <Maximize2Icon className="size-4" />}
+              </Button>
+            ) : null}
+            {phone ? (
+              <Button variant="ghost" size="sm" className="h-8 gap-1 px-2 text-small" onClick={() => setPanel(null)}>
+                <XIcon className="size-4" />
+                Close
+              </Button>
+            ) : (
+              <Button variant="ghost" size="icon" className="size-8" onClick={() => setPanel(null)} aria-label="Close panel" title="Close (Esc)">
+                <XIcon className="size-4" />
+              </Button>
+            )}
+          </div>
+        </div>
+        <Body tab={panel} />
+      </aside>
+    </>
+  );
+}

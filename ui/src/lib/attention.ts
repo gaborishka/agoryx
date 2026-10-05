@@ -1,0 +1,72 @@
+import type { AttentionItem, AttentionReason } from "./types";
+
+/**
+ * Tells the daemon which room this tab looks at (docs/archive/plans/2026-09-29-desktop-attention.md, Part C). The
+ * callbacks come from the store, so this module does not import it.
+ *
+ * A tab looks while it is visible and focused. Inside the macOS app nothing is sent: the app's main
+ * process reports its window itself (`document.hasFocus()` is unreliable in Electron). A plain same-origin
+ * fetch with the page's cookie, not api(): a heartbeat that fails never shows an error or the login gate.
+ */
+
+const HEARTBEAT_MS = 15_000;
+
+interface Report {
+  view: string;
+  room: string | null;
+  looking: boolean;
+}
+
+const viewId = (): string =>
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+
+export const startAttention = (currentRoom: () => string | null, subscribe: (listener: () => void) => () => void): void => {
+  if (typeof navigator === "undefined" || navigator.userAgent.includes("Electron/")) return;
+  const view = viewId();
+  let last: Report | null = null;
+
+  const looking = (): boolean => document.visibilityState === "visible" && document.hasFocus();
+
+  /** Sends where this tab looks; unchanged reports only as the heartbeat (`again`). */
+  const send = (again = false, leaving = false): void => {
+    const report: Report = { view, room: currentRoom(), looking: leaving ? false : looking() };
+    if (!again && last && last.room === report.room && last.looking === report.looking) return;
+    last = report;
+    fetch("/api/attention/view", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(report),
+      credentials: "same-origin",
+      keepalive: leaving,
+    }).catch(() => {});
+  };
+
+  subscribe(() => send());
+  document.addEventListener("visibilitychange", () => send());
+  window.addEventListener("focus", () => send());
+  window.addEventListener("blur", () => send());
+  window.addEventListener("pageshow", () => send(true));
+  window.addEventListener("pagehide", () => send(true, true));
+  // A focused tab left alone keeps counting while it keeps saying so (the daemon forgets a view after 45 s).
+  setInterval(() => {
+    if (looking()) send(true);
+  }, HEARTBEAT_MS);
+  send(true);
+};
+
+const SHORT: Record<AttentionReason, (by: string | undefined) => string> = {
+  done: () => "agents finished",
+  budget: () => "turn limit reached",
+  stopped: () => "stopped",
+  mention: (by) => `${by ?? "an agent"} is calling you`,
+  error: (by) => (by ? `${by}’s turn failed` : "a turn failed"),
+  thread: (by) => (by ? `thread “${by}” reported` : "a thread reported"),
+};
+
+/**
+ * Why a room waits, in a few words: “agents finished”, “Claude is calling you” (the sidebar puts “Waiting for you” before
+ * all but a mention, which already says who calls). The tray's copy is internal/desktop/attention.ts.
+ */
+export const waitingReason = (item: AttentionItem): string => SHORT[item.reason](item.by);

@@ -1,0 +1,238 @@
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { RoomEngine } from "../../internal/agora/engine.js";
+import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
+import { createCodexRunner } from "../../internal/agora/runners/codex.js";
+import { RoomStore } from "../../internal/agora/store.js";
+import { DEFAULT_SETTINGS, type RoomAgent, type RoomSettings } from "../../internal/agora/types.js";
+import { ensureAgentShim, workspacePaths } from "../../internal/agora/workspace.js";
+
+const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
+
+// An agent running these tests from inside a room inherits that room's variables (and its CLI's shell
+// hints), which would point the rooms under test at the real one and sign ops as that agent.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("AGORYX_") || key === "CLAUDECODE" || key.startsWith("CODEX_SANDBOX")) delete process.env[key];
+}
+
+export const AGENTS: RoomAgent[] = [
+  { id: "claude", kind: "claude", label: "Claude" },
+  { id: "codex", kind: "codex", label: "Codex" },
+];
+
+export interface FakeLogEntry {
+  kind: string;
+  turn: number;
+  args?: string[];
+  prompt?: string;
+  cwd?: string;
+  sessionId?: string;
+  resumed?: boolean;
+  env?: Record<string, string | undefined>;
+  /** Live mode: the pid of the (live) process and what it was started with, which no turn can change. */
+  live?: boolean;
+  pid?: number;
+  procEnv?: Record<string, string | undefined>;
+  tableOutputs?: string[];
+  backgroundPid?: number;
+}
+
+export interface TestRoom {
+  home: string;
+  store: RoomStore;
+  engine: RoomEngine;
+  env: NodeJS.ProcessEnv;
+  roomsRoot: string;
+  shimDir: string;
+  fakeClaude: string;
+  fakeCodex: string;
+  invocations(kind?: string): FakeLogEntry[];
+  cleanup(): Promise<void>;
+}
+
+export const writeFakeBins = (home: string) => {
+  const binDir = join(home, "fakebin");
+  mkdirSync(binDir, { recursive: true });
+  const make = (kind: string) => {
+    const path = join(binDir, `fake-${kind}`);
+    writeFileSync(path, `#!/bin/sh\nexec "${process.execPath}" "${join(fixtures, "fake-agent.mjs")}" ${kind} "$@"\n`);
+    chmodSync(path, 0o755);
+    return path;
+  };
+  return { fakeClaude: make("claude"), fakeCodex: make("codex") };
+};
+
+export const createTestRoom = (options: {
+  rules?: unknown[];
+  settings?: Partial<RoomSettings>;
+  agents?: RoomAgent[];
+  name?: string;
+  env?: NodeJS.ProcessEnv;
+  /** The human's profile file, as the daemon passes <AGORYX_HOME>/profile.md; none when not given. */
+  profilePath?: string;
+  /** Keep the agents' CLI processes up between turns (see EngineOptions.live). */
+  live?: boolean | { idleMs?: number };
+  /** Issues the agents' keys, as the daemon does. */
+  agentKey?: (agentId: string) => string | undefined;
+  secondLook?: import("../../internal/agora/jev.js").SecondLook;
+  readMessage?: import("../../internal/agora/jev.js").ReadMessage;
+  /** false: the workspace is a folder the human brought (it exists, and is not a git repository). */
+  createdWorkspace?: boolean;
+  /** Where the agents' limits go (see EngineOptions.onLimits). */
+  onLimits?: (snapshot: import("../../internal/agora/types.js").LimitSnapshot) => void;
+  /** Whether someone has the room open, and how often GitHub is asked again (see EngineOptions). */
+  viewed?: () => boolean;
+  githubPollMs?: number;
+  /** The test home is the Agoryx home too (AGORYX_HOME): the agents' own CLI finds the room, projects live there. */
+  agoraHome?: boolean;
+} = {}): TestRoom => {
+  const home = mkdtempSync(join(tmpdir(), "agora-test-"));
+  const roomsRoot = join(home, "rooms");
+  const workspace = join(home, "ws");
+  if (options.createdWorkspace === false) mkdirSync(workspace, { recursive: true });
+  const { fakeClaude, fakeCodex } = writeFakeBins(home);
+  const rulesPath = join(home, "rules.json");
+  writeFileSync(rulesPath, JSON.stringify(options.rules ?? []));
+  const logPath = join(home, "fake.log");
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    FAKE_LOG: logPath,
+    FAKE_STATE: join(home, "fake-state"),
+    FAKE_RULES: rulesPath,
+    CLAUDECODE: "1",
+    // Native session files (written by the fake CLIs) stay inside the test home.
+    CLAUDE_CONFIG_DIR: join(home, "claude-config"),
+    CODEX_HOME: join(home, "codex-home"),
+    // The agent tool waits this long for the room to take an op; under the whole suite's load 5 s is not enough.
+    AGORYX_ACK_MS: "60000",
+    // Rules order their turns by marks made here (mark / waitForMark), not by sleeps.
+    FAKE_MARKS: home,
+    ...(options.agoraHome ? { AGORYX_HOME: home } : {}),
+    ...options.env,
+  };
+  const shimDir = join(home, "shim");
+  ensureAgentShim(shimDir);
+  const store = RoomStore.create(roomsRoot, {
+    name: options.name ?? "Test room",
+    workspace,
+    createdWorkspace: options.createdWorkspace ?? true,
+    human: "Ivan",
+    agents: options.agents ?? AGENTS,
+    settings: { ...DEFAULT_SETTINGS, network: false, ...options.settings },
+  });
+  const engine = new RoomEngine({
+    store,
+    runners: { claude: createClaudeRunner(fakeClaude), codex: createCodexRunner(fakeCodex) },
+    shimDir,
+    env,
+    ...(options.profilePath ? { profilePath: options.profilePath } : {}),
+    ...(options.live !== undefined ? { live: options.live } : {}),
+    ...(options.agentKey ? { agentKey: options.agentKey } : {}),
+    ...(options.secondLook ? { secondLook: options.secondLook } : {}),
+    ...(options.readMessage ? { readMessage: options.readMessage } : {}),
+    ...(options.onLimits ? { onLimits: options.onLimits } : {}),
+    ...(options.viewed ? { viewed: options.viewed } : {}),
+    ...(options.githubPollMs !== undefined ? { githubPollMs: options.githubPollMs } : {}),
+    opsPollMs: 50,
+    nativePollMs: 50,
+  });
+  const untrack = trackRoom({ store, engine, logPath });
+  return {
+    home,
+    store,
+    engine,
+    env,
+    roomsRoot,
+    shimDir,
+    fakeClaude,
+    fakeCodex,
+    invocations(kind?: string) {
+      if (!existsSync(logPath)) return [];
+      return readFileSync(logPath, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as FakeLogEntry)
+        .filter((entry) => entry.prompt !== undefined && (!kind || entry.kind === kind));
+    },
+    async cleanup() {
+      untrack();
+      await engine.close();
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+};
+
+type TrackedRoom = { store: RoomStore; engine: RoomEngine; logPath: string };
+
+/** The rooms this test file has open, for what a timed-out wait says about them. */
+const openRooms = new Set<TrackedRoom>();
+
+/** A room a test built itself, described too if a wait times out; the returned function forgets it. */
+export const trackRoom = (room: TrackedRoom): (() => void) => {
+  openRooms.add(room);
+  return () => openRooms.delete(room);
+};
+
+const lines = (path: string): string[] => (existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : []);
+
+/** What each open room was doing: its turns, its last events, ops not yet taken, and what the fake CLIs' turns took. */
+export const describeOpenRooms = (): string => [...openRooms].map(describeRoom).join("\n");
+
+const describeRoom = ({ store, engine, logPath }: TrackedRoom): string => {
+  const state = store.state;
+  const t0 = Date.parse(state.createdAt);
+  const at = (ts: string | number | undefined) => (ts === undefined ? "…" : `+${((typeof ts === "number" ? ts : Date.parse(ts)) - t0) / 1000}s`);
+  const turns = state.turns.map((turn) => `${turn.id} ${turn.agent} ${turn.status} ${at(turn.startedAt)}→${at(turn.endedAt)}`);
+  const events = store.since(Math.max(0, state.seq - 12)).map((event) => `${at(event.ts)} ${event.type}`);
+  let ops: string[] = [];
+  try {
+    const dir = workspacePaths(state.workspace, state.id).opsDir;
+    ops = existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(".op")) : [];
+  } catch {
+    // gone
+  }
+  const timings = lines(`${logPath}.timing`).map((line) => {
+    try {
+      const { at: when, ...entry } = JSON.parse(line) as { at: number };
+      return `${at(when)} ${JSON.stringify(entry)}`;
+    } catch {
+      return line; // being written
+    }
+  });
+  return [
+    `room ${state.id} (${state.agents.map((agent) => agent.id).join(", ")}), presence ${JSON.stringify(engine.presence())}`,
+    `  turns: ${turns.join("; ") || "none"}`,
+    `  last events: ${events.join("; ")}`,
+    `  ops not taken: ${ops.length ? ops.join(", ") : "none"}`,
+    ...timings.map((line) => `  ${line}`),
+  ].join("\n");
+};
+
+export const tableOutputs = (room: TestRoom): FakeLogEntry[] => {
+  const logPath = room.env.FAKE_LOG!;
+  if (!existsSync(logPath)) return [];
+  return readFileSync(logPath, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as FakeLogEntry)
+    .filter((entry) => entry.tableOutputs);
+};
+
+export const withTimeout = <T>(promise: Promise<T>, ms = 20_000): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => {
+        // What is said about the rooms never keeps the wait from failing.
+        let rooms = "";
+        try {
+          rooms = describeOpenRooms();
+        } catch (error) {
+          rooms = `(the rooms could not be described: ${error instanceof Error ? error.message : String(error)})`;
+        }
+        reject(new Error(`timed out after ${ms}ms${rooms ? `\n${rooms}` : ""}`));
+      }, ms).unref(),
+    ),
+  ]);

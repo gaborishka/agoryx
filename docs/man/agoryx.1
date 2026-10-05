@@ -1,0 +1,116 @@
+.TH AGORYX 1 "2026-10-05" "Agoryx 0.1.0" "User Commands"
+.SH NAME
+agoryx \- a local-first workspace for you and your AI agents
+.SH SYNOPSIS
+.B agoryx up
+.RI "[-d] [--port N]"
+.br
+.B agoryx open
+.RI "[room]"
+.br
+.B agoryx new
+.RI "[name] [--mode chat|work] [--dir folder] [--worktree] [-m message]"
+.br
+.B agoryx say
+.RI "[-r room] text"
+.br
+.B agoryx help rooms
+.br
+.B agoryx doctor
+.RI "[--probe] [--json]"
+.br
+.B agoryx service
+.RI "install|uninstall|status [--json]"
+.SH DESCRIPTION
+Agoryx brings a human and native Claude Code/Codex agents into shared
+conversations.
+The web UI, macOS shell and room CLI share a local JSONL event runtime.
+Projects group conversations independently of their mode and execution folder.
+.PP
+Chat and Work use shared native sessions. Verification, Council, Tournament
+and Debate
+have separate private phases, atomic reveal and mode-specific results.
+Start these protocols in the web or desktop UI. Private execution requires the
+supported
+macOS Seatbelt backend and refuses to run without that boundary.
+.PP
+Local-first describes storage and coordination. Model prompts still go to the
+selected
+provider through its native CLI. The desktop distribution requires Apple
+Silicon,
+Node.js 22 or newer, and signed-in native agent CLIs.
+.SH ROOM COMMANDS
+.TP
+.B up / down / open
+Start or stop the daemon, or open its authenticated web UI. The default port
+is 7717.
+The daemon listens on loopback unless LAN or trusted proxy access is
+explicitly enabled.
+.TP
+.B new / rooms
+Create a Chat or Work conversation, or list conversations.
+.TP
+.B say / tail / more / stop
+Post a message, inspect or follow the conversation, request another round, or
+stop execution.
+.TP
+.B table
+Inspect or act on the room's questions, proposals, evidence, decisions and
+components.
+.TP
+.B project / memory
+Inspect or explicitly update the conversation's project and its event-backed
+memory.
+Use --dir to address a project folder directly.
+.TP
+.B doc / diff / revert
+Inspect the canonical document, per-turn changes and recovery snapshots.
+Reverting files does not rewind conversation or table history.
+.TP
+.B resume
+Print the native Claude/Codex session resume commands.
+.TP
+.B pair / devices
+Pair a phone using an expiring code, list paired devices or revoke access.
+.PP
+Run "agoryx help rooms" for the complete grammar and flags.
+.SH INSTALLATION AND DIAGNOSTICS
+.TP
+.B doctor
+Check Node, the build, native SQLite loading, agent installations/sign-ins,
+Git,
+state access and daemon status. --json prints structured results.
+--probe additionally sends a short real prompt to each signed-in provider.
+.TP
+.B service
+On macOS, install, uninstall or inspect a per-user launchd daemon service.
+Install it again after moving the installation or changing Node.
+.SH LEGACY TERMINAL CHAT
+Running agoryx without a subcommand, or running "agoryx chat", starts the
+older
+SQLite terminal runtime. It is separate from Rooms.
+Its policies are free, manual, round-robin, auto and team.
+Use "agoryx chat --help" for flags and "/help" inside a session.
+The sessions and config commands operate on this compatibility runtime.
+.SH FILES
+.TP
+.I $AGORYX_HOME
+Override for room, project, workflow and daemon state.
+The default is $XDG_STATE_HOME/agoryx/agora, falling back to
+~/.local/state/agoryx/agora.
+.TP
+.I $AGORYX_WORKSPACES
+Override for new Work folders. With a custom AGORYX_HOME, the default is its
+workspaces
+subdirectory; otherwise it is ~/agoryx.
+.TP
+.I $XDG_CONFIG_HOME/agoryx/config.json
+Legacy terminal configuration; falls back to ~/.config/agoryx/config.json.
+A local agoryx.json is also recognized by that runtime.
+.TP
+.I $XDG_STATE_HOME/agoryx/agoryx.db
+Legacy SQLite database; falls back to ~/.local/state/agoryx/agoryx.db.
+.SH SEE ALSO
+https://github.com/gaborishka/agoryx
+.br
+docs/README.md, docs/AGORA.md, docs/WORKFLOWS.md, docs/DESKTOP.md

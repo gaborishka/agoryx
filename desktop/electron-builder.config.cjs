@@ -1,0 +1,50 @@
+// Agoryx.app for this Mac: `npm --prefix desktop run dist` → desktop/release/ (an unsigned arm64 .app
+// and .dmg). The app itself is the Electron shell; the Agoryx core rides along as plain files in
+// Contents/Resources/agoryx, and the daemon runs that copy with the user's own node (docs/DESKTOP.md).
+const { join } = require("node:path");
+
+const root = join(__dirname, "..");
+// electron-builder takes a Developer ID by name alone ("Ivan Habor (TEAMID)") and refuses the prefix.
+const signIdentity = (process.env.AGORYX_SIGN_IDENTITY || "").replace(/^Developer ID Application:\s*/, "") || null;
+
+/** @type {import("electron-builder").Configuration} */
+module.exports = {
+  appId: "dev.agoryx.desktop",
+  productName: "Agoryx",
+  directories: {
+    output: "release",
+    buildResources: "build",
+  },
+  files: ["dist/**/*", "static/**/*", "package.json"],
+  extraResources: [
+    { from: join(root, "dist"), to: "agoryx/dist", filter: ["**/*", "!**/*.map"] },
+    { from: join(root, "bin"), to: "agoryx/bin" },
+    { from: join(root, "ui", "dist"), to: "agoryx/ui/dist" },
+    { from: join(root, "package.json"), to: "agoryx/package.json" },
+    // Written by scripts/stage-core.mjs (`npm run stage`): the root's production dependencies only.
+    { from: join(__dirname, ".stage", "node_modules"), to: "agoryx/node_modules", filter: ["**/*"] },
+  ],
+  // The shell has no native modules of its own; the core's are not Electron's to rebuild.
+  npmRebuild: false,
+  mac: {
+    target: [
+      { target: "dir", arch: ["arm64"] },
+      { target: "dmg", arch: ["arm64"] },
+    ],
+    category: "public.app-category.developer-tools",
+    icon: "build/icon.icns",
+    // A local build: no signing identity (macOS asks once on first open: right-click → Open), unless
+    // AGORYX_SIGN_IDENTITY names one from the keychain; only a signed app shows notification banners.
+    // A Developer ID identity also gets the hardened runtime that notarization requires; notarizing is a
+    // separate `xcrun notarytool` step (docs/DESKTOP.md).
+    identity: signIdentity,
+    hardenedRuntime: Boolean(signIdentity),
+    entitlements: signIdentity ? "build/entitlements.mac.plist" : undefined,
+    entitlementsInherit: signIdentity ? "build/entitlements.mac.plist" : undefined,
+    notarize: false,
+  },
+  dmg: {
+    title: "Agoryx",
+    sign: Boolean(signIdentity),
+  },
+};

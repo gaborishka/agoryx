@@ -1,0 +1,601 @@
+#!/usr/bin/env node
+// The `agoryx` command agents see inside a room. Zero dependencies on purpose:
+// it runs inside the agents' sandboxes, writes table ops into the workspace
+// inbox (.agoryx/rooms/<room>/ops/, one file per op) and waits briefly for the room to ack.
+// It also works outside a room turn, when someone talks to the agent directly
+// in its own session: the op is signed with --as, or with a hint from the
+// agent's environment, and the room reads it from the same inbox.
+// `agoryx diff` reads what each turn changed (.agoryx/rooms/<room>/turns/<turn>.patch).
+// `agoryx read` reads what was said, in full (.agoryx/messages/<room>/<id>.md).
+// `agoryx say` posts what the agent is doing while it works, through the same inbox as table ops.
+// Every other command is the human's own `agoryx` (bin/agoryx.js), run as is: in a turn it carries the
+// agent's key, so what it does is recorded as the agent's — the same commands, no fewer.
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+// Under a live agent (one CLI kept up across the agent's turns) the turn is not in the environment, which was
+// fixed when the process started: the room rewrites the file AGORYX_TURN_FILE names at the start of each turn
+// and removes it at the end. Same rules as applyTurnContext in internal/agora/turn-context.ts.
+if (process.env.AGORYX_TURN_FILE) {
+  let context = null;
+  try {
+    context = JSON.parse(readFileSync(process.env.AGORYX_TURN_FILE, "utf8"));
+  } catch {
+    // no turn in progress
+  }
+  const valid =
+    context &&
+    typeof context.turn === "string" &&
+    typeof context.seen === "string" &&
+    context.agent === process.env.AGORYX_AGENT &&
+    context.room === process.env.AGORYX_ROOM;
+  if (valid) {
+    process.env.AGORYX_TURN = context.turn;
+    process.env.AGORYX_SEEN = context.seen;
+    if (typeof context.key === "string" && context.key) process.env.AGORYX_AGENT_KEY = context.key;
+    else delete process.env.AGORYX_AGENT_KEY;
+  } else {
+    delete process.env.AGORYX_TURN;
+    delete process.env.AGORYX_SEEN;
+    delete process.env.AGORYX_AGENT_KEY;
+  }
+}
+
+const USAGE = `agoryx — room tools for agents
+
+  agoryx say "what I am doing"   post to the room now, while you work (not a turn; wakes only an idle agent you @mention)
+                   e.g. agoryx say "taking internal/x.ts — leaving the CLI to you"
+  agoryx read new          what the others said since your turn began
+
+  agoryx table show [W1]   W1 reads one component's full authored content
+  agoryx table brief "where we are" [--change "important change"] [--next "next step"] [--ref P1]
+                   --change and --ref can repeat; --awaiting Q1 --recommend P1 asks for the human's decision
+  agoryx table component "title" --kind comparison|plan|checks|artifact|custom [--ref P1]
+                   [--body "markdown" | --body-file preview.md | --body -] [--file path] [--target W1]
+                   publish a component; --target replaces your own component, --ref can repeat
+  agoryx table archive W1 | restore W1
+  agoryx table ask "question" [--many]
+                   --many: the options are not alternatives — any number of them can be chosen
+                   (a list of things to do, not "which one"); without it, choosing one closes the question
+  agoryx table propose "short title" [--body "what and why" | --body-file notes.md | --body -] [--file path] [--q Q1]
+                   the body is markdown: mermaid/html/svg fences and ![](path) embeds render for everyone
+  agoryx table object  P1 "reason"
+  agoryx table support P1 "reason"
+  agoryx table evidence P1 "finding" [--source url-or-path]
+                   these also take a settled point or a fact (S1, F1): object S1 when you still dispute it,
+                   and a step (X1): when you check one, object X1 for each finding, support X1 when it passed
+  agoryx table fact "a fact everyone should rely on"
+  agoryx table settle "what is now established" [--q Q1]   (--q: this answers Q1 and closes it)
+  agoryx table concede "what I no longer hold, and why" [--on P1]
+                   an argument changed your mind: say so on the table
+  agoryx table next "concrete next step" [--on P1]   (--on: the option, a route, it carries out)
+  agoryx table review X1   built it: it waits for someone else's check (again after fixing what a check found)
+  agoryx table done X1     its check passed
+  agoryx table withdraw P1
+  agoryx table decide P1 [--note "why"]
+  agoryx table reopen Q1|P1
+  agoryx table edit P1 ["new title"] [--body … | --body-file … | --body -] [--file path] [--q Q2]
+  agoryx table edit Q1|S1|F1|X1|N1|C1 ["new text"] [--many | --one] [--source …]
+                   rewrite your own item in place (the room sees that you did)
+  agoryx table delete P1|Q1|S1|F1|X1|N1|C1
+                   take your own item off the table (a mistake, a duplicate, a restructure);
+                   withdraw instead when the room should still see what you took back
+
+  agoryx diff              recent turns that changed files: who, when, +/−
+  agoryx diff t7           exactly what turn t7 changed (a patch)
+  agoryx diff t7 src/a.ts  only that file
+
+  agoryx read              recent messages: id, who, how long, how it starts
+  agoryx read m12          the full text of message m12 (your turn's delta may give only its start)
+  agoryx read m12 m15      several at once
+
+  Everything else is the full agoryx, as the human has it (agoryx settings, more, stop, new, …):
+  run from your turn, it acts under your own key, so the room records it as yours.
+
+Outside a room turn (someone talking to you directly in your own session), run it
+from the room's workspace and sign it: agoryx table … --as <your id in the room>.
+If several rooms share the workspace, name yours too: --room <room id> (table, diff, read).
+'say' works only during a room turn.
+`;
+
+const cleanRoom = (value) => String(value).replace(/[^\w.-]/g, "");
+
+/** The workspace's .agoryx directory: the one the room turn's inbox is in, or the nearest one up from here. */
+const findAgoryxDir = () => {
+  if (process.env.AGORYX_OPS_DIR) {
+    const opsParent = dirname(resolve(process.env.AGORYX_OPS_DIR));
+    // .agoryx/rooms/<room>/ops, or .agoryx/ops from a room that opened before rooms had their own directories
+    return /[\\/]rooms$/.test(dirname(opsParent)) ? dirname(dirname(opsParent)) : opsParent;
+  }
+  let dir = process.cwd();
+  for (;;) {
+    if (existsSync(join(dir, ".agoryx", "ops")) || existsSync(join(dir, ".agoryx", "rooms"))) return join(dir, ".agoryx");
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+};
+
+/** Rooms that opened in this workspace with their own directories: [{ id, name }]. */
+const roomsHere = (agoryxDir) => {
+  const root = join(agoryxDir, "rooms");
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "room.json")))
+    .map((entry) => {
+      try {
+        return { id: entry.name, name: JSON.parse(readFileSync(join(root, entry.name, "room.json"), "utf8")).name ?? entry.name };
+      } catch {
+        return { id: entry.name, name: entry.name };
+      }
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+};
+
+/**
+ * The directory holding one room's inbox (ops/), table (TABLE.md) and turn patches (turns/). Rooms may
+ * share a workspace, so each has .agoryx/rooms/<room>/. A room turn names it (AGORYX_OPS_DIR, AGORYX_ROOM);
+ * outside one, --room does, or the only room here. Several rooms and no --room is an error, not a guess:
+ * a move on the wrong room's table is worse than none. A workspace no room has opened with per-room
+ * directories yet keeps the older layout straight under .agoryx/.
+ */
+const roomDir = (agoryxDir, flagRoom) => {
+  const named = flagRoom ?? process.env.AGORYX_ROOM;
+  if (named !== undefined) {
+    const room = cleanRoom(named);
+    if (!room || room !== String(named) || room.startsWith(".")) fail(`'${named}' is not a room id`);
+    const dir = join(agoryxDir, "rooms", room);
+    if (!existsSync(dir)) {
+      // A room turn run by an engine from before per-room directories: its inbox is the one it named.
+      if (flagRoom === undefined && process.env.AGORYX_OPS_DIR && roomsHere(agoryxDir).length === 0
+        && dirname(resolve(process.env.AGORYX_OPS_DIR)) === agoryxDir) return agoryxDir;
+      const rooms = roomsHere(agoryxDir);
+      fail(`no room '${room}' in this workspace${rooms.length ? ` — rooms here: ${rooms.map((entry) => `${entry.id} (${entry.name})`).join(", ")}` : ""}`);
+    }
+    return dir;
+  }
+  if (process.env.AGORYX_OPS_DIR) {
+    const selected = dirname(resolve(process.env.AGORYX_OPS_DIR));
+    if (selected !== agoryxDir) return selected;
+  }
+  const rooms = roomsHere(agoryxDir);
+  if (rooms.length === 0) return agoryxDir;
+  if (rooms.length === 1) return join(agoryxDir, "rooms", rooms[0].id);
+  fail(
+    `${rooms.length} rooms share this workspace — say which one with --room <id>:\n${rooms.map((entry) => `  --room ${entry.id}   ${entry.name}`).join("\n")}`,
+  );
+};
+
+/** Flags that take no value (same as TABLE_SWITCHES in internal/agora/table-cli.ts). */
+const SWITCHES = ["many", "one"];
+const isFlagToken = (value) => /^--[a-zA-Z][a-zA-Z0-9-]*(?:=[^\r\n]*)?$/.test(value) || /^-[rh]$/.test(value);
+
+const parseArgs = (argv) => {
+  const positional = [];
+  const flags = {};
+  const put = (key, value) => {
+    if (key === "change" || key === "ref") flags[key] = [...(flags[key] ?? []), value];
+    else flags[key] = value;
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg.startsWith("--")) {
+      const eq = arg.indexOf("=");
+      if (eq < 0 && SWITCHES.includes(arg.slice(2))) put(arg.slice(2), "true");
+      else if (eq > 0) put(arg.slice(2, eq), arg.slice(eq + 1));
+      else if (i + 1 < argv.length && !isFlagToken(argv[i + 1])) put(arg.slice(2), argv[++i]);
+      else put(arg.slice(2), "");
+    } else {
+      positional.push(arg);
+    }
+  }
+  return { positional, flags };
+};
+
+const fail = (message) => {
+  process.stderr.write(`agoryx: ${message}\n`);
+  process.exit(1);
+};
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Who is writing. A room turn sets AGORYX_AGENT; outside one, --as says it, or
+ * the agent's own environment hints at which CLI it is ("kind.claude": a room
+ * may seat two Claudes, and one of them may even be called "claude", so a hint
+ * is never an id). "unknown" lets the room decide by who is mid-exchange in its
+ * own session right now.
+ */
+const signer = (flags) => {
+  const clean = (value) => String(value).replace(/[^a-z0-9_-]/gi, "");
+  if (flags.as) return clean(flags.as) || "unknown";
+  if (process.env.AGORYX_AGENT) return clean(process.env.AGORYX_AGENT) || "unknown";
+  if (process.env.CLAUDECODE) return "kind.claude";
+  if (process.env.CODEX_SANDBOX || process.env.CODEX_SANDBOX_NETWORK_DISABLED) return "kind.codex";
+  return "unknown";
+};
+
+/** The flags each verb takes (same as internal/agora/table-cli.ts); anything else is a typo, not something to drop. */
+const TABLE_FLAGS = {
+  brief: ["change", "next", "ref", "awaiting", "recommend"],
+  component: ["kind", "ref", "body", "file", "target"],
+  ask: ["many"],
+  propose: ["body", "file", "q"],
+  edit: ["body", "file", "q", "source", "many", "one"],
+  evidence: ["source"],
+  object: ["source"],
+  support: ["source"],
+  decide: ["note"],
+  settle: ["q"],
+  concede: ["on"],
+  next: ["on"],
+};
+
+const buildOp = (verb, positional, flags) => {
+  const allowed = TABLE_FLAGS[verb] ?? [];
+  const unknown = Object.keys(flags).filter((flag) => !allowed.includes(flag));
+  if (unknown.length > 0 && ["brief", "component", "archive", "restore", "ask", "fact", "settle", "concede", "next", "propose", "object", "support", "evidence", "review", "done", "withdraw", "reopen", "decide", "edit", "delete"].includes(verb)) {
+    fail(`'${verb}' does not take ${unknown.map((flag) => `--${flag}`).join(", ")}${allowed.length ? ` (it takes ${allowed.map((flag) => `--${flag}`).join(", ")})` : ""}`);
+  }
+  const rest = positional.join(" ").trim();
+  if (verb === "brief" || verb === "component") {
+    for (const [flag, values] of Object.entries(flags)) {
+      if ((Array.isArray(values) ? values : [values]).some(value => !String(value).trim())) fail(`--${flag} needs a value`);
+    }
+  }
+  switch (verb) {
+    case "brief":
+      if (!rest) fail("'brief' needs a short description of where work stands");
+      if (flags.recommend && !flags.awaiting) fail("--recommend needs --awaiting Q1");
+      return { op: verb, now: rest, changes: flags.change, next: flags.next, refs: flags.ref,
+        awaiting: flags.awaiting ? { q: flags.awaiting, ...(flags.recommend ? { recommendation: flags.recommend } : {}) } : undefined };
+    case "component":
+      if (!rest || !flags.kind) fail("'component' needs a title and --kind comparison|plan|checks|artifact|custom");
+      return { op: verb, title: rest, kind: flags.kind, refs: flags.ref ?? [], body: flags.body, file: flags.file, target: flags.target };
+    case "ask":
+      if (!rest) fail("'ask' needs text");
+      return { op: "ask", text: rest, many: flags.many ? true : undefined };
+    case "fact":
+      if (!rest) fail("'fact' needs text");
+      return { op: verb, text: rest };
+    case "next":
+      if (!rest) fail("'next' needs text");
+      return { op: verb, text: rest, target: flags.on };
+    case "settle":
+      if (!rest) fail("'settle' needs text");
+      return { op: "settle", text: rest, q: flags.q };
+    case "concede":
+      if (!rest) fail("'concede' needs text: what you no longer hold, and why");
+      return { op: "concede", text: rest, target: flags.on };
+    case "propose":
+      if (!positional[0]) fail("'propose' needs a title");
+      return {
+        op: "propose",
+        title: positional[0],
+        body: flags.body ?? (positional.slice(1).join(" ") || undefined),
+        file: flags.file,
+        q: flags.q,
+      };
+    case "object":
+    case "support":
+    case "evidence": {
+      const [target, ...text] = positional;
+      if (!target || text.length === 0) fail(`'${verb}' needs an option id and text, e.g. ${verb} P1 "..."`);
+      return { op: verb, target, text: text.join(" "), source: flags.source };
+    }
+    case "done":
+    case "archive":
+    case "restore":
+    case "review":
+    case "withdraw":
+    case "reopen":
+      if (!positional[0]) fail(`'${verb}' needs an id`);
+      if ((verb === "archive" || verb === "restore") && positional.length !== 1) fail(`'${verb}' takes one component id`);
+      return { op: verb, target: positional[0] };
+    case "edit": {
+      const [target, ...text] = positional;
+      if (!target) fail(`'edit' needs an id, e.g. edit P1 "new title" or edit Q1 --many`);
+      if (flags.many && flags.one) fail("'edit' takes --many or --one, not both");
+      return {
+        op: "edit",
+        target,
+        text: text.join(" ").trim() || undefined,
+        body: flags.body,
+        file: flags.file,
+        q: flags.q,
+        source: flags.source,
+        many: flags.many ? true : flags.one ? false : undefined,
+      };
+    }
+    case "delete":
+      if (!positional[0]) fail("'delete' needs an id");
+      return { op: "delete", target: positional[0] };
+    case "decide":
+      if (!positional[0]) fail("'decide' needs an option id");
+      return { op: "decide", target: positional[0], note: flags.note ?? (positional.slice(1).join(" ") || undefined) };
+    default:
+      fail(`unknown table command '${verb}'\n\n${USAGE}`);
+  }
+};
+
+/** A patch file is "# header" lines, then `diff --git` sections. */
+const splitPatch = (text) => {
+  const header = [];
+  const lines = text.split("\n");
+  while (lines.length && lines[0].startsWith("#")) header.push(lines.shift());
+  return { header, body: lines.join("\n") };
+};
+
+/** Whether a turn of this room is running now: its marker in .agoryx/live/ has not ended and its process lives. */
+const stillRunning = (agoryxDir, room, id) => {
+  if (room === agoryxDir) return false;
+  try {
+    const entry = JSON.parse(readFileSync(join(agoryxDir, "live", `${basename(room)}.${id}.json`), "utf8"));
+    if (entry.endedAt !== undefined) return false;
+    process.kill(entry.pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+};
+
+/**
+ * A room's turn patches; a room that opened before rooms had their own directories keeps its older
+ * ones in .agoryx/turns/, read too while it is the only room in the workspace.
+ */
+const runDiff = (agoryxDir, room, ref, path) => {
+  const dirs = [join(room, "turns")];
+  if (room !== agoryxDir && roomsHere(agoryxDir).length <= 1) dirs.push(join(agoryxDir, "turns"));
+  const found = new Map();
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSync(dir)) {
+      if (!/^t\d+\.patch$/.test(name)) continue;
+      const n = Number(name.slice(1, -".patch".length));
+      if (!found.has(n)) found.set(n, join(dir, name));
+    }
+  }
+  const turns = [...found.keys()].sort((a, b) => b - a);
+  if (!ref) {
+    if (turns.length === 0) {
+      process.stdout.write("No turn has changed files yet.\n");
+      return;
+    }
+    for (const n of turns.slice(0, 15)) {
+      const { header } = splitPatch(readFileSync(found.get(n), "utf8"));
+      process.stdout.write(`${header.filter((line) => line !== "#").map((line) => line.replace(/^# ?/, "")).join("\n")}\n\n`);
+    }
+    if (turns.length > 15) process.stdout.write(`… ${turns.length - 15} older turns: agoryx diff t<N>\n`);
+    return;
+  }
+  const id = /^t?\d+$/.test(ref) ? `t${ref.replace(/^t/, "")}` : null;
+  if (!id) fail(`'${ref}' is not a turn id (like t7) — agoryx diff lists them`);
+  const file = found.get(Number(id.slice(1)));
+  if (!file && stillRunning(agoryxDir, room, id)) {
+    fail(`turn ${id} is still running — what it changed is recorded when it ends (agoryx diff ${id} then); until then the files as they are now are in the workspace`);
+  }
+  if (!file) fail(`turn ${id} changed no files (or its patch is gone) — agoryx diff lists the ones that did`);
+  const { header, body } = splitPatch(readFileSync(file, "utf8"));
+  if (!path) {
+    process.stdout.write(`${header.join("\n")}\n${body}`);
+    return;
+  }
+  const want = path.replace(/^\.\//, "");
+  const section = body.split(/(?=^diff --git )/m).find((part) => {
+    const first = part.split("\n", 1)[0];
+    return first.endsWith(` b/${want}`) || first.includes(` a/${want} `);
+  });
+  if (!section) fail(`turn ${id} did not change ${want}`);
+  process.stdout.write(`${header[0]}\n${section}`);
+};
+
+/**
+ * Messages are kept per room (.agoryx/messages/<room>/), since rooms may share a
+ * workspace. A room turn names its room in AGORYX_ROOM; outside one, --room does,
+ * or the only room here, or the one that spoke last (said on stderr).
+ */
+const messagesDir = (agoryxDir, flagRoom) => {
+  const root = join(agoryxDir, "messages");
+  const clean = (value) => String(value).replace(/[^\w.-]/g, "");
+  const named = flagRoom ?? process.env.AGORYX_ROOM;
+  if (named) {
+    const room = clean(named);
+    if (!room || room !== String(named) || room.startsWith(".")) fail(`'${named}' is not a room id`);
+    return join(root, room);
+  }
+  const rooms = existsSync(root)
+    ? readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => ({ name: entry.name, mtime: statSync(join(root, entry.name)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+    : [];
+  if (rooms.length === 0) return join(root, "-");
+  if (rooms.length > 1) process.stderr.write(`agoryx: ${rooms.length} rooms share this workspace; reading ${rooms[0].name} (--room <id> for another)\n`);
+  return join(root, rooms[0].name);
+};
+
+/**
+ * Messages after the last one this turn's delta covered (AGORYX_SEEN), in full, but not the reader's own:
+ * what the others said while this turn was running — their updates, a reply, the human.
+ */
+const readNew = (dir) => {
+  const seen = /^m(\d+)$/.exec(process.env.AGORYX_SEEN ?? "");
+  if (!seen) fail("'read new' works during a room turn — outside one, 'agoryx read' lists recent messages");
+  const me = process.env.AGORYX_AGENT;
+  const fresh = existsSync(dir)
+    ? readdirSync(dir)
+        .filter((name) => /^m\d+\.md$/.test(name))
+        .map((name) => Number(name.slice(1, -".md".length)))
+        .filter((n) => n > Number(seen[1]))
+        .sort((a, b) => a - b)
+        .map((n) => readFileSync(join(dir, `m${n}.md`), "utf8"))
+        .filter((text) => text.split("\n", 1)[0].split(" · ")[1] !== me)
+    : [];
+  process.stdout.write(fresh.length ? fresh.join("\n") : "Nothing new since your turn began.\n");
+};
+
+const runRead = (agoryxDir, argv) => {
+  const { positional: refs, flags } = parseArgs(argv);
+  const dir = messagesDir(agoryxDir, flags.room);
+  if (refs.length === 1 && refs[0] === "new") {
+    readNew(dir);
+    return;
+  }
+  if (refs.length === 0) {
+    const all = existsSync(dir)
+      ? readdirSync(dir)
+          .filter((name) => /^m\d+\.md$/.test(name))
+          .map((name) => Number(name.slice(1, -".md".length)))
+          .sort((a, b) => b - a)
+      : [];
+    if (all.length === 0) {
+      process.stdout.write("No messages yet.\n");
+      return;
+    }
+    for (const n of all.slice(0, 20)) {
+      const [header, , ...body] = readFileSync(join(dir, `m${n}.md`), "utf8").split("\n");
+      const text = body.join("\n").trim();
+      const start = text.replace(/\s+/g, " ").slice(0, 100);
+      process.stdout.write(`${header.replace(/^# /, "")} · ${text.length} chars\n   ${start}${text.length > 100 ? " …" : ""}\n`);
+    }
+    if (all.length > 20) process.stdout.write(`… ${all.length - 20} older messages: agoryx read m<N>\n`);
+    return;
+  }
+  const out = [];
+  for (const ref of refs) {
+    const id = /^m?\d+$/.test(ref) ? `m${ref.replace(/^m/, "")}` : null;
+    if (!id) fail(`'${ref}' is not a message id (like m12) — agoryx read lists them`);
+    const file = join(dir, `${id}.md`);
+    if (!existsSync(file)) fail(`no message ${id} — agoryx read lists recent ones`);
+    out.push(readFileSync(file, "utf8"));
+  }
+  process.stdout.write(out.join("\n"));
+};
+
+const main = async () => {
+  const [command, verb, ...args] = process.argv.slice(2);
+  if (!command || command === "help" || command === "--help" || command === "-h") {
+    process.stdout.write(USAGE);
+    return;
+  }
+  // The room's browser, as an MCP server the room hands the agent's CLI (bin/agoryx-mcp.mjs). Not in USAGE:
+  // agents never run it by hand.
+  if (command === "mcp") { const { serve } = await import("./agoryx-mcp.mjs"); await serve(); return; }
+  if (command !== "table" && command !== "diff" && command !== "read" && command !== "say") {
+    const full = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "agoryx.js"), command, ...(verb === undefined ? [] : [verb]), ...args], {
+      stdio: "inherit",
+      env: process.env,
+    });
+    if (full.error) fail(`could not run agoryx ${command}: ${full.error.message}`);
+    process.exit(full.status ?? 1);
+  }
+
+  const agoryxDir = findAgoryxDir();
+  if (!agoryxDir) fail("not inside an Agoryx room workspace (no .agoryx/ directory found)");
+  if (command === "read") {
+    runRead(agoryxDir, verb ? [verb, ...args] : []);
+    return;
+  }
+  const { positional, flags } = parseArgs(verb ? [verb, ...args] : []);
+  for (const flag of ["as", "room"]) {
+    if (flags[flag] !== undefined && !flags[flag].trim()) fail(`--${flag} needs a value`);
+  }
+  const room = roomDir(agoryxDir, flags.room);
+  if (command === "diff") {
+    runDiff(agoryxDir, room, positional[0], positional[1]);
+    return;
+  }
+
+  if (command === "say") {
+    const text = positional.length === 1 && positional[0] === "-" ? readFileSync(0, "utf8") : positional.join(" ");
+    if (!text.trim()) fail(`'say' needs text, e.g. agoryx say "taking internal/x.ts"`);
+    const unknown = Object.keys(flags).filter((flag) => flag !== "as" && flag !== "room");
+    if (unknown.length) fail(`'say' does not take ${unknown.map((flag) => `--${flag}`).join(", ")}`);
+    await send(room, signer(flags), { op: "say", text });
+    return;
+  }
+
+  positional.shift();
+  if (!verb || verb === "show") {
+    const unknown = Object.keys(flags).filter(flag => !["as", "room"].includes(flag));
+    if (unknown.length) fail(`'show' does not take ${unknown.map(flag => `--${flag}`).join(", ")}`);
+    if (positional.length) {
+      if (positional.length !== 1 || !/^W[1-9]\d*$/i.test(positional[0])) fail("table show takes one component id, e.g. W1");
+      await send(room, signer(flags), { op: "table-read", target: positional[0].toUpperCase() });
+      return;
+    }
+    const tableFile = join(room, "TABLE.md");
+    process.stdout.write(existsSync(tableFile) ? readFileSync(tableFile, "utf8") : "The table is empty.\n");
+    return;
+  }
+
+  const agent = signer(flags);
+  delete flags.as;
+  delete flags.room;
+  for (const [flag, values] of Object.entries(flags)) {
+    if (!SWITCHES.includes(flag) && (Array.isArray(values) ? values : [values]).some(value => value === "")) fail(`--${flag} needs a value`);
+  }
+  // A long markdown body (diagrams, html) is easier to pass as a file or on stdin than as one shell argument.
+  if (flags["body-file"]) {
+    if (flags.body !== undefined) fail("use --body or --body-file, not both");
+    try {
+      flags.body = readFileSync(resolve(flags["body-file"]), "utf8");
+    } catch (error) {
+      fail(`cannot read --body-file: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    delete flags["body-file"];
+  } else if (flags.body === "-") {
+    flags.body = readFileSync(0, "utf8");
+  }
+  const op = buildOp(verb, positional, flags);
+  for (const key of Object.keys(op)) if (op[key] === undefined) delete op[key];
+  await send(room, agent, op);
+};
+
+/** Queue an op in the room's inbox and wait briefly for the room to ack it. */
+const send = async (room, agent, op) => {
+  const nonce = randomBytes(6).toString("hex");
+  const opsDir = join(room, "ops");
+  mkdirSync(opsDir, { recursive: true });
+  // One file per op, written aside and renamed in whole: the room takes an op entirely or not yet. A line appended
+  // to a shared file could land in it just after the room had taken it and read it, and be lost.
+  const stamp = `${String(Date.now()).padStart(15, "0")}-${String(process.hrtime.bigint()).padStart(20, "0")}`;
+  const file = join(opsDir, `${stamp}-${nonce}.${agent}.op`);
+  writeFileSync(`${file}.tmp`, `${JSON.stringify({ ...op, nonce })}\n`);
+  renameSync(`${file}.tmp`, file);
+
+  const ackFile = join(opsDir, "acks", `${nonce}.json`);
+  // The room answers within its poll; AGORYX_ACK_MS gives a loaded machine (a test suite) longer.
+  const wait = Number(process.env.AGORYX_ACK_MS);
+  const deadline = Date.now() + (Number.isFinite(wait) && wait > 0 ? wait : 5000);
+  while (Date.now() < deadline) {
+    if (existsSync(ackFile)) {
+      let ack;
+      try {
+        ack = JSON.parse(readFileSync(ackFile, "utf8"));
+      } catch {
+        await sleep(50);
+        continue;
+      }
+      rmSync(ackFile, { force: true });
+      if (!ack.ok) fail(ack.error || "rejected");
+      process.stdout.write(`${ack.text || "ok"}\n`);
+      return;
+    }
+    await sleep(100);
+  }
+  if (op.op === "table-read") {
+    rmSync(file, { force: true });
+    fail("the room did not answer the component read; start it and retry table show");
+  }
+  process.stdout.write(
+    process.env.AGORYX_AGENT
+      ? "queued — the room will pick it up when your turn ends\n"
+      : "queued — nothing is watching this room right now; it is applied when the room next opens (agoryx up, or any agoryx command for this room)\n",
+  );
+};
+
+main().catch((error) => fail(error instanceof Error ? error.message : String(error)));

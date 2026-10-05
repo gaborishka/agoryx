@@ -1,0 +1,36 @@
+# The old bridge between agents: kept locally, not in the repository
+bridge/
+
+# Local secrets (the daemon's Jev key)
+.env
+
+# Runtime
+agoryx.db
+agoryx.test.db
+*.db
+*.db-shm
+*.db-wal
+
+# Build
+node_modules/
+dist/
+coverage/
+
+# Desktop app (desktop/): dependencies, build output, packaged app, staged core deps, generated icon
+desktop/node_modules/
+desktop/dist/
+desktop/release/
+desktop/.stage/
+desktop/build/
+
+# Agoryx runtime artifacts
+.agoryx/
+
+# OS
+.DS_Store
+.idea/
+# Local browser-automation artifacts
+.playwright-mcp/
+
+# PWA icons (ui/scripts/make-icons.mjs draws them at build time)
+ui/public/icons/

@@ -1,0 +1,705 @@
+import assert from "node:assert/strict";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
+import { blockHash } from "../../internal/agora/blocks.js";
+import { AgoraDaemon } from "../../internal/agora/daemon.js";
+import { createClaudeRunner } from "../../internal/agora/runners/claude.js";
+import { createCodexRunner } from "../../internal/agora/runners/codex.js";
+import { writeFakeBins } from "./helpers.js";
+
+interface Reply {
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+  json<T = Record<string, unknown>>(): T;
+}
+
+let home: string;
+let daemon: AgoraDaemon;
+let port: number;
+
+const call = (
+  method: string,
+  path: string,
+  options: { token?: string | null; host?: string; origin?: string; body?: unknown; headers?: Record<string, string> } = {},
+): Promise<Reply> =>
+  new Promise((resolve, reject) => {
+    const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+    const token = options.token === undefined ? daemon.token : options.token;
+    const req = request(
+      {
+        host: "127.0.0.1",
+        port,
+        method,
+        path,
+        headers: {
+          host: options.host ?? `127.0.0.1:${port}`,
+          ...(token ? { "x-agoryx-token": token } : {}),
+          ...(options.origin ? { origin: options.origin } : {}),
+          ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}),
+          ...options.headers,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8");
+          resolve({ status: res.statusCode ?? 0, headers: res.headers, body, json: () => JSON.parse(body) });
+        });
+      },
+    );
+    req.on("error", reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+
+/**
+ * Reads SSE frames until `until` matches one, then closes. The bound is generous: alone a fake turn takes a
+ * fraction of a second, under the whole suite's load it takes seconds, and a run can hold four of them.
+ */
+const readEvents = (path: string, until: (frame: { event: string; data: any }) => boolean, ms = 30_000) =>
+  new Promise<Array<{ event: string; data: any }>>((resolve, reject) => {
+    const frames: Array<{ event: string; data: any }> = [];
+    const timer = setTimeout(() => {
+      req.destroy();
+      reject(new Error(`no matching SSE frame within ${ms}ms (got ${frames.map((f) => f.event).join(",")})`));
+    }, ms);
+    const req = request(
+      { host: "127.0.0.1", port, path, headers: { host: `127.0.0.1:${port}`, "x-agoryx-token": daemon.token } },
+      (res) => {
+        let buffer = "";
+        res.on("data", (chunk: Buffer) => {
+          buffer += chunk.toString("utf8");
+          let cut: number;
+          while ((cut = buffer.indexOf("\n\n")) >= 0) {
+            const raw = buffer.slice(0, cut);
+            buffer = buffer.slice(cut + 2);
+            const event = /^event: (.*)$/m.exec(raw)?.[1];
+            const data = /^data: (.*)$/m.exec(raw)?.[1];
+            if (!event || !data) continue;
+            const frame = { event, data: JSON.parse(data) };
+            frames.push(frame);
+            if (until(frame)) {
+              clearTimeout(timer);
+              req.destroy();
+              resolve(frames);
+              return;
+            }
+          }
+        });
+      },
+    );
+    req.on("error", (error) => {
+      if (!frames.length) reject(error);
+    });
+    req.end();
+  });
+
+const waitFor = async (check: () => Promise<boolean>, ms = 15_000) => {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("condition not met in time");
+};
+
+const newRoom = async (name: string, extra: Record<string, unknown> = {}) => {
+  const reply = await call("POST", "/api/rooms", { body: { name, mode: "work", ...extra } });
+  assert.equal(reply.status, 201, reply.body);
+  return reply.json<{ room: { id: string; workspace: string } }>().room;
+};
+
+before(async () => {
+  home = mkdtempSync(join(tmpdir(), "agora-daemon-"));
+  const { fakeClaude, fakeCodex } = writeFakeBins(home);
+  writeFileSync(join(home, "rules.json"), "[]");
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    AGORYX_HOME: join(home, "agora"),
+    AGORYX_USER: "Ivan",
+    FAKE_LOG: join(home, "fake.log"),
+    FAKE_STATE: join(home, "fake-state"),
+    FAKE_RULES: join(home, "rules.json"),
+    CLAUDE_CONFIG_DIR: join(home, "claude-config"),
+    CODEX_HOME: join(home, "codex-home"),
+  };
+  daemon = new AgoraDaemon({
+    env,
+    port: 0,
+    advertise: false,
+    opsPollMs: 50,
+    runners: { claude: createClaudeRunner(fakeClaude), codex: createCodexRunner(fakeCodex) },
+  });
+  port = (await daemon.start()).port;
+});
+
+after(async () => {
+  await daemon.close();
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("the API needs the token; health does not", async () => {
+  assert.equal((await call("GET", "/api/health", { token: null })).status, 200);
+  assert.equal((await call("GET", "/api/rooms", { token: null })).status, 401);
+  assert.equal((await call("GET", "/api/rooms", { token: "nope" })).status, 401);
+  assert.equal((await call("GET", "/api/rooms")).status, 200);
+});
+
+test("DNS rebinding and cross-origin writes are refused", async () => {
+  assert.equal((await call("GET", "/api/rooms", { host: "evil.example:80" })).status, 421);
+  assert.equal((await call("GET", "/api/health", { host: `attacker.test:${port}` })).status, 421);
+  const refused = await call("POST", "/api/rooms", { origin: "https://evil.example", body: { name: "x" } });
+  assert.equal(refused.status, 403);
+  const opaque = await call("POST", "/api/rooms", { origin: "null", body: { name: "x" } });
+  assert.equal(opaque.status, 403);
+  assert.equal((await call("GET", "/api/rooms", { host: `localhost:${port}` })).status, 200);
+});
+
+test("the ?t= login sets a strict HttpOnly cookie that then authorises the API", async () => {
+  assert.equal((await call("GET", "/?t=wrong", { token: null })).status, 401);
+  const login = await call("GET", `/?t=${daemon.token}`, { token: null });
+  assert.equal(login.status, 302);
+  const cookie = String(login.headers["set-cookie"]);
+  assert.match(cookie, /HttpOnly/);
+  assert.match(cookie, /SameSite=Strict/);
+  const pair = cookie.split(";")[0]!;
+  const withCookie = await new Promise<number>((resolve, reject) => {
+    const req = request(
+      { host: "127.0.0.1", port, path: "/api/rooms", headers: { host: `127.0.0.1:${port}`, cookie: pair } },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(withCookie, 200);
+});
+
+test("a message wakes both agents; SSE carries patches; the snapshot has the conversation", async () => {
+  const room = await newRoom("Daemon talk");
+  const done = readEvents(
+    `/api/rooms/${room.id}/events?after=0`,
+    (frame) => frame.event === "room" && frame.data.event.type === "run.ended",
+  );
+  const posted = await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "Hello both" } });
+  assert.equal(posted.status, 201);
+  const frames = await done;
+  const types = frames.filter((f) => f.event === "room").map((f) => f.data.event.type);
+  assert.ok(types.includes("message.posted"));
+  assert.ok(types.includes("turn.started"));
+  const message = frames.find((f) => f.event === "room" && f.data.event.type === "message.posted");
+  assert.ok(message!.data.patch.message, "message.posted carries a message patch");
+  const presence = frames.filter((f) => f.event === "presence").map((f) => f.data.agents);
+  assert.deepEqual(presence[0], { claude: "idle", codex: "idle" }, "the stream opens with who is busy now");
+  assert.ok(presence.some((agents) => agents.claude === "working"), "turn starts reach the stream as presence");
+
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+  const texts = snap.state.messages.map((m: any) => `${m.author}:${m.kind}:${m.text}`);
+  assert.ok(texts.includes("Ivan:human:Hello both"));
+  assert.ok(texts.includes("claude:agent:claude here"));
+  assert.ok(texts.includes("codex:agent:codex here"));
+  assert.equal(snap.driven, true);
+  assert.match(snap.rawBase, new RegExp(`^/raw/${room.id}/[0-9a-f]{32}/$`));
+  assert.match(snap.resume.claude, /--resume/);
+  assert.match(snap.resume.codex, /resume/);
+});
+
+test("a client that subscribes mid-turn gets the text already streamed since its snapshot", async () => {
+  writeFileSync(join(home, "rules.json"), JSON.stringify([{ agent: "claude", match: "Stream slowly", reply: "a long streamed answer", streamSleepMs: 2500 }]));
+  try {
+    const room = await newRoom("Late subscriber");
+    await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "Stream slowly" } });
+    let seq = 0;
+    await waitFor(async () => {
+      const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+      seq = snap.state.seq;
+      return Object.values(snap.streams).some((s: any) => s.text === "a long streamed answer");
+    });
+    const frames = await readEvents(`/api/rooms/${room.id}/events?after=${seq}`, (frame) => frame.event === "stream");
+    const stream = frames.find((f) => f.event === "stream")!.data;
+    assert.equal(stream.reset, true);
+    assert.equal(stream.text, "a long streamed answer");
+  } finally {
+    writeFileSync(join(home, "rules.json"), "[]");
+  }
+});
+
+test("table ops from the human land in the snapshot; bad ops are 400", async () => {
+  const room = await newRoom("Daemon table");
+  const asked = await call("POST", `/api/rooms/${room.id}/table`, { body: { op: "ask", text: "Which storage?" } });
+  assert.equal(asked.status, 201, asked.body);
+  assert.match(asked.json<{ text: string }>().text, /^Q1 · /);
+  const bad = await call("POST", `/api/rooms/${room.id}/table`, { body: { op: "decide", target: "P9" } });
+  assert.equal(bad.status, 400);
+  await waitFor(async () => (await call("GET", `/api/rooms/${room.id}`)).json<any>().state.runs.at(-1)?.status === "ended");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+  assert.equal(snap.state.table.questions[0].text, "Which storage?");
+  assert.equal(snap.ops[0].op.op, "ask");
+  assert.equal(snap.ops[0].op.by, "Ivan");
+});
+
+test("settings are validated; an unknown action is 404", async () => {
+  const room = await newRoom("Daemon settings");
+  const changed = await call("POST", `/api/rooms/${room.id}/settings`, { body: { budget: 4, access: "root" } });
+  assert.equal(changed.status, 200);
+  const settings = changed.json<{ settings: Record<string, unknown> }>().settings;
+  assert.equal(settings.budget, 4);
+  assert.notEqual(settings.access, "root");
+  // Back to no limit.
+  const unlimited = await call("POST", `/api/rooms/${room.id}/settings`, { body: { budget: null } });
+  assert.equal(unlimited.json<{ settings: Record<string, unknown> }>().settings.budget, null);
+  assert.equal((await call("POST", `/api/rooms/${room.id}/explode`, { body: {} })).status, 404);
+  assert.equal((await call("GET", "/api/rooms/no-such-room")).status, 404);
+});
+
+test("a room can start from its first message alone, and be renamed later", async () => {
+  const created = await call("POST", "/api/rooms", { body: { text: "@codex Порівняй SQLite і JSONL для журналу подій, будь ласка, з цифрами" } });
+  assert.equal(created.status, 201, created.body);
+  const room = created.json<{ room: { id: string; name: string } }>().room;
+  assert.equal(room.name, "Порівняй SQLite і JSONL для журналу подій, будь ласка, з…");
+  await waitFor(async () => (await call("GET", `/api/rooms/${room.id}`)).json<any>().state.runs.at(-1)?.status === "ended");
+  assert.equal((await call("POST", "/api/rooms", { body: {} })).status, 400);
+  for (const bad of [{ budget: 0 }, { budget: 2.5 }, { budget: 1000 }, { human: "@Claude" }, { human: " @ " }]) {
+    const refused = await call("POST", "/api/rooms", { body: { name: "Refused", ...bad } });
+    assert.equal(refused.status, 400, JSON.stringify(bad));
+  }
+
+  const renamed = await call("POST", `/api/rooms/${room.id}/rename`, { body: { name: "  Журнал подій  " } });
+  assert.equal(renamed.status, 200, renamed.body);
+  assert.equal(renamed.json<{ room: { name: string } }>().room.name, "Журнал подій");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+  assert.equal(snap.state.name, "Журнал подій");
+  assert.equal(snap.state.runs.length, 1, "a rename wakes nobody");
+  assert.equal((await call("POST", `/api/rooms/${room.id}/rename`, { body: { name: " " } })).status, 400);
+});
+
+test("the canonical file: read it, edit it against a base, see each revision's diff", async () => {
+  assert.equal((await call("GET", `/api/rooms/${(await newRoom("No doc")).id}/doc`)).status, 404, "a new room has none");
+  const room = await newRoom("Daemon doc", { doc: "README.md" });
+  const first = await call("GET", `/api/rooms/${room.id}/doc`);
+  assert.equal(first.status, 200, first.body);
+  const doc = first.json<{ path: string; text: string; hash: string; exists: boolean }>();
+  assert.deepEqual([doc.path, doc.text, doc.exists], ["README.md", "# Daemon doc\n", true]);
+
+  const saved = await call("POST", `/api/rooms/${room.id}/doc`, { body: { text: "# Daemon doc\n\nA line.\n", base: doc.hash } });
+  assert.equal(saved.status, 200, saved.body);
+  const { revision } = saved.json<{ revision: { seq: number; by: string; added: number } }>();
+  assert.deepEqual([revision.by, revision.added], ["Ivan", 2]);
+
+  const stale = await call("POST", `/api/rooms/${room.id}/doc`, { body: { text: "overwrite", base: doc.hash } });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.json<{ current: { text: string } }>().current.text, "# Daemon doc\n\nA line.\n");
+  assert.equal((await call("POST", `/api/rooms/${room.id}/doc`, { body: { text: 1 } })).status, 400);
+
+  const rev = (await call("GET", `/api/rooms/${room.id}/doc?rev=${revision.seq}`)).json<any>();
+  assert.equal(rev.text, "# Daemon doc\n\nA line.\n");
+  assert.deepEqual(
+    rev.diff.filter((item: any) => item.t && item.t !== " "),
+    [
+      { t: "+", s: "" },
+      { t: "+", s: "A line." },
+    ],
+  );
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+  assert.deepEqual(
+    snap.state.docRevisions.map((entry: any) => entry.by),
+    ["agoryx", "Ivan"],
+  );
+  assert.equal(snap.state.runs.length, 0, "an edit wakes nobody");
+
+  const bare = await newRoom("Daemon no doc", { doc: "" });
+  assert.equal((await call("GET", `/api/rooms/${bare.id}/doc`)).status, 404);
+  const none = await newRoom("Daemon null doc", { doc: null });
+  assert.equal((await call("GET", `/api/rooms/${none.id}/doc`)).status, 404, "null (agoryx new --doc none) means no canonical file");
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "Bad doc", doc: "../up.md" } })).status, 400);
+});
+
+test("a turn's exact change: counts in the snapshot, the patch on request", async () => {
+  writeFileSync(
+    join(home, "rules.json"),
+    JSON.stringify([{ agent: "claude", match: "clock", write: { path: "clock.ts", content: "export const t = 0;\n" }, reply: "Wrote clock.ts.", once: true }]),
+  );
+  try {
+    const room = await newRoom("Daemon changes");
+    await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "@claude write the clock" } });
+    let turn: any;
+    await waitFor(async () => {
+      const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+      turn = snap.state.turns.find((entry: any) => entry.changes?.length);
+      return Boolean(turn) && snap.state.runs.at(-1)?.status === "ended";
+    });
+    assert.deepEqual(turn.changes, [{ path: "clock.ts", status: "A", added: 1, removed: 0 }]);
+    const reply = await call("GET", `/api/rooms/${room.id}/turn-diff?turn=${turn.id}`);
+    assert.equal(reply.status, 200, reply.body);
+    const body = reply.json<any>();
+    assert.equal(body.agent, "claude");
+    assert.match(body.patch, /^diff --git a\/clock\.ts b\/clock\.ts\n[^]*\+export const t = 0;/);
+    assert.equal(body.truncated, false);
+    assert.equal((await call("GET", `/api/rooms/${room.id}/turn-diff?turn=t999`)).status, 404);
+    assert.equal((await call("GET", `/api/rooms/${room.id}/turn-diff?turn=../x`)).status, 400);
+  } finally {
+    writeFileSync(join(home, "rules.json"), "[]");
+  }
+});
+
+test("the room's whole change: the folder now against the tree before its first turn", async () => {
+  const room = await newRoom("Daemon room diff");
+  assert.equal((await call("GET", `/api/rooms/${room.id}/room-diff`)).status, 404, "no turn yet: nothing to count from");
+  // `once` rules are remembered by their index across tests; this test's rule is index 0 again.
+  rmSync(join(home, "fake-state", "used-rules.json"), { force: true });
+  writeFileSync(
+    join(home, "rules.json"),
+    JSON.stringify([{ agent: "claude", match: "gauge", write: { path: "gauge.ts", content: "export const g = 1;\n" }, reply: "Wrote gauge.ts.", once: true }]),
+  );
+  try {
+    await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "@claude write the gauge" } });
+    await waitFor(async () => {
+      const snap = (await call("GET", `/api/rooms/${room.id}`)).json<any>();
+      return snap.state.turns.some((entry: any) => entry.changes?.length) && snap.state.runs.at(-1)?.status === "ended";
+    });
+    // The human's own edit after the turn counts too: it is the folder, not a turn.
+    writeFileSync(join(room.workspace, "notes.txt"), "by hand\n");
+    const reply = await call("GET", `/api/rooms/${room.id}/room-diff`);
+    assert.equal(reply.status, 200, reply.body);
+    const body = reply.json<any>();
+    assert.equal(body.base.kind, "turn");
+    const paths = body.changes.map((change: any) => change.path).sort();
+    assert.ok(paths.includes("gauge.ts") && paths.includes("notes.txt"), paths.join(","));
+    assert.ok(!paths.some((path: string) => path.startsWith(".agoryx/")), "Agoryx's own files are left out");
+    assert.match(body.patch, /\+export const g = 1;/);
+    assert.equal(body.truncated, false);
+  } finally {
+    writeFileSync(join(home, "rules.json"), "[]");
+  }
+});
+
+test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .git and symlink escapes", async () => {
+  const room = await newRoom("Daemon raw");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();
+  mkdirSync(join(room.workspace, "site"), { recursive: true });
+  writeFileSync(join(room.workspace, "site", "index.html"), "<h1>hi</h1>");
+  const outside = mkdtempSync(join(tmpdir(), "agora-outside-"));
+  writeFileSync(join(outside, "secret.txt"), "secret");
+  symlinkSync(outside, join(room.workspace, "escape"));
+  try {
+    const page = await call("GET", `${snap.rawBase}site/`, { token: null });
+    assert.equal(page.status, 200);
+    assert.ok(page.body.startsWith("<h1>hi</h1>"), "the file itself comes first");
+    assert.match(page.body, /agoryxFrame/, "html gets the height reporter the page uses to size live frames");
+    assert.match(String(page.headers["content-security-policy"]), /^sandbox allow-scripts/);
+    assert.match(String(page.headers["content-security-policy"]), /frame-ancestors 'self'/);
+    assert.equal(page.headers["x-content-type-options"], "nosniff");
+
+    const wrongKey = snap.rawBase.replace(/[0-9a-f]{32}/, "0".repeat(32));
+    assert.equal((await call("GET", `${wrongKey}site/index.html`, { token: null })).status, 404);
+    assert.equal((await call("GET", `${snap.rawBase}.git/config`, { token: null })).status, 404);
+    assert.equal((await call("GET", `${snap.rawBase}escape/secret.txt`, { token: null })).status, 404);
+    assert.equal((await call("GET", `${snap.rawBase}..%2F..%2Fetc%2Fpasswd`, { token: null })).status, 404);
+    assert.equal((await call("POST", `${snap.rawBase}site/index.html`, { token: null, body: {} })).status, 405);
+
+    // Media seeks by range (Safari will not play video without it).
+    writeFileSync(join(room.workspace, "clip.mp4"), "0123456789");
+    const whole = await call("GET", `${snap.rawBase}clip.mp4`, { token: null });
+    assert.equal(whole.status, 200);
+    assert.equal(whole.body, "0123456789");
+    assert.equal(whole.headers["accept-ranges"], "bytes");
+    assert.equal(whole.headers["content-type"], "video/mp4");
+    const part = await call("GET", `${snap.rawBase}clip.mp4`, { token: null, headers: { range: "bytes=2-5" } });
+    assert.equal(part.status, 206);
+    assert.equal(part.body, "2345");
+    assert.equal(part.headers["content-range"], "bytes 2-5/10");
+    assert.equal((await call("GET", `${snap.rawBase}clip.mp4`, { token: null, headers: { range: "bytes=-3" } })).body, "789");
+    assert.equal((await call("GET", `${snap.rawBase}clip.mp4`, { token: null, headers: { range: "bytes=20-" } })).status, 416);
+
+    const file = await call("GET", `/api/rooms/${room.id}/file?path=escape/secret.txt`);
+    assert.equal(file.status, 404);
+
+    // The real .git is refused by any spelling that leads there, not only by its name.
+    assert.ok(existsSync(join(room.workspace, ".git", "config")), "the room workspace is a git repo");
+    symlinkSync(join(room.workspace, ".git"), join(room.workspace, "gitlink"));
+    assert.equal((await call("GET", `${snap.rawBase}gitlink/config`, { token: null })).status, 404);
+    assert.equal((await call("GET", `${snap.rawBase}site%2F..%2F.git%2Fconfig`, { token: null })).status, 404);
+    assert.equal((await call("GET", `/api/rooms/${room.id}/file?path=gitlink/config`)).status, 404);
+    assert.equal((await call("GET", `/api/rooms/${room.id}/file?path=.git/config`)).status, 404);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("media outside the workspace is served only while a message in the room links it", async () => {
+  const room = await newRoom("Daemon outside media");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();
+  const outside = mkdtempSync(join(tmpdir(), "agora-media-"));
+  writeFileSync(join(outside, "moon pic.png"), "PNG");
+  writeFileSync(join(outside, "other.png"), "OTHER");
+  writeFileSync(join(outside, "notes.txt"), "private");
+  symlinkSync(join(outside, "notes.txt"), join(outside, "sneaky.png"));
+  const abs = (name: string) => `${snap.rawBase}~abs${encodeURI(join(outside, name))}`;
+  try {
+    assert.equal((await call("GET", abs("moon pic.png"), { token: null })).status, 404, "not linked yet");
+    const text = `Look: ![moon](${encodeURI(join(outside, "moon pic.png"))}) [notes](${join(outside, "notes.txt")}) ![x](${join(outside, "sneaky.png")})`;
+    assert.equal((await call("POST", `/api/rooms/${room.id}/messages`, { body: { text } })).status, 201);
+
+    const moon = await call("GET", abs("moon pic.png"), { token: null });
+    assert.equal(moon.status, 200);
+    assert.equal(moon.body, "PNG");
+    assert.equal(moon.headers["content-type"], "image/png");
+    assert.equal((await call("GET", abs("other.png"), { token: null })).status, 404, "a file no message links");
+    assert.equal((await call("GET", abs("notes.txt"), { token: null })).status, 404, "linked, but not media");
+    assert.equal((await call("GET", abs("sneaky.png"), { token: null })).status, 404, "a media name over some other file");
+    const wrongKey = snap.rawBase.replace(/[0-9a-f]{32}/, "0".repeat(32));
+    assert.equal((await call("GET", `${wrongKey}~abs${encodeURI(join(outside, "moon pic.png"))}`, { token: null })).status, 404);
+
+    // Gone from disk is gone from the room: nothing was copied.
+    rmSync(join(outside, "moon pic.png"));
+    assert.equal((await call("GET", abs("moon pic.png"), { token: null })).status, 404);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("media outside the workspace is served while the table's prose links it too", async () => {
+  const room = await newRoom("Daemon table media");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();
+  const outside = mkdtempSync(join(tmpdir(), "agora-media-"));
+  writeFileSync(join(outside, "chart.png"), "PNG");
+  writeFileSync(join(outside, "100%20 sure.png"), "PCT");
+  const abs = (name: string) => `${snap.rawBase}~abs${join(outside, name).split("/").map(encodeURIComponent).join("/")}`;
+  try {
+    assert.equal((await call("GET", abs("chart.png"), { token: null })).status, 404);
+    const op = await call("POST", `/api/rooms/${room.id}/table`, { body: { op: "propose", title: "Plot", body: `![chart](${join(outside, "chart.png")})` } });
+    assert.equal(op.status, 201, op.body);
+    assert.equal((await call("GET", abs("chart.png"), { token: null })).status, 200, "a proposal body renders through markdown");
+    // A literal %20 in the file's own name survives: the path is decoded once.
+    const text = `![](${encodeURI(join(outside, "100%20 sure.png"))})`;
+    assert.equal((await call("POST", `/api/rooms/${room.id}/messages`, { body: { text } })).status, 201);
+    const pct = await call("GET", abs("100%20 sure.png"), { token: null });
+    assert.equal(pct.status, 200);
+    assert.equal(pct.body, "PCT");
+    writeFileSync(join(outside, "page.htm"), "<p>hi</p>");
+    assert.equal((await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: `[page](${join(outside, "page.htm")})` } })).status, 201);
+    assert.match((await call("GET", abs("page.htm"), { token: null })).headers["content-type"] ?? "", /^text\/html/);
+    // A broken escape in the room part is just not a room.
+    assert.equal((await call("GET", snap.rawBase.replace(/\/raw\/[^/]+\//, "/raw/%E0%A4%A/") + "x.png", { token: null })).status, 404);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("a file preview reads only its first 2 MB", async () => {
+  const room = await newRoom("Daemon big file");
+  writeFileSync(join(room.workspace, "big.txt"), "x".repeat(3 * 1024 * 1024));
+  const file = await call("GET", `/api/rooms/${room.id}/file?path=big.txt`);
+  assert.equal(file.status, 200);
+  const body = file.json<{ size: number; truncated: boolean; text: string }>();
+  assert.equal(body.size, 3 * 1024 * 1024);
+  assert.equal(body.truncated, true);
+  assert.equal(body.text.length, 2 * 1024 * 1024);
+});
+
+test("the table file a message links opens the room's own table", async () => {
+  const room = await newRoom("Daemon table file");
+  assert.equal((await call("POST", `/api/rooms/${room.id}/table`, { body: { op: "propose", title: "Own table" } })).status, 201);
+  const file = await call("GET", `/api/rooms/${room.id}/file?path=.agoryx/TABLE.md`);
+  assert.equal(file.status, 200, file.body);
+  assert.match(file.json<{ text: string }>().text, /Own table/);
+});
+
+test("html and svg fences in a message are served as sandboxed pages, found by the hash of their body", async () => {
+  const room = await newRoom("Daemon blocks");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ rawBase: string }>();
+  const html = "<!doctype html><canvas id=c></canvas><script>c.width=10</script>";
+  const pic = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="4"/></svg>';
+  const text = ["Look:", "```html", html, "```", "and", "```svg", pic, "```", "```js", "not live", "```"].join("\n");
+  const posted = (await call("POST", `/api/rooms/${room.id}/messages`, { body: { text } })).json<{ message: { id: string } }>();
+  const id = posted.message.id;
+
+  const page = await call("GET", `${snap.rawBase}~block/m:${id}/${blockHash(html)}`, { token: null });
+  assert.equal(page.status, 200);
+  assert.ok(page.body.startsWith(html));
+  assert.match(String(page.headers["content-type"]), /^text\/html/);
+  assert.match(String(page.headers["content-security-policy"]), /^sandbox allow-scripts/);
+
+  const image = await call("GET", `${snap.rawBase}~block/m:${id}/${blockHash(pic)}`, { token: null });
+  assert.equal(image.status, 200);
+  assert.equal(image.body, pic);
+  assert.match(String(image.headers["content-type"]), /^image\/svg\+xml/);
+
+  assert.equal((await call("GET", `${snap.rawBase}~block/m:${id}/${blockHash("not live")}`, { token: null })).status, 404);
+  assert.equal((await call("GET", `${snap.rawBase}~block/m:nope/${blockHash(html)}`, { token: null })).status, 404);
+  const wrongKey = snap.rawBase.replace(/[0-9a-f]{32}/, "0".repeat(32));
+  assert.equal((await call("GET", `${wrongKey}~block/m:${id}/${blockHash(html)}`, { token: null })).status, 404);
+});
+
+test("static UI is served with a CSP; unknown paths fall back to the app shell", async () => {
+  const index = await call("GET", "/", { token: null });
+  assert.equal(index.status, 200);
+  assert.match(String(index.headers["content-security-policy"]), /frame-ancestors 'none'/);
+  // Whichever page is served (ui/dist or web/), the script it references must load.
+  const script = /<script[^>]*\ssrc="(\/[^"]+\.js)"/.exec(String(index.body))?.[1];
+  assert.ok(script, "index.html references a script");
+  assert.equal((await call("GET", script, { token: null })).status, 200);
+  assert.equal((await call("GET", "/../package.json", { token: null })).status, 404);
+  const route = await call("GET", "/rooms/whatever", { token: null });
+  assert.equal(route.status, 200);
+  assert.equal(route.body, index.body);
+});
+
+const gitIn = (cwd: string, ...args: string[]) =>
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
+
+const makeRepo = (name: string) => {
+  const repo = join(home, name);
+  mkdirSync(join(repo, "src"), { recursive: true });
+  gitIn(repo, "init", "-q", "-b", "main");
+  writeFileSync(join(repo, "src", "a.txt"), "main\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "commit", "-q", "-m", "first");
+  gitIn(repo, "branch", "feature");
+  gitIn(repo, "checkout", "-q", "feature");
+  writeFileSync(join(repo, "src", "a.txt"), "feature\n");
+  gitIn(repo, "commit", "-q", "-am", "on feature");
+  gitIn(repo, "checkout", "-q", "main");
+  return repo;
+};
+
+test("a room can work in its own git worktree, shared by both agents", async () => {
+  const repo = makeRepo("wt-repo");
+  const reply = await call("POST", "/api/rooms", { body: { name: "Worktree room", dir: repo, worktree: true, base: "feature" } });
+  assert.equal(reply.status, 201, reply.body);
+  const { room } = reply.json<{ room: { id: string; workspace: string; folder?: string; branch?: string } }>();
+  assert.equal(room.folder, repo);
+  assert.equal(room.branch, "agoryx/worktree-room");
+  assert.ok(room.workspace.includes(join("agora", "worktrees")), room.workspace);
+  // Started from the chosen base, on its own branch; the human's checkout did not move.
+  assert.equal(gitIn(room.workspace, "rev-parse", "--abbrev-ref", "HEAD"), "agoryx/worktree-room");
+  assert.equal(gitIn(room.workspace, "show", "HEAD:src/a.txt"), "feature");
+  assert.equal(gitIn(repo, "rev-parse", "--abbrev-ref", "HEAD"), "main");
+  const git = (await call("GET", `/api/rooms/${room.id}/git`)).json<{ git: { branch: string; linked: boolean }; worktree: { base: string } }>();
+  assert.equal(git.git.branch, "agoryx/worktree-room");
+  assert.equal(git.git.linked, true);
+  assert.equal(git.worktree.base, "feature");
+  const snap = (await call("GET", `/api/rooms/${room.id}`)).json<{ state: { settings: { autoCommit: boolean } } }>();
+  assert.equal(snap.state.settings.autoCommit, false);
+  const folders = (await call("GET", "/api/folders")).json<{ recent: Array<{ path: string; git: boolean }> }>();
+  assert.ok(folders.recent.some((f) => f.path === repo && f.git));
+});
+
+test("a worktree in a subfolder works in the same subfolder; refused worktrees leave nothing", async () => {
+  const repo = makeRepo("wt-sub");
+  const { room } = (await call("POST", "/api/rooms", { body: { name: "Sub", dir: join(repo, "src"), worktree: true } })).json<{ room: { workspace: string } }>();
+  assert.ok(room.workspace.endsWith(`${join("", "src")}`), room.workspace);
+  assert.ok(existsSync(join(room.workspace, "a.txt")));
+  const before = gitIn(repo, "branch", "--list", "agoryx/*");
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "Bad base", dir: repo, worktree: true, base: "nope" } })).status, 400);
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "No git", dir: home, worktree: true } })).status, 400);
+  assert.equal((await call("POST", "/api/rooms", { body: { name: "Relative", dir: "src" } })).status, 400);
+  assert.equal(gitIn(repo, "branch", "--list", "agoryx/*"), before);
+});
+
+test("a worktree whose setup fails after git made it is rolled back", async () => {
+  const repo = makeRepo("wt-rollback");
+  // On this base `src` is a file, so the picked src/ folder cannot be made in the worktree.
+  gitIn(repo, "checkout", "-q", "-b", "flat");
+  gitIn(repo, "rm", "-q", "-r", "src");
+  writeFileSync(join(repo, "src"), "a file now\n");
+  gitIn(repo, "add", "-A");
+  gitIn(repo, "commit", "-q", "-m", "src is a file");
+  gitIn(repo, "checkout", "-q", "main");
+  const worktrees = gitIn(repo, "worktree", "list");
+  const reply = await call("POST", "/api/rooms", { body: { name: "Flat", dir: join(repo, "src"), worktree: true, base: "flat" } });
+  assert.ok(reply.status >= 400, reply.body);
+  assert.equal(gitIn(repo, "branch", "--list", "agoryx/*"), "");
+  assert.equal(gitIn(repo, "worktree", "list"), worktrees);
+});
+
+test("the folder picker lists subfolders and says which are git repositories", async () => {
+  makeRepo("wt-list");
+  const reply = await call("GET", `/api/fs?path=${encodeURIComponent(home)}`);
+  assert.equal(reply.status, 200, reply.body);
+  const fs = reply.json<{ path: string; parent: string | null; dirs: Array<{ name: string; git: boolean }> }>();
+  assert.ok(fs.dirs.some((d) => d.name === "wt-list" && d.git));
+  assert.ok(fs.parent);
+  const inside = (await call("GET", `/api/fs?path=${encodeURIComponent(join(home, "wt-list"))}`)).json<{ git: { branch: string; branches: string[] } }>();
+  assert.equal(inside.git.branch, "main");
+  assert.deepEqual([...inside.git.branches].sort(), ["feature", "main"]);
+  assert.equal((await call("GET", `/api/fs?path=${encodeURIComponent(join(home, "missing"))}`)).status, 404);
+});
+
+test("an agent's own session is read from its CLI's file; its model and effort change through the room", async () => {
+  const room = await newRoom("Sessions");
+  const none = (await call("GET", `/api/rooms/${room.id}/session?agent=claude`)).json<any>();
+  assert.equal(none.sessionId, null, "no turn yet, no session");
+  assert.deepEqual(none.entries, []);
+  assert.equal((await call("GET", `/api/rooms/${room.id}/session?agent=nobody`)).status, 404);
+
+  const done = readEvents(`/api/rooms/${room.id}/events?after=0`, (frame) => frame.event === "room" && frame.data.event.type === "run.ended");
+  await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "Hello both" } });
+  await done;
+  for (const agent of ["claude", "codex"]) {
+    const t = (await call("GET", `/api/rooms/${room.id}/session?agent=${agent}`)).json<any>();
+    assert.ok(t.sessionId && t.file, `${agent}'s session file is found`);
+    assert.ok(t.entries.some((e: any) => e.kind === "user" && e.agoryx), `${agent}: the room's prompt is there, marked`);
+    assert.ok(t.entries.some((e: any) => e.kind === "assistant" && e.text === `${agent} here`), `${agent}: its reply is there`);
+    const same = (await call("GET", `/api/rooms/${room.id}/session?agent=${agent}&size=${t.size}`)).json<any>();
+    assert.equal(same.unchanged, true, "nothing new: nothing sent");
+    assert.equal(same.entries, undefined);
+  }
+
+  const models = await call("GET", "/api/models");
+  assert.equal(models.status, 200);
+  assert.ok(models.json<any>().claude.models.some((m: any) => m.id === "opus"));
+
+  const changed = readEvents(`/api/rooms/${room.id}/events?after=0`, (frame) => frame.event === "room" && frame.data.event.type === "agent.changed");
+  const set = await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "claude", model: "sonnet", effort: "high" } });
+  assert.equal(set.status, 200, set.body);
+  assert.deepEqual(set.json<any>().agent, { id: "claude", kind: "claude", label: "Claude", model: "sonnet", effort: "high" });
+  const frame = (await changed).at(-1)!;
+  assert.equal(frame.data.patch.agents.find((a: any) => a.id === "claude").model, "sonnet", "the stream carries the new roster");
+  assert.match(frame.data.patch.resume.claude, /--model sonnet/, "and the resume command that goes with it");
+  assert.equal((await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "claude", model: "a b" } })).status, 400);
+  assert.equal((await call("POST", `/api/rooms/${room.id}/agent`, { body: { agent: "nobody", model: "opus" } })).status, 400);
+});
+
+test("inline activity reads only this turn's native tools, including after the agent leaves", async () => {
+  const room = await newRoom("Inline activity");
+  assert.equal((await call("GET", `/api/rooms/${room.id}/turn-activity`)).status, 400);
+  assert.equal((await call("GET", `/api/rooms/${room.id}/turn-activity?turn=t999999`)).status, 404);
+  const done = readEvents(`/api/rooms/${room.id}/events?after=0`, (frame) => frame.event === "room" && frame.data.event.type === "run.ended");
+  await call("POST", `/api/rooms/${room.id}/messages`, { body: { text: "Hello both" } });
+  await done;
+  const state = (await call("GET", `/api/rooms/${room.id}`)).json<any>().state;
+  for (const kind of ["claude", "codex"]) {
+    const turn = state.turns.find((t: any) => t.agent === kind);
+    const id = turn.activity.find((a: any) => a.kind === "command").id;
+    const session = (await call("GET", `/api/rooms/${room.id}/session?agent=${kind}`)).json<any>();
+    const record = (toolId: string, timestamp: string, output: string) => kind === "claude" ? [
+      { type: "assistant", uuid: `a-${toolId}-${timestamp}`, timestamp, message: { content: [{ type: "tool_use", id: toolId, name: "Bash", input: { command: "printf test" } }] } },
+      { type: "user", uuid: `r-${toolId}-${timestamp}`, timestamp, message: { content: [{ type: "tool_result", tool_use_id: toolId, content: output }] } },
+    ] : [{ type: "event_msg", timestamp, payload: { type: "item_completed", item: { type: "CommandExecution", id: toolId, command: ["printf", "test"], aggregated_output: output, status: "completed", exit_code: 0 } } }];
+    const exact = new Date((Date.parse(turn.startedAt) + Date.parse(turn.endedAt)) / 2).toISOString();
+    const later = new Date(Date.parse(turn.endedAt) + 60000).toISOString();
+    appendFileSync(session.file, [...record(id, exact, "expected output"), ...record("unrelated", exact, "foreign output"), ...record(id, later, "next turn output")].map((line) => JSON.stringify(line)).join("\n") + "\n");
+    const reply = await call("GET", `/api/rooms/${room.id}/turn-activity?turn=${turn.id}`);
+    assert.equal(reply.status, 200, reply.body);
+    const details = reply.json<any>();
+    assert.equal(details.turn, turn.id);
+    assert.equal(details.sessionId, turn.sessionId);
+    assert.deepEqual(details.entries.map((e: any) => [e.id, e.output]), [[id, "expected output"]]);
+    assert.equal(details.entries.some((e: any) => e.kind !== "tool"), false);
+    assert.equal((await call("GET", `/api/rooms/${room.id}/turn-activity?turn=${turn.id}&end=bad`)).status, 400);
+    if (kind === "claude") {
+      assert.equal((await call("POST", `/api/rooms/${room.id}/agent-remove`, { body: { agent: kind } })).status, 200);
+      const historical = (await call("GET", `/api/rooms/${room.id}/turn-activity?turn=${turn.id}`)).json<any>();
+      assert.equal(historical.entries[0].output, "expected output");
+    }
+  }
+});

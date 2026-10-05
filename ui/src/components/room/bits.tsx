@@ -1,0 +1,231 @@
+import type { ReactNode } from "react";
+import { MarkMono } from "@/components/brand/Mark";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { clock, fullDate } from "@/lib/format";
+import { ink, nameOf, participant, type Tone, toneText } from "@/lib/room";
+import { useSeating } from "@/lib/store";
+import type { MessageEntry, RoomAgent } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+const toneBg: Record<Tone, string> = {
+  claude: "bg-claude-soft text-claude ring-claude/25",
+  codex: "bg-codex-soft text-codex ring-codex/25",
+  human: "bg-human-soft text-human ring-human/25",
+  sys: "bg-muted text-muted-foreground ring-border",
+};
+
+const ringTone: Record<Tone, string> = {
+  claude: "before:border-claude",
+  codex: "before:border-codex",
+  human: "before:border-human",
+  sys: "before:border-border",
+};
+
+/** Claude: a sunburst of strokes. */
+const ClaudeGlyph = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" className="size-[58%]">
+    <path d="M12 3v5.2M12 15.8V21M3 12h5.2M15.8 12H21M5.6 5.6l3.7 3.7M14.7 14.7l3.7 3.7M18.4 5.6l-3.7 3.7M9.3 14.7l-3.7 3.7" />
+  </svg>
+);
+
+/** Codex: a prompt caret and cursor. */
+const CodexGlyph = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" className="size-[58%]">
+    <path d="M5 7l5 5-5 5M12.5 17H19" />
+  </svg>
+);
+
+/** Below this size a glyph and a corner badge do not both read: the glyph stays, the badge goes (the shade still tells one agent from another). */
+const MARK_INSIDE = 26;
+
+/**
+ * `roster`: who to look the handle up in when there is no room yet (the start screen).
+ * An agent that shares its kind with another gets its own shade of the kind's colour and its mark
+ * (a corner badge, left off on a small avatar unless `badge` asks for it); one alone of its kind looks as it always has.
+ */
+export function Avatar({
+  handle,
+  roster,
+  size = 28,
+  live = false,
+  badge = false,
+  className,
+}: {
+  handle: string;
+  roster?: RoomAgent[];
+  size?: number;
+  live?: boolean;
+  /** Keep the mark's badge on a small avatar, where it is the only thing telling two of a kind apart. */
+  badge?: boolean;
+  className?: string;
+}) {
+  const room = useSeating();
+  const p = participant(roster ? { agents: roster } : room, handle);
+  const inside = Boolean(p.mark) && size < MARK_INSIDE && !badge;
+  const corner = Math.max(12, Math.round(size * 0.46));
+  return (
+    <span
+      className={cn(
+        "relative inline-grid shrink-0 place-items-center rounded-[30%] ring-1 ring-inset",
+        toneBg[p.tone],
+        live && "before:absolute before:-inset-[3px] before:animate-pulse before:rounded-[34%] before:border-2",
+        live && ringTone[p.tone],
+        className,
+      )}
+      style={{ width: size, height: size, ...ink(p) }}
+      aria-hidden
+    >
+      {p.kind === "claude" ? (
+        <ClaudeGlyph />
+      ) : p.kind === "codex" ? (
+        <CodexGlyph />
+      ) : p.tone === "sys" ? (
+        <MarkMono className="size-[62%]" />
+      ) : (
+        <span className="font-semibold" style={{ fontSize: size * 0.44 }}>
+          {(handle[0] ?? "?").toUpperCase()}
+        </span>
+      )}
+      {p.mark && !inside ? (
+        <span
+          className={cn(
+            "absolute -right-1 -bottom-1 grid place-items-center rounded-full font-bold leading-none text-background ring-2 ring-background",
+            p.kind === "codex" ? "bg-codex" : "bg-claude",
+          )}
+          style={{ width: corner, height: corner, fontSize: Math.round(corner * 0.66) }}
+        >
+          {p.mark}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * Who sits somewhere, overlapping left to right: those at work first, pulsing. `ring` is the surface it sits on, so
+ * each face is cut out of the one under it. More than `max` is a count.
+ */
+export function Facepile({
+  agents,
+  working,
+  size = 20,
+  max = 3,
+  ring = "ring-background",
+  className,
+}: {
+  agents: RoomAgent[];
+  working?: Set<string>;
+  size?: number;
+  max?: number;
+  ring?: string;
+  className?: string;
+}) {
+  if (!agents.length) return null;
+  const on = working ?? new Set<string>();
+  const shown = [...agents].sort((a, b) => Number(on.has(b.id)) - Number(on.has(a.id))).slice(0, max);
+  const more = agents.length - shown.length;
+  return (
+    <span className={cn("flex shrink-0 items-center", className)} aria-label={agents.map((agent) => agent.label ?? agent.id).join(", ")} role="img">
+      {shown.map((agent, index) => (
+        <span key={agent.id} className={cn("rounded-[34%] ring-2", ring)} style={{ marginLeft: index ? -Math.round(size * 0.22) : 0, zIndex: shown.length - index }}>
+          <Avatar handle={agent.id} roster={agents} size={size} live={on.has(agent.id)} />
+        </span>
+      ))}
+      {more > 0 ? (
+        <span
+          className={cn("grid place-items-center rounded-[34%] bg-muted font-medium text-muted-foreground ring-2", ring)}
+          style={{ width: size, height: size, marginLeft: -Math.round(size * 0.22), fontSize: Math.round(size * 0.45) }}
+        >
+          +{more}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+export function Name({ handle, className }: { handle: string; className?: string }) {
+  const room = useSeating();
+  const p = participant(room, handle);
+  return (
+    <span className={cn("font-semibold", toneText[p.tone], className)} style={ink(p)}>
+      {nameOf(room, handle)}
+    </span>
+  );
+}
+
+export function Tip({ tip, children, side }: { tip: ReactNode; children: ReactNode; side?: "top" | "bottom" | "left" | "right" }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side={side} className="max-w-72 text-pretty">
+        {tip}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+export function Time({ iso }: { iso: string }) {
+  return (
+    <Tip tip={fullDate(iso)}>
+      <time dateTime={iso} className="tabular text-xs text-faint">
+        {clock(iso)}
+      </time>
+    </Tip>
+  );
+}
+
+const nativeTone: Record<Tone, string> = {
+  claude: "border-claude/30 text-claude",
+  codex: "border-codex/30 text-codex",
+  human: "border-human/30 text-human",
+  sys: "border-border text-muted-foreground",
+};
+
+export function NativeBadge({ agent, label, tip }: { agent: string; label: string; tip: string }) {
+  const room = useSeating();
+  const p = participant(room, agent);
+  return (
+    <Tip tip={tip}>
+      <span className={cn("inline-flex h-5 items-center rounded-full border border-dashed px-2 text-micro font-medium", nativeTone[p.tone])} style={ink(p)}>
+        {label}
+      </span>
+    </Tip>
+  );
+}
+
+/** A message imported from an agent's own session (outside the room) says where it happened. */
+export function NativeTag({ m }: { m: MessageEntry }) {
+  const room = useSeating();
+  if (!m.native) return null;
+  const who = nameOf(room, m.native.agent);
+  return (
+    <NativeBadge
+      agent={m.native.agent}
+      label={m.author === m.native.agent ? "in own session" : `directly in ${who}’s session`}
+      tip={`This happened in ${who}’s own session, outside the room. Agoryx brought it here so everyone can see it.`}
+    />
+  );
+}
+
+export function Stats({ added, removed, deleted, binary, isNew }: { added?: number | null; removed?: number | null; deleted?: boolean; binary?: boolean; isNew?: boolean }) {
+  if (binary) return <span className="text-faint">binary</span>;
+  if (deleted) return <span className="tabular text-del-ink">deleted{removed ? ` −${removed}` : ""}</span>;
+  return (
+    <span className="tabular inline-flex gap-1">
+      <span className="text-add-ink">+{added ?? 0}</span>
+      <span className="text-del-ink">−{removed ?? 0}</span>
+      {isNew ? <span className="text-faint">new</span> : null}
+    </span>
+  );
+}
+
+export function Divider({ children, title }: { children: ReactNode; title?: string }) {
+  const body = (
+    <div className="flex items-center gap-3 py-1 text-xs text-muted-foreground">
+      <span className="h-px flex-1 bg-border" />
+      <span className="max-w-[80%] text-center text-balance">{children}</span>
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+  return title ? <Tip tip={title}>{body}</Tip> : body;
+}

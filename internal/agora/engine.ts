@@ -343,7 +343,8 @@ export const roomsSharingWorkspace = (store: RoomStore): Array<{ id: string; nam
   const here = resolve(store.state.workspace);
   const rooms = new Map<string, string>();
   for (const id of workspaceRooms(store.state.workspace)) rooms.set(id, id);
-  for (const room of RoomStore.list(dirname(store.dir))) {
+  // This room's own entry is set below whatever its log says, so its summary comes from memory.
+  for (const room of RoomStore.list(dirname(store.dir), (id) => (id === store.id ? store : undefined))) {
     const id = roomDirName(room.id);
     if (id && resolve(room.workspace) === here) rooms.set(id, room.name);
   }

@@ -77,11 +77,33 @@ export type Route =
 
 type Upsertable = { id: string };
 const upsert = <T extends Upsertable>(list: T[], item: T): T[] => {
-  const index = list.findIndex((entry) => entry.id === item.id);
+  // From the end: what changes is almost always one of the latest (a new message is not there at all).
+  let index = list.length - 1;
+  while (index >= 0 && list[index]!.id !== item.id) index -= 1;
   if (index < 0) return [...list, item];
   const next = list.slice();
   next[index] = item;
   return next;
+};
+
+/**
+ * The room list as fetched, keeping each room that did not change as the object it was: the list is polled every few
+ * seconds, and a new object for every room would render the whole sidebar again each time although nothing changed.
+ * The previous list itself when no room changed.
+ */
+const sameRooms = (before: RoomSummary[], fetched: RoomSummary[]): RoomSummary[] => {
+  const known = new Map(before.map((room) => [room.id, room]));
+  let changed = before.length !== fetched.length;
+  const rooms = fetched.map((room, index) => {
+    const old = known.get(room.id);
+    if (old && JSON.stringify(old) === JSON.stringify(room)) {
+      if (before[index] !== old) changed = true;
+      return old;
+    }
+    changed = true;
+    return room;
+  });
+  return changed ? rooms : before;
 };
 
 interface Store {
@@ -197,6 +219,8 @@ const closeStream = () => {
   source?.close();
   source = null;
   clearTimeout(reopenTimer);
+  // The next stream starts with each live turn's whole text (a reset): what this one still owed is in it.
+  dropStreams();
 };
 
 export const useStore = create<Store>((set, get) => ({
@@ -243,7 +267,8 @@ export const useStore = create<Store>((set, get) => ({
   async loadRooms() {
     try {
       const data = await api<{ rooms: RoomSummary[] }>("GET", "/api/rooms");
-      const rooms = data.rooms.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      const rooms = sameRooms(get().rooms, data.rooms.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+      if (rooms === get().rooms && get().roomsLoaded && get().bootError === null) return;
       set({ rooms, roomsLoaded: true, bootError: null });
     } catch (error) {
       if (error instanceof Unauthorized) return;
@@ -504,6 +529,8 @@ type Patch = {
 };
 
 const applyPatch = (event: RoomEvent, patch: Patch) => {
+  // Streamed text that came before this event lands first, as it was sent.
+  flushStreams();
   if ((event.type === "room.mode.changed" || event.type === "room.project.changed")) {
     const s = useStore.getState();
     useStore.setState({ panel: null, terminalOpen: false, docFocus: null, docReset: s.docReset + 1 });
@@ -575,14 +602,46 @@ const applyPatch = (event: RoomEvent, patch: Patch) => {
   useStore.setState({ snap: next, ...extra });
 };
 
-const applyStream = (data: { turnId: string; agent: string; text: string; reset?: boolean }) => {
+type StreamChunk = { turnId: string; agent: string; text: string; reset?: boolean };
+
+/**
+ * Streamed text waiting for the next frame. An agent's CLI sends many small chunks a second, and each store update
+ * runs every selector on screen and renders the streaming message again: chunks are joined and applied once a frame.
+ */
+let pendingStreams: StreamChunk[] = [];
+let streamFrame: number | undefined;
+let streamTimer: ReturnType<typeof setTimeout> | undefined;
+
+function dropStreams() {
+  if (streamFrame !== undefined) cancelAnimationFrame(streamFrame);
+  clearTimeout(streamTimer);
+  streamFrame = streamTimer = undefined;
+  pendingStreams = [];
+}
+
+const flushStreams = () => {
+  const chunks = pendingStreams;
+  dropStreams();
+  if (chunks.length === 0) return;
   const { snap } = useStore.getState();
   if (!snap) return;
-  const turn = snap.state.turns.find((t) => t.id === data.turnId);
-  if (turn && turn.status !== "running") return;
-  const before = snap.streams[data.turnId]?.text ?? "";
-  const text = data.reset ? data.text : before + data.text;
-  useStore.setState({ snap: { ...snap, streams: { ...snap.streams, [data.turnId]: { agent: data.agent, text } } } });
+  let streams = snap.streams;
+  for (const data of chunks) {
+    const turn = snap.state.turns.find((t) => t.id === data.turnId);
+    if (turn && turn.status !== "running") continue;
+    const before = streams[data.turnId]?.text ?? "";
+    const text = data.reset ? data.text : before + data.text;
+    streams = { ...streams, [data.turnId]: { agent: data.agent, text } };
+  }
+  if (streams !== snap.streams) useStore.setState({ snap: { ...snap, streams } });
+};
+
+const applyStream = (data: StreamChunk) => {
+  pendingStreams.push(data);
+  if (streamFrame !== undefined || streamTimer !== undefined) return;
+  // A hidden page gets no frames: its text still arrives, a little later.
+  if (document.visibilityState === "hidden") streamTimer = setTimeout(flushStreams, 250);
+  else streamFrame = requestAnimationFrame(flushStreams);
 };
 
 function connect(roomId: string, after: number) {

@@ -93,6 +93,25 @@ const translations: Partial<StreamdownTranslations> = {
 const defaultRemark = Object.values(defaultRemarkPlugins);
 const blocks = wholeBlocks(parseMarkdownIntoBlocks);
 
+/*
+ * Streamdown's props, made once. Its Block memo compares `remarkPlugins` and its contexts compare the rest by
+ * reference: a new array or object per render would render every finished block of a streaming message again on
+ * each token (O(message) work per chunk) instead of only the growing last one.
+ */
+const remarkPlugins = [...defaultRemark, remarkAgora];
+const remarkPluginsLiteral = [...defaultRemark, remarkAgora, remarkLiteralHtml];
+const liveRenderers = [{ language: ["html", "htm", "svg"], component: LiveBlock }];
+const pluginsLight = { code, mermaid: mermaidLight, renderers: liveRenderers };
+const pluginsDark = { code, mermaid: mermaidDark, renderers: liveRenderers };
+const linkSafety = { enabled: false };
+const shikiTheme: ["vitesse-light", "vitesse-dark"] = ["vitesse-light", "vitesse-dark"];
+const controls = {
+  table: { copy: true, download: false, fullscreen: true },
+  code: { copy: true, download: false },
+  mermaid: { copy: true, download: false, fullscreen: true, panZoom: true },
+  image: false,
+};
+
 export const rawUrl = (rawBase: string, path: string) => rawBase + path.split("/").map(encodeURIComponent).join("/");
 
 /** A media file outside the workspace, served from where it is while a message links it. */
@@ -125,43 +144,50 @@ function Source({ code: text, lang }: { code: string; lang: string }) {
   );
 }
 
-const makeLiveRenderer = (source: Source, text: string) =>
-  function LiveBlock({ code: fence, isIncomplete, language }: CustomRendererProps) {
-    const rawBase = useStore((s) => s.snap?.rawBase);
-    const lang = language.toLowerCase();
-    const block = useMemo(() => liveBlocks(text).find((b) => b.lang === lang && b.body.trim() === fence.trim()), [fence, lang]);
-    if (isIncomplete || !source || !rawBase || !block) {
-      return (
-        <div className="my-3 overflow-hidden rounded-xl border border-border bg-code">
-          <div className="border-b border-border px-3 py-1.5 font-mono text-meta text-muted-foreground">{lang}</div>
-          <pre className="scroll-thin max-h-96 overflow-auto px-3 py-2.5 font-mono text-small leading-relaxed">{fence}</pre>
-        </div>
-      );
-    }
-    const url = `${rawBase}~block/${source}/${hashBlock(block.body)}`;
-    if (lang === "svg") {
-      return (
-        <figure className="my-3 overflow-hidden rounded-xl border border-border bg-paper">
-          <img src={url} alt="SVG" className="mx-auto block max-w-full p-3" />
-          <Source code={fence} lang={lang} />
-        </figure>
-      );
-    }
+/**
+ * The message a live fence belongs to. A context, not a renderer made per text: the renderer is part of Streamdown's
+ * `plugins`, and a new one on every streamed token would render every block of the message again.
+ */
+const LiveSource = createContext<{ source: Source; text: string }>({ source: undefined, text: "" });
+
+function LiveBlock({ code: fence, isIncomplete, language }: CustomRendererProps) {
+  const { source, text } = useContext(LiveSource);
+  const rawBase = useStore((s) => s.snap?.rawBase);
+  const lang = language.toLowerCase();
+  // The fence's text is the block's; the message around it may still be streaming.
+  const block = useMemo(() => liveBlocks(text).find((b) => b.lang === lang && b.body.trim() === fence.trim()), [fence, lang, isIncomplete, source]);
+  if (isIncomplete || !source || !rawBase || !block) {
     return (
-      <figure className="my-3 overflow-hidden rounded-xl border border-border bg-paper shadow-soft">
-        <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
-          <span className="size-2 rounded-full bg-add-ink/70" />
-          <span className="font-mono">html</span>
-          <span className="text-faint">live page</span>
-          <a href={url} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-foreground">
-            <Maximize2Icon className="size-3.5" /> Full screen
-          </a>
-        </div>
-        <LiveFrame src={url} title="HTML" />
+      <div className="my-3 overflow-hidden rounded-xl border border-border bg-code">
+        <div className="border-b border-border px-3 py-1.5 font-mono text-meta text-muted-foreground">{lang}</div>
+        <pre className="scroll-thin max-h-96 overflow-auto px-3 py-2.5 font-mono text-small leading-relaxed">{fence}</pre>
+      </div>
+    );
+  }
+  const url = `${rawBase}~block/${source}/${hashBlock(block.body)}`;
+  if (lang === "svg") {
+    return (
+      <figure className="my-3 overflow-hidden rounded-xl border border-border bg-paper">
+        <img src={url} alt="SVG" className="mx-auto block max-w-full p-3" />
         <Source code={fence} lang={lang} />
       </figure>
     );
-  };
+  }
+  return (
+    <figure className="my-3 overflow-hidden rounded-xl border border-border bg-paper shadow-soft">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+        <span className="size-2 rounded-full bg-add-ink/70" />
+        <span className="font-mono">html</span>
+        <span className="text-faint">live page</span>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-foreground">
+          <Maximize2Icon className="size-3.5" /> Full screen
+        </a>
+      </div>
+      <LiveFrame src={url} title="HTML" />
+      <Source code={fence} lang={lang} />
+    </figure>
+  );
+}
 
 function Mention({ handle, children }: { handle: string; children: ReactNode }) {
   const room = useSeating();
@@ -364,6 +390,10 @@ const plain = (Tag: "h1" | "h2" | "h3" | "h4") =>
     return <Tag id={id}>{children}</Tag>;
   };
 
+// One map per variant, for every Markdown on screen: Streamdown's blocks compare these entry by entry.
+const chatComponents = { a: Link, img: Embed, h1: shifted("h2"), h2: shifted("h3"), h3: shifted("h4"), h4: shifted("h4") } as Components;
+const docComponents = { a: Link, img: Embed, h1: plain("h1"), h2: plain("h2"), h3: plain("h3"), h4: plain("h4") } as Components;
+
 export interface MarkdownProps {
   text: string;
   /** m:<id>, o:<id> or w:<id>: lets ```html / ```svg fences render live. */
@@ -384,41 +414,31 @@ export const Markdown = memo(function Markdown({ text, source, variant = "chat",
     }
     return (source?.startsWith("m:") ? indexed(s.snap?.state.messages) : source?.startsWith("o:") ? indexed(s.snap?.state.table.options) : undefined)?.get(source!.slice(2));
   });
-  const plugins = useMemo(() => {
-    const Live = makeLiveRenderer(source, text);
-    return { code, mermaid: dark ? mermaidDark : mermaidLight, renderers: [{ language: ["html", "htm", "svg"], component: Live }] };
-  }, [source, text, dark]);
-  const components = useMemo<Components>(
-    () => ({
-      a: Link,
-      img: Embed,
-      ...(variant === "chat"
-        ? { h1: shifted("h2"), h2: shifted("h3"), h3: shifted("h4"), h4: shifted("h4") }
-        : { h1: plain("h1"), h2: plain("h2"), h3: plain("h3"), h4: plain("h4") }),
-    }),
-    [variant],
-  );
+  const live = useMemo(() => ({ source, text }), [source, text]);
+  const components = variant === "chat" ? chatComponents : docComponents;
   return (
     <FileSource.Provider value={seq}>
+    <LiveSource.Provider value={live}>
     <Streamdown
       className={cn(variant === "chat" ? "prose-chat" : "prose-chat prose-doc", "min-w-0", className)}
       mode={streaming ? "streaming" : "static"}
       isAnimating={streaming}
       caret={streaming ? "block" : undefined}
-      plugins={plugins}
+      plugins={dark ? pluginsDark : pluginsLight}
       components={components}
-      remarkPlugins={[...defaultRemark, remarkAgora, ...(literalHtml ? [remarkLiteralHtml] : [])]}
+      remarkPlugins={literalHtml ? remarkPluginsLiteral : remarkPlugins}
       parseMarkdownIntoBlocksFn={blocks}
       translations={translations}
-      linkSafety={{ enabled: false }}
+      linkSafety={linkSafety}
       lineNumbers={false}
       codeBlockMaxHeight={variant === "doc" ? 640 : 460}
       tableMaxHeight={variant === "doc" ? 800 : 420}
-      shikiTheme={["vitesse-light", "vitesse-dark"]}
-      controls={{ table: { copy: true, download: false, fullscreen: true }, code: { copy: true, download: false }, mermaid: { copy: true, download: false, fullscreen: true, panZoom: true }, image: false }}
+      shikiTheme={shikiTheme}
+      controls={controls}
     >
       {text}
     </Streamdown>
+    </LiveSource.Provider>
     </FileSource.Provider>
   );
 });

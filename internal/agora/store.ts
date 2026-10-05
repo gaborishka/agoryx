@@ -149,6 +149,8 @@ export class RoomStore {
   state!: RoomState;
   private offset = 0;
   private tailChecked = false;
+  /** summary() at a seq: the room list asks for every open room's on each poll. */
+  private summarized: { seq: number; summary: RoomSummary } | undefined;
   private readonly listeners = new Set<StoreListener>();
 
   private constructor(dir: string) {
@@ -204,7 +206,11 @@ export class RoomStore {
     return store;
   }
 
-  static list(root: string): RoomSummary[] {
+  /**
+   * `live`: the stores this process writes itself. Their summary comes from memory, since reading and replaying a busy
+   * room's whole log on every poll of the room list is what its constant writes would otherwise cost.
+   */
+  static list(root: string, live?: (id: string) => RoomStore | undefined): RoomSummary[] {
     if (!existsSync(root)) return [];
     const rooms: RoomSummary[] = [];
     const listed = new Set<string>();
@@ -212,6 +218,11 @@ export class RoomStore {
       if (!entry.isDirectory()) continue;
       const file = join(root, entry.name, EVENTS_FILE);
       listed.add(file);
+      const store = live?.(entry.name);
+      if (store) {
+        rooms.push(store.summary());
+        continue;
+      }
       try {
         // A room's summary is its event log's: read again only when the log changed.
         const { mtimeMs, size } = statSync(file);
@@ -268,7 +279,21 @@ export class RoomStore {
   }
 
   summary(): RoomSummary {
-    const last = [...this.state.messages].reverse().find((message) => message.kind !== "pass" && message.kind !== "system");
+    if (this.summarized?.seq === this.state.seq) return this.summarized.summary;
+    const summary = this.summarize();
+    this.summarized = { seq: this.state.seq, summary };
+    return summary;
+  }
+
+  private summarize(): RoomSummary {
+    let last: RoomState["messages"][number] | undefined;
+    for (let i = this.state.messages.length - 1; i >= 0; i -= 1) {
+      const message = this.state.messages[i]!;
+      if (message.kind !== "pass" && message.kind !== "system") {
+        last = message;
+        break;
+      }
+    }
     // What git and gh said of the folder's GitHub repository is no activity of the room's.
     let lastEvent = this.events[this.events.length - 1]!;
     for (let i = this.events.length - 1; i >= 0; i -= 1) {
@@ -282,7 +307,7 @@ export class RoomStore {
     const lastLabel = lastBy ? lastBy.label : lastGuest ? originName(lastGuest) : undefined;
     const working = this.state.turns.filter((turn) => turn.status === "running").map((turn) => ({ agent: turn.agent, since: turn.startedAt }));
     const key = projectKey(this.state);
-    const modeAt = this.state.modeSince ? this.events.find(event => event.seq === this.state.modeSince)?.ts : undefined;
+    const modeAt = this.state.modeSince ? this.at(this.state.modeSince)?.ts : undefined;
     const nativeActivityAt = last && (!modeAt || last.ts > modeAt) ? last.ts : modeAt;
     return {
       id: this.state.id,
@@ -338,6 +363,12 @@ export class RoomStore {
   subscribe(listener: StoreListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** The event at `seq`: usually its index (seq - 1), else searched for (a corrupt line skipped on replay leaves a gap). */
+  private at(seq: number): RoomEvent | undefined {
+    const dense = this.events[seq - 1];
+    return dense?.seq === seq ? dense : this.events.find((event) => event.seq === seq);
   }
 
   since(seq: number): RoomEvent[] {

@@ -23,12 +23,15 @@ export const roomSnapshot = (state: RoomState, streams: Map<string, StreamBuffer
   streams: Object.fromEntries([...streams.entries()].map(([turnId, buffer]) => [turnId, buffer])),
 });
 
-const findTurn = (state: RoomState, turnId: string): TurnState | undefined => {
-  for (let index = state.turns.length - 1; index >= 0; index -= 1) {
-    if (state.turns[index]!.id === turnId) return state.turns[index];
+/** From the end: the item an event names is almost always one of the latest. */
+const findLatest = <T extends { id: string }>(list: readonly T[], id: string): T | undefined => {
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (list[index]!.id === id) return list[index];
   }
   return undefined;
 };
+
+const findTurn = (state: RoomState, turnId: string): TurnState | undefined => findLatest(state.turns, turnId);
 
 /**
  * The slice of projected state a client must merge after `event`, so browser
@@ -43,7 +46,7 @@ export const eventPatch = (state: RoomState, event: RoomEvent): Record<string, u
   const base = { seq: event.seq, runs: state.runs, presence: presenceOf(state), ...(guest ? { guests: state.guests } : {}) };
   switch (event.type) {
     case "message.posted": {
-      const message = state.messages.find((entry) => entry.id === event.message.id);
+      const message = findLatest(state.messages, event.message.id);
       return { ...base, message };
     }
     case "turn.started":

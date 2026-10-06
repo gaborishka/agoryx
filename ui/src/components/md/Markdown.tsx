@@ -45,6 +45,13 @@ const oneByte = (text: string): string => {
   return copy;
 };
 
+/** A fence as plain text, in the shape of a highlight: what Streamdown itself shows before one. */
+const plainCode = (text: string): HighlightResult => ({
+  bg: "transparent",
+  fg: "inherit",
+  tokens: text.split("\n").map((line) => [{ content: line, color: "inherit", bgColor: "transparent", htmlStyle: {}, offset: 0 }]),
+});
+
 /**
  * The @streamdown/code plugin, but Shiki is imported with the first fence, not with the page; until then a fence
  * shows plain, as it does while a language loads. Streamdown asks the plugin only for its themes and highlights.
@@ -62,10 +69,18 @@ const lazyCode = (themes: [ThemeInput, ThemeInput]): CodeHighlighterPlugin => {
     highlight(options: HighlightOptions, callback?: (result: HighlightResult) => void) {
       const fit = { ...options, code: oneByte(options.code) };
       if (plugin) return plugin.highlight(fit, callback);
-      void load().then((loaded) => {
-        const ready = loaded.highlight(fit, callback);
-        if (ready) callback?.(ready);
-      }, () => {});
+      void load().then(
+        (loaded) => {
+          const ready = loaded.highlight(fit, callback);
+          if (ready) callback?.(ready);
+        },
+        (error: unknown) => {
+          // Its chunk did not load (the page outlived an update of Agoryx): the fence shows plain, and the next asks again.
+          console.error("[Markdown] code highlighting did not load:", error);
+          loading = undefined;
+          callback?.(plainCode(fit.code));
+        },
+      );
       return null;
     },
   };

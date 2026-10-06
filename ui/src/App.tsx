@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { Palette } from "@/components/Palette";
 import { SidePanel, warmPanels } from "@/components/panel/SidePanel";
 import { Mark } from "@/components/brand/Mark";
+import { LazyView } from "@/components/common/LazyView";
 import { NAV, navWidthOf, PANEL_MIN, ResizeHandle, ROOM_MIN, useViewportWidth } from "@/components/common/ResizeHandle";
 import { Composer, StatusBar } from "@/components/room/Composer";
 import { Feed } from "@/components/room/Feed";
@@ -142,7 +143,7 @@ function Room() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <RoomHeader />
-      {isProtocolMode(workspaceMode) ? <Suspense fallback={<div className="flex-1" />}><WorkflowBoard key={`${roomId}:${workspaceMode}`} mode={workspaceMode} /></Suspense> : view === "sessions" ? <Suspense fallback={<div className="flex-1" />}><WorkflowSessions key={roomId} /></Suspense> : view === "table" ? <TableBoard /> : <Feed />}
+      {isProtocolMode(workspaceMode) ? <LazyView key="board" fallback={<div className="flex-1" />}><WorkflowBoard key={`${roomId}:${workspaceMode}`} mode={workspaceMode} /></LazyView> : view === "sessions" ? <LazyView key="sessions" fallback={<div className="flex-1" />}><WorkflowSessions key={roomId} /></LazyView> : view === "table" ? <TableBoard /> : <Feed />}
       {!isProtocolMode(workspaceMode) && view !== "sessions" ? <div className={cn("shrink-0 px-3 pb-3 sm:px-5 sm:pb-4", view === "table" && "border-t border-border/70 bg-canvas pt-3")}>
         <div className="mx-auto flex w-full max-w-reading flex-col gap-2">
           {workflowRunning ? <div className="rounded-xl border border-border bg-muted/50 px-4 py-3 text-small text-muted-foreground">A private session is active. Chat is available to read; sending resumes when it finishes. <button type="button" className="font-medium text-foreground underline underline-offset-2" onClick={() => { const mode = useWorkflow.getState().run?.mode; if (mode && roomId) useStore.getState().openWorkflow(roomId, mode, useWorkflow.getState().run?.id); }}>Open session</button></div> : <><StatusBar /><Composer /></>}
@@ -198,17 +199,17 @@ function Shell() {
           <NewChatScreen />
 
         ) : route.kind === "settings" ? (
-          <Suspense fallback={null}>
+          <LazyView key="settings">
             <Settings section={route.section} />
-          </Suspense>
+          </LazyView>
         ) : route.kind === "project" ? (
-          <Suspense fallback={null}>
+          <LazyView key="project">
             <ProjectPage hash={route.hash} />
-          </Suspense>
+          </LazyView>
         ) : route.kind === "projects" ? (
-          <Suspense fallback={null}>
+          <LazyView key="projects">
             <ProjectsPage />
-          </Suspense>
+          </LazyView>
         ) : null}
       </main>
       {route.kind === "room" ? <SidePanel overlay={!docked} phone={phone} /> : null}

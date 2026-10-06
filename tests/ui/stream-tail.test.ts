@@ -28,3 +28,16 @@ test("a reply with no paragraph breaks still keeps a steady tail", () => {
   assert.ok(tail.length - 1 >= 2400);
   assert.equal(streamTail(`${text}bbb`, 2400).slice(0, 50), tail.slice(0, 50));
 });
+
+test("a tail that begins inside a code block opens it again", () => {
+  const code = Array.from({ length: 200 }, (_, i) => `const line${i} = ${i};\n${i % 5 === 0 ? "\n" : ""}`).join("");
+  const text = `Here is the change:\n\n\`\`\`ts\n${code}\`\`\`\n\nThat is all.`;
+  const tail = streamTail(text, 2400);
+  assert.ok(tail.startsWith("…\n\n```ts\n"), tail.slice(0, 40));
+  assert.ok(tail.endsWith("```\n\nThat is all."));
+});
+
+test("a tail after a closed code block adds no fence", () => {
+  const text = `\`\`\`ts\nconst a = 1;\n\`\`\`\n\n${"Prose goes on here.\n\n".repeat(300)}`;
+  assert.ok(!streamTail(text, 2400).includes("```"));
+});

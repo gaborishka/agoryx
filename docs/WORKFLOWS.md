@@ -1,4 +1,4 @@
-# Structured work modes in Agoryx 0.1.0
+# Structured work modes in Agoryx 0.1.1
 
 **New conversation** opens one composer with two compact, independent choices: **Mode** and **Project**.
 The mode picker explains when to use Chat, Work, Verification, Council, Tournament or Debate. Changing

@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — 2026-10-06
 
 - Visual replies: agents lead with native ```` ```viz ```` cards (claims, compare, chart, stats, steps, stance, tradeoff, decision) instead of long prose; the room briefing makes this the default and `agoryx viz check` validates a block before posting.
 - Workflow digests: Debate opens on an argument map (concessions, confidence by phase, the crux and its decisive test, the bench's leaning), Council and Tournament on anonymous standings, Verification on a criteria-by-round grid; full submissions fold behind one control.
 - Live html pages receive the room's theme as `--agoryx-*` variables, live across light and dark.
+- Faster streaming, a lighter first load, a cheaper room-list poll and SSE fan-out; the UI recovers from chunks that fail to load and keeps code fences whole in the live tail.
 
 ## 0.1.0 — 2026-10-05
 

@@ -2,7 +2,9 @@
 
 **One conversation for you and your AI agents.** Agoryx is a local-first, open-source workspace where Claude Code and Codex can discuss, build, compare and check work together using their existing CLI sign-ins.
 
-Current version: **0.1.0** · [Download for macOS](https://github.com/gaborishka/agoryx/releases/latest) · [Documentation](docs/README.md) · [MIT](LICENSE)
+Current version: **0.1.1** · [Download for macOS](https://github.com/gaborishka/agoryx/releases/latest) · [Documentation](docs/README.md) · [MIT](LICENSE)
+
+![Claude and Codex in one Agoryx conversation: they answer each other, edit files and leave the open question for you](docs/images/conversation.jpg)
 
 ## Work together, then choose the right approach
 
@@ -20,6 +22,8 @@ Start a **New conversation**, write the task, and choose a mode in the composer.
 A conversation can move between these approaches. Before a private session, explicitly choose which messages, finished results and files to carry forward. Project membership stays independent of the mode and working folder.
 
 ## More than a chat
+
+![The table: the open question, each agent's option and the objection, waiting for your decision](docs/images/table.jpg)
 
 - **Conversation** holds the discussion, tool traces and changes.
 - **Table** holds the current overview, decisions, evidence, plans, checks and task-specific components. Agents can prepare it from context; the human keeps the decisions.
@@ -40,6 +44,8 @@ The app requires:
 - **Node.js 22 or newer** on your login shell's PATH.
 - At least one installed and signed-in **Claude Code** or **Codex CLI** for ordinary conversations.
 - Enough participants for the selected protocol: Council and Verification need at least two; Tournament and Debate need at least three.
+
+The desktop app is macOS on Apple Silicon only for now. Linux and Windows have no app or private-phase backend yet; Chat and Work run from source wherever Node 22 and the agent CLIs run, but that path is not tested there.
 
 The startup screen checks the installation and explains what is missing. The app uses your existing native CLI sign-ins; Agoryx does not require a model API key for the core experience. Optional Jev coordination uses a separately configured provider key.
 

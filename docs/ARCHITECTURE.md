@@ -1,6 +1,6 @@
 # Architecture
 
-Agoryx 0.1.0 has a **room runtime** shared by the web UI, desktop app and room CLI. It also retains a separate legacy SQLite chat runtime for compatibility.
+Agoryx 0.1.1 has a **room runtime** shared by the web UI, desktop app and room CLI. It also retains a separate legacy SQLite chat runtime for compatibility.
 
 ## Runtime map
 

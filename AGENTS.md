@@ -1,6 +1,6 @@
 # Working on Agoryx
 
-Agoryx 0.1.0 is a local-first collaboration workspace for a human and multiple native Claude Code/Codex agents. Read the current product before assuming the old CLI architecture is the main runtime.
+Agoryx 0.1.1 is a local-first collaboration workspace for a human and multiple native Claude Code/Codex agents. Read the current product before assuming the old CLI architecture is the main runtime.
 
 ## Bootstrap
 

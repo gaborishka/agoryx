@@ -1,6 +1,6 @@
 # Conversations, projects and the shared table
 
-This guide describes the room application in **Agoryx 0.1.0**. A room is the persisted conversation behind the UI. The older SQLite `agoryx chat` runtime is documented [separately](LEGACY-CLI.md).
+This guide describes the room application in **Agoryx 0.1.1**. A room is the persisted conversation behind the UI. The older SQLite `agoryx chat` runtime is documented [separately](LEGACY-CLI.md).
 
 ## Start a conversation
 

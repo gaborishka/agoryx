@@ -634,7 +634,7 @@ class CodexAppServerRunner {
         {
           clientInfo: {
             name: "agoryx",
-            version: "0.1.0",
+            version: "0.1.1",
           },
           capabilities: null,
         },

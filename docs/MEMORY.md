@@ -1,6 +1,6 @@
 # Project memory
 
-Agoryx 0.1.0 keeps **explicit, attributed memory for a project**. This is separate from a conversation's event log and from each provider's native session history.
+Agoryx 0.1.1 keeps **explicit, attributed memory for a project**. This is separate from a conversation's event log and from each provider's native session history.
 
 ## What belongs to a project
 

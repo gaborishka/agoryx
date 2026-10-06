@@ -24,7 +24,7 @@ import {
   TrophyIcon,
   UsersRoundIcon,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
   WorkflowCheck,
   WorkflowEntry,
@@ -56,6 +56,8 @@ import { AgentStage } from "./AgentStage";
 import { WorkflowSetup } from "./WorkflowSetup";
 import { WorkflowReading } from "./WorkflowReading";
 import { WorkflowChecks as Checks } from "./WorkflowChecks";
+import { CriteriaGridView, DebateMap, Standings } from "./WorkflowDigest";
+import { councilStandings, debateDigest, tournamentStandings } from "@/lib/workflow-digest";
 
 function Markdown(props: MarkdownProps) {
   return <AppMarkdown {...props} literalHtml />;
@@ -689,6 +691,7 @@ function Verification({ run }: { run: WorkflowRun }) {
                   </div>
                 ))}
               </div>
+              <CriteriaGridView run={run} />
               <Checks checks={run.report.checks} />
               <Unknowns items={run.report.unknowns} />
               <details className="audit-detail">
@@ -839,6 +842,8 @@ function Council({ run }: { run: WorkflowRun }) {
         answers && !revealed(answers) ? (
           <Sealed round={answers} run={run} />
         ) : (
+          <>
+          <Standings rows={councilStandings(run)} title={revealed(reviews) && run.participants.length > 2 ? "How the council ranked each other" : "The voices in one line each"} unit="answer" />
           <div className="council-voices">
             {answers?.entries.map((entry) => (
               <article key={entry.id}>
@@ -863,6 +868,7 @@ function Council({ run }: { run: WorkflowRun }) {
               </Empty>
             ) : null}
           </div>
+          </>
         )
       ) : (
         <section className="peer-review-desk">
@@ -876,6 +882,7 @@ function Council({ run }: { run: WorkflowRun }) {
               Every member evaluates other answers. No self-ranking.
             </p>
           </div>
+          {run.participants.length > 2 ? <Standings rows={councilStandings(run)} title="Standing after peer review" unit="answer" /> : null}
           <Entries run={run} round={reviews} />
         </section>
       )}
@@ -1048,6 +1055,7 @@ function Tournament({ run }: { run: WorkflowRun }) {
             detail="Judges evaluate the common criteria; prototype authors do not judge."
             icon={<ScaleIcon className="size-4" />}
           >
+            {revealed(evaluation) ? <Standings rows={tournamentStandings(run)} title="Where the prototypes stand" unit="prototype" /> : null}
             <Entries run={run} round={evaluation} />
           </Section>
           {canSelect && current ? (
@@ -1133,6 +1141,12 @@ function Debate({ run }: { run: WorkflowRun }) {
   }, [run.status]);
   const [decision, setDecision] = useState("");
   const [overrideOpen, setOverrideOpen] = useState(false);
+  // With the map drawn, the full submissions are the evidence behind it, opened on request. The map stands in for
+  // them only when it could read both openings; a phase still running or failed keeps its own section in view.
+  const [fullExchange, setFullExchange] = useState(false);
+  const digest = useMemo(() => debateDigest(run), [run]);
+  const mapped = !!digest && digest.sides.length === 2 && digest.sides.every((side) => side.position && side.arguments.length);
+  const gateSettled = [steelman, acceptance].every((round) => !round || revealed(round));
   const busy = useWorkflow((s) => s.busy);
   const current = useWorkflow((s) => s.run?.id === run.id);
   const advocates = run.participants
@@ -1149,6 +1163,7 @@ function Debate({ run }: { run: WorkflowRun }) {
       icon={<ScaleIcon className="size-4" />}
       className={revealed(verdict) ? "border-foreground/25" : ""}
     >
+      {revealed(verdict) ? <CriteriaGridView run={run} /> : null}
       <Entries run={run} round={verdict} />
       {run.override ? (
         <div className="mt-5 rounded-xl border border-human/30 bg-human-soft/40 p-4">
@@ -1241,14 +1256,29 @@ function Debate({ run }: { run: WorkflowRun }) {
         </div>
       </div>
       {debateView === "verdict" ? (
-        <div className="verdict-paper" data-workflow-outcome="debate">
+        <div className="verdict-paper space-y-5" data-workflow-outcome="debate">
+          <DebateMap run={run} />
           {verdictSection}
         </div>
       ) : (
         <>
+          {mapped ? (
+            <>
+              <DebateMap run={run} />
+              <button
+                type="button"
+                aria-expanded={fullExchange}
+                onClick={() => setFullExchange(!fullExchange)}
+                className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-small font-medium transition hover:bg-accent"
+              >
+                <ChevronDownIcon className={cn("size-3.5 transition-transform", fullExchange && "rotate-180")} />
+                {fullExchange ? "Hide the full submissions" : "Read the full submissions"}
+              </button>
+            </>
+          ) : null}
           {openings && !revealed(openings) ? (
             <Sealed round={openings} run={run} />
-          ) : (
+          ) : mapped && !fullExchange ? null : (
             <div className="debate-exchange grid items-start gap-4 @min-[50rem]/workflow:grid-cols-2">
               {participants.map((person) => (
                 <Section
@@ -1325,6 +1355,7 @@ function Debate({ run }: { run: WorkflowRun }) {
               ))}
             </div>
           )}
+          {mapped && !fullExchange && gateSettled ? null : (
           <Section
             title="Understanding before rebuttal"
             detail="The original speaker must accept the opponent’s restatement. Rejected restatements return for repair."
@@ -1341,6 +1372,7 @@ function Debate({ run }: { run: WorkflowRun }) {
               </Empty>
             )}
           </Section>
+          )}
           {run.phase === "disagreement" ? (
             <Unknowns
               title="Agreement on the restatement was not reached"

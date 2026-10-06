@@ -41,7 +41,7 @@ export const restrictedRoom = (settings: TurnRequest["settings"]): boolean => se
 export const buildClaudeSettings = (request: Pick<TurnRequest, "settings"> & { env?: NodeJS.ProcessEnv }): Json => {
   const readonly = request.settings.access === "readonly";
   const shim = request.env?.AGORYX_CLI;
-  const tools = ["agoryx", ...(shim ? [shim] : [])].flatMap((cli) => ["table", "diff", "read", "say"].map((verb) => `Bash(${cli} ${verb} *)`));
+  const tools = ["agoryx", ...(shim ? [shim] : [])].flatMap((cli) => ["table", "diff", "read", "say", "viz"].map((verb) => `Bash(${cli} ${verb} *)`));
   return {
     ...(restrictedRoom(request.settings)
       ? {

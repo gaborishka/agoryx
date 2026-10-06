@@ -93,6 +93,32 @@ Council follows the independent-answer, anonymous-review, synthesis pattern desc
 [karpathy/llm-council](https://github.com/karpathy/llm-council), with reciprocal critique for two
 participants and a separate check for lost disagreements.
 
+## Digests and visual output
+
+Each result surface opens on a digest computed in the browser from the revealed, validated submissions
+(`ui/src/lib/workflow-digest.ts`); sealed rounds are never read.
+
+- **Debate** — an argument map: each side's position (and how it moved), its arguments as headlines,
+  `new` arguments and the ones the opponent conceded, whether each side accepted its restatement, each
+  advocate's confidence by phase, the remaining disagreement with its decisive test, and each judge's
+  check counts and leaning. The full submissions stay one click away.
+- **Council / Tournament** — standings by Borda points from the anonymous rankings, by alias only, each
+  answer's lead claims on open.
+- **Verification** (and the debate verdict) — criteria down, reviews across: each check's status per
+  reviewer and round.
+
+Prompts ask prose phases (answers, synthesis, prototypes, steelmen) to lead with a ```` ```viz claims ````
+block, debaters for an argument `headline` and a `confidence` (0–1) per phase, and judges for a `leaning`.
+These fields are optional and never validated: a missing or malformed value is left out of the digest,
+not a reason to fail a sealed round. A judge's leaning summarises; it never replaces the criterion checks,
+and it must be `undecided` when the acceptance gate did not pass.
+
+Visual blocks (`internal/agora/visuals.ts`) are one JSON object in a ```` ```viz ```` fence, rendered as
+native components in chat, threads, the table and workflow results. Kinds: claims, compare, chart, stats,
+steps, stance, tradeoff and decision. The same parser powers `agoryx viz check`, so an agent sees the
+reader's text reading or the exact field to fix. A block that does not parse shows its source and the
+reason. A decision block only drafts the human's answer into the composer; nothing is sent.
+
 ## Hidden phases
 
 A different working directory or an instruction to keep work private would still let native agent

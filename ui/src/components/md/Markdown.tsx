@@ -2,8 +2,8 @@ import { workspaceAt } from "@agora/room-mode";
 import { liveBlocks } from "@agora/blocks";
 import type { CodeHighlighterPlugin, HighlightOptions, HighlightResult, ThemeInput } from "@streamdown/code";
 import type { DiagramPlugin, MermaidConfig } from "@streamdown/mermaid";
-import { Code2Icon, ExternalLinkIcon, FileIcon, FileXIcon, Maximize2Icon } from "lucide-react";
-import { type ComponentProps, createContext, useContext, memo, type ReactNode, useMemo, useState } from "react";
+import { BarChart3Icon, Code2Icon, ExternalLinkIcon, FileIcon, FileXIcon, Maximize2Icon } from "lucide-react";
+import { type ComponentProps, createContext, lazy, useContext, memo, type ReactNode, Suspense, useMemo, useState } from "react";
 import { type Components, type CustomRendererProps, defaultRemarkPlugins, parseMarkdownIntoBlocks, Streamdown, type StreamdownTranslations } from "streamdown";
 import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, hashBlock, IMAGE_EXT, TABLE_EXT, VIDEO_EXT, VISUAL_EXT, workspaceRel } from "@/lib/format";
 import { ink, participant, refExists, toneText } from "@/lib/room";
@@ -155,7 +155,10 @@ const blocks = wholeBlocks(parseMarkdownIntoBlocks);
  */
 const remarkPlugins = [...defaultRemark, remarkAgora];
 const remarkPluginsLiteral = [...defaultRemark, remarkAgora, remarkLiteralHtml];
-const liveRenderers = [{ language: ["html", "htm", "svg"], component: LiveBlock }];
+const liveRenderers = [
+  { language: ["html", "htm", "svg"], component: LiveBlock },
+  { language: ["viz"], component: VizFence },
+];
 const pluginsLight = { code, mermaid: mermaidLight, renderers: liveRenderers };
 const pluginsDark = { code, mermaid: mermaidDark, renderers: liveRenderers };
 const linkSafety = { enabled: false };
@@ -244,6 +247,26 @@ function LiveBlock({ code: fence, isIncomplete, language }: CustomRendererProps)
       <LiveFrame src={url} title="HTML" />
       <Source code={fence} lang={lang} />
     </figure>
+  );
+}
+
+/**
+ * A ```viz fence: its card is drawn by Visual.tsx, loaded with the first one. Lazy also because Visual draws a claim's
+ * detail with this file's Markdown: a static import each way would make either module's top level depend on the other.
+ */
+const VizBlock = lazy(() => import("./Visual").then((m) => ({ default: m.VizBlock })));
+
+function VizFence({ code: fence, isIncomplete }: CustomRendererProps) {
+  return (
+    <Suspense
+      fallback={
+        <div className="not-prose my-3 flex h-24 items-center justify-center gap-2 rounded-xl border border-dashed border-border text-meta text-faint">
+          <BarChart3Icon className="size-4 animate-pulse" /> drawing…
+        </div>
+      }
+    >
+      <VizBlock code={fence} isIncomplete={isIncomplete} />
+    </Suspense>
   );
 }
 

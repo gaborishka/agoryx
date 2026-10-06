@@ -3,7 +3,7 @@ import test from "node:test";
 import { buildBriefing } from "../../internal/agora/prompts.js";
 import { buildClaudeSettings } from "../../internal/agora/runners/claude.js";
 import { DEFAULT_SETTINGS } from "../../internal/agora/types.js";
-import { parseViz, VIZ_GUIDE, VIZ_KINDS, vizBlocks, vizDecisionReply, vizText, type VizSpec } from "../../internal/agora/visuals.js";
+import { parseViz, VIZ_GUIDE, VIZ_GUIDE_ANONYMOUS, VIZ_KINDS, vizBlocks, vizDecisionReply, vizText, type VizSpec } from "../../internal/agora/visuals.js";
 import { createTestRoom } from "./helpers.js";
 
 const ok = (spec: unknown): VizSpec => {
@@ -29,7 +29,7 @@ test("claims keep their tree, tone, confidence and author; a bare string is a cl
   if (spec.kind !== "claims") return;
   assert.equal(spec.claims[0]!.text, "Plain claim");
   assert.equal(spec.claims[1]!.children?.[0]?.text, "Hit rate 92%");
-  assert.equal(vizText(spec), "Why cache\n1. Plain claim\n2. + Cuts p95 by 40% (@codex, 80%)\n  2.1. ✓ Hit rate 92%");
+  assert.equal(vizText(spec), "Why cache\n1. Plain claim\n2. + Cuts p95 by 40% (@codex, 80%)\n    Measured on **staging**\n  2.1. ✓ Hit rate 92%");
 });
 
 test("errors name the exact field and what to do", () => {
@@ -94,4 +94,27 @@ test("the briefing asks for visual-first replies, lists every kind and how to ch
 test("checking a block is one of the room's own tools", () => {
   const settings = buildClaudeSettings({ settings: DEFAULT_SETTINGS, env: {} });
   assert.ok(JSON.stringify(settings.permissions).includes("Bash(agoryx viz *)"));
+});
+
+test("review fixes: what a card opens on click is in its reading, labels drawn side by side are distinct, an empty leaf list is fine", () => {
+  assert.equal(vizText(ok({ kind: "compare", columns: ["A"], rows: [{ label: "Cost", values: [" "], note: "per month" }] })), "| | A |\n| Cost (per month) | — |");
+  assert.equal(vizText(ok({ kind: "steps", steps: [{ title: "Build", detail: "two files" }] })), "1. [todo] Build\n   two files");
+  assert.equal(vizText(ok({ kind: "stance", left: "L", right: "R", items: [{ label: "x", value: 0.5, confidence: 0.6 }] })), "L ←→ R\nx: +0.50 (60%)");
+  const leaf = { text: "1", children: [{ text: "2", children: [{ text: "3", children: [] }] }] };
+  ok({ kind: "claims", claims: [leaf] });
+  assert.match(error({ kind: "chart", labels: ["a", "a"], series: [{ values: [1, 2] }] }), /labels repeats "a"/);
+  assert.match(error({ kind: "compare", columns: ["A"], rows: [{ label: "x", values: [1] }, { label: "x", values: [2] }] }), /rows repeats "x"/);
+  assert.match(error({ kind: "stats", items: [{ label: "a", value: 1 }, { label: "a", value: 2 }] }), /items repeats "a"/);
+  assert.match(error({ kind: "tradeoff", options: [{ name: "A", pros: [], cons: [] }, { name: "A", pros: [], cons: [] }] }), /options repeats "A"/);
+});
+
+test("viz fences are found after fences with attributes and inside longer closers", () => {
+  const md = '```ts title="x"\nconst a = 1;\n```\n\n````viz\n{"kind":"stats","items":[{"label":"a","value":"1"}]}\n`````\n';
+  assert.deepEqual(vizBlocks(md), ['{"kind":"stats","items":[{"label":"a","value":"1"}]}']);
+});
+
+test("the workflow guide names no agent, so an anonymous answer cannot copy a handle from it", () => {
+  assert.doesNotMatch(VIZ_GUIDE_ANONYMOUS, /@codex|@claude/);
+  assert.match(VIZ_GUIDE_ANONYMOUS, /Never put your own name, handle or model in a block/);
+  for (const example of [...VIZ_GUIDE_ANONYMOUS.matchAll(/(\{"kind":.*\})(?:\s|$)/gm)].map((m) => m[1]!)) ok(JSON.parse(example));
 });

@@ -5,7 +5,7 @@ import type {
   WorkflowAction, WorkflowBudget, WorkflowCheck, WorkflowEntry, WorkflowExecutor,
   WorkflowMode, WorkflowParticipant, WorkflowReport, WorkflowRound, WorkflowRun, WorkflowStartInput, WorkflowSummary,
 } from "./workflow-types.js";
-import { VIZ_GUIDE } from "./visuals.js";
+import { VIZ_GUIDE_ANONYMOUS } from "./visuals.js";
 
 /**
  * The human follows several agents at once, so every phase that returns prose
@@ -14,7 +14,7 @@ import { VIZ_GUIDE } from "./visuals.js";
  * digest and are never validated: a missing or malformed one is left out of
  * the picture rather than failing a sealed round.
  */
-const READABLE = `The human reads several agents' work side by side, so make yours quick to follow. In phases that return prose, lead with a \`\`\`viz claims block (2-5 short, checkable claims with your confidence) and keep the prose after it for evidence; use another visual block where a comparison, numbers or steps carry the point better than paragraphs. Phases that ask for JSON only still return only that JSON.\n${VIZ_GUIDE}`;
+const READABLE = `The human reads several agents' work side by side, so make yours quick to follow. In phases that return prose, lead with a \`\`\`viz claims block (2-5 short, checkable claims with your confidence) and keep the prose after it for evidence; use another visual block where a comparison, numbers or steps carry the point better than paragraphs. Phases that ask for JSON only still return only that JSON.\n${VIZ_GUIDE_ANONYMOUS}`;
 const LEAD = 'Begin with a ```viz claims block summarising';
 const MODES: WorkflowMode[] = ["verification", "council", "tournament", "debate"];
 const DEFAULT_BUDGET: WorkflowBudget = { timeoutMs: 180_000, maxOutputChars: 20_000, maxRounds: 2 };

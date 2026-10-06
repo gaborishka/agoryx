@@ -452,6 +452,7 @@ test("prose phases lead with a viz claims block; debate JSON asks for headlines,
   assert.equal(service.get("room")!.status, "completed", "answers without the optional fields still pass validation");
   const prompt = (phase: string) => calls.find((call) => call.phase === phase)!.prompt;
   for (const call of calls) assert.match(call.prompt, /The human reads several agents' work side by side/);
+  for (const call of calls) assert.doesNotMatch(call.prompt, /@codex|@claude/, "the isolated guide carries no agent handle");
   assert.match(prompt("openings"), /"headline":"the argument as one claim of at most 12 words"/);
   assert.match(prompt("openings"), /"confidence":0\.7/);
   assert.match(prompt("new_arguments"), /"headline"/);

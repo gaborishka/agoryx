@@ -123,6 +123,12 @@ const unique = (items: string[], path: string): void => {
   }
 };
 
+/** Items drawn side by side are told apart by these names, so each must be distinct. */
+const distinct = <T>(items: T[], name: (item: T) => string, path: string): T[] => {
+  unique(items.map(name), path);
+  return items;
+};
+
 const claim = (value: unknown, path: string, depth: number): VizClaim => {
   const raw = typeof value === "string" ? { text: value } : object(value, path);
   const out: VizClaim = { text: text(raw.text, `${path}.text`, VIZ_LIMITS.claim) };
@@ -134,9 +140,10 @@ const claim = (value: unknown, path: string, depth: number): VizClaim => {
   if (by) out.by = by;
   const detail = optionalText(raw.detail, `${path}.detail`, VIZ_LIMITS.detail);
   if (detail) out.detail = detail;
-  if (raw.children !== undefined) {
-    if (depth >= VIZ_LIMITS.depth) fail(`${path}.children`, `goes deeper than ${VIZ_LIMITS.depth} levels`);
-    const children = list(raw.children, `${path}.children`, 0, VIZ_LIMITS.claims).map((child, i) => claim(child, `${path}.children[${i}]`, depth + 1));
+  if (raw.children !== undefined && raw.children !== null) {
+    const listed = list(raw.children, `${path}.children`, 0, VIZ_LIMITS.claims);
+    if (listed.length && depth >= VIZ_LIMITS.depth) fail(`${path}.children`, `goes deeper than ${VIZ_LIMITS.depth} levels`);
+    const children = listed.map((child, i) => claim(child, `${path}.children[${i}]`, depth + 1));
     if (children.length) out.children = children;
   }
   return out;
@@ -169,6 +176,7 @@ const parseSpec = (raw: Obj): VizSpec => {
         const note = optionalText(row.note, `rows[${i}].note`, VIZ_LIMITS.claim);
         return { label: text(row.label, `rows[${i}].label`, VIZ_LIMITS.short), values, ...(note ? { note } : {}) };
       });
+      unique(rows.map((r) => r.label), "rows");
       const pick = optionalText(raw.pick, "pick", VIZ_LIMITS.short);
       if (pick && !columns.includes(pick)) fail("pick", `must name one of the columns (${columns.join(", ")})`);
       return { ...base, kind: "compare", columns, rows, ...(pick ? { pick } : {}) };
@@ -177,6 +185,7 @@ const parseSpec = (raw: Obj): VizSpec => {
       const type = (raw.type ?? "bar") as VizChartType;
       if (!CHART_TYPES.includes(type)) fail("type", `must be one of ${CHART_TYPES.join(", ")}`);
       const labels = textList(raw.labels, "labels", 1, VIZ_LIMITS.labels, VIZ_LIMITS.short);
+      unique(labels, "labels");
       const series = list(raw.series, "series", 1, VIZ_LIMITS.series).map((value, i) => {
         const s = object(value, `series[${i}]`);
         const values = exactly(s.values, `series[${i}].values`, labels.length, "label").map((v, j) => number(v, `series[${i}].values[${j}]`));
@@ -191,12 +200,12 @@ const parseSpec = (raw: Obj): VizSpec => {
       return {
         ...base,
         kind: "stats",
-        items: list(raw.items, "items", 1, VIZ_LIMITS.stats).map((value, i) => {
+        items: distinct(list(raw.items, "items", 1, VIZ_LIMITS.stats).map((value, i) => {
           const item = object(value, `items[${i}]`);
           const delta = optionalText(item.delta, `items[${i}].delta`, 24);
           const t = tone(item.tone, `items[${i}].tone`);
           return { label: text(item.label, `items[${i}].label`, VIZ_LIMITS.short), value: text(item.value, `items[${i}].value`, 24), ...(delta ? { delta } : {}), ...(t ? { tone: t } : {}) };
-        }),
+        }), (item) => item.label, "items"),
       };
     case "steps":
       return {
@@ -217,20 +226,20 @@ const parseSpec = (raw: Obj): VizSpec => {
         kind: "stance",
         left: text(raw.left, "left", VIZ_LIMITS.short),
         right: text(raw.right, "right", VIZ_LIMITS.short),
-        items: list(raw.items, "items", 1, VIZ_LIMITS.stance).map((value, i) => {
+        items: distinct(list(raw.items, "items", 1, VIZ_LIMITS.stance).map((value, i) => {
           const item = object(value, `items[${i}]`);
           const v = number(item.value, `items[${i}].value`);
           if (v < -1 || v > 1) fail(`items[${i}].value`, "must be from -1 (left) to 1 (right)");
           const note = optionalText(item.note, `items[${i}].note`, VIZ_LIMITS.claim);
           const c = unit(item.confidence, `items[${i}].confidence`);
           return { label: text(item.label, `items[${i}].label`, VIZ_LIMITS.short), value: v, ...(note ? { note } : {}), ...(c !== undefined ? { confidence: c } : {}) };
-        }),
+        }), (item) => item.label, "items"),
       };
     case "tradeoff":
       return {
         ...base,
         kind: "tradeoff",
-        options: list(raw.options, "options", 1, VIZ_LIMITS.tradeoff).map((value, i) => {
+        options: distinct(list(raw.options, "options", 1, VIZ_LIMITS.tradeoff).map((value, i) => {
           const option = object(value, `options[${i}]`);
           const verdict = optionalText(option.verdict, `options[${i}].verdict`, VIZ_LIMITS.claim);
           return {
@@ -239,7 +248,7 @@ const parseSpec = (raw: Obj): VizSpec => {
             cons: textList(option.cons, `options[${i}].cons`, 0, VIZ_LIMITS.points, VIZ_LIMITS.claim),
             ...(verdict ? { verdict } : {}),
           };
-        }),
+        }), (option) => option.name, "options"),
       };
     case "decision": {
       const options = list(raw.options, "options", 2, VIZ_LIMITS.options).map((value, i) => {
@@ -272,7 +281,8 @@ export const parseViz = (source: string): VizResult => {
   }
 };
 
-const FENCE = /^\s*(`{3,}|~{3,})\s*([\w+-]*)\s*$/;
+// An opener may carry attributes after its language (```ts title="x"); a closer is the same character, at least as long.
+const FENCE = /^\s{0,3}(`{3,}|~{3,})\s*([\w+-]*)(?:\s.*)?$/;
 
 /** Every ```viz fence body in a markdown text, in order. */
 export const vizBlocks = (markdown: string): string[] => {
@@ -281,7 +291,7 @@ export const vizBlocks = (markdown: string): string[] => {
   for (let i = 0; i < lines.length; i += 1) {
     const open = FENCE.exec(lines[i]!);
     if (!open) continue;
-    const close = new RegExp(`^\\s*${open[1]}\\s*$`);
+    const close = new RegExp(`^\\s{0,3}${open[1]![0] === "`" ? "`" : "~"}{${open[1]!.length},}\\s*$`);
     const body: string[] = [];
     i += 1;
     while (i < lines.length && !close.test(lines[i]!)) body.push(lines[i++]!);
@@ -292,11 +302,13 @@ export const vizBlocks = (markdown: string): string[] => {
 
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 const SIDE: Record<VizTone, string> = { pro: "+", con: "−", good: "✓", bad: "✗", warn: "!", info: "i", neutral: "·" };
-const cellText = (value: VizCell): string => (value === true ? "yes" : value === false ? "no" : value === null ? "—" : String(value));
+const cellText = (value: VizCell): string => (value === true ? "yes" : value === false ? "no" : value === null || value === "" ? "—" : String(value));
+const indentText = (text: string, indent: string) => text.replace(/^/gm, indent);
 
 /**
  * A plain-text reading of a spec: what a screen reader, an export or a
- * terminal shows. It carries every value the card shows, so nothing is only visual.
+ * terminal shows. It carries every value the card shows, including what opens
+ * on click, so nothing is only visual.
  */
 export const vizText = (spec: VizSpec): string => {
   const lines: string[] = [];
@@ -308,6 +320,7 @@ export const vizText = (spec: VizSpec): string => {
           const n = `${prefix}${i + 1}`;
           const meta = [c.by, c.confidence !== undefined ? pct(c.confidence) : ""].filter(Boolean).join(", ");
           lines.push(`${indent}${n}. ${c.tone ? `${SIDE[c.tone]} ` : ""}${c.text}${meta ? ` (${meta})` : ""}`);
+          if (c.detail) lines.push(indentText(c.detail, `${indent}    `));
           if (c.children) walk(c.children, `${n}.`, `${indent}  `);
         });
       walk(spec.claims, "", "");
@@ -315,7 +328,7 @@ export const vizText = (spec: VizSpec): string => {
     }
     case "compare":
       lines.push(`| | ${spec.columns.map((c) => (c === spec.pick ? `${c} (pick)` : c)).join(" | ")} |`);
-      for (const row of spec.rows) lines.push(`| ${row.label} | ${row.values.map(cellText).join(" | ")} |`);
+      for (const row of spec.rows) lines.push(`| ${row.label}${row.note ? ` (${row.note})` : ""} | ${row.values.map(cellText).join(" | ")} |`);
       break;
     case "chart":
       for (const s of spec.series) lines.push(`${s.name}: ${spec.labels.map((label, i) => `${label} ${s.values[i]}${spec.unit ?? ""}`).join(", ")}`);
@@ -324,11 +337,14 @@ export const vizText = (spec: VizSpec): string => {
       for (const item of spec.items) lines.push(`${item.label}: ${item.value}${item.delta ? ` (${item.delta})` : ""}`);
       break;
     case "steps":
-      spec.steps.forEach((step, i) => lines.push(`${i + 1}. [${step.status}] ${step.title}${step.by ? ` — ${step.by}` : ""}`));
+      spec.steps.forEach((step, i) => {
+        lines.push(`${i + 1}. [${step.status}] ${step.title}${step.by ? ` — ${step.by}` : ""}`);
+        if (step.detail) lines.push(indentText(step.detail, "   "));
+      });
       break;
     case "stance":
       lines.push(`${spec.left} ←→ ${spec.right}`);
-      for (const item of spec.items) lines.push(`${item.label}: ${item.value > 0 ? "+" : ""}${item.value.toFixed(2)}${item.note ? ` — ${item.note}` : ""}`);
+      for (const item of spec.items) lines.push(`${item.label}: ${item.value > 0 ? "+" : ""}${item.value.toFixed(2)}${item.confidence !== undefined ? ` (${pct(item.confidence)})` : ""}${item.note ? ` — ${item.note}` : ""}`);
       break;
     case "tradeoff":
       for (const option of spec.options) {
@@ -355,6 +371,9 @@ export const vizDecisionReply = (question: string, label: string): string => `> 
  * briefings and workflow prompts. Kept short: the parser's error messages
  * carry the rest.
  */
+/** The handles in the guide's examples, and what a workflow guide says in their place. */
+const HANDLES: Array<[RegExp, string]> = [[/@codex/g, "Answer A"], [/@claude/g, "Answer B"]];
+
 export const VIZ_GUIDE = [
   "Visual blocks: a ```viz fence holding ONE JSON object renders as a native card in the room's theme (no HTML needed).",
   "Kinds — each example below is valid as written; every block also takes an optional \"title\" and a one-line \"caption\":",
@@ -367,4 +386,14 @@ export const VIZ_GUIDE = [
   '- tradeoff — pros and cons per option: {"kind":"tradeoff","options":[{"name":"SQLite","pros":["No server"],"cons":["One writer"],"verdict":"Enough for now"}]}',
   '- decision — a choice for the human, answered with one click (at most one recommended): {"kind":"decision","question":"Ship behind a flag?","options":[{"label":"Ship now","detail":"Flag off by default","recommended":true},{"label":"Wait a week"}]}',
   "tone is one of pro, con, good, bad, warn, info, neutral; confidence is 0 to 1. Write strict JSON (double quotes, no comments, no trailing commas). Limits keep a card glanceable: 8 claims per level and 3 levels, 6 columns, 12 rows, 6 series.",
+].join("\n");
+
+/**
+ * The guide for isolated workflow phases. Submissions there are anonymous (Council answers and
+ * Tournament prototypes go to peers under an alias), so its examples carry no agent handle and it
+ * says plainly that a block must not name its author.
+ */
+export const VIZ_GUIDE_ANONYMOUS = [
+  HANDLES.reduce((guide, [handle, alias]) => guide.replace(handle, alias), VIZ_GUIDE),
+  'Never put your own name, handle or model in a block: in "by" or a label, name only answers (such as "Answer A"), sides ("for", "against") or sources.',
 ].join("\n");

@@ -156,8 +156,8 @@ function ClaimList({ claims, prefix, depth }: { claims: VizClaim[]; prefix: stri
 
 // ── compare ──────────────────────────────────────────────────────────────
 
-const YES = /^(yes|true|✓|✔|y|pass(ed)?|ok)$/i;
-const NO = /^(no|false|✗|✘|x|n|fail(ed)?)$/i;
+const YES = /^(yes|true|✓|✔|pass(ed)?|ok)$/i;
+const NO = /^(no|false|✗|✘|fail(ed)?)$/i;
 const PARTIAL = /^(partial|partly|some|~|maybe|limited)$/i;
 
 function Cell({ value, max }: { value: VizCell; max: number }) {
@@ -290,8 +290,8 @@ function Chart({ spec }: { spec: Extract<VizSpec, { kind: "chart" }> }) {
               <div className="space-y-[2px]">
                 {series.map((s, k) => (
                   <div key={s.name} className="flex items-center gap-2">
-                    <span className="h-2.5 rounded-r-[4px]" style={{ width: `${Math.max(0, (s.values[i]! / max) * 100)}%`, background: SERIES[k], minWidth: s.values[i] ? 2 : 0 }} />
-                    {series.length === 1 ? <span className="text-micro tabular-nums text-muted-foreground">{short(s.values[i]!)}{unit ?? ""}</span> : null}
+                    <span className="h-2.5 rounded-r-[4px]" style={{ width: `${Math.max(0, (s.values[i]! / max) * 100)}%`, background: SERIES[k], minWidth: s.values[i]! > 0 ? 2 : 0 }} />
+                    {series.length === 1 || s.values[i]! < 0 ? <span className="text-micro tabular-nums text-muted-foreground">{short(s.values[i]!)}{unit ?? ""}</span> : null}
                   </div>
                 ))}
               </div>
@@ -309,7 +309,8 @@ function Chart({ spec }: { spec: Extract<VizSpec, { kind: "chart" }> }) {
   const ih = H - pad.t - pad.b;
   const totals = labels.map((_, i) => series.reduce((n, s) => n + Math.max(0, s.values[i]!), 0));
   const all = series.flatMap((s) => s.values);
-  const lo = Math.min(0, ...all);
+  // Below zero the axis gets its own round step, and zero keeps a solid baseline.
+  const lo = -niceMax(-Math.min(0, ...all)) * (Math.min(0, ...all) < 0 ? 1 : 0);
   const hi = niceMax(type === "stacked" ? Math.max(...totals) : Math.max(0, ...all));
   const span = hi - lo || 1;
   const y = (v: number) => pad.t + ih - ((v - lo) / span) * ih;
@@ -318,8 +319,11 @@ function Chart({ spec }: { spec: Extract<VizSpec, { kind: "chart" }> }) {
   const every = Math.ceil(labels.length / 10);
   const onMove = (e: MouseEvent<SVGRectElement>, i: number) => {
     const svg = e.currentTarget.ownerSVGElement!.getBoundingClientRect();
+    // The tooltip is placed in the wrapper, which also holds the legend above the plot.
+    const wrap = e.currentTarget.ownerSVGElement!.parentElement!.getBoundingClientRect();
     const scale = svg.width / W;
-    setHover({ x: (pad.l + band * (i + 0.5)) * scale, y: (type === "stacked" ? y(totals[i]!) : y(Math.max(...series.map((s) => s.values[i]!)))) * scale, label: labels[i]!, rows: rowsAt(i) });
+    const top = type === "stacked" ? y(totals[i]!) : y(Math.max(0, ...series.map((s) => s.values[i]!)));
+    setHover({ x: svg.left - wrap.left + (pad.l + band * (i + 0.5)) * scale, y: svg.top - wrap.top + top * scale, label: labels[i]!, rows: rowsAt(i) });
   };
   return (
     <div className="relative" onMouseLeave={() => setHover(null)}>
@@ -331,6 +335,7 @@ function Chart({ spec }: { spec: Extract<VizSpec, { kind: "chart" }> }) {
             <text x={pad.l - 6} y={y(t)} dy="0.32em" textAnchor="end" fontSize="10" fill="var(--faint)">{short(t)}</text>
           </g>
         ))}
+        {lo < 0 ? <line x1={pad.l} x2={W - pad.r} y1={y(0)} y2={y(0)} stroke="var(--faint)" /> : null}
         {labels.map((label, i) =>
           i % every === 0 ? (
             <text key={label} x={pad.l + band * (i + 0.5)} y={H - 8} textAnchor="middle" fontSize="10" fill="var(--muted-foreground)">

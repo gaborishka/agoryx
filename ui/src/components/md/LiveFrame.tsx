@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -25,15 +25,15 @@ export function LiveFrame({ src, title, className, initial = 360, max = 1400 }: 
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(initial);
   const dark = useTheme((s) => s.dark);
-  // The theme travels in the URL's fragment so the first paint has it; the page itself is the same document.
-  // Only html pages read it: a pdf viewer would take the fragment as its own parameters.
-  // The frame keeps its first URL (a new one would reload the page); later themes are posted to it.
-  const url = useMemo(() => (/\.pdf($|[?#])/i.test(src) ? src : `${src}#agoryx-theme=${encodeURIComponent(JSON.stringify(frameTheme(dark)))}`), [src]);
+  // The page's frame script asks for the theme as soon as it runs; it is sent again on load (a frame that loaded
+  // late, or navigated, asks anew) and on every switch. A pdf or an image has no frame script and ignores it.
+  const sendTheme = () => ref.current?.contentWindow?.postMessage({ agoryxTheme: frameTheme(useTheme.getState().dark) }, "*");
   useLayoutEffect(() => { setHeight(initial); }, [src, initial]);
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.source !== ref.current?.contentWindow) return;
-      const data = event.data as { agoryxFrame?: number; h?: number };
+      const data = event.data as { agoryxFrame?: number; h?: number; theme?: number };
+      if (data?.agoryxFrame === 1 && data.theme === 1) sendTheme();
       if (data?.agoryxFrame === 1 && typeof data.h === "number" && Number.isFinite(data.h)) setHeight(Math.max(80, Math.min(max, Math.ceil(data.h))));
     };
     window.addEventListener("message", onMessage);
@@ -41,13 +41,14 @@ export function LiveFrame({ src, title, className, initial = 360, max = 1400 }: 
   }, [max]);
   useEffect(() => {
     // After the class flip has repainted the tokens.
-    const id = requestAnimationFrame(() => ref.current?.contentWindow?.postMessage({ agoryxTheme: frameTheme(dark) }, "*"));
+    const id = requestAnimationFrame(sendTheme);
     return () => cancelAnimationFrame(id);
   }, [dark]);
   return (
     <iframe
       ref={ref}
-      src={url}
+      src={src}
+      onLoad={sendTheme}
       title={title}
       loading="lazy"
       sandbox="allow-scripts allow-forms allow-modals allow-popups"

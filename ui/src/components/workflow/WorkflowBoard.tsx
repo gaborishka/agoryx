@@ -24,7 +24,7 @@ import {
   TrophyIcon,
   UsersRoundIcon,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
   WorkflowCheck,
   WorkflowEntry,
@@ -57,7 +57,7 @@ import { WorkflowSetup } from "./WorkflowSetup";
 import { WorkflowReading } from "./WorkflowReading";
 import { WorkflowChecks as Checks } from "./WorkflowChecks";
 import { CriteriaGridView, DebateMap, Standings } from "./WorkflowDigest";
-import { councilStandings, tournamentStandings } from "@/lib/workflow-digest";
+import { councilStandings, debateDigest, tournamentStandings } from "@/lib/workflow-digest";
 
 function Markdown(props: MarkdownProps) {
   return <AppMarkdown {...props} literalHtml />;
@@ -843,7 +843,7 @@ function Council({ run }: { run: WorkflowRun }) {
           <Sealed round={answers} run={run} />
         ) : (
           <>
-          <Standings rows={councilStandings(run)} title={revealed(reviews) ? "How the council ranked each other" : "The voices in one line each"} unit="answer" />
+          <Standings rows={councilStandings(run)} title={revealed(reviews) && run.participants.length > 2 ? "How the council ranked each other" : "The voices in one line each"} unit="answer" />
           <div className="council-voices">
             {answers?.entries.map((entry) => (
               <article key={entry.id}>
@@ -882,7 +882,7 @@ function Council({ run }: { run: WorkflowRun }) {
               Every member evaluates other answers. No self-ranking.
             </p>
           </div>
-          <Standings rows={councilStandings(run)} title="Standing after peer review" unit="answer" />
+          {run.participants.length > 2 ? <Standings rows={councilStandings(run)} title="Standing after peer review" unit="answer" /> : null}
           <Entries run={run} round={reviews} />
         </section>
       )}
@@ -1141,9 +1141,12 @@ function Debate({ run }: { run: WorkflowRun }) {
   }, [run.status]);
   const [decision, setDecision] = useState("");
   const [overrideOpen, setOverrideOpen] = useState(false);
-  // With the map drawn, the full submissions are the evidence behind it, opened on request.
+  // With the map drawn, the full submissions are the evidence behind it, opened on request. The map stands in for
+  // them only when it could read both openings; a phase still running or failed keeps its own section in view.
   const [fullExchange, setFullExchange] = useState(false);
-  const mapped = revealed(openings);
+  const digest = useMemo(() => debateDigest(run), [run]);
+  const mapped = !!digest && digest.sides.length === 2 && digest.sides.every((side) => side.position && side.arguments.length);
+  const gateSettled = [steelman, acceptance].every((round) => !round || revealed(round));
   const busy = useWorkflow((s) => s.busy);
   const current = useWorkflow((s) => s.run?.id === run.id);
   const advocates = run.participants
@@ -1352,7 +1355,7 @@ function Debate({ run }: { run: WorkflowRun }) {
               ))}
             </div>
           )}
-          {mapped && !fullExchange ? null : (
+          {mapped && !fullExchange && gateSettled ? null : (
           <Section
             title="Understanding before rebuttal"
             detail="The original speaker must accept the opponent’s restatement. Rejected restatements return for repair."

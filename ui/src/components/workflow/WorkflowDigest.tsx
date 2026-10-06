@@ -100,6 +100,7 @@ function SideColumn({ side }: { side: DebateSide }) {
           </div>
           <p className="mt-0.5 text-ui font-medium leading-snug">{side.positionNow ?? side.position}</p>
           {side.positionNow ? <p className="mt-0.5 text-meta text-faint line-through decoration-faint/50">{side.position}</p> : null}
+          {side.corrections ? <p className="mt-1 rounded-lg bg-amber-soft px-2 py-1 text-meta text-amber-ink"><strong>Asked to correct:</strong> {side.corrections}</p> : null}
         </div>
       </div>
       <Trajectory side={side} />
@@ -175,7 +176,7 @@ function Judges({ digest }: { digest: DebateDigest }) {
 export function DebateMap({ run }: { run: WorkflowRun }) {
   const digest = useMemo(() => debateDigest(run), [run]);
   if (!digest || digest.sides.length < 2) return null;
-  const cruxes = digest.sides.filter((s) => s.remainingDisagreement || s.decisiveTest);
+  const cruxes = digest.sides.filter((s) => s.rebuttal || s.remainingDisagreement || s.decisiveTest);
   const conceded = digest.sides.reduce((n, s) => n + s.concessionsMade, 0);
   const argued = digest.sides.reduce((n, s) => n + s.arguments.length, 0);
   return (
@@ -202,6 +203,7 @@ export function DebateMap({ run }: { run: WorkflowRun }) {
                   <span className={cn("size-2 rounded-full", SIDE[side.role].dot)} />
                   {SIDE[side.role].name} · {side.label}
                 </p>
+                {side.rebuttal ? <p className="mt-1 text-meta text-muted-foreground"><strong className="font-semibold text-foreground">Rebuttal:</strong> {side.rebuttal}</p> : null}
                 {side.remainingDisagreement ? <p className="mt-1 text-small leading-snug">{side.remainingDisagreement}</p> : null}
                 {side.decisiveTest ? (
                   <p className="mt-1.5 flex gap-1.5 text-meta text-muted-foreground">

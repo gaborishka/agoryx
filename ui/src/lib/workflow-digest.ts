@@ -15,7 +15,7 @@ type Obj = Record<string, unknown>;
 const parse = (text: string | undefined): Obj | null => {
   if (!text) return null;
   try {
-    const value: unknown = JSON.parse(text.replace(/^\s*```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, ""));
+    const value: unknown = JSON.parse(text.replace(/^\s*```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/, ""));
     return value && typeof value === "object" && !Array.isArray(value) ? (value as Obj) : null;
   } catch {
     return null;
@@ -83,7 +83,11 @@ export interface DebateSide {
   confidence: { phase: "openings" | "new_arguments" | "rebuttal"; value: number }[];
   /** Whether this side accepted the opponent's restatement of it, per attempt. */
   acceptance: boolean[];
+  /** What this side asked to correct when it last rejected its restatement. */
+  corrections?: string;
   concessionsMade: number;
+  /** The rebuttal, as one line. */
+  rebuttal?: string;
   remainingDisagreement?: string;
   decisiveTest?: string;
 }
@@ -146,6 +150,8 @@ export const debateDigest = (run: WorkflowRun): DebateDigest | null => {
     push("new_arguments", later);
     push("rebuttal", rebuttal);
     const position = str(opening?.position);
+    const lastAcceptance = parse(entryOf(acceptanceRounds.at(-1), p.id)?.text);
+    const corrections = lastAcceptance?.accepted === false ? str(lastAcceptance.corrections) : "";
     const positionNow = str(later?.position);
     return {
       participantId: p.id,
@@ -156,7 +162,9 @@ export const debateDigest = (run: WorkflowRun): DebateDigest | null => {
       arguments: [...args(opening?.arguments, "opening"), ...args(later?.arguments, "new")],
       confidence,
       acceptance: acceptanceRounds.map((r) => parse(entryOf(r, p.id)?.text)?.accepted).filter((a): a is boolean => typeof a === "boolean"),
+      ...(corrections ? { corrections } : {}),
       concessionsMade: Array.isArray(rebuttal?.concessions) ? rebuttal.concessions.length : 0,
+      ...(str(rebuttal?.rebuttal) ? { rebuttal: headline(str(rebuttal?.rebuttal), 220) } : {}),
       ...(str(rebuttal?.remainingDisagreement) ? { remainingDisagreement: str(rebuttal?.remainingDisagreement) } : {}),
       ...(str(rebuttal?.decisiveTest) ? { decisiveTest: str(rebuttal?.decisiveTest) } : {}),
     };
@@ -172,15 +180,20 @@ export const debateDigest = (run: WorkflowRun): DebateDigest | null => {
     }
   }
   const last = acceptanceRounds.at(-1);
-  const gate: DebateDigest["gate"] =
-    run.phase === "disagreement" ? "failed" : revealed(fresh) || revealed(rebuttals) ? "passed" : last && sides.every((s) => s.acceptance.at(-1) === true) ? "passed" : "open";
   const verdict = latest(run, "verdict");
+  // Rebuttals follow only an accepted gate, and the verdict follows the rebuttals; a verdict round with no new
+  // arguments before it, or a rejection after the last permitted repair, means the gate failed — even before the
+  // run marks it at the end of the verdict.
+  const exhausted = acceptanceRounds.length > run.budget.maxRounds && sides.some((s) => s.acceptance.at(-1) === false);
+  const gate: DebateDigest["gate"] =
+    run.phase === "disagreement" || (verdict && !fresh) || exhausted ? "failed" : revealed(fresh) || revealed(rebuttals) ? "passed" : last && sides.every((s) => s.acceptance.at(-1) === true) ? "passed" : "open";
   const judges: DebateJudge[] = revealed(verdict)
     ? verdict.entries.flatMap((entry) => {
         const data = parse(entry.text);
         if (!data) return [];
         const lean = data.leaning && typeof data.leaning === "object" ? (data.leaning as Obj) : null;
-        const side = str(lean?.side);
+        // With the gate failed there is no argumentative winner to lean towards: a leaning the judge gave anyway is left out.
+        const side = gate === "failed" ? "" : str(lean?.side);
         const leanConfidence = unit(lean?.confidence);
         return [
           {

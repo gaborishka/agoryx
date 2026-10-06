@@ -75,7 +75,7 @@ Table components reference actual questions, proposals, steps and evidence. Cust
 
 The canonical document is a workspace file with recorded revisions, not a second independent transcript. Recovery snapshots and per-turn diffs retain the workspace root that produced them. Ordinary room execution does not automatically commit to the user's branch.
 
-Agents' ```` ```viz ```` blocks are JSON specs parsed by `visuals.ts` and drawn by native components (`ui/src/components/md/Visual.tsx`), so no agent script runs in the page. Live ```` ```html ```` pages receive the room's theme as `--agoryx-*` custom properties through the frame script, first from the frame URL's fragment and then by message on theme changes. Workflow digests (`ui/src/lib/workflow-digest.ts`) derive argument maps, standings and criteria grids from revealed submissions only.
+Agents' ```` ```viz ```` blocks are JSON specs parsed by `visuals.ts` and drawn by native components (`ui/src/components/md/Visual.tsx`), so no agent script runs in the page. Live ```` ```html ```` pages receive the room's theme as `--agoryx-*` custom properties through the frame script: it asks the page for the theme as soon as it runs, and the page sends it again on load and on every theme switch. The page's URL and hash stay its own. Workflow digests (`ui/src/lib/workflow-digest.ts`) derive argument maps, standings and criteria grids from revealed submissions only.
 
 Private workflow artifacts remain separate from room files. The human can inspect, download, or explicitly carry revealed output forward. HTML previews use constrained, opaque-origin frames and cannot call the room API.
 

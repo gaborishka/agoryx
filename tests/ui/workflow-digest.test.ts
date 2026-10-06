@@ -151,3 +151,25 @@ test("the criteria grid: one column per review, one row per criterion, status or
   ]);
   assert.equal(criteriaGrid(base("council", [])), null);
 });
+
+test("review fixes: an uppercase JSON fence still maps; a failed gate reads failed before the run says so, and drops a leaning", () => {
+  const upper = debate();
+  upper.rounds[0] = { ...upper.rounds[0]!, entries: upper.rounds[0]!.entries.map((e) => ({ ...e, text: "```JSON\n" + e.text + "\n```" })) };
+  assert.equal(debateDigest(upper)!.sides[0]!.arguments.length, 3);
+
+  const failing = debate({ phase: "verdict", status: "running" });
+  failing.rounds = failing.rounds.filter((r) => !["new_arguments", "rebuttal"].includes(r.phase));
+  const rejected = { accepted: false, corrections: "You left out the protocol point" };
+  failing.rounds = failing.rounds.map((r) => (r.id === "acceptance-1" ? round("acceptance-1", "acceptance", [["claude", rejected], ["codex", { accepted: true, corrections: "none" }]]) : r));
+  const digest = debateDigest(failing)!;
+  assert.equal(digest.gate, "failed", "the verdict runs with no new arguments before it");
+  assert.equal(digest.judges[0]!.leaning, undefined, "no winner to lean towards");
+  assert.equal(digest.sides[0]!.corrections, "You left out the protocol point");
+
+  const exhausted = debate({ phase: "acceptance", status: "failed" });
+  exhausted.budget = { ...exhausted.budget, maxRounds: 1 };
+  exhausted.rounds = exhausted.rounds.filter((r) => r.phase !== "verdict" && r.phase !== "new_arguments" && r.phase !== "rebuttal").map((r) => (r.id === "acceptance-1" ? round("acceptance-1", "acceptance", [["claude", rejected], ["codex", { accepted: true, corrections: "none" }]]) : r));
+  assert.equal(debateDigest(exhausted)!.gate, "failed", "rejected after the last permitted repair");
+
+  assert.equal(debateDigest(debate())!.sides[0]!.rebuttal, "…", "the rebuttal travels as one line");
+});

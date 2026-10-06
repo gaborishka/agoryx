@@ -330,36 +330,90 @@ const showDaemon = (info: DaemonInfo): void => {
   win.loadURL(`${info.url}/?t=${encodeURIComponent(info.token)}`).catch(() => {});
 };
 
-/** The daemons already asked about (by pid): one question per daemon, and not again after "Later". */
-const askedRestart = new Set<number>();
+/** The core's version order (internal/agora/updates.ts), loaded like the rest of the core; null when it is not there. */
+const loadCompare = async (): Promise<((a: string, b: string) => number | null) | null> => {
+  try {
+    const updates = (await import(pathToFileURL(join(agoryxRoot(), "dist", "internal", "agora", "updates.js")).href)) as {
+      compareVersions(a: string, b: string): number | null;
+    };
+    return updates.compareVersions;
+  } catch {
+    return null;
+  }
+};
+
+/** "<daemon's version>-><app's version>" pairs asked about since the app started: one question per pair, whatever the answer. */
+const askedRestart = new Set<string>();
+/** Pairs the human chose to restart for: a daemon that comes back as the same old version runs from another install. */
+const restartedFor = new Set<string>();
+
+const declinedRestart = (): string | null => {
+  const value = readJson(userFile("desktop.json")).declinedRestart;
+  return typeof value === "string" ? value : null;
+};
+
+const declineRestart = (pair: string): void => {
+  writeJson(userFile("desktop.json"), { ...readJson(userFile("desktop.json")), declinedRestart: pair });
+};
+
+const daemonVersion = async (info: DaemonInfo): Promise<string | null> => {
+  try {
+    const response = await fetch(`${info.url}/api/info`, { headers: { "x-agoryx-token": info.token }, signal: AbortSignal.timeout(5000) });
+    if (!response.ok) return null;
+    return ((await response.json()) as { version?: string | null }).version ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const ask = async (options: Electron.MessageBoxOptions): Promise<number> =>
+  (win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)).response;
 
 /**
  * After the app is updated, the daemon it finds may still be the one the old version started: it outlives the
- * app, and runs the old core until it restarts. Ask the human to restart it (its turns stop), never do it unasked.
+ * app, and runs the old core until it restarts. Ask the human to restart it (its turns stop), never do it unasked;
+ * only for a daemon older than the app (a newer one, from a terminal install, is not downgraded), and not again
+ * for the same pair of versions after "Later".
  */
 const offerDaemonRestart = async (info: DaemonInfo): Promise<void> => {
-  if (askedRestart.has(info.pid)) return;
-  let running: string | null = null;
-  try {
-    const response = await fetch(`${info.url}/api/info`, { headers: { "x-agoryx-token": info.token }, signal: AbortSignal.timeout(5000) });
-    if (!response.ok) return;
-    running = ((await response.json()) as { version?: string | null }).version ?? null;
-  } catch {
+  const running = await daemonVersion(info);
+  const mine = coreVersion();
+  if (!running || daemon !== info || stopping) return;
+  const pair = `${running}->${mine}`;
+  if (restartedFor.has(pair)) {
+    // Restarted, and the same old version came back: what starts it (the login service, say) runs another install.
+    restartedFor.delete(pair);
+    await ask({
+      type: "warning",
+      message: `Agoryx is still running version ${running}`,
+      detail: `It was restarted, but what starts it runs another Agoryx install, not this app's ${mine}. If you use the login service, run \`agoryx service install\` again from this version (docs/DESKTOP.md).`,
+      buttons: OK,
+    });
     return;
   }
-  const mine = coreVersion();
-  if (!running || running === mine || daemon !== info || stopping || askedRestart.has(info.pid)) return;
-  askedRestart.add(info.pid);
-  const options = {
-    type: "info" as const,
+  const compare = await loadCompare();
+  if (!compare || compare(mine, running) !== 1 || askedRestart.has(pair) || declinedRestart() === pair) return;
+  askedRestart.add(pair);
+  const response = await ask({
+    type: "info",
     message: `Restart Agoryx to finish updating to ${mine}?`,
     detail: `The Agoryx service that is running is still version ${running}. Restarting it stops the agents' current turns; conversations are kept.`,
     buttons: ["Restart Now", "Later"],
     defaultId: 0,
     cancelId: 1,
-  };
-  const { response } = win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
-  if (response === 0 && daemon === info) void restartDaemon();
+  });
+  if (response !== 0) {
+    declineRestart(pair);
+    return;
+  }
+  if (daemon !== info || stopping) return;
+  if (busy) {
+    // A start or a check is under way: exclusive() would drop the restart without a word.
+    await ask({ type: "info", message: "Agoryx is busy", detail: "Restart it from Daemon › Restart Daemon once it is done.", buttons: OK });
+    return;
+  }
+  restartedFor.add(pair);
+  void restartDaemon();
 };
 
 const firstLine = (error: unknown): string => (error instanceof Error ? error.message : String(error)).split("\n")[0]!.trim();
@@ -886,12 +940,13 @@ const buildMenu = (): Menu =>
         { role: "about", label: "About Agoryx" },
         {
           label: "Check for Updates…",
-          // Settings › About asks GitHub for the latest release and offers its download; without the daemon's UI, the releases page.
+          // The UI opens Settings › About and asks GitHub now (ui/src/lib/updates.ts); without the daemon's UI, the releases page.
           click: () => {
             focusWindow();
             onPage((page) => {
-              if (isDaemonUrl(page.getURL())) void page.executeJavaScript(`location.hash = "#settings/about"`).catch(() => {});
-              else void shell.openExternal(RELEASES_PAGE);
+              if (isDaemonUrl(page.getURL())) {
+                void page.executeJavaScript(`location.hash = "#settings/about"; window.dispatchEvent(new Event("agoryx:check-updates"))`).catch(() => {});
+              } else void shell.openExternal(RELEASES_PAGE);
             });
           },
         },

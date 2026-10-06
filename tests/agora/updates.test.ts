@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DaemonClient } from "../../internal/agora/client.js";
+import { agentKey } from "../../internal/agora/actor.js";
+import { DaemonClient, DaemonRequestError } from "../../internal/agora/client.js";
 import { AgoraDaemon } from "../../internal/agora/daemon.js";
-import { compareVersions, CHECK_EVERY_MS, isNewer, parseRelease, UpdateChecker, updatePath, type FetchLike } from "../../internal/agora/updates.js";
+import { createRoom } from "../../internal/agora/service.js";
+import { compareVersions, CHECK_EVERY_MS, isNewer, parseRelease, RELEASES_PAGE, UpdateChecker, updatePath, type FetchLike } from "../../internal/agora/updates.js";
 
 const release = (tag: string, extra: Record<string, unknown> = {}) => ({
   tag_name: tag,
@@ -105,7 +107,8 @@ test("the checker asks GitHub once per interval, remembers the answer across res
     assert.equal(failed.latest?.version, "0.2.0");
     assert.equal(failed.available, true);
 
-    // "Check for updates" asks now; the installed version is the latest.
+    // "Check for updates" asks now (a minute after the last answer); the installed version is the latest.
+    now += 60 * 1000;
     reply = { status: 200, body: release("v0.1.1") };
     const updated = new UpdateChecker({ env, current: "0.1.1", fetch: remote.fetch, now: () => now });
     const forced = await updated.check(true);
@@ -114,6 +117,7 @@ test("the checker asks GitHub once per interval, remembers the answer across res
     assert.equal(forced.error, null);
 
     // Updated past what was remembered: nothing is offered.
+    now += 60 * 1000;
     reply = { status: 200, body: release("v0.2.0") };
     await updated.check(true);
     assert.equal(new UpdateChecker({ env, current: "0.2.0", fetch: remote.fetch, now: () => now }).status().available, false);
@@ -140,10 +144,89 @@ test("concurrent checks share one request; AGORYX_UPDATE_CHECK=off asks nothing"
   }
 });
 
-test("GET /api/update answers what the daemon knows; POST asks again", async () => {
+test("a failed check is tried again after 30 minutes, not on every page load; a manual check within a minute reuses the answer", async () => {
+  const { dir, env } = scratch();
+  try {
+    let now = Date.parse("2026-10-06T08:00:00Z");
+    let reply: { status: number; body?: unknown } = { status: 403 };
+    const remote = github(() => reply);
+    const checker = new UpdateChecker({ env, current: "0.1.1", fetch: remote.fetch, now: () => now });
+    assert.equal((await checker.check()).error, "GitHub answered HTTP 403");
+    now += 29 * 60 * 1000;
+    await checker.check();
+    assert.equal(remote.calls.length, 1);
+    now += 60 * 1000;
+    reply = { status: 200, body: release("v0.2.0") };
+    const retried = await checker.check();
+    assert.equal(remote.calls.length, 2);
+    assert.equal(retried.error, null);
+    assert.equal(retried.available, true);
+
+    // "Check for updates" right after an answer: the same answer; a minute later, GitHub again.
+    now += 30 * 1000;
+    await checker.check(true);
+    assert.equal(remote.calls.length, 2);
+    now += 31 * 1000;
+    await checker.check(true);
+    assert.equal(remote.calls.length, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("GitHub not answering in time is a failed check, not a hang", async () => {
+  const { dir, env } = scratch();
+  try {
+    // A fetch that only ends when it is aborted.
+    const hanging: FetchLike = (_url, init) =>
+      new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+    const checker = new UpdateChecker({ env, current: "0.1.1", fetch: hanging, timeoutMs: 50 });
+    const started = Date.now();
+    const status = await checker.check();
+    assert.equal(status.error, "GitHub did not answer in time");
+    assert.ok(Date.now() - started < 5_000);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("update.json written by anyone else is checked on the way back: foreign links are not offered, junk is no release", () => {
+  const { dir, env } = scratch();
+  try {
+    mkdirSync(join(dir, "agora"), { recursive: true });
+    const write = (value: unknown) => writeFileSync(updatePath(env), typeof value === "string" ? value : JSON.stringify(value));
+    write({
+      latest: { version: "9.0.0", name: "Agoryx 9", url: "https://evil.example/agoryx", download: "https://evil.example/Agoryx.dmg", notes: 42 },
+      checkedAt: new Date().toISOString(),
+      error: null,
+    });
+    const status = new UpdateChecker({ env, current: "0.1.1" }).status();
+    assert.equal(status.available, true);
+    assert.equal(status.latest?.url, RELEASES_PAGE);
+    assert.equal(status.latest?.download, null);
+    assert.equal(status.latest?.notes, "");
+
+    write({ latest: { version: "not a version" }, checkedAt: 5, error: ["x"] });
+    assert.deepEqual(new UpdateChecker({ env, current: "0.1.1" }).status(), {
+      current: "0.1.1",
+      latest: null,
+      available: false,
+      checkedAt: null,
+      error: null,
+      disabled: false,
+    });
+    write("{ torn");
+    assert.equal(new UpdateChecker({ env, current: "0.1.1" }).status().latest, null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/update answers what the daemon knows; POST asks again, and only the human may", async () => {
   const { dir, env } = scratch();
   const remote = github(() => ({ status: 200, body: release("v99.0.0") }));
-  const daemon = new AgoraDaemon({ env: { ...env, AGORYX_JEV: "off" }, port: 0, advertise: false, watchDays: 0, updateFetch: remote.fetch });
+  const daemonEnv = { ...env, AGORYX_JEV: "off" };
+  const daemon = new AgoraDaemon({ env: daemonEnv, port: 0, advertise: false, watchDays: 0, updateFetch: remote.fetch });
   try {
     const info = await daemon.start();
     const client = new DaemonClient(info);
@@ -153,8 +236,14 @@ test("GET /api/update answers what the daemon knows; POST asks again", async () 
     assert.ok(status.current);
     await client.request("GET", "/api/update");
     assert.equal(remote.calls.length, 1);
-    await client.request("POST", "/api/update");
-    assert.equal(remote.calls.length, 2);
+
+    // An agent reads the status, but cannot make the daemon ask GitHub.
+    mkdirSync(join(dir, "work"), { recursive: true });
+    const room = createRoom({ name: "Updates", dir: join(dir, "work"), env: daemonEnv, human: "Ivan" });
+    const agent = new DaemonClient({ url: info.url, token: agentKey(daemon.token, room.state.id, room.state.agents[0]!.id) });
+    assert.equal((await agent.request<{ available: boolean }>("GET", "/api/update")).available, true);
+    await assert.rejects(agent.request("POST", "/api/update"), (error: unknown) => error instanceof DaemonRequestError && error.status === 403);
+    assert.equal(remote.calls.length, 1);
   } finally {
     await daemon.close();
     rmSync(dir, { recursive: true, force: true });

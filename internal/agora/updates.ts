@@ -6,6 +6,8 @@ import { agoraHome } from "./paths.js";
 // The daemon asks only when a page asks it (GET /api/update), at most every CHECK_EVERY_MS, and remembers the
 // answer in <AGORYX_HOME>/update.json across restarts. Nothing is downloaded or installed here: the UI shows
 // the release and the human installs it. AGORYX_UPDATE_CHECK=off turns the check off.
+// A forced check ("Check for updates") clicked again within a minute gets the answer just given: GitHub's
+// unauthenticated limit is shared by everything on this address.
 
 export const RELEASES_REPO = "gaborishka/agoryx";
 const LATEST_URL = `https://api.github.com/repos/${RELEASES_REPO}/releases/latest`;
@@ -15,6 +17,8 @@ export const RELEASES_PAGE = `https://github.com/${RELEASES_REPO}/releases/lates
 export const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 /** After a failed check (offline, rate-limited): sooner than a successful one, not on every page load. */
 const RETRY_AFTER_MS = 30 * 60 * 1000;
+/** "Check for updates" clicked again within this: the answer just given, not another request. */
+const FORCE_GAP_MS = 60 * 1000;
 const TIMEOUT_MS = 8_000;
 
 export interface ReleaseInfo {
@@ -79,6 +83,19 @@ export const compareVersions = (a: string, b: string): number | null => {
 /** Whether `latest` is a newer release than `current`. */
 export const isNewer = (latest: string, current: string | null): boolean => current !== null && compareVersions(latest, current) === 1;
 
+/** An https link on github.com, or null: nothing else is offered as the release's page or download. */
+const githubLink = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "github.com" ? url.href : null;
+  } catch {
+    return null;
+  }
+};
+
+const cutNotes = (text: string): string => (text.length > MAX_NOTES ? `${text.slice(0, MAX_NOTES).trimEnd()}…` : text);
+
 /** GitHub's release JSON → what the UI shows; null when it names no version. Only https links on github.com pass. */
 export const parseRelease = (raw: unknown): ReleaseInfo | null => {
   if (!raw || typeof raw !== "object") return null;
@@ -87,25 +104,35 @@ export const parseRelease = (raw: unknown): ReleaseInfo | null => {
   const tag = typeof body.tag_name === "string" ? body.tag_name.trim() : "";
   if (!parseVersion(tag)) return null;
   const version = tag.replace(/^v/, "");
-  const github = (value: unknown): string | null => {
-    if (typeof value !== "string") return null;
-    try {
-      const url = new URL(value);
-      return url.protocol === "https:" && url.hostname === "github.com" ? url.href : null;
-    } catch {
-      return null;
-    }
-  };
   const assets = Array.isArray(body.assets) ? (body.assets as Array<Record<string, unknown>>) : [];
   const dmg = assets.find((asset) => typeof asset?.name === "string" && /\.dmg$/i.test(asset.name));
   const notes = typeof body.body === "string" ? body.body.replace(/\r\n/g, "\n").trim() : "";
   return {
     version,
     name: typeof body.name === "string" && body.name.trim() ? body.name.trim() : `Agoryx ${version}`,
-    url: github(body.html_url) ?? RELEASES_PAGE,
-    download: github(dmg?.browser_download_url),
+    url: githubLink(body.html_url) ?? RELEASES_PAGE,
+    download: githubLink(dmg?.browser_download_url),
     publishedAt: typeof body.published_at === "string" ? body.published_at : null,
-    notes: notes.length > MAX_NOTES ? `${notes.slice(0, MAX_NOTES).trimEnd()}…` : notes,
+    notes: cutNotes(notes),
+  };
+};
+
+/**
+ * A release as update.json keeps it, checked again on the way back: the file is in the state folder, which any
+ * process of this user (an agent's among them) can write, so its links pass the same filter as GitHub's answer.
+ */
+const rememberedRelease = (raw: unknown): ReleaseInfo | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const body = raw as Record<string, unknown>;
+  const version = typeof body.version === "string" ? body.version.trim() : "";
+  if (!parseVersion(version)) return null;
+  return {
+    version: version.replace(/^v/, ""),
+    name: typeof body.name === "string" && body.name.trim() ? body.name.trim() : `Agoryx ${version}`,
+    url: githubLink(body.url) ?? RELEASES_PAGE,
+    download: githubLink(body.download),
+    publishedAt: typeof body.publishedAt === "string" ? body.publishedAt : null,
+    notes: typeof body.notes === "string" ? cutNotes(body.notes) : "",
   };
 };
 
@@ -127,6 +154,8 @@ export interface UpdateCheckerOptions {
   fetch?: FetchLike;
   now?: () => number;
   log?: (message: string) => void;
+  /** How long GitHub is given to answer (default 8s). */
+  timeoutMs?: number;
 }
 
 export class UpdateChecker {
@@ -135,6 +164,7 @@ export class UpdateChecker {
   private readonly fetcher: FetchLike;
   private readonly now: () => number;
   private readonly log: (message: string) => void;
+  private readonly timeoutMs: number;
   private remembered: Remembered;
   private checking: Promise<void> | null = null;
 
@@ -144,6 +174,7 @@ export class UpdateChecker {
     this.fetcher = options.fetch ?? ((url, init) => fetch(url, init));
     this.now = options.now ?? Date.now;
     this.log = options.log ?? (() => {});
+    this.timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
     this.remembered = this.read();
   }
 
@@ -177,7 +208,7 @@ export class UpdateChecker {
    */
   async check(force = false): Promise<UpdateStatus> {
     if (this.disabled) return this.status();
-    if (force || this.stale()) {
+    if ((force && !this.justAsked()) || this.stale()) {
       this.checking ??= this.ask().finally(() => {
         this.checking = null;
       });
@@ -186,10 +217,15 @@ export class UpdateChecker {
     return this.status();
   }
 
+  /** GitHub answered (or failed) less than FORCE_GAP_MS ago. */
+  private justAsked(): boolean {
+    const at = this.remembered.checkedAt ? Date.parse(this.remembered.checkedAt) : NaN;
+    return Number.isFinite(at) && at <= this.now() && this.now() - at < FORCE_GAP_MS;
+  }
+
   private async ask(): Promise<void> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    timer.unref?.();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const checkedAt = new Date(this.now()).toISOString();
     try {
       const response = await this.fetcher(LATEST_URL, {
@@ -215,10 +251,9 @@ export class UpdateChecker {
 
   private read(): Remembered {
     try {
-      const parsed = JSON.parse(readFileSync(updatePath(this.env), "utf8")) as Partial<Remembered>;
-      const latest = parsed.latest && typeof parsed.latest === "object" && typeof parsed.latest.version === "string" ? parsed.latest : null;
+      const parsed = JSON.parse(readFileSync(updatePath(this.env), "utf8")) as Record<string, unknown>;
       return {
-        latest,
+        latest: rememberedRelease(parsed.latest),
         checkedAt: typeof parsed.checkedAt === "string" ? parsed.checkedAt : null,
         error: typeof parsed.error === "string" ? parsed.error : null,
       };

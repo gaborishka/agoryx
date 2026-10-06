@@ -14,11 +14,11 @@ The distributed release is intended to be Developer ID signed and notarized. A l
 
 ## Updates
 
-When a newer release is published, the app (and the web UI in a browser) shows a bar at the top: **Download update** gets the new DMG from GitHub Releases, **What’s new** opens the release notes, and ✕ hides the bar until the next release. **Agoryx › Check for Updates…** (or Settings › About › Check for updates) asks GitHub immediately.
+When a newer release is published, the app shows a bar at the top. **Download update** gets the new DMG from GitHub Releases, **What’s new** opens the release notes, and ✕ hides the bar until the next release. **Agoryx › Check for Updates…** (or Settings › About › Check for updates) asks GitHub immediately. In a browser or on a phone, the bar links to the release page instead of the DMG.
 
-To install, quit the app, open the new DMG and replace **Agoryx.app** in Applications. Conversations and settings are kept. The daemon outlives the app, so on the first start after an update the app sees a daemon still running the previous version and asks to restart it. Restarting stops the agents' current turns. Choose **Later** to restart it yourself from **Daemon › Restart Daemon**.
+To install, quit the app, open the new DMG and replace **Agoryx.app** in Applications. Conversations and settings are kept. The daemon outlives the app, so when the app finds a daemon still running an older version, it asks to restart it. Restarting stops the agents' current turns. Choose **Later** to restart it yourself from **Daemon › Restart Daemon**; the app does not ask again for the same pair of versions. A daemon newer than the app (started from a terminal install) is left alone. If the login service runs another install, a restart brings the old version back. The app says so; run `agoryx service install` from the new version.
 
-The daemon asks `api.github.com` for the latest release of `gaborishka/agoryx` only while a page is open, at most every six hours (every 30 minutes after a failed check). It remembers the answer in `<AGORYX_HOME>/update.json`. Nothing is downloaded or installed automatically. Set `AGORYX_UPDATE_CHECK=off` in the daemon's environment to turn the check off.
+The daemon asks `api.github.com` for the latest release of `gaborishka/agoryx` when the UI asks it (on open and hourly), at most every six hours (every 30 minutes after a failed check; a manual check again within a minute reuses the last answer). It remembers the answer in `<AGORYX_HOME>/update.json`. Nothing is downloaded or installed automatically. Set `AGORYX_UPDATE_CHECK=off` in the daemon's environment to turn the check off.
 
 ## How the app runs
 

@@ -91,6 +91,8 @@ Run `agoryx help rooms` for the room CLI. Structured protocols are started and i
 
 Room logs and project records live under `~/.local/state/agoryx/agora` by default, or `AGORYX_HOME`. The daemon listens on loopback unless you explicitly enable LAN or a trusted HTTPS proxy. Phone access requires pairing and can be revoked.
 
+To tell you about new releases, the daemon asks GitHub's API for the latest Agoryx release at most every six hours while the UI is open; nothing else is sent, and nothing is installed without you. `AGORYX_UPDATE_CHECK=off` turns it off.
+
 Model prompts still go to the selected model provider through its native CLI. “Local-first” describes Agoryx's storage and coordination, not offline inference.
 
 Agoryx does not automatically commit ordinary room work. Recovery snapshots preserve changes without moving the working branch. Workflow artifacts are returned for inspection and download; they are not silently applied to project files.

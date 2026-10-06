@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Update notices: when a newer release is published on GitHub, the app and web UI show a bar with the download and release notes (Settings › About › Check for updates asks immediately; `AGORYX_UPDATE_CHECK=off` turns it off). After an update, the desktop app offers to restart a daemon still running the previous version.
+
 ## 0.1.1 — 2026-10-06
 
 - Visual replies: agents lead with native ```` ```viz ```` cards (claims, compare, chart, stats, steps, stance, tradeoff, decision) instead of long prose; the room briefing makes this the default and `agoryx viz check` validates a block before posting.

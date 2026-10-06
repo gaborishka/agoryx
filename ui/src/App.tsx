@@ -12,6 +12,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { NewChatScreen } from "@/components/NewChatScreen";
 import { TableBoard } from "@/components/table/TableBoard";
 import { WorkspaceBar } from "@/components/workflow/WorkspaceBar";
+import { UpdateBanner } from "@/components/common/UpdateBanner";
 import { activeWorkflow, useWorkflow, useWorkflowRoom } from "@/lib/workflow-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -177,6 +178,7 @@ function Shell() {
   return (
     <div className="flex h-full min-h-0 bg-background">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <UpdateBanner />
       <WorkspaceBar />
       <div className="flex min-h-0 flex-1">
       {desktop && !navCollapsed ? (

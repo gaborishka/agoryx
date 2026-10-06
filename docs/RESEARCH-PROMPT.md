@@ -1,6 +1,6 @@
 # Open product and engineering research
 
-This is a research brief for the current Agoryx 0.1.0 baseline. It is not an implementation plan or a claim that the items below already exist.
+This is a research brief for the current Agoryx 0.1.1 baseline. It is not an implementation plan or a claim that the items below already exist.
 
 ## Start from the implemented product
 

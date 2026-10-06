@@ -1,6 +1,6 @@
 # Claude — Agoryx context
 
-Read [AGENTS.md](AGENTS.md) first. It is the shared contributor guide for the current 0.1.0 product.
+Read [AGENTS.md](AGENTS.md) first. It is the shared contributor guide for the current 0.1.1 product.
 
 Agoryx coordinates a human and multiple native agents. Ordinary Chat/Work sessions retain their native tools and conversation context. Verification, Council, Tournament and Debate use independent, system-isolated phases with session-specific roles.
 

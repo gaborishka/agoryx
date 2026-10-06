@@ -1,6 +1,6 @@
 # Documentation
 
-This documentation describes **Agoryx 0.1.0**: the room-based application, macOS shell and structured collaboration modes.
+This documentation describes **Agoryx 0.1.1**: the room-based application, macOS shell and structured collaboration modes.
 
 ## Use the product
 

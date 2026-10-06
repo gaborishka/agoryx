@@ -1,6 +1,6 @@
 # Build and release
 
-The current release version is **0.1.0**. The desktop target is **macOS arm64**.
+The current release version is **0.1.1**. The desktop target is **macOS arm64**.
 
 ## Version and source
 
@@ -43,7 +43,7 @@ Expected outputs:
 
 ```text
 desktop/release/mac-arm64/Agoryx.app
-desktop/release/Agoryx-0.1.0-arm64.dmg
+desktop/release/Agoryx-0.1.1-arm64.dmg
 ```
 
 ## Notarize and staple
@@ -61,8 +61,8 @@ cd desktop
 AGORYX_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
   npx --no-install electron-builder --config electron-builder.config.cjs \
   --mac dmg --arm64 --prepackaged release/mac-arm64/Agoryx.app --publish never
-xcrun notarytool submit release/Agoryx-0.1.0-arm64.dmg --keychain-profile agoryx --wait
-xcrun stapler staple release/Agoryx-0.1.0-arm64.dmg
+xcrun notarytool submit release/Agoryx-0.1.1-arm64.dmg --keychain-profile agoryx --wait
+xcrun stapler staple release/Agoryx-0.1.1-arm64.dmg
 ```
 
 Require an **Accepted** result for both submissions. If Apple rejects a submission, retrieve its log, fix the cause, and resubmit; do not describe the rejected artifact as notarized.
@@ -79,10 +79,10 @@ codesign -dv --verbose=4 desktop/release/mac-arm64/Agoryx.app
 xcrun stapler validate desktop/release/mac-arm64/Agoryx.app
 spctl --assess --type execute --verbose=2 desktop/release/mac-arm64/Agoryx.app
 
-codesign --verify --strict --verbose=2 desktop/release/Agoryx-0.1.0-arm64.dmg
-xcrun stapler validate desktop/release/Agoryx-0.1.0-arm64.dmg
+codesign --verify --strict --verbose=2 desktop/release/Agoryx-0.1.1-arm64.dmg
+xcrun stapler validate desktop/release/Agoryx-0.1.1-arm64.dmg
 spctl --assess --type open --context context:primary-signature --verbose=2 \
-  desktop/release/Agoryx-0.1.0-arm64.dmg
+  desktop/release/Agoryx-0.1.1-arm64.dmg
 ```
 
 Check `CFBundleShortVersionString` and the embedded core package version. Mount the DMG read-only and verify the application inside it matches the released package. Run the packaged core's `doctor --json` with disposable state, and inspect the application startup when testing the shell.
@@ -91,7 +91,7 @@ Compute checksums **after** stapling, because stapling changes the artifact:
 
 ```sh
 cd desktop/release
-shasum -a 256 Agoryx-0.1.0-arm64.dmg > SHA256SUMS.txt
+shasum -a 256 Agoryx-0.1.1-arm64.dmg > SHA256SUMS.txt
 ```
 
 ## Publish
@@ -99,10 +99,10 @@ shasum -a 256 Agoryx-0.1.0-arm64.dmg > SHA256SUMS.txt
 Publish the verified DMG and checksum file to the intended tag and explicitly mark the release as current. When version numbers have been reset, do not rely on semantic-version ordering to select Latest.
 
 ```sh
-gh release create v0.1.0 \
-  desktop/release/Agoryx-0.1.0-arm64.dmg \
+gh release create v0.1.1 \
+  desktop/release/Agoryx-0.1.1-arm64.dmg \
   desktop/release/SHA256SUMS.txt \
-  --title "Agoryx 0.1.0" --notes-file /path/to/release-notes.md --latest
+  --title "Agoryx 0.1.1" --notes-file /path/to/release-notes.md --latest
 ```
 
 The tag must already identify the intended release snapshot, or be created deliberately for that snapshot. Do not overwrite a published tag as a routine update.

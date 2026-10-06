@@ -1,6 +1,6 @@
 # Legacy SQLite CLI
 
-Agoryx 0.1.0 retains the older terminal chat runtime for compatibility. Its SQLite sessions and orchestration policies are separate from the room application described in the [README](../README.md).
+Agoryx 0.1.1 retains the older terminal chat runtime for compatibility. Its SQLite sessions and orchestration policies are separate from the room application described in the [README](../README.md).
 
 For the current web/desktop experience, use `agoryx up -d` and `agoryx open`. Running `agoryx` without a subcommand still starts the legacy chat interface; this behavior has not been changed by the documentation or version reset.
 

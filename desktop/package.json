@@ -1,7 +1,7 @@
 {
   "name": "agoryx-desktop",
   "productName": "Agoryx",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agoryx for macOS: the local daemon and its room UI in one window.",
   "license": "MIT",
   "private": true,

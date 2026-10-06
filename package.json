@@ -1,7 +1,7 @@
 {
   "name": "agoryx",
-  "version": "0.1.0",
-  "description": "Local-first multi-agent chat orchestrator for Codex and Claude.",
+  "version": "0.1.1",
+  "description": "One local-first conversation for you, Claude Code and Codex.",
   "license": "MIT",
   "private": true,
   "type": "module",

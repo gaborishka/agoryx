@@ -18,6 +18,7 @@ import { keyLabel, withMod } from "@/lib/keys";
 import { errText } from "@/lib/load";
 import { handleFor, KIND_NAME, KIND_SHORT, MAX_ROLE, nameFor, rosterEntry as entry } from "@/lib/agents";
 import { useModels } from "@/lib/models";
+import { useUpdates } from "@/lib/updates";
 import { DEFAULT_AGENTS } from "@/lib/room";
 import { type SettingsSection, useStore } from "@/lib/store";
 import { SETTINGS_NAVIGATION } from "@/lib/settings-sections";
@@ -529,6 +530,59 @@ interface Info {
   rooms: number;
 }
 
+/** Settings › About: whether this is the latest release, and "Check for updates" (asks GitHub now). */
+function UpdateCard() {
+  const status = useUpdates((s) => s.status);
+  const checking = useUpdates((s) => s.checking);
+  const refresh = useUpdates((s) => s.refresh);
+  const check = () =>
+    refresh(true)
+      .then((next) => {
+        if (next?.error) toast.error(`Could not check for updates: ${next.error}`);
+        else if (next && !next.available) toast.success("Agoryx is up to date");
+      })
+      .catch((err) => toast.error(`Could not check for updates: ${errText(err)}`));
+  const latest = status?.latest;
+  let text: ReactNode;
+  if (!status) text = "Not checked yet.";
+  else if (status.disabled) text = "Update checks are off (AGORYX_UPDATE_CHECK=off).";
+  else if (status.available && latest) text = <><span className="font-medium text-foreground">Agoryx {latest.version} is available.</span> You have {status.current ?? "an unknown version"}.</>;
+  else if (latest) text = `You have the latest version${status.current ? ` (${status.current})` : ""}.`;
+  else if (status.error) text = `Could not check: ${status.error}.`;
+  else text = "Not checked yet.";
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card px-4 py-3">
+      <div className="flex flex-col gap-1">
+        <span className="text-small font-medium">Updates</span>
+        <span className="text-small text-muted-foreground">{text}</span>
+        {status?.checkedAt ? <span className="text-xs text-faint">Last checked {new Date(status.checkedAt).toLocaleString()}</span> : null}
+      </div>
+      {status?.available && latest?.notes ? <pre className="scroll-thin max-h-48 overflow-y-auto rounded-lg bg-muted/50 px-3 py-2 font-sans text-small whitespace-pre-wrap text-muted-foreground">{latest.notes}</pre> : null}
+      <div className="flex flex-wrap gap-2">
+        {status?.available && latest ? (
+          <>
+            <Button asChild size="sm">
+              <a href={latest.download ?? latest.url} target="_blank" rel="noopener noreferrer">
+                {latest.download ? "Download update" : "Get the update"}
+              </a>
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <a href={latest.url} target="_blank" rel="noopener noreferrer">
+                Release notes
+              </a>
+            </Button>
+          </>
+        ) : null}
+        {!status?.disabled ? (
+          <Button size="sm" variant="outline" disabled={checking} onClick={() => void check()}>
+            {checking ? "Checking…" : "Check for updates"}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function About() {
   const openDialog = useStore((s) => s.openDialog);
   const [info, setInfo] = useState<Info | null>(null);
@@ -558,6 +612,7 @@ function About() {
           {line("Rooms", info.rooms)}
         </div>
       )}
+      <UpdateCard />
       <div>
         <Button variant="outline" onClick={() => openDialog({ kind: "help" })}>
           How it works

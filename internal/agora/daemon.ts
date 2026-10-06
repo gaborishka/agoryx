@@ -56,6 +56,7 @@ import { WorkflowService } from "./workflows.js";
 import { createWorkflowExecutor, workflowIsolationCapability } from "./workflow-executor.js";
 import type { WorkflowAction, WorkflowExecutor, WorkflowMode, WorkflowRole, WorkflowStartInput } from "./workflow-types.js";
 import { artifactPreviewDocument, parseWorkflowArtifacts, visualArtifact } from "./workflow-artifacts.js";
+import { UpdateChecker, type FetchLike } from "./updates.js";
 
 export interface DaemonOptions {
   env?: NodeJS.ProcessEnv;
@@ -91,6 +92,8 @@ export interface DaemonOptions {
   /** Web Push: how notifications are sent (tests), and whether an http endpoint is taken (tests only). */
   pushFetch?: typeof fetch;
   pushAllowHttp?: boolean;
+  /** How GET /api/update asks GitHub for the latest release (tests). */
+  updateFetch?: FetchLike;
 }
 
 /**
@@ -428,6 +431,8 @@ export class AgoraDaemon {
   private readonly push: PushSender;
   /** What each push said: the phone fetches it (push.ts), so a push the daemon did not send shows nothing. */
   private readonly pushNotes = new PushNotes();
+  /** Whether a newer Agoryx has been released (updates.ts); asked only when a page asks. */
+  private readonly updates: UpdateChecker;
   private heartbeat?: NodeJS.Timeout;
   /** Rooms with thread reports waiting while another process drives them: tried again until they can take them. */
   private reportsWaiting = new Set<string>();
@@ -451,6 +456,7 @@ export class AgoraDaemon {
     this.cookieName = `${LEGACY_COOKIE}_${createHash("sha256").update(this.token).digest("hex").slice(0, 24)}`;
     this.log = options.log ?? (() => {});
     this.devices = new DeviceRegistry({ env: this.env });
+    this.updates = new UpdateChecker({ env: this.env, current: agoryxVersion(), log: this.log, ...(options.updateFetch ? { fetch: options.updateFetch } : {}) });
     this.push = new PushSender({
       env: this.env,
       devices: this.devices,
@@ -1528,6 +1534,18 @@ export class AgoraDaemon {
         device: device ? { id: device.id, name: device.name } : null,
         ...this.roster(),
       });
+      return;
+    }
+
+    // Whether a newer release is out (updates.ts). POST asks GitHub now: the human's "Check for updates".
+    if (parts[0] === "update" && parts.length === 1) {
+      if (method === "POST") {
+        if (caller.agent) throw new HttpError(403, "only the human checks for updates");
+        sendJson(res, 200, await this.updates.check(true));
+        return;
+      }
+      if (method !== "GET") throw new HttpError(405, "GET or POST");
+      sendJson(res, 200, await this.updates.check());
       return;
     }
 

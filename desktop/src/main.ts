@@ -318,7 +318,9 @@ const daemonOrigin = (): string | null => (daemon ? new URL(daemon.url).origin :
 
 /** The window on the daemon's UI; `/?t=` trades the token for the UI's cookie and redirects to `/`. */
 const showDaemon = (info: DaemonInfo): void => {
+  const fresh = daemon !== info;
   daemon = info;
+  if (fresh) void offerDaemonRestart(info);
   // Also with the window closed: the one the Dock opens next shows the daemon, not the start page's last state.
   view = "daemon";
   // Also with the window closed. Neither throws, and both are no-ops for the same daemon (render() calls this again).
@@ -326,6 +328,38 @@ const showDaemon = (info: DaemonInfo): void => {
   panes.connect(info);
   if (!win || win.isDestroyed()) return;
   win.loadURL(`${info.url}/?t=${encodeURIComponent(info.token)}`).catch(() => {});
+};
+
+/** The daemons already asked about (by pid): one question per daemon, and not again after "Later". */
+const askedRestart = new Set<number>();
+
+/**
+ * After the app is updated, the daemon it finds may still be the one the old version started: it outlives the
+ * app, and runs the old core until it restarts. Ask the human to restart it (its turns stop), never do it unasked.
+ */
+const offerDaemonRestart = async (info: DaemonInfo): Promise<void> => {
+  if (askedRestart.has(info.pid)) return;
+  let running: string | null = null;
+  try {
+    const response = await fetch(`${info.url}/api/info`, { headers: { "x-agoryx-token": info.token }, signal: AbortSignal.timeout(5000) });
+    if (!response.ok) return;
+    running = ((await response.json()) as { version?: string | null }).version ?? null;
+  } catch {
+    return;
+  }
+  const mine = coreVersion();
+  if (!running || running === mine || daemon !== info || stopping || askedRestart.has(info.pid)) return;
+  askedRestart.add(info.pid);
+  const options = {
+    type: "info" as const,
+    message: `Restart Agoryx to finish updating to ${mine}?`,
+    detail: `The Agoryx service that is running is still version ${running}. Restarting it stops the agents' current turns; conversations are kept.`,
+    buttons: ["Restart Now", "Later"],
+    defaultId: 0,
+    cancelId: 1,
+  };
+  const { response } = win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+  if (response === 0 && daemon === info) void restartDaemon();
 };
 
 const firstLine = (error: unknown): string => (error instanceof Error ? error.message : String(error)).split("\n")[0]!.trim();
@@ -549,6 +583,9 @@ const restartDaemon = (): Promise<void> => {
     }
   });
 };
+
+/** Where releases are published (internal/agora/updates.ts asks the same repository). */
+const RELEASES_PAGE = "https://github.com/gaborishka/agoryx/releases/latest";
 
 /** The one button of the app's dialogs. */
 const OK = ["OK"];
@@ -847,6 +884,17 @@ const buildMenu = (): Menu =>
       label: app.name,
       submenu: [
         { role: "about", label: "About Agoryx" },
+        {
+          label: "Check for Updates…",
+          // Settings › About asks GitHub for the latest release and offers its download; without the daemon's UI, the releases page.
+          click: () => {
+            focusWindow();
+            onPage((page) => {
+              if (isDaemonUrl(page.getURL())) void page.executeJavaScript(`location.hash = "#settings/about"`).catch(() => {});
+              else void shell.openExternal(RELEASES_PAGE);
+            });
+          },
+        },
         { type: "separator" },
         {
           label: "Settings…",

@@ -12,6 +12,14 @@ The app checks Node, the packaged core, native SQLite loading, available agents/
 
 The distributed release is intended to be Developer ID signed and notarized. A local developer build is unsigned unless a signing identity is supplied. Verify an artifact's actual signing/notarization status rather than inferring it from the filename; [release verification](RELEASING.md).
 
+## Updates
+
+When a newer release is published, the app (and the web UI in a browser) shows a bar at the top: **Download update** gets the new DMG from GitHub Releases, **What’s new** opens the release notes, and ✕ hides the bar until the next release. **Agoryx › Check for Updates…** (or Settings › About › Check for updates) asks GitHub immediately.
+
+To install, quit the app, open the new DMG and replace **Agoryx.app** in Applications. Conversations and settings are kept. The daemon outlives the app, so on the first start after an update the app sees a daemon still running the previous version and asks to restart it. Restarting stops the agents' current turns. Choose **Later** to restart it yourself from **Daemon › Restart Daemon**.
+
+The daemon asks `api.github.com` for the latest release of `gaborishka/agoryx` only while a page is open, at most every six hours (every 30 minutes after a failed check). It remembers the answer in `<AGORYX_HOME>/update.json`. Nothing is downloaded or installed automatically. Set `AGORYX_UPDATE_CHECK=off` in the daemon's environment to turn the check off.
+
 ## How the app runs
 
 1. Read the login shell's environment so Node and agents installed with Homebrew, nvm or a user-local prefix can be found.

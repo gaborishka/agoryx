@@ -269,6 +269,15 @@
   --animate-breathe: breathe 1.8s ease-in-out infinite;
   --animate-flash: flash 1.6s ease-out;
   --animate-travel: travel 3.2s ease-in-out infinite;
+  --animate-fresh: fresh 0.28s cubic-bezier(0.2, 0, 0, 1);
+  --animate-shimmer: shimmer var(--shimmer-duration, 2s) linear infinite;
+  @keyframes fresh {
+    from { opacity: 0; transform: translateY(8px); }
+  }
+  @keyframes shimmer {
+    from { background-position: 100% center; }
+    to { background-position: 0% center; }
+  }
   @keyframes breathe {
     0%, 100% { opacity: 0.35; transform: scale(0.85); }
     50% { opacity: 1; transform: scale(1); }

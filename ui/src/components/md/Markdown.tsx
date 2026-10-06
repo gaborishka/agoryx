@@ -1,6 +1,6 @@
 import { workspaceAt } from "@agora/room-mode";
 import { liveBlocks } from "@agora/blocks";
-import { createCodePlugin } from "@streamdown/code";
+import type { CodeHighlighterPlugin, HighlightOptions, HighlightResult, ThemeInput } from "@streamdown/code";
 import type { DiagramPlugin, MermaidConfig } from "@streamdown/mermaid";
 import { Code2Icon, ExternalLinkIcon, FileIcon, FileXIcon, Maximize2Icon } from "lucide-react";
 import { type ComponentProps, createContext, useContext, memo, type ReactNode, useMemo, useState } from "react";
@@ -31,7 +31,47 @@ const indexed = (list: readonly { id: string; seq?: number }[] | undefined) => {
   return index;
 };
 
-const code = createCodePlugin({ themes: ["vitesse-light", "vitesse-dark"] });
+/**
+ * A copy of `text` in one byte per character when it fits. A fence is sliced out of its message, and a message with
+ * one character past Latin-1 (an em dash, curly quotes, any Cyrillic) is stored two bytes per character, its slices
+ * too: Shiki's regexes then take V8's slower two-byte path, about 3x slower on the same code.
+ */
+const oneByte = (text: string): string => {
+  if (!/^[\x00-\xff]*$/.test(text)) return text;
+  const codes = new Array<number>(text.length);
+  for (let i = 0; i < text.length; i += 1) codes[i] = text.charCodeAt(i);
+  let copy = "";
+  for (let i = 0; i < codes.length; i += 8192) copy += String.fromCharCode(...codes.slice(i, i + 8192));
+  return copy;
+};
+
+/**
+ * The @streamdown/code plugin, but Shiki is imported with the first fence, not with the page; until then a fence
+ * shows plain, as it does while a language loads. Streamdown asks the plugin only for its themes and highlights.
+ */
+const lazyCode = (themes: [ThemeInput, ThemeInput]): CodeHighlighterPlugin => {
+  let plugin: CodeHighlighterPlugin | undefined;
+  let loading: Promise<CodeHighlighterPlugin> | undefined;
+  const load = () => (loading ??= import("@streamdown/code").then((m) => (plugin = m.createCodePlugin({ themes }))));
+  return {
+    name: "shiki",
+    type: "code-highlighter",
+    getThemes: () => themes,
+    getSupportedLanguages: () => plugin?.getSupportedLanguages() ?? [],
+    supportsLanguage: (language) => plugin?.supportsLanguage(language) ?? true,
+    highlight(options: HighlightOptions, callback?: (result: HighlightResult) => void) {
+      const fit = { ...options, code: oneByte(options.code) };
+      if (plugin) return plugin.highlight(fit, callback);
+      void load().then((loaded) => {
+        const ready = loaded.highlight(fit, callback);
+        if (ready) callback?.(ready);
+      }, () => {});
+      return null;
+    },
+  };
+};
+
+const code = lazyCode(["vitesse-light", "vitesse-dark"]);
 /**
  * The @streamdown/mermaid plugin, but mermaid (half a megabyte) is imported on the first diagram,
  * not with the page. Mermaid is one global, so each render applies its own theme first.
@@ -154,8 +194,11 @@ function LiveBlock({ code: fence, isIncomplete, language }: CustomRendererProps)
   const { source, text } = useContext(LiveSource);
   const rawBase = useStore((s) => s.snap?.rawBase);
   const lang = language.toLowerCase();
-  // The fence's text is the block's; the message around it may still be streaming.
-  const block = useMemo(() => liveBlocks(text).find((b) => b.lang === lang && b.body.trim() === fence.trim()), [fence, lang, isIncomplete, source]);
+  // Looked up only once there is a page to show: a streaming message (no source yet) would search its whole text per token.
+  const block = useMemo(
+    () => (source && !isIncomplete ? liveBlocks(text).find((b) => b.lang === lang && b.body.trim() === fence.trim()) : undefined),
+    [text, fence, lang, source, isIncomplete],
+  );
   if (isIncomplete || !source || !rawBase || !block) {
     return (
       <div className="my-3 overflow-hidden rounded-xl border border-border bg-code">
@@ -390,7 +433,8 @@ const plain = (Tag: "h1" | "h2" | "h3" | "h4") =>
     return <Tag id={id}>{children}</Tag>;
   };
 
-// One map per variant, for every Markdown on screen: Streamdown's blocks compare these entry by entry.
+// One map per variant, for every Markdown on screen: Streamdown's blocks compare these entry by entry. A cast: its
+// `Components` types every entry as taking Record<string, unknown>, which the typed props of Link and Embed are not.
 const chatComponents = { a: Link, img: Embed, h1: shifted("h2"), h2: shifted("h3"), h3: shifted("h4"), h4: shifted("h4") } as Components;
 const docComponents = { a: Link, img: Embed, h1: plain("h1"), h2: plain("h2"), h3: plain("h3"), h4: plain("h4") } as Components;
 

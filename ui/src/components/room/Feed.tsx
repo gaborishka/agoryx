@@ -10,6 +10,7 @@ import { clock, names, plural, secs } from "@/lib/format";
 import { unquoted } from "../../../../internal/agora/quote";
 import { buildFeed, type FeedItem, type FeedModel, type FeedRow, ink, nameOf, participant } from "@/lib/room";
 import { useSeating, useStore } from "@/lib/store";
+import { streamTail } from "@/lib/stream-tail";
 import type { TableOp, TurnState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Avatar, Name, Tip } from "./bits";
@@ -64,7 +65,7 @@ function LiveTurn({ turn, ops }: { turn: TurnState; ops?: TableOp[] }) {
       {last.length ? <ActivityList items={last} turn={turn} className="mt-3" /> : null}
       {stream ? (
         <div className="mt-2">
-          <Markdown text={stream.length > 2400 ? `…${stream.slice(-2400)}` : stream} streaming />
+          <Markdown text={streamTail(stream)} streaming />
         </div>
       ) : !last.length ? (
         <p className="mt-2 text-small text-muted-foreground">

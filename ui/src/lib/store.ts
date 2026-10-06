@@ -639,9 +639,9 @@ const flushStreams = () => {
 const applyStream = (data: StreamChunk) => {
   pendingStreams.push(data);
   if (streamFrame !== undefined || streamTimer !== undefined) return;
-  // A hidden page gets no frames: its text still arrives, a little later.
-  if (document.visibilityState === "hidden") streamTimer = setTimeout(flushStreams, 250);
-  else streamFrame = requestAnimationFrame(flushStreams);
+  // The next frame, or a timer when frames stop (a page hidden before or after this): whichever comes first.
+  streamFrame = requestAnimationFrame(flushStreams);
+  streamTimer = setTimeout(flushStreams, 250);
 };
 
 function connect(roomId: string, after: number) {

@@ -278,6 +278,7 @@ export class RoomStore {
     return this.state.id;
   }
 
+  /** One object per seq, shared by every caller: spread it to change it. */
   summary(): RoomSummary {
     if (this.summarized?.seq === this.state.seq) return this.summarized.summary;
     const summary = this.summarize();

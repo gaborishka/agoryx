@@ -195,3 +195,9 @@ test("named executor files preserve a trailing carriage return exactly", () => {
   )[0]!;
   assert.equal(file.text, original);
 });
+
+test("a leading viz summary card is not mistaken for a delivered file", () => {
+  const text = 'Summary first.\n\n```viz\n{"kind":"claims","claims":[{"text":"Works offline"}]}\n```\n\n```html\n<h1>Prototype</h1>\n```\n';
+  const files = parseWorkflowArtifacts(text);
+  assert.deepEqual(files.map((file) => [file.path, file.language]), [["artifact-1.html", "html"]]);
+});

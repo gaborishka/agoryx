@@ -444,3 +444,26 @@ test("corrupt private state diagnostics never quote private submission content",
     assert.throws(() => recovered.get("room"), (error: Error) => /Invalid persisted workflow/.test(error.message) && !error.message.includes("PRIVATE SEALED VALUE"));
   }
 });
+
+test("prose phases lead with a viz claims block; debate JSON asks for headlines, confidence and a judge's leaning without requiring them", async () => {
+  const { service, calls } = fixture();
+  service.start("room", { ...setup("debate", 3), participants: [{ ...participants[0]!, role: "pro" }, { ...participants[1]!, role: "con" }, { ...participants[2]!, role: "judge" }] });
+  await service.wait("room");
+  assert.equal(service.get("room")!.status, "completed", "answers without the optional fields still pass validation");
+  const prompt = (phase: string) => calls.find((call) => call.phase === phase)!.prompt;
+  for (const call of calls) assert.match(call.prompt, /The human reads several agents' work side by side/);
+  assert.match(prompt("openings"), /"headline":"the argument as one claim of at most 12 words"/);
+  assert.match(prompt("openings"), /"confidence":0\.7/);
+  assert.match(prompt("new_arguments"), /"headline"/);
+  assert.match(prompt("rebuttal"), /lowering it is not a concession/);
+  assert.match(prompt("steelman"), /Begin with a ```viz claims block summarising the opponent's case/);
+  assert.match(prompt("verdict"), /"leaning":\{"side":"pro\|con\|undecided"/);
+
+  const council = fixture();
+  council.service.start("room", setup("council", 3));
+  await council.service.wait("room");
+  const answer = council.calls.find((call) => call.phase === "answers")!.prompt;
+  assert.match(answer, /Begin with a ```viz claims block summarising your answer/);
+  assert.match(council.calls.find((call) => call.phase === "synthesis")!.prompt, /set "by" to the answers that support each one/);
+  assert.equal(peerAliases(council.calls.find((call) => call.phase === "peer_review")!.prompt).length, 2, "the visual guide adds no alias-like lines");
+});

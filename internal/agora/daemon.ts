@@ -194,12 +194,15 @@ const RAW_CSP = "sandbox allow-scripts allow-forms allow-modals allow-popups all
 
 /**
  * Appended to html the page embeds: reports the document's height to the page
- * so a live block is as tall as its content. The frame stays sandboxed; this
- * only sends a number up.
+ * so a live block is as tall as its content, and takes the room's theme as
+ * --agoryx-* custom properties (plus data-theme on <html>) — first from the
+ * frame URL's #agoryx-theme= fragment, then from the page's messages as the
+ * reader switches light and dark. The frame stays sandboxed; this only sends a
+ * number up and accepts colour values down.
  */
 const FRAME_REPORTER = Buffer.from(
   // The content's own height, not the viewport's: scrollHeight never drops below the frame, so a frame could only grow.
-  '\n<script>(()=>{let last=0;const size=()=>{const d=document.documentElement,b=document.body;if(!b)return d.scrollHeight;const m=parseFloat(getComputedStyle(b).marginBottom)||0;let h=b.getBoundingClientRect().bottom+m;for(const el of b.children){const r=el.getBoundingClientRect();if(r.bottom>h)h=r.bottom}return h};const post=()=>{const h=Math.ceil(size()+scrollY);if(Math.abs(h-last)>2){last=h;parent.postMessage({agoryxFrame:1,h},"*")}};addEventListener("load",post);try{const o=new ResizeObserver(post);o.observe(document.documentElement);document.body&&o.observe(document.body)}catch{}setTimeout(post,400);setTimeout(post,1500)})()</script>\n',
+  '\n<script>(()=>{const theme=t=>{if(!t||typeof t!=="object")return;const r=document.documentElement;r.dataset.theme=t.dark?"dark":"light";const v=t.vars&&typeof t.vars==="object"?t.vars:{};for(const k in v)if(/^--agoryx-[a-z0-9-]+$/.test(k))r.style.setProperty(k,String(v[k]).replace(/[;{}<>]/g,""))};try{const m=/[#&]agoryx-theme=([^&]*)/.exec(location.hash);if(m){theme(JSON.parse(decodeURIComponent(m[1])));history.replaceState(history.state,"",location.pathname+location.search)}}catch{}addEventListener("message",e=>{if(e.source===parent&&e.data&&e.data.agoryxTheme)theme(e.data.agoryxTheme)});let last=0;const size=()=>{const d=document.documentElement,b=document.body;if(!b)return d.scrollHeight;const m=parseFloat(getComputedStyle(b).marginBottom)||0;let h=b.getBoundingClientRect().bottom+m;for(const el of b.children){const r=el.getBoundingClientRect();if(r.bottom>h)h=r.bottom}return h};const post=()=>{const h=Math.ceil(size()+scrollY);if(Math.abs(h-last)>2){last=h;parent.postMessage({agoryxFrame:1,h},"*")}};addEventListener("load",post);try{const o=new ResizeObserver(post);o.observe(document.documentElement);document.body&&o.observe(document.body)}catch{}setTimeout(post,400);setTimeout(post,1500)})()</script>\n',
 );
 
 const MAX_BODY = 1024 * 1024;

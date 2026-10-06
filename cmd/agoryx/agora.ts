@@ -28,6 +28,7 @@ import { limitText } from "../../internal/agora/duration.js";
 import { describeRevert, planRevert, RevertError, undoableRevert, type RevertRequest } from "../../internal/agora/revert.js";
 import { changeStats, patchSection, workspaceTracking } from "../../internal/agora/workspace.js";
 import { RoomStore } from "../../internal/agora/store.js";
+import { parseViz, vizBlocks, vizText, VIZ_GUIDE } from "../../internal/agora/visuals.js";
 import { headlineWindow, limitPace } from "../../internal/agora/limits.js";
 import { readLimits } from "../../internal/agora/limits-store.js";
 import { roomUsage, TURN_OUTCOMES, type UsageTotals } from "../../internal/agora/usage.js";
@@ -42,6 +43,7 @@ import { CliUsageError, parseCliArgsOrThrow, type OptionSpec, type OutputWriter 
 
 export const AGORA_COMMANDS = new Set([
   "up",
+  "viz",
   "down",
   "open",
   "new",
@@ -100,6 +102,8 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       '  agoryx memory [-r room | --dir D] [note "text" [--kind K] [--why "…"] | promote S3|F2|D1|Q1 | revise M2 "text" [--why "…"] | remove M2]',
       "                                     The project's memory: show it, note something, keep a table item as the table holds it, or take one out",
       "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--access workspace|readonly] [--doc PATH|none]",
+      "  agoryx viz check [--body JSON | --file F | -]   Check visual blocks (```viz) before posting: what the reader sees, or what to fix",
+      "  agoryx viz guide                   The visual block kinds and their fields",
       "",
       "Table ops:",
       ...TABLE_USAGE.map((line) => `  ${line}`),
@@ -1771,6 +1775,45 @@ const runDevices = async (argv: string[]): Promise<number> => {
   return 0;
 };
 
+/**
+ * `agoryx viz check`: the reader's view of visual blocks, without posting. Takes one spec (--body, or a
+ * file or stdin holding JSON), or markdown with ```viz fences, and prints each block as the room will
+ * read it — or the exact field to fix. Pure: no room, no daemon.
+ */
+const runViz = (argv: string[]): number => {
+  const [verb, ...rest] = argv;
+  if (verb === "guide") {
+    console.log(VIZ_GUIDE);
+    return 0;
+  }
+  const parsed = parse(rest, [{ long: "body", takesValue: true }, { long: "file", takesValue: true }]);
+  if (verb !== "check" || parsed.options.help) {
+    console.log("agoryx viz check [--body JSON | --file spec.json|notes.md | -]   agoryx viz guide");
+    return verb === "check" || verb === undefined ? 0 : 2;
+  }
+  const file = parsed.options.file ?? parsed.positionals[0];
+  const input = parsed.options.body ?? (file && file !== "-" ? readFileSync(file, "utf8") : !process.stdin.isTTY ? readFileSync(0, "utf8") : "");
+  if (!input.trim()) {
+    console.error("agoryx viz check: give a spec with --body, --file or on stdin");
+    return 2;
+  }
+  const fenced = vizBlocks(input);
+  const specs = fenced.length ? fenced : [input];
+  let failed = 0;
+  specs.forEach((source, i) => {
+    const result = parseViz(source);
+    const label = specs.length > 1 ? `block ${i + 1}: ` : "";
+    if (result.ok) {
+      console.log(`${pc.green("✓")} ${label}${result.spec.kind}`);
+      console.log(vizText(result.spec).replace(/^/gm, "  "));
+    } else {
+      failed += 1;
+      console.log(`${pc.red("✗")} ${label}${result.error}`);
+    }
+  });
+  return failed ? 1 : 0;
+};
+
 export const runAgora = async (command: string, argv: string[]): Promise<number> => {
   switch (command) {
     case "up":
@@ -1816,6 +1859,8 @@ export const runAgora = async (command: string, argv: string[]): Promise<number>
       return runPair(argv);
     case "devices":
       return runDevices(argv);
+    case "viz":
+      return runViz(argv);
     default:
       throw new CliUsageError(`unknown room command '${command}'`, printAgoraUsage);
   }

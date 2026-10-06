@@ -75,6 +75,8 @@ Table components reference actual questions, proposals, steps and evidence. Cust
 
 The canonical document is a workspace file with recorded revisions, not a second independent transcript. Recovery snapshots and per-turn diffs retain the workspace root that produced them. Ordinary room execution does not automatically commit to the user's branch.
 
+Agents' ```` ```viz ```` blocks are JSON specs parsed by `visuals.ts` and drawn by native components (`ui/src/components/md/Visual.tsx`), so no agent script runs in the page. Live ```` ```html ```` pages receive the room's theme as `--agoryx-*` custom properties through the frame script, first from the frame URL's fragment and then by message on theme changes. Workflow digests (`ui/src/lib/workflow-digest.ts`) derive argument maps, standings and criteria grids from revealed submissions only.
+
 Private workflow artifacts remain separate from room files. The human can inspect, download, or explicitly carry revealed output forward. HTML previews use constrained, opaque-origin frames and cannot call the room API.
 
 ## Projects and memory
@@ -104,6 +106,7 @@ The macOS shell uses login-shell environment discovery, setup checks, daemon sup
 | `internal/agora/runners/` | Native Claude/Codex transports |
 | `internal/agora/workflows.ts` / `workflow-*.ts` | Private protocols, execution, auth, artifacts and handoff |
 | `internal/agora/table*.ts` / `work-table.ts` | Table records, preparation and presentation |
+| `internal/agora/visuals.ts` | Visual block specs: parser, plain-text reading, agent guide |
 | `internal/agora/projects.ts` / `memory.ts` | Project records and explicit memory |
 | `internal/desktop/` | Setup, shell environment, supervision, browser host, launchd |
 | `ui/src/` | React UI; Vite output is `ui/dist/` |

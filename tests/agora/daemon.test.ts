@@ -394,6 +394,8 @@ test("/raw/ serves workspace files under a sandbox CSP and refuses bad keys, .gi
     assert.equal(page.status, 200);
     assert.ok(page.body.startsWith("<h1>hi</h1>"), "the file itself comes first");
     assert.match(page.body, /agoryxFrame/, "html gets the height reporter the page uses to size live frames");
+    assert.match(page.body, /agoryx-theme=/, "and takes the room's theme from its URL fragment");
+    assert.match(page.body, /\^--agoryx-\[a-z0-9-\]\+\$/, "only --agoryx-* properties, so a message cannot restyle anything else");
     assert.match(String(page.headers["content-security-policy"]), /^sandbox allow-scripts/);
     assert.match(String(page.headers["content-security-policy"]), /frame-ancestors 'self'/);
     assert.equal(page.headers["x-content-type-options"], "nosniff");

@@ -11,6 +11,7 @@ import { useSeating, useStore } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { LiveFrame } from "./LiveFrame";
+import { VizBlock } from "./Visual";
 import { CsvFile, Player, useRawText } from "./Media";
 import { localPath, messageRefId, remarkAgora, wholeBlocks } from "./remark-agora";
 import { remarkLiteralHtml } from "./remark-literal-html";
@@ -386,7 +387,7 @@ export const Markdown = memo(function Markdown({ text, source, variant = "chat",
   });
   const plugins = useMemo(() => {
     const Live = makeLiveRenderer(source, text);
-    return { code, mermaid: dark ? mermaidDark : mermaidLight, renderers: [{ language: ["html", "htm", "svg"], component: Live }] };
+    return { code, mermaid: dark ? mermaidDark : mermaidLight, renderers: [{ language: ["html", "htm", "svg"], component: Live }, { language: ["viz"], component: VizBlock }] };
   }, [source, text, dark]);
   const components = useMemo<Components>(
     () => ({

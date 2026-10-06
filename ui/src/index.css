@@ -104,6 +104,13 @@
   --add-ink: #1f5b33;
   --del: #f8e6e1;
   --del-ink: #8a3322;
+  /* Categorical series for visual blocks (```viz), in fixed order; validated for colour-blind separation. */
+  --viz-1: #2a78d6;
+  --viz-2: #eb6834;
+  --viz-3: #1baf7a;
+  --viz-4: #eda100;
+  --viz-5: #e87ba4;
+  --viz-6: #4a3aa7;
   --shadow-edge: 0 1px 0 rgb(0 0 0 / 0.04);
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.05), 0 10px 28px -6px rgb(0 0 0 / 0.08);
   --shadow-lift: 0 1px 2px rgb(0 0 0 / 0.06), 0 22px 56px -10px rgb(0 0 0 / 0.18);
@@ -187,6 +194,12 @@
   --add-ink: #9bd8ae;
   --del: #351c16;
   --del-ink: #f0a08c;
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
+  --viz-3: #199e70;
+  --viz-4: #c98500;
+  --viz-5: #d55181;
+  --viz-6: #9085e9;
   --shadow-edge: 0 1px 0 rgb(0 0 0 / 0.25);
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
   --shadow-lift: 0 1px 2px rgb(0 0 0 / 0.35), 0 18px 48px rgb(0 0 0 / 0.45);

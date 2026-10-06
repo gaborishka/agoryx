@@ -44,7 +44,7 @@ import { folderGit, listFolder, parentFolder, resolveFolder } from "./folders.js
 import { workspaceAt } from "./room-mode.js";
 import { changeRoomMode, createRoom, defaultHumanName, defaultRunners, openEngine, resumeCommands, roomNameFrom } from "./service.js";
 import { deliverWaitingReports, hasWaitingReports, queueThreadReport, threadReport } from "./threads.js";
-import { RoomStore } from "./store.js";
+import { RoomStore, type RoomSummary } from "./store.js";
 import { isWorkTableEvent } from "./work-table.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import { TableAssistError } from "./table-assist.js";
@@ -347,6 +347,12 @@ interface RoomHandle {
   gitWatch?: FSWatcher;
   /** SSE senders. They listen to the handle, not to a store, so they survive a takeover (see relay). */
   listeners: Set<(event: RoomEvent | EphemeralEvent) => void>;
+  /**
+   * The SSE frame of the event being delivered: every open stream of the room (the desktop, a phone, more tabs) gets
+   * the same event object in one synchronous delivery, against the same state, so its patch and JSON are made once.
+   * One slot: a frame is never kept past the next event.
+   */
+  frame?: { event: RoomEvent | EphemeralEvent; text: string };
   relayOff?: () => void;
 }
 
@@ -363,6 +369,7 @@ const relay = (handle: RoomHandle): void => {
   handle.relayOff?.();
   handle.relayOff = handle.store.subscribe((event) => {
     for (const listener of handle.listeners) listener(event);
+    delete handle.frame;
     // An agent may have made the folder a repository (or a parent of it) during its turn: asked once per turn,
     // and only while someone has the room open.
     if (event.type === "turn.ended" && handle.followers > 0) lookAtGit(handle);
@@ -686,7 +693,7 @@ export class AgoraDaemon {
     const days = this.options.watchDays ?? 14;
     if (days <= 0) return;
     const cutoff = Date.now() - days * 86_400_000;
-    for (const summary of RoomStore.list(roomsDir(this.env))) {
+    for (const summary of this.listRooms()) {
       if (Date.parse(summary.updatedAt) < cutoff) continue;
       try {
         this.room(summary.id);
@@ -762,6 +769,17 @@ export class AgoraDaemon {
     this.attention.track(id, () => handle.store, handle.listeners);
     this.tryDrive(handle);
     return handle;
+  }
+
+  /**
+   * Every room's summary. A room this daemon drives is summarized from its live store: the engine holds the room's
+   * lock, so memory is what the log says, and its log is the one that changes between two polls of the room list.
+   */
+  private listRooms(): RoomSummary[] {
+    return RoomStore.list(roomsDir(this.env), (id) => {
+      const handle = this.rooms.get(id);
+      return handle?.engine ? handle.store : undefined;
+    });
   }
 
   /** Take over driving the room unless another process holds its lock. */
@@ -1300,7 +1318,7 @@ export class AgoraDaemon {
   }
 
   private async projectsApi(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[], method: string, caller: Caller): Promise<void> {
-    const rooms = RoomStore.list(roomsDir(this.env));
+    const rooms = this.listRooms();
     const keys = new Map<string, string>();
     for (const project of listProjects(this.env)) keys.set(project.hash, project.key);
     for (const room of rooms) {
@@ -1504,7 +1522,7 @@ export class AgoraDaemon {
         pid: process.pid,
         url: this.url,
         home: agoraHome(this.env),
-        rooms: RoomStore.list(roomsDir(this.env)).length,
+        rooms: this.listRooms().length,
         version: agoryxVersion(),
         // Which paired device asks (null: this computer, or an agent).
         device: device ? { id: device.id, name: device.name } : null,
@@ -1599,7 +1617,7 @@ export class AgoraDaemon {
     if (parts[0] === "folders" && parts.length === 1 && method === "GET") {
       const seen = new Set<string>();
       const recent = [];
-      for (const room of RoomStore.list(roomsDir(this.env))) {
+      for (const room of this.listRooms()) {
         if (!room.folder || seen.has(room.folder)) continue;
         seen.add(room.folder);
         if (!existsSync(room.folder)) continue;
@@ -1636,7 +1654,7 @@ export class AgoraDaemon {
       if (caller.agent) throw new HttpError(403, "workflows are controlled and inspected by the human");
       const workflows = [];
       const unavailable: string[] = [];
-      for (const room of RoomStore.list(roomsDir(this.env))) {
+      for (const room of this.listRooms()) {
         try { workflows.push(...this.workflows.history(room.id).map((run) => workflowIndexEntry(run, room))); }
         catch { unavailable.push(room.id); }
       }
@@ -1654,7 +1672,7 @@ export class AgoraDaemon {
           const name = summary.projectHash ? names.get(summary.projectHash) : undefined;
           return name ? { ...summary, projectName: name } : summary;
         };
-        const rooms = RoomStore.list(roomsDir(this.env)).map(named).map((summary) => {
+        const rooms = this.listRooms().map(named).map((summary) => {
           const handle = this.rooms.get(summary.id);
           // What the human has not seen is the human's: an agent key never learns it.
           if (caller.agent) return handle ? { ...named(handle.store.summary()), driven: Boolean(handle.engine) } : summary;
@@ -1696,7 +1714,7 @@ export class AgoraDaemon {
         try {
           store = createRoom({
             name,
-            ...(body.projectKey !== undefined ? { projectKey: typeof body.projectKey === "string" ? projectKeyOfFolder(resolveFolder(body.projectKey, this.env), RoomStore.list(roomsDir(this.env))) : body.projectKey as null } : {}),
+            ...(body.projectKey !== undefined ? { projectKey: typeof body.projectKey === "string" ? projectKeyOfFolder(resolveFolder(body.projectKey, this.env), this.listRooms()) : body.projectKey as null } : {}),
             ...(body.mode !== undefined ? { mode: body.mode as import("./types.js").RoomMode } : {}),
             ...(typeof body.dir === "string" && body.dir.trim() ? { dir: resolveFolder(body.dir, this.env) } : {}),
             ...(body.worktree === true ? { worktree: true } : {}),
@@ -1894,7 +1912,7 @@ export class AgoraDaemon {
       if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "A project change must be an object");
       if (body.projectKey !== null && (typeof body.projectKey !== "string" || !body.projectKey.trim())) throw new HttpError(400, "projectKey must be a project folder or null");
       let key: string | null;
-      try { key = body.projectKey === null ? null : projectKeyOfFolder(resolveFolder(body.projectKey as string, this.env), RoomStore.list(roomsDir(this.env))); }
+      try { key = body.projectKey === null ? null : projectKeyOfFolder(resolveFolder(body.projectKey as string, this.env), this.listRooms()); }
       catch (error) { throw new HttpError(400, error instanceof Error ? error.message : String(error)); }
       const engine = this.engineFor(handle);
       if (!engine.isIdle() || Object.values(engine.presence()).includes("native")) throw new HttpError(409, "Wait for the agents to finish before changing the project");
@@ -2483,23 +2501,11 @@ export class AgoraDaemon {
       "x-accel-buffering": "no",
     });
     res.write("retry: 1500\n\n");
-    const send = (event: RoomEvent | EphemeralEvent) => {
-      if (event.type === "turn.stream") {
-        res.write(`event: stream\ndata: ${JSON.stringify(event)}\n\n`);
-        return;
-      }
-      if (event.type === "presence") {
-        res.write(`event: presence\ndata: ${JSON.stringify({ agents: this.presence(handle) })}\n\n`);
-        return;
-      }
-      if (event.type === "limits") {
-        res.write(`event: limits\ndata: ${JSON.stringify({ limits: event.limits })}\n\n`);
-        return;
-      }
-      if (event.type === "git") {
-        res.write(`event: git\ndata: ${JSON.stringify({ gitRepo: event.gitRepo })}\n\n`);
-        return;
-      }
+    const frame = (event: RoomEvent | EphemeralEvent): string => {
+      if (event.type === "turn.stream") return `event: stream\ndata: ${JSON.stringify(event)}\n\n`;
+      if (event.type === "presence") return `event: presence\ndata: ${JSON.stringify({ agents: this.presence(handle) })}\n\n`;
+      if (event.type === "limits") return `event: limits\ndata: ${JSON.stringify({ limits: event.limits })}\n\n`;
+      if (event.type === "git") return `event: git\ndata: ${JSON.stringify({ gitRepo: event.gitRepo })}\n\n`;
       const state = handle.store.state;
       const patch = {
         ...eventPatch(state, event),
@@ -2507,12 +2513,17 @@ export class AgoraDaemon {
         // The command to open a session names its model: it changes with either.
         ...(event.type === "agent.changed" || event.type === "agent.added" || event.type === "agent.removed" || event.type === "session.bound" ? { resume: resumeCommands(handle.store, this.runners) } : {}),
       };
-      res.write(`id: ${event.seq}\nevent: room\ndata: ${JSON.stringify({ event, patch })}\n\n`);
+      return `id: ${event.seq}\nevent: room\ndata: ${JSON.stringify({ event, patch })}\n\n`;
+    };
+    const send = (event: RoomEvent | EphemeralEvent) => {
+      if (handle.frame?.event !== event) handle.frame = { event, text: frame(event) };
+      res.write(handle.frame.text);
     };
     const start = Number.isFinite(after) ? after : handle.store.state.seq;
-    for (const event of handle.store.since(start)) send(event);
+    // A replay is framed against today's state, for this stream alone.
+    for (const event of handle.store.since(start)) res.write(frame(event));
     // Text streamed since the client's snapshot is not in the log: resend each live turn's whole buffer as a reset.
-    for (const [turnId, buffer] of handle.streams) send({ type: "turn.stream", turnId, agent: buffer.agent, text: buffer.text, reset: true });
+    for (const [turnId, buffer] of handle.streams) res.write(frame({ type: "turn.stream", turnId, agent: buffer.agent, text: buffer.text, reset: true }));
     // Who is busy right now, including in their own sessions (not in the log, so not replayed above).
     res.write(`event: presence\ndata: ${JSON.stringify({ agents: this.presence(handle) })}\n\n`);
     handle.listeners.add(send);

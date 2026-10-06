@@ -1,5 +1,4 @@
 import { ChevronRightIcon, FileTextIcon, GitCommitHorizontalIcon, InfoIcon, RotateCcwIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
-import { motion } from "motion/react";
 import { memo, useState, type ReactNode } from "react";
 import { Mark } from "@/components/brand/Mark";
 import { Markdown } from "@/components/md/Markdown";
@@ -25,9 +24,10 @@ export function Fresh({ fresh, children, className, id }: { fresh: boolean; chil
     );
   }
   return (
-    <motion.div id={id} className={className} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.28, ease: [0.2, 0, 0, 1] }}>
+    // A CSS animation, run by the compositor: no animation library in the page for one fade.
+    <div id={id} className={cn("animate-fresh", className)}>
       {children}
-    </motion.div>
+    </div>
   );
 }
 

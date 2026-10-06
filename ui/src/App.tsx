@@ -1,10 +1,9 @@
 import { isProtocolMode } from "@/lib/workflow";
 import { lazy, Suspense, useEffect, useState } from "react";
-import { ProjectPage } from "@/components/project/ProjectPage";
-import { ProjectsPage } from "@/components/project/ProjectsPage";
 import { Palette } from "@/components/Palette";
 import { SidePanel, warmPanels } from "@/components/panel/SidePanel";
 import { Mark } from "@/components/brand/Mark";
+import { LazyView } from "@/components/common/LazyView";
 import { NAV, navWidthOf, PANEL_MIN, ResizeHandle, ROOM_MIN, useViewportWidth } from "@/components/common/ResizeHandle";
 import { Composer, StatusBar } from "@/components/room/Composer";
 import { Feed } from "@/components/room/Feed";
@@ -13,8 +12,6 @@ import { Sidebar } from "@/components/Sidebar";
 import { NewChatScreen } from "@/components/NewChatScreen";
 import { TableBoard } from "@/components/table/TableBoard";
 import { WorkspaceBar } from "@/components/workflow/WorkspaceBar";
-import { WorkflowBoard } from "@/components/workflow/WorkflowBoard";
-import { WorkflowSessions } from "@/components/workflow/WorkflowSessions";
 import { activeWorkflow, useWorkflow, useWorkflowRoom } from "@/lib/workflow-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,6 +30,17 @@ const TerminalDrawer = lazy(() => import("@/components/terminal/Terminals").then
 
 const loadDialogs = () => import("@/components/dialogs/Dialogs");
 const Dialogs = lazy(() => loadDialogs().then((m) => ({ default: m.Dialogs })));
+
+// Views of their own route or mode — a private session's board, saved sessions, projects — are not in the room's first
+// paint: loaded when shown, and fetched while idle like the dialogs.
+const loadWorkflowBoard = () => import("@/components/workflow/WorkflowBoard");
+const WorkflowBoard = lazy(() => loadWorkflowBoard().then((m) => ({ default: m.WorkflowBoard })));
+const loadWorkflowSessions = () => import("@/components/workflow/WorkflowSessions");
+const WorkflowSessions = lazy(() => loadWorkflowSessions().then((m) => ({ default: m.WorkflowSessions })));
+const loadProjectPage = () => import("@/components/project/ProjectPage");
+const ProjectPage = lazy(() => loadProjectPage().then((m) => ({ default: m.ProjectPage })));
+const loadProjectsPage = () => import("@/components/project/ProjectsPage");
+const ProjectsPage = lazy(() => loadProjectsPage().then((m) => ({ default: m.ProjectsPage })));
 
 const useWideScreen = (query: string) => {
   const [on, setOn] = useState(() => window.matchMedia(query).matches);
@@ -135,7 +143,7 @@ function Room() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <RoomHeader />
-      {isProtocolMode(workspaceMode) ? <WorkflowBoard key={`${roomId}:${workspaceMode}`} mode={workspaceMode} /> : view === "sessions" ? <WorkflowSessions key={roomId} /> : view === "table" ? <TableBoard /> : <Feed />}
+      {isProtocolMode(workspaceMode) ? <LazyView key="board" fallback={<div className="flex-1" />}><WorkflowBoard key={`${roomId}:${workspaceMode}`} mode={workspaceMode} /></LazyView> : view === "sessions" ? <LazyView key="sessions" fallback={<div className="flex-1" />}><WorkflowSessions key={roomId} /></LazyView> : view === "table" ? <TableBoard /> : <Feed />}
       {!isProtocolMode(workspaceMode) && view !== "sessions" ? <div className={cn("shrink-0 px-3 pb-3 sm:px-5 sm:pb-4", view === "table" && "border-t border-border/70 bg-canvas pt-3")}>
         <div className="mx-auto flex w-full max-w-reading flex-col gap-2">
           {workflowRunning ? <div className="rounded-xl border border-border bg-muted/50 px-4 py-3 text-small text-muted-foreground">A private session is active. Chat is available to read; sending resumes when it finishes. <button type="button" className="font-medium text-foreground underline underline-offset-2" onClick={() => { const mode = useWorkflow.getState().run?.mode; if (mode && roomId) useStore.getState().openWorkflow(roomId, mode, useWorkflow.getState().run?.id); }}>Open session</button></div> : <><StatusBar /><Composer /></>}
@@ -191,13 +199,17 @@ function Shell() {
           <NewChatScreen />
 
         ) : route.kind === "settings" ? (
-          <Suspense fallback={null}>
+          <LazyView key="settings">
             <Settings section={route.section} />
-          </Suspense>
+          </LazyView>
         ) : route.kind === "project" ? (
-          <ProjectPage hash={route.hash} />
+          <LazyView key="project">
+            <ProjectPage hash={route.hash} />
+          </LazyView>
         ) : route.kind === "projects" ? (
-          <ProjectsPage />
+          <LazyView key="projects">
+            <ProjectsPage />
+          </LazyView>
         ) : null}
       </main>
       {route.kind === "room" ? <SidePanel overlay={!docked} phone={phone} /> : null}
@@ -215,7 +227,8 @@ export function App() {
   const browserOpen = useStore((s) => s.panel === "browser");
   useEffect(() => {
     // Warm the lazy chunks while the page is idle, so the first dialog or tab opens without a wait.
-    const warm = () => void Promise.all([loadDialogs(), loadSettings(), warmPanels()]).catch(() => {});
+    const warm = () =>
+      void Promise.all([loadDialogs(), loadSettings(), warmPanels(), loadWorkflowBoard(), loadWorkflowSessions(), loadProjectPage(), loadProjectsPage()]).catch(() => {});
     if ("requestIdleCallback" in window) {
       const id = window.requestIdleCallback(warm, { timeout: 4000 });
       return () => window.cancelIdleCallback(id);

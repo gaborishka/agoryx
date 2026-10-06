@@ -1,9 +1,9 @@
 import { workspaceAt } from "@agora/room-mode";
 import { liveBlocks } from "@agora/blocks";
-import { createCodePlugin } from "@streamdown/code";
+import type { CodeHighlighterPlugin, HighlightOptions, HighlightResult, ThemeInput } from "@streamdown/code";
 import type { DiagramPlugin, MermaidConfig } from "@streamdown/mermaid";
-import { Code2Icon, ExternalLinkIcon, FileIcon, FileXIcon, Maximize2Icon } from "lucide-react";
-import { type ComponentProps, createContext, useContext, memo, type ReactNode, useMemo, useState } from "react";
+import { BarChart3Icon, Code2Icon, ExternalLinkIcon, FileIcon, FileXIcon, Maximize2Icon } from "lucide-react";
+import { type ComponentProps, createContext, lazy, useContext, memo, type ReactNode, Suspense, useMemo, useState } from "react";
 import { type Components, type CustomRendererProps, defaultRemarkPlugins, parseMarkdownIntoBlocks, Streamdown, type StreamdownTranslations } from "streamdown";
 import { AUDIO_EXT, baseName, DIAGRAM_EXT, ext, FRAME_EXT, hashBlock, IMAGE_EXT, TABLE_EXT, VIDEO_EXT, VISUAL_EXT, workspaceRel } from "@/lib/format";
 import { ink, participant, refExists, toneText } from "@/lib/room";
@@ -11,7 +11,6 @@ import { useSeating, useStore } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { LiveFrame } from "./LiveFrame";
-import { VizBlock } from "./Visual";
 import { CsvFile, Player, useRawText } from "./Media";
 import { localPath, messageRefId, remarkAgora, wholeBlocks } from "./remark-agora";
 import { remarkLiteralHtml } from "./remark-literal-html";
@@ -32,7 +31,62 @@ const indexed = (list: readonly { id: string; seq?: number }[] | undefined) => {
   return index;
 };
 
-const code = createCodePlugin({ themes: ["vitesse-light", "vitesse-dark"] });
+/**
+ * A copy of `text` in one byte per character when it fits. A fence is sliced out of its message, and a message with
+ * one character past Latin-1 (an em dash, curly quotes, any Cyrillic) is stored two bytes per character, its slices
+ * too: Shiki's regexes then take V8's slower two-byte path, about 3x slower on the same code.
+ */
+const oneByte = (text: string): string => {
+  if (!/^[\x00-\xff]*$/.test(text)) return text;
+  const codes = new Array<number>(text.length);
+  for (let i = 0; i < text.length; i += 1) codes[i] = text.charCodeAt(i);
+  let copy = "";
+  for (let i = 0; i < codes.length; i += 8192) copy += String.fromCharCode(...codes.slice(i, i + 8192));
+  return copy;
+};
+
+/** A fence as plain text, in the shape of a highlight: what Streamdown itself shows before one. */
+const plainCode = (text: string): HighlightResult => ({
+  bg: "transparent",
+  fg: "inherit",
+  tokens: text.split("\n").map((line) => [{ content: line, color: "inherit", bgColor: "transparent", htmlStyle: {}, offset: 0 }]),
+});
+
+/**
+ * The @streamdown/code plugin, but Shiki is imported with the first fence, not with the page; until then a fence
+ * shows plain, as it does while a language loads. Streamdown asks the plugin only for its themes and highlights.
+ */
+const lazyCode = (themes: [ThemeInput, ThemeInput]): CodeHighlighterPlugin => {
+  let plugin: CodeHighlighterPlugin | undefined;
+  let loading: Promise<CodeHighlighterPlugin> | undefined;
+  const load = () => (loading ??= import("@streamdown/code").then((m) => (plugin = m.createCodePlugin({ themes }))));
+  return {
+    name: "shiki",
+    type: "code-highlighter",
+    getThemes: () => themes,
+    getSupportedLanguages: () => plugin?.getSupportedLanguages() ?? [],
+    supportsLanguage: (language) => plugin?.supportsLanguage(language) ?? true,
+    highlight(options: HighlightOptions, callback?: (result: HighlightResult) => void) {
+      const fit = { ...options, code: oneByte(options.code) };
+      if (plugin) return plugin.highlight(fit, callback);
+      void load().then(
+        (loaded) => {
+          const ready = loaded.highlight(fit, callback);
+          if (ready) callback?.(ready);
+        },
+        (error: unknown) => {
+          // Its chunk did not load (the page outlived an update of Agoryx): the fence shows plain, and the next asks again.
+          console.error("[Markdown] code highlighting did not load:", error);
+          loading = undefined;
+          callback?.(plainCode(fit.code));
+        },
+      );
+      return null;
+    },
+  };
+};
+
+const code = lazyCode(["vitesse-light", "vitesse-dark"]);
 /**
  * The @streamdown/mermaid plugin, but mermaid (half a megabyte) is imported on the first diagram,
  * not with the page. Mermaid is one global, so each render applies its own theme first.
@@ -94,6 +148,28 @@ const translations: Partial<StreamdownTranslations> = {
 const defaultRemark = Object.values(defaultRemarkPlugins);
 const blocks = wholeBlocks(parseMarkdownIntoBlocks);
 
+/*
+ * Streamdown's props, made once. Its Block memo compares `remarkPlugins` and its contexts compare the rest by
+ * reference: a new array or object per render would render every finished block of a streaming message again on
+ * each token (O(message) work per chunk) instead of only the growing last one.
+ */
+const remarkPlugins = [...defaultRemark, remarkAgora];
+const remarkPluginsLiteral = [...defaultRemark, remarkAgora, remarkLiteralHtml];
+const liveRenderers = [
+  { language: ["html", "htm", "svg"], component: LiveBlock },
+  { language: ["viz"], component: VizFence },
+];
+const pluginsLight = { code, mermaid: mermaidLight, renderers: liveRenderers };
+const pluginsDark = { code, mermaid: mermaidDark, renderers: liveRenderers };
+const linkSafety = { enabled: false };
+const shikiTheme: ["vitesse-light", "vitesse-dark"] = ["vitesse-light", "vitesse-dark"];
+const controls = {
+  table: { copy: true, download: false, fullscreen: true },
+  code: { copy: true, download: false },
+  mermaid: { copy: true, download: false, fullscreen: true, panZoom: true },
+  image: false,
+};
+
 export const rawUrl = (rawBase: string, path: string) => rawBase + path.split("/").map(encodeURIComponent).join("/");
 
 /** A media file outside the workspace, served from where it is while a message links it. */
@@ -126,43 +202,73 @@ function Source({ code: text, lang }: { code: string; lang: string }) {
   );
 }
 
-const makeLiveRenderer = (source: Source, text: string) =>
-  function LiveBlock({ code: fence, isIncomplete, language }: CustomRendererProps) {
-    const rawBase = useStore((s) => s.snap?.rawBase);
-    const lang = language.toLowerCase();
-    const block = useMemo(() => liveBlocks(text).find((b) => b.lang === lang && b.body.trim() === fence.trim()), [fence, lang]);
-    if (isIncomplete || !source || !rawBase || !block) {
-      return (
-        <div className="my-3 overflow-hidden rounded-xl border border-border bg-code">
-          <div className="border-b border-border px-3 py-1.5 font-mono text-meta text-muted-foreground">{lang}</div>
-          <pre className="scroll-thin max-h-96 overflow-auto px-3 py-2.5 font-mono text-small leading-relaxed">{fence}</pre>
-        </div>
-      );
-    }
-    const url = `${rawBase}~block/${source}/${hashBlock(block.body)}`;
-    if (lang === "svg") {
-      return (
-        <figure className="my-3 overflow-hidden rounded-xl border border-border bg-paper">
-          <img src={url} alt="SVG" className="mx-auto block max-w-full p-3" />
-          <Source code={fence} lang={lang} />
-        </figure>
-      );
-    }
+/**
+ * The message a live fence belongs to. A context, not a renderer made per text: the renderer is part of Streamdown's
+ * `plugins`, and a new one on every streamed token would render every block of the message again.
+ */
+const LiveSource = createContext<{ source: Source; text: string }>({ source: undefined, text: "" });
+
+function LiveBlock({ code: fence, isIncomplete, language }: CustomRendererProps) {
+  const { source, text } = useContext(LiveSource);
+  const rawBase = useStore((s) => s.snap?.rawBase);
+  const lang = language.toLowerCase();
+  // Looked up only once there is a page to show: a streaming message (no source yet) would search its whole text per token.
+  const block = useMemo(
+    () => (source && !isIncomplete ? liveBlocks(text).find((b) => b.lang === lang && b.body.trim() === fence.trim()) : undefined),
+    [text, fence, lang, source, isIncomplete],
+  );
+  if (isIncomplete || !source || !rawBase || !block) {
     return (
-      <figure className="my-3 overflow-hidden rounded-xl border border-border bg-paper shadow-soft">
-        <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
-          <span className="size-2 rounded-full bg-add-ink/70" />
-          <span className="font-mono">html</span>
-          <span className="text-faint">live page</span>
-          <a href={url} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-foreground">
-            <Maximize2Icon className="size-3.5" /> Full screen
-          </a>
-        </div>
-        <LiveFrame src={url} title="HTML" />
+      <div className="my-3 overflow-hidden rounded-xl border border-border bg-code">
+        <div className="border-b border-border px-3 py-1.5 font-mono text-meta text-muted-foreground">{lang}</div>
+        <pre className="scroll-thin max-h-96 overflow-auto px-3 py-2.5 font-mono text-small leading-relaxed">{fence}</pre>
+      </div>
+    );
+  }
+  const url = `${rawBase}~block/${source}/${hashBlock(block.body)}`;
+  if (lang === "svg") {
+    return (
+      <figure className="my-3 overflow-hidden rounded-xl border border-border bg-paper">
+        <img src={url} alt="SVG" className="mx-auto block max-w-full p-3" />
         <Source code={fence} lang={lang} />
       </figure>
     );
-  };
+  }
+  return (
+    <figure className="my-3 overflow-hidden rounded-xl border border-border bg-paper shadow-soft">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+        <span className="size-2 rounded-full bg-add-ink/70" />
+        <span className="font-mono">html</span>
+        <span className="text-faint">live page</span>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-foreground">
+          <Maximize2Icon className="size-3.5" /> Full screen
+        </a>
+      </div>
+      <LiveFrame src={url} title="HTML" />
+      <Source code={fence} lang={lang} />
+    </figure>
+  );
+}
+
+/**
+ * A ```viz fence: its card is drawn by Visual.tsx, loaded with the first one. Lazy also because Visual draws a claim's
+ * detail with this file's Markdown: a static import each way would make either module's top level depend on the other.
+ */
+const VizBlock = lazy(() => import("./Visual").then((m) => ({ default: m.VizBlock })));
+
+function VizFence({ code: fence, isIncomplete }: CustomRendererProps) {
+  return (
+    <Suspense
+      fallback={
+        <div className="not-prose my-3 flex h-24 items-center justify-center gap-2 rounded-xl border border-dashed border-border text-meta text-faint">
+          <BarChart3Icon className="size-4 animate-pulse" /> drawing…
+        </div>
+      }
+    >
+      <VizBlock code={fence} isIncomplete={isIncomplete} />
+    </Suspense>
+  );
+}
 
 function Mention({ handle, children }: { handle: string; children: ReactNode }) {
   const room = useSeating();
@@ -365,6 +471,11 @@ const plain = (Tag: "h1" | "h2" | "h3" | "h4") =>
     return <Tag id={id}>{children}</Tag>;
   };
 
+// One map per variant, for every Markdown on screen: Streamdown's blocks compare these entry by entry. A cast: its
+// `Components` types every entry as taking Record<string, unknown>, which the typed props of Link and Embed are not.
+const chatComponents = { a: Link, img: Embed, h1: shifted("h2"), h2: shifted("h3"), h3: shifted("h4"), h4: shifted("h4") } as Components;
+const docComponents = { a: Link, img: Embed, h1: plain("h1"), h2: plain("h2"), h3: plain("h3"), h4: plain("h4") } as Components;
+
 export interface MarkdownProps {
   text: string;
   /** m:<id>, o:<id> or w:<id>: lets ```html / ```svg fences render live. */
@@ -385,41 +496,31 @@ export const Markdown = memo(function Markdown({ text, source, variant = "chat",
     }
     return (source?.startsWith("m:") ? indexed(s.snap?.state.messages) : source?.startsWith("o:") ? indexed(s.snap?.state.table.options) : undefined)?.get(source!.slice(2));
   });
-  const plugins = useMemo(() => {
-    const Live = makeLiveRenderer(source, text);
-    return { code, mermaid: dark ? mermaidDark : mermaidLight, renderers: [{ language: ["html", "htm", "svg"], component: Live }, { language: ["viz"], component: VizBlock }] };
-  }, [source, text, dark]);
-  const components = useMemo<Components>(
-    () => ({
-      a: Link,
-      img: Embed,
-      ...(variant === "chat"
-        ? { h1: shifted("h2"), h2: shifted("h3"), h3: shifted("h4"), h4: shifted("h4") }
-        : { h1: plain("h1"), h2: plain("h2"), h3: plain("h3"), h4: plain("h4") }),
-    }),
-    [variant],
-  );
+  const live = useMemo(() => ({ source, text }), [source, text]);
+  const components = variant === "chat" ? chatComponents : docComponents;
   return (
     <FileSource.Provider value={seq}>
+    <LiveSource.Provider value={live}>
     <Streamdown
       className={cn(variant === "chat" ? "prose-chat" : "prose-chat prose-doc", "min-w-0", className)}
       mode={streaming ? "streaming" : "static"}
       isAnimating={streaming}
       caret={streaming ? "block" : undefined}
-      plugins={plugins}
+      plugins={dark ? pluginsDark : pluginsLight}
       components={components}
-      remarkPlugins={[...defaultRemark, remarkAgora, ...(literalHtml ? [remarkLiteralHtml] : [])]}
+      remarkPlugins={literalHtml ? remarkPluginsLiteral : remarkPlugins}
       parseMarkdownIntoBlocksFn={blocks}
       translations={translations}
-      linkSafety={{ enabled: false }}
+      linkSafety={linkSafety}
       lineNumbers={false}
       codeBlockMaxHeight={variant === "doc" ? 640 : 460}
       tableMaxHeight={variant === "doc" ? 800 : 420}
-      shikiTheme={["vitesse-light", "vitesse-dark"]}
-      controls={{ table: { copy: true, download: false, fullscreen: true }, code: { copy: true, download: false }, mermaid: { copy: true, download: false, fullscreen: true, panZoom: true }, image: false }}
+      shikiTheme={shikiTheme}
+      controls={controls}
     >
       {text}
     </Streamdown>
+    </LiveSource.Provider>
     </FileSource.Provider>
   );
 });

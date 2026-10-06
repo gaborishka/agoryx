@@ -123,7 +123,8 @@ export function parseWorkflowArtifacts(text: string): WorkflowArtifact[] {
     if (close === lines.length) break;
     const namedPath = pendingName ? safeArtifactPath(pendingName) : null;
     // Unsafe names stay ordinary displayed prose, not downloadable files or preview dependencies.
-    if ((!pendingName && language) || namedPath) {
+    // A ```viz block is the answer's own summary card, drawn on the board, not a file it delivers.
+    if ((!pendingName && language && language !== "viz") || namedPath) {
       const path =
         namedPath ??
         `artifact-${result.length + 1}.${EXTENSIONS[language] ?? "txt"}`;

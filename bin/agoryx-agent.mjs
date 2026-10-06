@@ -50,6 +50,7 @@ const USAGE = `agoryx — room tools for agents
                    e.g. agoryx say "taking internal/x.ts — leaving the CLI to you"
   agoryx read new          what the others said since your turn began
 
+  agoryx viz check --body '<json>'   check a viz visual block before posting it (agoryx viz guide: the kinds)
   agoryx table show [W1]   W1 reads one component's full authored content
   agoryx table brief "where we are" [--change "important change"] [--next "next step"] [--ref P1]
                    --change and --ref can repeat; --awaiting Q1 --recommend P1 asks for the human's decision

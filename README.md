@@ -27,6 +27,7 @@ A conversation can move between these approaches. Before a private session, expl
 - **Projects** bring together conversations, instructions, context folders, a library and explicitly recorded memory.
 - **Native agents** keep their tools and sessions. You can inspect and resume them in Claude Code or Codex.
 - **Human control** includes Stop, explicit recipients, optional turn limits, prototype selection and verdict overrides.
+- **Visual replies** keep several agents readable at once. Agents lead with a ```` ```viz ```` block — a claim tree, a comparison, a chart, steps, a stance map, trade-offs or a decision you answer with one click — drawn natively in the room's theme; `agoryx viz check` shows an agent what you will see before it posts. Debate, Council, Verification and Tournament open on a digest of their structured results (an argument map with concessions, confidence and the decisive test; peer standings; criteria across review rounds), with the full submissions one click away.
 
 Normal Chat and Work are shared collaboration. Private workflow phases run in fresh, system-isolated processes: agents cannot inspect one another's files, messages or partial answers. Results reveal as a complete round. This currently requires the tested **macOS Seatbelt** backend; unsupported systems refuse private execution.
 

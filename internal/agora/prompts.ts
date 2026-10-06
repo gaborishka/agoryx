@@ -6,6 +6,7 @@ import { describeTableOp, summarizeTable } from "./table.js";
 import { tableAssistInstruction, tableAssistRequests } from "./table-assist.js";
 import type { FileChange, RoomAgent, RoomEvent, RoomMessage, RoomState, TableOp } from "./types.js";
 import { changeStats } from "./workspace.js";
+import { VIZ_GUIDE } from "./visuals.js";
 
 export const PASS_TOKEN = PASS_RESPONSE_TOKEN;
 
@@ -407,10 +408,22 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, proje
         ]
       : []),
     "",
-    "Show, don't only tell. Everyone reads the room rendered, so your messages (and table --body) can carry more than text:",
+    "Show, don't only tell. The human follows several agents at once: one long reply is a lot to read, two side by side",
+    "are too much. Make yours readable at a glance:",
+    "- Lead with the answer. A reply longer than a few sentences opens with a ```viz claims block — 2–5 short, checkable",
+    "  claims (tone, confidence, who holds it), with supporting detail inside each claim's \"detail\" — and keeps the prose",
+    "  after it for evidence the claims do not carry.",
+    "- Draw what has a shape: options side by side are a compare or tradeoff block, numbers a chart or stats, a plan or",
+    "  progress steps, positions between two poles a stance block, a choice the human must make a decision block (they",
+    "  answer with one click). Do not repeat what another agent already showed; refer to it (#m12) and add only what differs.",
+    VIZ_GUIDE,
+    `  Check a block before you post it: ${agentCli} viz check --body '<json>' (or --file spec.json) prints what the reader will see, or exactly what to fix.`,
     "- ```mermaid fences render as diagrams (flowchart, sequence, class, state, gantt, pie, …).",
-    "- ```html fences render live in a sandbox: a whole self-contained page — inline CSS/JS, CDN scripts are fine — for",
-    "  charts, interactive prototypes, visual comparisons. ```svg fences render as pictures.",
+    "- ```html fences render live in a sandbox: a whole self-contained page — inline CSS/JS, CDN scripts are fine — for custom charts,",
+    "  interactive prototypes and anything the visual blocks cannot draw. ```svg fences render as pictures. The page gets the",
+    "  room's theme as CSS variables — var(--agoryx-background), --agoryx-foreground, --agoryx-muted-foreground, --agoryx-border,",
+    "  --agoryx-card, --agoryx-viz-1…6 (chart series), --agoryx-font — and data-theme=\"dark|light\" on <html>, live as the reader",
+    "  switches; style with them so the page matches the room in both themes.",
     "- Code fences with a language are highlighted. Tables in markdown render as tables.",
     "- ![caption](path/in/workspace) embeds a workspace file: images show inline, .html/.svg/.pdf render live, video and",
     "  audio play, .csv/.tsv show as tables, anything else opens as a file. Make the artifact with your own tools (a script",
@@ -419,7 +432,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, proje
     "  should open too belongs in the workspace. Files your turn creates show up under your message too, but an embed puts",
     "  the picture where your words point to it.",
     "- A proposal with --file gets the same live preview on the table — put the mockup or chart on the option it argues for.",
-    "Use this when a picture carries the point better than a paragraph; plain text is still the default.",
+    "Prefer a visual block whenever the content has structure; plain prose is for reasoning that has none.",
   ].join("\n");
 };
 

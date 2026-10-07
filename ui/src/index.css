@@ -1929,3 +1929,8 @@ diffs-container,
 }
 @media (max-width: 760px) {
 }
+
+/* Table-tool entrance motion leaves numeric values authoritative throughout. */
+@keyframes intelligent-component-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+.intelligent-component { animation: intelligent-component-in 220ms ease-out both; }
+@media (prefers-reduced-motion: reduce) { .intelligent-component { animation: none; } }

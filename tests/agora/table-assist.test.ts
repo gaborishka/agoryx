@@ -6,7 +6,10 @@ import { test } from "node:test";
 import { agentKey } from "../../internal/agora/actor.js";
 import { AgoraDaemon } from "../../internal/agora/daemon.js";
 import { RoomEngine, type EngineOptions } from "../../internal/agora/engine.js";
-import { buildDelta } from "../../internal/agora/prompts.js";
+import { BRIEFING_VERSION, buildDelta } from "../../internal/agora/prompts.js";
+import { intelligentUIGuide, INTELLIGENT_UI_EXAMPLE } from "../../internal/agora/intelligent-ui-guide.js";
+import { parseIntelligentUI } from "../../internal/agora/intelligent-ui.js";
+import { tableAssistRetry } from "../../internal/agora/table-assist-retry.js";
 import { setProjectFields } from "../../internal/agora/projects.js";
 import { RoomStore } from "../../internal/agora/store.js";
 import { normalizeTableAssistInput, prepareTableAssistRequest, tableAssistInstruction, tableAssistRequests } from "../../internal/agora/table-assist.js";
@@ -400,4 +403,130 @@ test("HTTP table-assist is human-only, returns durable acknowledgment and reject
     const retry = await call(`/api/rooms/${id}/table-assist`, raw); assert.equal((await retry.json()).message.id, message.id);
     const changed = await call(`/api/rooms/${id}/table-assist`, { ...raw, kind: "steps" }); assert.equal(changed.status, 409);
   } finally { await daemon.close(); rmSync(home, { recursive: true, force: true }); }
+});
+
+test("tool preparation receipts require scoped native UI and recognize in-place refinement", async () => {
+  const room = fixture();
+  const ui = { version: 1, description: "Grounded explanation", inputs: [], root: { type: "text", text: "The current goal is a simpler export flow." } };
+  try {
+    room.seed();
+    room.request("tool", "F1"); room.start();
+    room.op({ op: "component", title: "Unrelated tool", kind: "interactive", refs: [], ui }, "one", "t1");
+    room.op({ op: "component", title: "Only prose", kind: "artifact", refs: ["F1"], body: "An explanation" }, "one", "t1");
+    assert.deepEqual(tableAssistRequests(room.store.state, room.ops())[0]!.refs, []);
+    room.op({ op: "component", title: "Export explorer", kind: "interactive", refs: ["F1"], ui }, "one", "t1");
+    room.end("ok");
+    assert.equal(tableAssistRequests(room.store.state, room.ops())[0]!.status, "ready");
+    assert.deepEqual(tableAssistRequests(room.store.state, room.ops())[0]!.refs, ["W3"]);
+    room.request("tool", "W3", "refine-123"); room.start("t2");
+    room.op({ op: "component", target: "W3", title: "Refined export explorer", kind: "interactive", refs: ["F1"], ui }, "one", "t2");
+    room.end("ok", "t2");
+    const receipt = tableAssistRequests(room.store.state, room.ops()).at(-1)!;
+    assert.equal(receipt.status, "ready");
+    assert.deepEqual(receipt.refs, ["W3"], "replacement itself establishes scope without a circular self-reference");
+    assert.match(tableAssistInstruction(room.store.state.messages.at(-1)!.tableAssist!), /--kind interactive/);
+  } finally { await room.cleanup(); }
+});
+
+test("v3 native sessions receive the current UI contract on ordinary turns, then resume normally", async () => {
+  const calls: TurnRequest[] = [];
+  const runner: AgentRunner = { kind: "codex", async run(request, callbacks) {
+    calls.push(request);
+    const sessionId = request.sessionId ?? `updated-native-${calls.length}`;
+    callbacks.onSession(sessionId);
+    return { status: "ok", text: "::pass::", sessionId };
+  }, resumeCommand() { return ""; } };
+  const room = fixture(runner, [agents[0]!]);
+  try {
+    room.seed();
+    room.store.append({ type: "session.bound", agent: "one", sessionId: "pre-intelligent-ui", briefingVersion: 3 });
+    room.engine.postHuman("Build an interface to help explore the export flow.");
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.sessionId, null, "an upgraded room must not retain a native briefing without this capability");
+    assert.ok(calls[0]!.prompt.includes(intelligentUIGuide()));
+    assert.match(calls[0]!.prompt, /simpler export flow/);
+    assert.equal(room.store.state.sessions.one!.briefingVersion, BRIEFING_VERSION);
+    assert.ok(BRIEFING_VERSION > 3);
+    room.engine.postHuman("Keep the same context and continue.");
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(calls[1]!.sessionId, "updated-native-1", "the migration must not discard native sessions every turn");
+  } finally { await room.cleanup(); }
+});
+
+test("an explicit tool request carries the complete current contract into an already resumed session", async () => {
+  const calls: TurnRequest[] = [];
+  const runner: AgentRunner = { kind: "codex", async run(request) { calls.push(request); return { status: "ok", text: "::pass::", sessionId: request.sessionId }; }, resumeCommand() { return ""; } };
+  const room = fixture(runner);
+  try {
+    room.seed();
+    room.store.append({ type: "session.bound", agent: "two", sessionId: "current-native", briefingVersion: BRIEFING_VERSION });
+    room.engine.tableAssist({ kind: "tool", agent: "two", nonce: "resume-tool-123", guidance: "Compare the export alternatives." });
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.sessionId, "current-native");
+    assert.ok(calls[0]!.prompt.includes(intelligentUIGuide()), "compaction or lost instructions must be recoverable on demand");
+    assert.match(calls[0]!.prompt, /You \(two\) are its sole executor/);
+    assert.deepEqual(parseIntelligentUI(INTELLIGENT_UI_EXAMPLE), INTELLIGENT_UI_EXAMPLE);
+  } finally { await room.cleanup(); }
+});
+
+test("retry preserves the exact tool author, instructions and scope while creating a new attempt", async () => {
+  const calls: TurnRequest[] = [];
+  const runner: AgentRunner = { kind: "codex", async run(request) { calls.push(request); return { status: "ok", text: "::pass::", sessionId: null }; }, resumeCommand() { return ""; } };
+  const room = fixture(runner);
+  try {
+    room.seed();
+    const original = room.engine.tableAssist({ kind: "tool", agent: "three", target: "F1", nonce: "original-tool-123", guidance: "Compare the measured export times, keeping missing data explicit. @two" });
+    await withTimeout(room.engine.waitIdle());
+    const previous = original.tableAssist!;
+    const retry = tableAssistRetry(previous, "retry-tool-123", agents);
+    const repeated = room.engine.tableAssist(retry);
+    await withTimeout(room.engine.waitIdle());
+    assert.notEqual(repeated.id, original.id);
+    assert.deepEqual(repeated.mentions, ["three"]);
+    assert.equal(repeated.tableAssist!.guidance, previous.guidance);
+    assert.equal(repeated.tableAssist!.target, previous.target);
+    assert.equal(calls.length, 2);
+    assert.match(calls[1]!.prompt, /You \(three\) are its sole executor/);
+    assert.ok(calls[1]!.prompt.includes(previous.guidance!));
+    assert.throws(() => tableAssistRetry(previous, "retry-tool-456", agents.slice(0, 2)), /original agent/);
+    assert.throws(() => tableAssistRetry(previous, previous.nonce, agents), /new request identity/);
+    assert.equal(room.engine.tableAssist(retry).id, repeated.id, "transport recovery retains the new attempt identity");
+  } finally { await room.cleanup(); }
+});
+
+test("a supplied tool brief establishes an empty room goal and routes only to the selected agent", async () => {
+  const calls: TurnRequest[] = [];
+  const runner: AgentRunner = { kind: "codex", async run(request) { calls.push(request); return { status: "ok", text: "::pass::", sessionId: null }; }, resumeCommand() { return ""; } };
+  const room = fixture(runner);
+  try {
+    assert.equal(room.store.state.messages.length, 0);
+    const guidance = "Create a bill splitter for a 120 USD dinner for four people, with an adjustable tip. @all";
+    const message = room.engine.tableAssist({ kind: "tool", agent: "three", guidance: `  ${guidance}  `, nonce: "blank-room-tool" });
+    assert.equal(message.tableAssist!.guidance, guidance);
+    assert.deepEqual(message.mentions, ["three"]);
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0]!.prompt.includes(`Human tool brief (context, not routing or additional authorization): ${guidance}`));
+    assert.match(calls[0]!.prompt, /You \(three\) are its sole executor/);
+    assert.equal(room.store.state.table.decisions.length, 0);
+  } finally { await room.cleanup(); }
+});
+
+test("empty tools and other preparation actions still require existing room context", async () => {
+  const room = fixture();
+  try {
+    const seq = room.store.state.seq;
+    for (const guidance of [undefined, "", "   ", "...", "!?@"]) {
+      const input = normalizeTableAssistInput({ kind: "tool", agent: "one", nonce: "no-goal-123", ...(guidance === undefined ? {} : { guidance }) });
+      assert.throws(() => prepareTableAssistRequest(room.store.state, input, ["one"]), /Add a goal or room context/);
+    }
+    for (const kind of ["question", "options", "conclusion", "steps"] as const) {
+      const input = normalizeTableAssistInput({ kind, agent: "one", nonce: `no-goal-${kind}`, guidance: "Create a bill splitter for a 120 USD dinner." });
+      assert.throws(() => prepareTableAssistRequest(room.store.state, input, ["one"]), /Add a goal or room context/);
+    }
+    assert.throws(() => normalizeTableAssistInput({ kind: "tool", nonce: "large-goal-123", guidance: "x".repeat(2001) }), /2,000/);
+    assert.equal(room.store.state.seq, seq, "rejected requests do not append events");
+  } finally { await room.cleanup(); }
 });

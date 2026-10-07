@@ -1,3 +1,5 @@
+import type { TableScenario } from "./types.js";
+import type { IntelligentUI, UIInputSnapshot } from "./intelligent-ui.js";
 import { wakesAgent } from "./wakes.js";
 import { currentDecisionIds } from "./table-decisions.js";
 export { currentDecisionIds } from "./table-decisions.js";
@@ -43,6 +45,9 @@ export interface WorkAgent {
 }
 
 export interface WorkComponentView {
+  ui?: IntelligentUI;
+  inputSnapshot?: UIInputSnapshot;
+  scenarios?: TableScenario[];
   id: string;
   title: string;
   kind: TableComponentKind;
@@ -198,6 +203,7 @@ const eventView = (room: RoomState, event: RoomEvent, resolve: (raw: string) => 
         case "settle": return { ...base, kind: "conclusion", ref: op.id, text: line(op.text) };
         case "concede": return { ...base, kind: "concession", ref: op.id, text: line(op.text) };
         case "propose": return op.file || op.body ? { ...base, kind: "artifact", ref: op.id, text: line(op.title) } : undefined;
+        case "component-input": return { ...base, kind: "component", ref: op.target, text: `Scenario saved for ${resolve(op.target).text ?? op.target}`, status: "scenario" };
         case "component": return { ...base, kind: "component", ref: op.target ?? op.id, text: line(op.title), status: "updated" };
         case "archive": case "restore": return { ...base, kind: "component", ref: op.target, text: captions?.get(event.seq) ?? resolve(op.target).text ?? op.target, status: op.op };
         case "delete": return { ...base, kind: "reopened", ref: op.target, text: line(op.was ?? op.target), status: "deleted" };

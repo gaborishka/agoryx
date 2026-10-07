@@ -1,3 +1,5 @@
+import { IntelligentTool } from "./IntelligentTool";
+import { TableAssistButton } from "./TableAssist";
 import { ArchiveIcon, ArrowUpRightIcon, CheckCircle2Icon, ChevronDownIcon, FileIcon, LayoutPanelTopIcon, ListChecksIcon, LoaderCircleIcon, ScanEyeIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { stepBuilder, stepChecked } from "@agora/table";
@@ -29,7 +31,7 @@ export function WorkSources({ refs, className, onNavigate }: { refs: WorkRef[]; 
 }
 
 const KIND = {
-  comparison: ["Comparison", LayoutPanelTopIcon], plan: ["Plan", ListChecksIcon], checks: ["Checks", ScanEyeIcon], artifact: ["Result", FileIcon], custom: ["Component", LayoutPanelTopIcon],
+  interactive: ["Interactive tool", LayoutPanelTopIcon], comparison: ["Comparison", LayoutPanelTopIcon], plan: ["Plan", ListChecksIcon], checks: ["Checks", ScanEyeIcon], artifact: ["Result", FileIcon], custom: ["Component", LayoutPanelTopIcon],
 } as const;
 
 export type ComponentAction = { pending: string | null; disabled: boolean; choose: (option: TableOption) => void };
@@ -57,7 +59,8 @@ export function AgentComponent({ component, room, action, archive, archived = fa
     try { await archive(component.id); } finally { setArchiving(false); }
   };
   return (
-    <article id={`component-${component.id}`} data-work-component={component.kind} className="min-w-0 scroll-mt-4 overflow-hidden rounded-2xl border border-border bg-card shadow-soft">
+    <article id={`component-${component.id}`} data-work-component={component.kind} className={cn("min-w-0 scroll-mt-4 overflow-hidden rounded-2xl border bg-card shadow-soft", component.kind === "interactive" ? "intelligent-component border-codex/25" : "border-border")}>
+      {component.kind === "interactive" ? <div className="flex items-center gap-2 border-b border-codex/10 bg-codex-soft/30 px-4 py-2 text-micro font-semibold tracking-wider text-primary"><LayoutPanelTopIcon className="size-3.5" />BUILT FOR THIS TASK<span className="ml-auto font-normal tracking-normal text-muted-foreground">Interactive tool</span></div> : null}
       <header className="flex items-start gap-2.5 px-4 py-3.5">
         {component.source === "authored" ? <Avatar handle={contentAuthor} size={25} /> : <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-secondary text-muted-foreground"><Icon className="size-4" /></span>}
         <div className="min-w-0 flex-1">
@@ -82,6 +85,7 @@ export function AgentComponent({ component, room, action, archive, archived = fa
           </summary>
           <div className="pt-2 pb-1"><WorkSources refs={component.refs} /></div>
         </details> : <WorkSources refs={component.refs} />}
+        {component.kind === "interactive" && !archived && !action.disabled ? <TableAssistButton kind="tool" target={component.id} /> : null}
         {archive && component.source === "authored" ? <Button variant="ghost" size="sm" disabled={archiving || action.disabled || !!action.pending} onClick={archiveComponent} aria-label={`Archive component: ${component.title}`} className="ml-auto text-muted-foreground pointer-coarse:h-11">
           {archiving ? <LoaderCircleIcon className="size-3 animate-spin" /> : <ArchiveIcon className="size-3" />} {archiving ? "Archiving…" : "Archive"}
         </Button> : null}
@@ -97,6 +101,7 @@ function ComponentBody({ component, room, action }: { component: WorkComponentVi
   const records = componentRecords(table, component.refs.map(ref => ref.id));
   const compact = componentWindow(records, component.kind, false);
   const { options, steps, notes, claims, omitted } = expanded ? componentWindow(records, component.kind, true) : compact;
+  if (component.kind === "interactive") return <IntelligentTool component={component} room={room} disabled={action.disabled || !!action.pending} />;
   if (component.kind === "custom") return <>
     {component.body ? <Markdown text={component.body} source={`w:${component.id}`} className="text-ui [overflow-wrap:anywhere]" /> : null}
     {component.file ? <FilePreview file={component.file} seq={component.contentSeq ?? component.seq} revision={component.contentSeq ?? component.seq} /> : null}

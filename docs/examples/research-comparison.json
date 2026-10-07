@@ -1,0 +1,1639 @@
+{
+ "version": 1,
+ "description": "Fictional tools and pricing for exploring a decision. Atlas, Birch and Cedar are synthetic alternatives; all costs and forecasts are made-up assumptions, not vendor facts or recommendations.",
+ "inputs": [
+  {
+   "id": "seats",
+   "label": "People who need access",
+   "type": "number",
+   "value": 30,
+   "min": 5,
+   "max": 100,
+   "step": 1,
+   "unit": "people"
+  },
+  {
+   "id": "option",
+   "label": "Alternative to explore",
+   "type": "select",
+   "value": "Birch",
+   "options": [
+    "Atlas",
+    "Birch",
+    "Cedar"
+   ]
+  },
+  {
+   "id": "months",
+   "label": "Planning horizon",
+   "type": "number",
+   "value": 6,
+   "min": 1,
+   "max": 12,
+   "step": 1,
+   "unit": "months"
+  },
+  {
+   "id": "question",
+   "label": "Question for the next research pass",
+   "type": "text",
+   "value": "Which assumptions change at twice this team size?",
+   "placeholder": "What would you verify next?",
+   "maxLength": 300
+  }
+ ],
+ "root": {
+  "type": "tabs",
+  "tabs": [
+   {
+    "label": "Compare",
+    "children": [
+     {
+      "type": "heading",
+      "text": "Three paths. Different tradeoffs.",
+      "level": 3
+     },
+     {
+      "type": "input",
+      "id": "seats"
+     },
+     {
+      "type": "comparison",
+      "columns": [
+       {
+        "title": "Atlas",
+        "subtitle": "Small setup, less control",
+        "badge": "Fast start",
+        "items": [
+         {
+          "label": "Monthly cost · USD",
+          "value": {
+           "op": "add",
+           "args": [
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "input": "seats"
+              },
+              18
+             ]
+            },
+            120
+           ]
+          }
+         },
+         {
+          "label": "Setup · USD",
+          "value": 300
+         },
+         {
+          "label": "Data export",
+          "value": "Basic"
+         },
+         {
+          "label": "Illustrative setup time",
+          "value": "2 days"
+         }
+        ]
+       },
+       {
+        "title": "Birch",
+        "subtitle": "Moderate setup and control",
+        "badge": "Balanced",
+        "items": [
+         {
+          "label": "Monthly cost · USD",
+          "value": {
+           "op": "add",
+           "args": [
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "input": "seats"
+              },
+              12
+             ]
+            },
+            240
+           ]
+          }
+         },
+         {
+          "label": "Setup · USD",
+          "value": 900
+         },
+         {
+          "label": "Data export",
+          "value": "Standard"
+         },
+         {
+          "label": "Illustrative setup time",
+          "value": "5 days"
+         }
+        ]
+       },
+       {
+        "title": "Cedar",
+        "subtitle": "Larger setup, more control",
+        "badge": "Flexible",
+        "items": [
+         {
+          "label": "Monthly cost · USD",
+          "value": {
+           "op": "add",
+           "args": [
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "input": "seats"
+              },
+              7
+             ]
+            },
+            420
+           ]
+          }
+         },
+         {
+          "label": "Setup · USD",
+          "value": 1500
+         },
+         {
+          "label": "Data export",
+          "value": "Custom"
+         },
+         {
+          "label": "Illustrative setup time",
+          "value": "10 days"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "type": "callout",
+      "tone": "neutral",
+      "text": "Change the team size: lower per-seat rates can become cheaper as a team grows, even with a larger support fee. This is an illustrative cost model only."
+     }
+    ]
+   },
+   {
+    "label": "Budget",
+    "children": [
+     {
+      "type": "grid",
+      "columns": 2,
+      "children": [
+       {
+        "type": "input",
+        "id": "option"
+       },
+       {
+        "type": "input",
+        "id": "months"
+       }
+      ]
+     },
+     {
+      "type": "grid",
+      "columns": 2,
+      "children": [
+       {
+        "type": "metric",
+        "label": "Monthly recurring cost",
+        "value": {
+         "op": "if",
+         "args": [
+          {
+           "op": "equal",
+           "args": [
+            {
+             "input": "option"
+            },
+            "Atlas"
+           ]
+          },
+          {
+           "op": "add",
+           "args": [
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "input": "seats"
+              },
+              18
+             ]
+            },
+            120
+           ]
+          },
+          {
+           "op": "if",
+           "args": [
+            {
+             "op": "equal",
+             "args": [
+              {
+               "input": "option"
+              },
+              "Birch"
+             ]
+            },
+            {
+             "op": "add",
+             "args": [
+              {
+               "op": "multiply",
+               "args": [
+                {
+                 "input": "seats"
+                },
+                12
+               ]
+              },
+              240
+             ]
+            },
+            {
+             "op": "add",
+             "args": [
+              {
+               "op": "multiply",
+               "args": [
+                {
+                 "input": "seats"
+                },
+                7
+               ]
+              },
+              420
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        "unit": "USD"
+       },
+       {
+        "type": "metric",
+        "label": "Cost over your horizon",
+        "value": {
+         "op": "add",
+         "args": [
+          {
+           "op": "if",
+           "args": [
+            {
+             "op": "equal",
+             "args": [
+              {
+               "input": "option"
+              },
+              "Atlas"
+             ]
+            },
+            300,
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Birch"
+               ]
+              },
+              900,
+              1500
+             ]
+            }
+           ]
+          },
+          {
+           "op": "multiply",
+           "args": [
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Atlas"
+               ]
+              },
+              {
+               "op": "add",
+               "args": [
+                {
+                 "op": "multiply",
+                 "args": [
+                  {
+                   "input": "seats"
+                  },
+                  18
+                 ]
+                },
+                120
+               ]
+              },
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Birch"
+                 ]
+                },
+                {
+                 "op": "add",
+                 "args": [
+                  {
+                   "op": "multiply",
+                   "args": [
+                    {
+                     "input": "seats"
+                    },
+                    12
+                   ]
+                  },
+                  240
+                 ]
+                },
+                {
+                 "op": "add",
+                 "args": [
+                  {
+                   "op": "multiply",
+                   "args": [
+                    {
+                     "input": "seats"
+                    },
+                    7
+                   ]
+                  },
+                  420
+                 ]
+                }
+               ]
+              }
+             ]
+            },
+            {
+             "input": "months"
+            }
+           ]
+          }
+         ]
+        },
+        "unit": "USD",
+        "detail": "Setup plus recurring monthly cost"
+       }
+      ]
+     },
+     {
+      "type": "chart",
+      "variant": "donut",
+      "title": "Where the scenario budget goes",
+      "unit": "USD",
+      "items": [
+       {
+        "label": "Licenses over horizon",
+        "value": {
+         "op": "multiply",
+         "args": [
+          {
+           "op": "if",
+           "args": [
+            {
+             "op": "equal",
+             "args": [
+              {
+               "input": "option"
+              },
+              "Atlas"
+             ]
+            },
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "input": "seats"
+              },
+              18
+             ]
+            },
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Birch"
+               ]
+              },
+              {
+               "op": "multiply",
+               "args": [
+                {
+                 "input": "seats"
+                },
+                12
+               ]
+              },
+              {
+               "op": "multiply",
+               "args": [
+                {
+                 "input": "seats"
+                },
+                7
+               ]
+              }
+             ]
+            }
+           ]
+          },
+          {
+           "input": "months"
+          }
+         ]
+        }
+       },
+       {
+        "label": "Support over horizon",
+        "value": {
+         "op": "multiply",
+         "args": [
+          {
+           "op": "subtract",
+           "args": [
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Atlas"
+               ]
+              },
+              {
+               "op": "add",
+               "args": [
+                {
+                 "op": "multiply",
+                 "args": [
+                  {
+                   "input": "seats"
+                  },
+                  18
+                 ]
+                },
+                120
+               ]
+              },
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Birch"
+                 ]
+                },
+                {
+                 "op": "add",
+                 "args": [
+                  {
+                   "op": "multiply",
+                   "args": [
+                    {
+                     "input": "seats"
+                    },
+                    12
+                   ]
+                  },
+                  240
+                 ]
+                },
+                {
+                 "op": "add",
+                 "args": [
+                  {
+                   "op": "multiply",
+                   "args": [
+                    {
+                     "input": "seats"
+                    },
+                    7
+                   ]
+                  },
+                  420
+                 ]
+                }
+               ]
+              }
+             ]
+            },
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Atlas"
+               ]
+              },
+              {
+               "op": "multiply",
+               "args": [
+                {
+                 "input": "seats"
+                },
+                18
+               ]
+              },
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Birch"
+                 ]
+                },
+                {
+                 "op": "multiply",
+                 "args": [
+                  {
+                   "input": "seats"
+                  },
+                  12
+                 ]
+                },
+                {
+                 "op": "multiply",
+                 "args": [
+                  {
+                   "input": "seats"
+                  },
+                  7
+                 ]
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          },
+          {
+           "input": "months"
+          }
+         ]
+        }
+       },
+       {
+        "label": "One-time setup",
+        "value": {
+         "op": "if",
+         "args": [
+          {
+           "op": "equal",
+           "args": [
+            {
+             "input": "option"
+            },
+            "Atlas"
+           ]
+          },
+          300,
+          {
+           "op": "if",
+           "args": [
+            {
+             "op": "equal",
+             "args": [
+              {
+               "input": "option"
+              },
+              "Birch"
+             ]
+            },
+            900,
+            1500
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "type": "table",
+      "caption": "Cost components · fictional USD assumptions",
+      "searchable": true,
+      "sortable": true,
+      "columns": [
+       "Alternative",
+       "Per person / month",
+       "Support / month",
+       "Setup",
+       "Monthly total"
+      ],
+      "rows": [
+       [
+        "Atlas",
+        18,
+        120,
+        300,
+        {
+         "op": "add",
+         "args": [
+          {
+           "op": "multiply",
+           "args": [
+            {
+             "input": "seats"
+            },
+            18
+           ]
+          },
+          120
+         ]
+        }
+       ],
+       [
+        "Birch",
+        12,
+        240,
+        900,
+        {
+         "op": "add",
+         "args": [
+          {
+           "op": "multiply",
+           "args": [
+            {
+             "input": "seats"
+            },
+            12
+           ]
+          },
+          240
+         ]
+        }
+       ],
+       [
+        "Cedar",
+        7,
+        420,
+        1500,
+        {
+         "op": "add",
+         "args": [
+          {
+           "op": "multiply",
+           "args": [
+            {
+             "input": "seats"
+            },
+            7
+           ]
+          },
+          420
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Forecast",
+    "children": [
+     {
+      "type": "badge",
+      "label": "Scenario projections · not observed data",
+      "tone": "warning"
+     },
+     {
+      "type": "grid",
+      "columns": 2,
+      "children": [
+       {
+        "type": "chart",
+        "variant": "line",
+        "title": "Cumulative cost of the selected alternative",
+        "unit": "USD",
+        "items": [
+         {
+          "label": "Month 1",
+          "value": {
+           "op": "add",
+           "args": [
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Atlas"
+               ]
+              },
+              300,
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Birch"
+                 ]
+                },
+                900,
+                1500
+               ]
+              }
+             ]
+            },
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Atlas"
+                 ]
+                },
+                {
+                 "op": "add",
+                 "args": [
+                  {
+                   "op": "multiply",
+                   "args": [
+                    {
+                     "input": "seats"
+                    },
+                    18
+                   ]
+                  },
+                  120
+                 ]
+                },
+                {
+                 "op": "if",
+                 "args": [
+                  {
+                   "op": "equal",
+                   "args": [
+                    {
+                     "input": "option"
+                    },
+                    "Birch"
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      12
+                     ]
+                    },
+                    240
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      7
+                     ]
+                    },
+                    420
+                   ]
+                  }
+                 ]
+                }
+               ]
+              },
+              1
+             ]
+            }
+           ]
+          }
+         },
+         {
+          "label": "Month 2",
+          "value": {
+           "op": "add",
+           "args": [
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Atlas"
+               ]
+              },
+              300,
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Birch"
+                 ]
+                },
+                900,
+                1500
+               ]
+              }
+             ]
+            },
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Atlas"
+                 ]
+                },
+                {
+                 "op": "add",
+                 "args": [
+                  {
+                   "op": "multiply",
+                   "args": [
+                    {
+                     "input": "seats"
+                    },
+                    18
+                   ]
+                  },
+                  120
+                 ]
+                },
+                {
+                 "op": "if",
+                 "args": [
+                  {
+                   "op": "equal",
+                   "args": [
+                    {
+                     "input": "option"
+                    },
+                    "Birch"
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      12
+                     ]
+                    },
+                    240
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      7
+                     ]
+                    },
+                    420
+                   ]
+                  }
+                 ]
+                }
+               ]
+              },
+              2
+             ]
+            }
+           ]
+          }
+         },
+         {
+          "label": "Month 3",
+          "value": {
+           "op": "add",
+           "args": [
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Atlas"
+               ]
+              },
+              300,
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Birch"
+                 ]
+                },
+                900,
+                1500
+               ]
+              }
+             ]
+            },
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Atlas"
+                 ]
+                },
+                {
+                 "op": "add",
+                 "args": [
+                  {
+                   "op": "multiply",
+                   "args": [
+                    {
+                     "input": "seats"
+                    },
+                    18
+                   ]
+                  },
+                  120
+                 ]
+                },
+                {
+                 "op": "if",
+                 "args": [
+                  {
+                   "op": "equal",
+                   "args": [
+                    {
+                     "input": "option"
+                    },
+                    "Birch"
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      12
+                     ]
+                    },
+                    240
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      7
+                     ]
+                    },
+                    420
+                   ]
+                  }
+                 ]
+                }
+               ]
+              },
+              3
+             ]
+            }
+           ]
+          }
+         },
+         {
+          "label": "Month 4",
+          "value": {
+           "op": "add",
+           "args": [
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Atlas"
+               ]
+              },
+              300,
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Birch"
+                 ]
+                },
+                900,
+                1500
+               ]
+              }
+             ]
+            },
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Atlas"
+                 ]
+                },
+                {
+                 "op": "add",
+                 "args": [
+                  {
+                   "op": "multiply",
+                   "args": [
+                    {
+                     "input": "seats"
+                    },
+                    18
+                   ]
+                  },
+                  120
+                 ]
+                },
+                {
+                 "op": "if",
+                 "args": [
+                  {
+                   "op": "equal",
+                   "args": [
+                    {
+                     "input": "option"
+                    },
+                    "Birch"
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      12
+                     ]
+                    },
+                    240
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      7
+                     ]
+                    },
+                    420
+                   ]
+                  }
+                 ]
+                }
+               ]
+              },
+              4
+             ]
+            }
+           ]
+          }
+         },
+         {
+          "label": "Month 5",
+          "value": {
+           "op": "add",
+           "args": [
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Atlas"
+               ]
+              },
+              300,
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Birch"
+                 ]
+                },
+                900,
+                1500
+               ]
+              }
+             ]
+            },
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Atlas"
+                 ]
+                },
+                {
+                 "op": "add",
+                 "args": [
+                  {
+                   "op": "multiply",
+                   "args": [
+                    {
+                     "input": "seats"
+                    },
+                    18
+                   ]
+                  },
+                  120
+                 ]
+                },
+                {
+                 "op": "if",
+                 "args": [
+                  {
+                   "op": "equal",
+                   "args": [
+                    {
+                     "input": "option"
+                    },
+                    "Birch"
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      12
+                     ]
+                    },
+                    240
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      7
+                     ]
+                    },
+                    420
+                   ]
+                  }
+                 ]
+                }
+               ]
+              },
+              5
+             ]
+            }
+           ]
+          }
+         },
+         {
+          "label": "Month 6",
+          "value": {
+           "op": "add",
+           "args": [
+            {
+             "op": "if",
+             "args": [
+              {
+               "op": "equal",
+               "args": [
+                {
+                 "input": "option"
+                },
+                "Atlas"
+               ]
+              },
+              300,
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Birch"
+                 ]
+                },
+                900,
+                1500
+               ]
+              }
+             ]
+            },
+            {
+             "op": "multiply",
+             "args": [
+              {
+               "op": "if",
+               "args": [
+                {
+                 "op": "equal",
+                 "args": [
+                  {
+                   "input": "option"
+                  },
+                  "Atlas"
+                 ]
+                },
+                {
+                 "op": "add",
+                 "args": [
+                  {
+                   "op": "multiply",
+                   "args": [
+                    {
+                     "input": "seats"
+                    },
+                    18
+                   ]
+                  },
+                  120
+                 ]
+                },
+                {
+                 "op": "if",
+                 "args": [
+                  {
+                   "op": "equal",
+                   "args": [
+                    {
+                     "input": "option"
+                    },
+                    "Birch"
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      12
+                     ]
+                    },
+                    240
+                   ]
+                  },
+                  {
+                   "op": "add",
+                   "args": [
+                    {
+                     "op": "multiply",
+                     "args": [
+                      {
+                       "input": "seats"
+                      },
+                      7
+                     ]
+                    },
+                    420
+                   ]
+                  }
+                 ]
+                }
+               ]
+              },
+              6
+             ]
+            }
+           ]
+          }
+         }
+        ]
+       },
+       {
+        "type": "chart",
+        "variant": "area",
+        "title": "Illustrative capacity ramp",
+        "unit": "hours / month",
+        "items": [
+         {
+          "label": "Month 1",
+          "value": {
+           "op": "multiply",
+           "args": [
+            {
+             "input": "seats"
+            },
+            2
+           ]
+          }
+         },
+         {
+          "label": "Month 2",
+          "value": {
+           "op": "multiply",
+           "args": [
+            {
+             "input": "seats"
+            },
+            4
+           ]
+          }
+         },
+         {
+          "label": "Month 3",
+          "value": {
+           "op": "multiply",
+           "args": [
+            {
+             "input": "seats"
+            },
+            6
+           ]
+          }
+         },
+         {
+          "label": "Month 4",
+          "value": {
+           "op": "multiply",
+           "args": [
+            {
+             "input": "seats"
+            },
+            7
+           ]
+          }
+         },
+         {
+          "label": "Month 5",
+          "value": {
+           "op": "multiply",
+           "args": [
+            {
+             "input": "seats"
+            },
+            8
+           ]
+          }
+         },
+         {
+          "label": "Month 6",
+          "value": {
+           "op": "multiply",
+           "args": [
+            {
+             "input": "seats"
+            },
+            8
+           ]
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "type": "accordion",
+      "sections": [
+       {
+        "title": "Read the forecast responsibly",
+        "children": [
+         {
+          "type": "text",
+          "text": "Cost assumes a constant team size and price. Capacity assumes a hypothetical ramp from 2 to 8 hours saved per person each month. Neither chart measures real adoption, productivity, quality or savings."
+         }
+        ]
+       },
+       {
+        "title": "Questions to validate before deciding",
+        "children": [
+         {
+          "type": "list",
+          "items": [
+           {
+            "title": "Check actual vendor terms",
+            "detail": "Replace every fictional rate and fee with sourced data.",
+            "status": "todo"
+           },
+           {
+            "title": "Measure the adoption ramp",
+            "detail": "A pilot should test whether time savings exist.",
+            "status": "todo"
+           },
+           {
+            "title": "Review export and control needs",
+            "detail": "These tradeoffs can outweigh the price model.",
+            "status": "todo"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Research note",
+    "children": [
+     {
+      "type": "input",
+      "id": "question"
+     },
+     {
+      "type": "table",
+      "caption": "Your selected scenario",
+      "columns": [
+       "Setting",
+       "Value"
+      ],
+      "rows": [
+       [
+        "People",
+        {
+         "input": "seats"
+        }
+       ],
+       [
+        "Alternative",
+        {
+         "input": "option"
+        }
+       ],
+       [
+        "Months",
+        {
+         "input": "months"
+        }
+       ],
+       [
+        "Next question",
+        {
+         "input": "question"
+        }
+       ]
+      ]
+     },
+     {
+      "type": "text",
+      "text": "Save the scenario to share the question and assumptions. Ask the agents in the conversation to investigate; the tool does not initiate research on its own."
+     }
+    ]
+   }
+  ]
+ }
+}

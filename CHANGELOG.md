@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Intelligent UI on the Work table: agents compose task-specific tools from 18 native node types, including interactive comparisons, timelines, searchable/sortable tables, progress and four chart variants. Exact number entry, text inputs and structured expressions make scenarios useful beyond fixed dashboards.
+- Create/refine requests select one agent and retain scope; failed attempts retry with the original author and instructions. Updated native briefings and a discoverable `agoryx ui guide`/`ui check` contract support both new and resumed conversations.
+- Named scenarios retain human attribution and model revisions, with durable history, JSON exports and concurrent-save protection. Per-tab drafts survive navigation and offer export after model changes; SSE acknowledgments reconcile save retries. Inputs do not approve plans or trigger model calls.
+- Added bounded validation for authored UI, saved data and draft recovery, plus synthetic examples and a reproducible interactive demo. Existing table components and sandboxed custom previews remain compatible.
 - Update notices: when a newer release is published on GitHub, the app and web UI show a bar with the download and release notes (Settings › About › Check for updates asks immediately; `AGORYX_UPDATE_CHECK=off` turns it off). After an update, the desktop app offers to restart a daemon still running the previous version.
 
 ## 0.1.1 — 2026-10-06

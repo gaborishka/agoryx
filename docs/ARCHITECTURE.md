@@ -71,7 +71,13 @@ See [workflow contracts](WORKFLOWS.md) for budgets, validation, recovery, APIs a
 
 `table.ts` validates authored table operations and preserves their identities, ownership and provenance. `work-table.ts` derives the presentation model: Heads-up, human decisions, current results, meaningful changes and team status.
 
-Table components reference actual questions, proposals, steps and evidence. Custom previews render behind sandboxed frames. `table-assist.ts` turns explicit human preparation requests into one ordinary agent assignment; it does not grant authority to decide on the human's behalf.
+Table components reference actual questions, proposals, steps and evidence. `intelligent-ui.ts` validates bounded declarative UI programs: 18 node types, typed controls and structured expressions. `ToolNode.tsx` renders the native layouts, charts and controls; `IntelligentTool.tsx` owns exploration, scenario saves, recovery and exports. No authored script executes in this format. `intelligent-ui-guide.ts` supplies the shared agent/CLI contract; `intelligent-ui-cli.ts` provides room-independent `ui guide` and `ui check` preflight. Native briefing version 4 migrates older bindings, and explicit tool requests include the guide even in resumed sessions.
+
+Human input snapshots are version-checked `component-input` events and never imply approval or start turns. Each named scenario retains its author, event and model revision. Projection keeps at most 24 recent scenarios within 256,000 JSON characters; the full JSONL log retains older events. A replacement clears the active snapshot but preserves recent history for inspection/export. Earlier-model values cannot be loaded automatically into a new model.
+
+`tool-draft.ts` stores per-tab, revision-scoped exploration and save-retry identity in bounded session storage. `tool-session.ts` validates snapshots/history, checks authoritative save receipts and recovers old drafts for explicit export. Matching a save requires nonce, actor, component and model revision, so an SSE acknowledgment before an HTTP response does not create a second scenario. The UI exposes storage failure and concurrent-save recovery rather than overwriting exploration silently.
+
+Custom previews render behind sandboxed frames. `table-assist.ts` turns explicit human preparation requests into one ordinary agent assignment; it does not grant authority to decide on the human's behalf. `table-assist-retry.ts` preserves the selected executor, guidance and scope for a new attempt. Transport retries keep the existing nonce; a new agent attempt receives a new nonce.
 
 The canonical document is a workspace file with recorded revisions, not a second independent transcript. Recovery snapshots and per-turn diffs retain the workspace root that produced them. Ordinary room execution does not automatically commit to the user's branch.
 

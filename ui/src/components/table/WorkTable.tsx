@@ -51,7 +51,7 @@ export function WorkTable({ beside, onArguments }: { beside: boolean; onArgument
     // A folded card opens in the same render. No shared scroll position changes until then.
     const timer = setTimeout(() => {
       const node = host.current?.querySelector<HTMLElement>(flash.ref === "brief" ? "#table-headsup" : `#component-${CSS.escape(flash.ref)}`);
-      node?.scrollIntoView({ behavior: "smooth", block: "center" });
+      node?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
       if (node) { node.classList.remove("animate-flash"); void node.offsetWidth; node.classList.add("animate-flash"); }
     }, 60);
     return () => clearTimeout(timer);
@@ -81,6 +81,7 @@ export function WorkTable({ beside, onArguments }: { beside: boolean; onArgument
   const choose = (option: TableOption) => { void perform(option.id, "/table", { op: "decide", target: option.id }, "Decision recorded. Agents will see it in the shared context."); };
   const action = { pending, disabled, choose };
   const components = allComponents ? model.components : model.components.slice(0, 2);
+  const tools = model.components.filter(component => component.kind === "interactive");
   const archived = (room.table.components ?? []).filter(component => component.archived);
   const focusComposer = () => { const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]'); input?.focus(); };
   const authored = model.headsUp.source === "authored";
@@ -90,8 +91,10 @@ export function WorkTable({ beside, onArguments }: { beside: boolean; onArgument
         <header className="flex flex-wrap items-center gap-2.5">
           <h1 className="mr-auto flex items-center gap-2 font-display text-display leading-tight font-semibold"><LayoutPanelTopIcon className="size-5 text-muted-foreground" />Work table</h1>
           <Button size="sm" variant="ghost" onClick={onArguments} className="text-muted-foreground"><MessageSquareIcon className="size-3.5" />Arguments</Button>
+          <TableAssistButton kind="tool" />
           <TableAssistActions compact />
         </header>
+        {tools.length ? <nav aria-label="Interactive tools on this table" className="flex flex-wrap items-center gap-2"><span className="mr-1 text-meta font-medium text-muted-foreground">Your tools</span>{tools.map(tool => <button type="button" key={tool.id} onClick={() => goToRef(tool.id)} className="inline-flex min-h-9 max-w-full items-center gap-2 rounded-xl border border-border bg-card px-3 py-1.5 text-small transition hover:border-codex/40 hover:bg-codex-soft/30 focus-visible:outline-2 focus-visible:outline-ring"><LayoutPanelTopIcon className="size-3.5 shrink-0 text-codex" /><span className="truncate">{tool.title}</span><span className="font-mono text-micro text-muted-foreground">{tool.id}</span></button>)}</nav> : null}
         <TableAssistActivity />
         {connection !== "live" || !snap.driven ? <p className="flex items-start gap-2 rounded-xl bg-secondary px-3 py-2 text-small text-muted-foreground" role="status"><WifiOffIcon className="mt-0.5 size-3.5 shrink-0" />{!snap.driven ? "View only: another process is driving this room." : connection === "offline" ? "Offline. Showing the last received state; actions will be available after reconnecting." : "Reconnecting. Showing the last received state."}</p> : null}
         <section id="table-headsup" className="scroll-mt-4 border-b border-border pb-5" aria-labelledby="work-headsup">
@@ -152,6 +155,18 @@ export function WorkTable({ beside, onArguments }: { beside: boolean; onArgument
               </section>
             ) : null}
           </div> : null}
+          <div id="work-results" className={cn("flex min-w-0 flex-col gap-4 @3xl:col-start-1", attention ? "@3xl:row-start-2" : "@3xl:row-start-1")}>
+            {components.map(component => <AgentComponent key={component.id} component={component} room={room} action={action} archive={id => perform(`archive-${id}`, "/table", { op: "archive", target: id }, "Component archived. Its history is preserved.")} />)}
+            {model.components.length > 2 ? <Button size="sm" variant="ghost" className="self-start text-muted-foreground" onClick={() => setAllComponents(!allComponents)} aria-expanded={allComponents} aria-controls="work-results"><ChevronDownIcon className={cn("size-3.5", allComponents && "rotate-180")} />{allComponents ? "Show main results only" : `Show the rest · ${model.components.length - 2}`}</Button> : null}
+            {!components.length ? <section className="rounded-2xl border border-dashed border-border p-5"><h2 className="text-body font-semibold">A working surface for your next idea</h2><p className="mt-1 max-w-lg text-small leading-relaxed text-muted-foreground">Ask an agent to build a calculator, an interactive comparison or a visual explorer from this conversation. Change the inputs, explore the result, and save a scenario for the team.</p><Button size="sm" variant="ghost" onClick={() => setView("chat")} className="mt-3 -ml-2 text-muted-foreground"><MessageSquareIcon className="size-3.5" />Open conversation</Button></section> : null}
+            {archived.length ? <section className="border-t border-border/70 pt-3">
+              <Button size="sm" variant="ghost" onClick={() => setArchivesOpen(!archivesOpen)} aria-expanded={archivesOpen} className="text-muted-foreground"><HistoryIcon className="size-3.5" />Component archive · {archived.length}<ChevronDownIcon className={cn("size-3.5", archivesOpen && "rotate-180")} /></Button>
+              {archivesOpen ? <div className="mt-3 flex flex-col gap-3">{archived.map(component => {
+                const view: WorkComponentView = { ...component, refs: component.refs.map(id => resolve(id)), source: "authored", stale: false };
+                return <div key={component.id}><AgentComponent component={view} room={room} action={{ ...action, disabled: true }} archived /><div className="mt-1.5 flex justify-end"><Button size="xs" variant="ghost" disabled={disabled || !!pending} onClick={() => void perform(`restore-${component.id}`, "/table", { op: "restore", target: component.id }, "Component restored to the table.")}>{pending === `restore-${component.id}` ? "Restoring…" : "Restore to table"}</Button></div></div>;
+              })}</div> : null}
+            </section> : null}
+          </div>
           <aside className={cn("grid min-w-0 gap-4 rounded-xl border border-border bg-card/40 p-3 @xl:grid-cols-2 @3xl:col-start-2 @3xl:row-start-1 @3xl:grid-cols-1 @3xl:border-0 @3xl:bg-transparent @3xl:p-0", attention && "@3xl:row-span-2")} aria-label="Team, changes and decisions">
             <section className="min-w-0">
               <div className="flex items-center justify-between gap-2"><h2 className="text-small font-semibold text-muted-foreground">Important changes</h2><button type="button" className={linkClass} onClick={() => setView("chat")}>All</button></div>
@@ -175,18 +190,6 @@ export function WorkTable({ beside, onArguments }: { beside: boolean; onArgument
               })}{!model.team.length ? <p className="text-small text-muted-foreground">No agents in the room yet.</p> : null}</div>
             </section>
           </aside>
-          <div id="work-results" className={cn("flex min-w-0 flex-col gap-4 @3xl:col-start-1", attention ? "@3xl:row-start-2" : "@3xl:row-start-1")}>
-            {components.map(component => <AgentComponent key={component.id} component={component} room={room} action={action} archive={id => perform(`archive-${id}`, "/table", { op: "archive", target: id }, "Component archived. Its history is preserved.")} />)}
-            {model.components.length > 2 ? <Button size="sm" variant="ghost" className="self-start text-muted-foreground" onClick={() => setAllComponents(!allComponents)} aria-expanded={allComponents} aria-controls="work-results"><ChevronDownIcon className={cn("size-3.5", allComponents && "rotate-180")} />{allComponents ? "Show main results only" : `Show the rest · ${model.components.length - 2}`}</Button> : null}
-            {!components.length ? <section className="rounded-2xl border border-dashed border-border p-5"><h2 className="text-body font-semibold">Results will appear here</h2><p className="mt-1 max-w-lg text-small leading-relaxed text-muted-foreground">A plan, comparison, check or custom component created for the task.</p><Button size="sm" variant="ghost" onClick={() => setView("chat")} className="mt-3 -ml-2 text-muted-foreground"><MessageSquareIcon className="size-3.5" />Open conversation</Button></section> : null}
-            {archived.length ? <section className="border-t border-border/70 pt-3">
-              <Button size="sm" variant="ghost" onClick={() => setArchivesOpen(!archivesOpen)} aria-expanded={archivesOpen} className="text-muted-foreground"><HistoryIcon className="size-3.5" />Component archive · {archived.length}<ChevronDownIcon className={cn("size-3.5", archivesOpen && "rotate-180")} /></Button>
-              {archivesOpen ? <div className="mt-3 flex flex-col gap-3">{archived.map(component => {
-                const view: WorkComponentView = { ...component, refs: component.refs.map(id => resolve(id)), source: "authored", stale: false };
-                return <div key={component.id}><AgentComponent component={view} room={room} action={{ ...action, disabled: true }} archived /><div className="mt-1.5 flex justify-end"><Button size="xs" variant="ghost" disabled={disabled || !!pending} onClick={() => void perform(`restore-${component.id}`, "/table", { op: "restore", target: component.id }, "Component restored to the table.")}>{pending === `restore-${component.id}` ? "Restoring…" : "Restore to table"}</Button></div></div>;
-              })}</div> : null}
-            </section> : null}
-          </div>
         </div>
         {beside ? <SteeringField disabled={disabled || !!pending} roomId={room.id} send={text => perform("steering", "/messages", { text }, "Direction added to the shared conversation. Agents will receive it in their context.")} /> : null}
       </div>

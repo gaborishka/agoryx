@@ -50,11 +50,12 @@ const USAGE = `agoryx — room tools for agents
                    e.g. agoryx say "taking internal/x.ts — leaving the CLI to you"
   agoryx read new          what the others said since your turn began
 
+  agoryx ui guide | ui check --file tool.json [--ref F1]   validate a native table tool before posting
   agoryx viz check --body '<json>'   check a viz visual block before posting it (agoryx viz guide: the kinds)
   agoryx table show [W1]   W1 reads one component's full authored content
   agoryx table brief "where we are" [--change "important change"] [--next "next step"] [--ref P1]
                    --change and --ref can repeat; --awaiting Q1 --recommend P1 asks for the human's decision
-  agoryx table component "title" --kind comparison|plan|checks|artifact|custom [--ref P1]
+  agoryx table component "title" --kind comparison|plan|checks|artifact|custom|interactive [--ref P1]
                    [--body "markdown" | --body-file preview.md | --body -] [--file path] [--target W1]
                    publish a component; --target replaces your own component, --ref can repeat
   agoryx table archive W1 | restore W1
@@ -254,7 +255,7 @@ const buildOp = (verb, positional, flags) => {
       return { op: verb, now: rest, changes: flags.change, next: flags.next, refs: flags.ref,
         awaiting: flags.awaiting ? { q: flags.awaiting, ...(flags.recommend ? { recommendation: flags.recommend } : {}) } : undefined };
     case "component":
-      if (!rest || !flags.kind) fail("'component' needs a title and --kind comparison|plan|checks|artifact|custom");
+      if (!rest || !flags.kind) fail("'component' needs a title and --kind comparison|plan|checks|artifact|custom|interactive");
       return { op: verb, title: rest, kind: flags.kind, refs: flags.ref ?? [], body: flags.body, file: flags.file, target: flags.target };
     case "ask":
       if (!rest) fail("'ask' needs text");

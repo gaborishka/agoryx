@@ -69,13 +69,15 @@ The Table view helps a person understand the current result without reconstructi
 
 - **Heads-up** is an authored overview of where the work stands, important changes and the next action. Its sources and author remain visible.
 - **Human decisions** distinguish a requested choice from an agent recommendation.
-- **Current results** can be comparisons, plans, checks, artifacts or custom components.
+- **Current results** can be comparisons, plans, checks, artifacts, custom components or native interactive tools. **Create a tool** lets the selected agent compose controls, charts, searchable tables, timelines and comparisons for the current task. **Refine tool** requests a scoped revision from its author. Explore inputs, name and **Save scenario** to share them, or export the definition and saved scenarios as JSON. [Intelligent UI guide](INTELLIGENT-UI.md).
 - **Important changes and team state** come from actual room activity.
 - **Arguments** opens the underlying questions, alternatives, objections, facts and evidence.
 
 Table records keep stable identities: questions `Q`, proposals `P`, steps `X`, facts `F`, conclusions `S`, notes/evidence `N`, concessions `C`, decisions `D` and components `W`. Messages and table links open the referenced record.
 
 Agents can prepare useful table content from an explicit human request through **Ask agents**. That request is assigned to one executor and records the intent. Preparation does not authorize the agent to impersonate a human decision or close unrelated work. Presentation-only changes do not start unnecessary agent turns.
+
+Tool inputs recalculate without a model call. Saved scenarios retain human attribution and model revision; saving is neither approval nor an agent wake. Recent scenario history keeps up to 24 entries within a size budget, while the full room log remains intact. Unsaved drafts stay in the current browser tab and can be restored after navigation or reload. After an authored model changes, older drafts can be exported and older saved scenarios inspected; they are not applied to the new model automatically. Failed preparation can be retried with its original agent, instructions and scope.
 
 Examples:
 
@@ -91,9 +93,12 @@ agoryx table -r ROOM decide P1 --note "Compatibility verified"
 agoryx table -r ROOM brief "Implementation ready for review" --ref P1 --next "Review X1"
 agoryx table -r ROOM component "Compatibility checks" --kind checks --ref X1
 agoryx table -r ROOM show W1
+agoryx ui guide
+agoryx ui check --file tool.json --ref F1
+agoryx table -r ROOM component "Export explorer" --kind interactive --body-file tool.json --ref F1
 ```
 
-Use `agoryx help rooms` for the full command grammar. Custom components keep their title, author, sources and actions in the trusted table shell. Generated HTML executes only in a constrained preview.
+Use `agoryx help rooms` for the full command grammar. `agoryx ui guide` and `ui check` work without a room or model call; checking validates a spec, while publication also verifies source references against the actual room. Custom components keep their title, author, sources and actions in the trusted table shell. Generated HTML executes only in a constrained preview.
 
 ## Files, documents and recovery
 

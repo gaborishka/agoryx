@@ -1,0 +1,266 @@
+{
+  "version": 1,
+  "description": "Explore how scope, team size and an independent review change a delivery scenario. These are illustrative assumptions, not a forecast.",
+  "inputs": [
+    {
+      "id": "scope",
+      "label": "Scope to deliver",
+      "type": "number",
+      "value": 36,
+      "min": 6,
+      "max": 90,
+      "step": 3,
+      "unit": "person-days"
+    },
+    {
+      "id": "team",
+      "label": "People on the team",
+      "type": "number",
+      "value": 3,
+      "min": 1,
+      "max": 8,
+      "step": 1,
+      "unit": "people"
+    },
+    {
+      "id": "review",
+      "label": "Include independent review",
+      "type": "toggle",
+      "value": true
+    }
+  ],
+  "root": {
+    "type": "tabs",
+    "tabs": [
+      {
+        "label": "Explore",
+        "children": [
+          {
+            "type": "grid",
+            "children": [
+              {
+                "type": "input",
+                "id": "scope"
+              },
+              {
+                "type": "input",
+                "id": "team"
+              }
+            ]
+          },
+          {
+            "type": "grid",
+            "children": [
+              {
+                "type": "metric",
+                "label": "Delivery window",
+                "value": {
+                  "op": "add",
+                  "args": [
+                    {
+                      "op": "divide",
+                      "args": [
+                        {
+                          "input": "scope"
+                        },
+                        {
+                          "input": "team"
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": [
+                        {
+                          "input": "review"
+                        },
+                        3,
+                        0
+                      ]
+                    }
+                  ]
+                },
+                "unit": "days",
+                "detail": "Build time plus the review allowance",
+                "decimals": 1
+              },
+              {
+                "type": "metric",
+                "label": "Team effort",
+                "value": {
+                  "op": "multiply",
+                  "args": [
+                    {
+                      "op": "add",
+                      "args": [
+                        {
+                          "op": "divide",
+                          "args": [
+                            {
+                              "input": "scope"
+                            },
+                            {
+                              "input": "team"
+                            }
+                          ]
+                        },
+                        {
+                          "op": "if",
+                          "args": [
+                            {
+                              "input": "review"
+                            },
+                            3,
+                            0
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "input": "team"
+                    }
+                  ]
+                },
+                "unit": "person-days",
+                "detail": "Assumes equal, parallel capacity"
+              }
+            ]
+          },
+          {
+            "type": "chart",
+            "title": "Compare team sizes",
+            "unit": "days",
+            "items": [
+              {
+                "label": "Two people",
+                "value": {
+                  "op": "divide",
+                  "args": [
+                    {
+                      "input": "scope"
+                    },
+                    2
+                  ]
+                }
+              },
+              {
+                "label": "Your team \u00b7 build only",
+                "value": {
+                  "op": "divide",
+                  "args": [
+                    {
+                      "input": "scope"
+                    },
+                    {
+                      "input": "team"
+                    }
+                  ]
+                }
+              },
+              {
+                "label": "Six people",
+                "value": {
+                  "op": "divide",
+                  "args": [
+                    {
+                      "input": "scope"
+                    },
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "type": "input",
+            "id": "review"
+          }
+        ]
+      },
+      {
+        "label": "Model & assumptions",
+        "children": [
+          {
+            "type": "callout",
+            "tone": "warning",
+            "text": "Illustrative model. It assumes perfectly parallel work and adds three days for review. It excludes onboarding, dependencies and bottlenecks. Saving a scenario records inputs; it does not approve a plan."
+          },
+          {
+            "type": "table",
+            "columns": [
+              "Input",
+              "Current scenario"
+            ],
+            "rows": [
+              [
+                "Scope",
+                {
+                  "input": "scope"
+                }
+              ],
+              [
+                "Team size",
+                {
+                  "input": "team"
+                }
+              ],
+              [
+                "Independent review",
+                {
+                  "input": "review"
+                }
+              ],
+              [
+                "Build days",
+                {
+                  "op": "divide",
+                  "args": [
+                    {
+                      "input": "scope"
+                    },
+                    {
+                      "input": "team"
+                    }
+                  ]
+                }
+              ],
+              [
+                "Total days",
+                {
+                  "op": "add",
+                  "args": [
+                    {
+                      "op": "divide",
+                      "args": [
+                        {
+                          "input": "scope"
+                        },
+                        {
+                          "input": "team"
+                        }
+                      ]
+                    },
+                    {
+                      "op": "if",
+                      "args": [
+                        {
+                          "input": "review"
+                        },
+                        3,
+                        0
+                      ]
+                    }
+                  ]
+                }
+              ]
+            ]
+          },
+          {
+            "type": "text",
+            "text": "Change the model with \u201cRefine tool\u201d. Ask your agent to use measured throughput or include dependencies from the conversation."
+          }
+        ]
+      }
+    ]
+  }
+}

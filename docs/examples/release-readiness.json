@@ -1,0 +1,319 @@
+{
+  "version": 1,
+  "description": "Synthetic release rehearsal. These controls model a readiness policy; counts, dates and checklist items are illustrative, not evidence of a real release. Saving shares your scenario without approving deployment.",
+  "inputs": [
+    {
+      "id": "checks",
+      "label": "Passing checks",
+      "type": "number",
+      "value": 32,
+      "min": 0,
+      "max": 40,
+      "step": 1,
+      "unit": "of 40"
+    },
+    {
+      "id": "blockers",
+      "label": "Open critical blockers",
+      "type": "number",
+      "value": 2,
+      "min": 0,
+      "max": 8,
+      "step": 1,
+      "presentation": "number"
+    },
+    {
+      "id": "audited",
+      "label": "Independent audit complete in this scenario",
+      "type": "toggle",
+      "value": false
+    },
+    {
+      "id": "notes",
+      "label": "Handoff notes",
+      "type": "textarea",
+      "value": "Rehearse recovery before asking for the deployment decision.",
+      "placeholder": "Capture a question or condition for the team…",
+      "maxLength": 600
+    }
+  ],
+  "root": {
+    "type": "tabs",
+    "tabs": [
+      {
+        "label": "Readiness",
+        "children": [
+          {
+            "type": "heading",
+            "text": "What is still between us and a decision?",
+            "level": 3
+          },
+          {
+            "type": "grid",
+            "columns": 2,
+            "children": [
+              {
+                "type": "input",
+                "id": "checks"
+              },
+              {
+                "type": "input",
+                "id": "blockers"
+              }
+            ]
+          },
+          {
+            "type": "input",
+            "id": "audited"
+          },
+          {
+            "type": "grid",
+            "columns": 2,
+            "children": [
+              {
+                "type": "metric",
+                "label": "Next gate",
+                "value": {
+                  "op": "if",
+                  "args": [
+                    {
+                      "op": "greater",
+                      "args": [
+                        {
+                          "input": "blockers"
+                        },
+                        0
+                      ]
+                    },
+                    "Resolve blockers",
+                    {
+                      "op": "if",
+                      "args": [
+                        {
+                          "op": "less",
+                          "args": [
+                            {
+                              "input": "checks"
+                            },
+                            36
+                          ]
+                        },
+                        "Complete checks",
+                        {
+                          "op": "if",
+                          "args": [
+                            {
+                              "input": "audited"
+                            },
+                            "Ready for human review",
+                            "Independent audit needed"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "detail": "Illustrative policy, recalculated from your scenario"
+              },
+              {
+                "type": "metric",
+                "label": "Checks still to pass",
+                "value": {
+                  "op": "subtract",
+                  "args": [
+                    40,
+                    {
+                      "input": "checks"
+                    }
+                  ]
+                },
+                "unit": "checks"
+              }
+            ]
+          },
+          {
+            "type": "progress",
+            "label": "Verification coverage",
+            "value": {
+              "input": "checks"
+            },
+            "max": 40,
+            "unit": "checks",
+            "detail": "The sample gate requires at least 36 passing checks, zero critical blockers and an independent audit."
+          },
+          {
+            "type": "callout",
+            "tone": "warning",
+            "text": "“Ready for human review” never means “approved to deploy”. A human still owns that decision."
+          }
+        ]
+      },
+      {
+        "label": "Plan",
+        "children": [
+          {
+            "type": "badge",
+            "label": "Illustrative sequence",
+            "tone": "neutral"
+          },
+          {
+            "type": "timeline",
+            "title": "A rehearsal in three steps",
+            "items": [
+              {
+                "title": "Baseline and ownership",
+                "detail": "Record the candidate version and assign a reviewer.",
+                "date": "Day 1 · morning",
+                "status": "done"
+              },
+              {
+                "title": "Recovery rehearsal",
+                "detail": "Restore disposable data and observe the recovery outcome.",
+                "date": "Day 1 · afternoon",
+                "status": "doing"
+              },
+              {
+                "title": "Human deployment decision",
+                "detail": "Bring evidence, unresolved risks and the recovery plan.",
+                "date": "Day 2",
+                "status": "todo"
+              }
+            ]
+          },
+          {
+            "type": "accordion",
+            "sections": [
+              {
+                "title": "Example evidence checklist",
+                "children": [
+                  {
+                    "type": "list",
+                    "items": [
+                      {
+                        "title": "Build artifacts are inspectable",
+                        "detail": "Illustrative completed item; this tool did not run a build.",
+                        "status": "done"
+                      },
+                      {
+                        "title": "Critical blocker review",
+                        "detail": "Use the scenario count on Readiness.",
+                        "status": "blocked"
+                      },
+                      {
+                        "title": "Independent review receipt",
+                        "detail": "Link actual evidence in the conversation before deciding.",
+                        "status": "todo"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "title": "How the sample gate works",
+                "children": [
+                  {
+                    "type": "text",
+                    "text": "Resolve critical blockers first. Next reach 36 of 40 checks. Then obtain the independent audit. This is a hypothetical policy; use the team’s actual release contract."
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "Handoff",
+        "children": [
+          {
+            "type": "input",
+            "id": "notes"
+          },
+          {
+            "type": "table",
+            "caption": "Current scenario for the handoff",
+            "searchable": true,
+            "sortable": true,
+            "columns": [
+              "Field",
+              "Scenario value"
+            ],
+            "rows": [
+              [
+                "Passing checks",
+                {
+                  "input": "checks"
+                }
+              ],
+              [
+                "Open critical blockers",
+                {
+                  "input": "blockers"
+                }
+              ],
+              [
+                "Independent audit",
+                {
+                  "input": "audited"
+                }
+              ],
+              [
+                "Next gate",
+                {
+                  "op": "if",
+                  "args": [
+                    {
+                      "op": "greater",
+                      "args": [
+                        {
+                          "input": "blockers"
+                        },
+                        0
+                      ]
+                    },
+                    "Resolve blockers",
+                    {
+                      "op": "if",
+                      "args": [
+                        {
+                          "op": "less",
+                          "args": [
+                            {
+                              "input": "checks"
+                            },
+                            36
+                          ]
+                        },
+                        "Complete checks",
+                        {
+                          "op": "if",
+                          "args": [
+                            {
+                              "input": "audited"
+                            },
+                            "Ready for human review",
+                            "Independent audit needed"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              [
+                "Handoff note",
+                {
+                  "input": "notes"
+                }
+              ]
+            ]
+          },
+          {
+            "type": "callout",
+            "text": "Save scenario records these values and notes for the room. It does not notify a person, start work or publish a release.",
+            "tone": "neutral"
+          }
+        ]
+      }
+    ]
+  }
+}

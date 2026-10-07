@@ -7,6 +7,7 @@ This documentation describes **Agoryx 0.1.1**: the room-based application, macOS
 - [Overview and installation](../README.md)
 - [Conversations, projects, table and room CLI](AGORA.md)
 - [Verification, Council, Tournament and Debate](WORKFLOWS.md)
+- [Intelligent UI: interactive tools on the table](INTELLIGENT-UI.md)
 - [Project memory](MEMORY.md)
 - [macOS app, setup, phone access and troubleshooting](DESKTOP.md)
 - [Legacy SQLite CLI](LEGACY-CLI.md)

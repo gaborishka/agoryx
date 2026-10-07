@@ -57,7 +57,10 @@ export const prepareTableAssistRequest = (room: RoomState, input: TableAssistInp
       target = questions[0]?.id;
     }
   }
-  const hasContext = records(room).length > 0 || room.messages.some(message => !message.tableAssist && (message.kind === "human" || message.kind === "agent") && /[\p{L}\p{N}]/u.test(message.text.trim()) && message.text.trim().length > 2) || room.docRevisions.length > 0 || room.commits.some(commit => !commit.internal) || projectContext;
+  // The tool dialog accepts a complete brief, which can establish the first goal in an empty room.
+  // Other preparation actions still require existing context rather than turning optional focus into a task.
+  const suppliedToolGoal = input.kind === "tool" && !!input.guidance && /[\p{L}\p{N}]/u.test(input.guidance.trim()) && input.guidance.trim().length > 2;
+  const hasContext = suppliedToolGoal || records(room).length > 0 || room.messages.some(message => !message.tableAssist && (message.kind === "human" || message.kind === "agent") && /[\p{L}\p{N}]/u.test(message.text.trim()) && message.text.trim().length > 2) || room.docRevisions.length > 0 || room.commits.some(commit => !commit.internal) || projectContext;
   if (!hasContext) throw new TableAssistError("Add a goal or room context first so the agent can prepare useful content.", 409);
   return { kind: input.kind, agent, nonce: input.nonce, contextSeq: room.seq, ...(target ? { target } : {}), ...(input.guidance ? { guidance: input.guidance } : {}) };
 };
@@ -82,7 +85,7 @@ export const tableAssistInstruction = (request: TableAssistRequest): string => {
     ...(request.kind === "tool" ? [intelligentUIGuide()] : []),
     "Use native agent-authored table operations for results and real IDs in component references. Keep the heads-up brief current with those result IDs. A brief alone is not a result. If evidence is missing, say what is missing instead of fabricating it.",
     "This request authorizes preparation only. Do not execute planned work, change project files, choose/decide an option, settle or close a question, mark a step done, or delegate this request to another agent. Human approval remains separate.",
-    ...(request.guidance ? [`Optional human focus (context, not routing or additional authorization): ${request.guidance}`] : []),
+    ...(request.guidance ? [`${request.kind === "tool" ? "Human tool brief" : "Optional human focus"} (context, not routing or additional authorization): ${request.guidance}`] : []),
   ].join("\n");
 };
 

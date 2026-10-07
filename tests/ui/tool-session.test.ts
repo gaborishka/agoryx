@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseIntelligentUI } from "../../internal/agora/intelligent-ui.js";
-import { acknowledgedScenario, safeInputSnapshot, safePreviousDrafts, safeScenarios, type ToolDraftStorage } from "../../ui/src/lib/tool-session.js";
+import { acknowledgedScenario, safeInputSnapshot, safePreviousDrafts, safeScenarios, scenarioValuesForModel, type ToolDraftStorage } from "../../ui/src/lib/tool-session.js";
 
 const spec = parseIntelligentUI({ version: 1, description: "A model", inputs: [{ id: "people", type: "number", label: "People", min: 1, max: 10, value: 3 }], root: { type: "input", id: "people" } });
 const scenario = (seq = 4, values: unknown = { people: 3 }) => ({ seq, revision: 1, name: "Baseline", by: "Ivan", values });
@@ -30,6 +30,48 @@ test("history preserves old-model scalars and filters invalid names, values and 
   assert.deepEqual(safeScenarios([current, current]), { scenarios: [current], invalid: true });
   result.scenarios[1]!.values.people = 9;
   assert.deepEqual(current.values, { people: 3 });
+});
+
+test("applying a current-model scenario validates its exact keys, types and ranges independently of inspection", () => {
+  for (const values of [{}, { renamed_input: 3 }, { people: "3" }, { people: true }, { people: 0 }, { people: 11 }, { people: 3, extra: false }]) {
+    const history = safeScenarios([scenario(4, values)]);
+    assert.equal(history.invalid, false, "valid scalar history remains inspectable and exportable");
+    assert.equal(history.scenarios.length, 1);
+    const before = structuredClone(history.scenarios[0]!);
+    assert.deepEqual(scenarioValuesForModel(spec, 1, history.scenarios[0]!), { values: null, reason: "invalid-values" });
+    assert.deepEqual(history.scenarios[0], before, "failed application must preserve historical evidence");
+  }
+  const saved = safeScenarios([scenario(4, { people: 7 })]).scenarios[0]!;
+  const usable = scenarioValuesForModel(spec, 1, saved);
+  assert.deepEqual(usable, { values: { people: 7 }, reason: null });
+  usable.values!.people = 8;
+  assert.equal(saved.values.people, 7, "local exploration receives its own values object");
+});
+
+test("different model revisions remain exportable but cannot be silently reinterpreted or applied", () => {
+  const old = safeScenarios([scenario(4, { old_input: "old model data" })]).scenarios[0]!;
+  const before = structuredClone(old);
+  assert.deepEqual(scenarioValuesForModel(spec, 3, old), { values: null, reason: "different-revision" });
+  assert.deepEqual(old, before);
+  const sameShape = safeScenarios([scenario(4, { people: 5 })]).scenarios[0]!;
+  assert.deepEqual(scenarioValuesForModel(spec, 3, sameShape), { values: null, reason: "different-revision" }, "matching input names alone never override the revision boundary");
+  const future = { ...sameShape, revision: 9, seq: 10 };
+  assert.deepEqual(scenarioValuesForModel(spec, 1, future), { values: null, reason: "different-revision" });
+});
+
+test("applying scenarios enforces current text limits and selected options", () => {
+  const current = parseIntelligentUI({ version: 1, description: "Current controls", inputs: [
+    { id: "notes", type: "textarea", label: "Notes", maxLength: 3, value: "" },
+    { id: "plan", type: "select", label: "Plan", options: ["A", "B"], value: "A" },
+    { id: "ready", type: "toggle", label: "Ready", value: false },
+  ], root: { type: "stack", children: ["notes", "plan", "ready"].map(id => ({ type: "input", id })) } });
+  const values = { notes: " \n ", plan: "B", ready: true };
+  const entry = safeScenarios([scenario(4, values)]).scenarios[0]!;
+  assert.deepEqual(scenarioValuesForModel(current, 1, entry), { values, reason: null });
+  for (const patch of [{ notes: "longer" }, { plan: "C" }, { ready: "yes" }]) {
+    const invalid = { ...entry, values: { ...values, ...patch } };
+    assert.deepEqual(scenarioValuesForModel(current, 1, invalid), { values: null, reason: "invalid-values" });
+  }
 });
 
 test("history count and serialized size are bounded while recent valid scenarios survive", () => {

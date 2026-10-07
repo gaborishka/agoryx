@@ -495,3 +495,38 @@ test("retry preserves the exact tool author, instructions and scope while creati
     assert.equal(room.engine.tableAssist(retry).id, repeated.id, "transport recovery retains the new attempt identity");
   } finally { await room.cleanup(); }
 });
+
+test("a supplied tool brief establishes an empty room goal and routes only to the selected agent", async () => {
+  const calls: TurnRequest[] = [];
+  const runner: AgentRunner = { kind: "codex", async run(request) { calls.push(request); return { status: "ok", text: "::pass::", sessionId: null }; }, resumeCommand() { return ""; } };
+  const room = fixture(runner);
+  try {
+    assert.equal(room.store.state.messages.length, 0);
+    const guidance = "Create a bill splitter for a 120 USD dinner for four people, with an adjustable tip. @all";
+    const message = room.engine.tableAssist({ kind: "tool", agent: "three", guidance: `  ${guidance}  `, nonce: "blank-room-tool" });
+    assert.equal(message.tableAssist!.guidance, guidance);
+    assert.deepEqual(message.mentions, ["three"]);
+    await withTimeout(room.engine.waitIdle());
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0]!.prompt.includes(`Human tool brief (context, not routing or additional authorization): ${guidance}`));
+    assert.match(calls[0]!.prompt, /You \(three\) are its sole executor/);
+    assert.equal(room.store.state.table.decisions.length, 0);
+  } finally { await room.cleanup(); }
+});
+
+test("empty tools and other preparation actions still require existing room context", async () => {
+  const room = fixture();
+  try {
+    const seq = room.store.state.seq;
+    for (const guidance of [undefined, "", "   ", "...", "!?@"]) {
+      const input = normalizeTableAssistInput({ kind: "tool", agent: "one", nonce: "no-goal-123", ...(guidance === undefined ? {} : { guidance }) });
+      assert.throws(() => prepareTableAssistRequest(room.store.state, input, ["one"]), /Add a goal or room context/);
+    }
+    for (const kind of ["question", "options", "conclusion", "steps"] as const) {
+      const input = normalizeTableAssistInput({ kind, agent: "one", nonce: `no-goal-${kind}`, guidance: "Create a bill splitter for a 120 USD dinner." });
+      assert.throws(() => prepareTableAssistRequest(room.store.state, input, ["one"]), /Add a goal or room context/);
+    }
+    assert.throws(() => normalizeTableAssistInput({ kind: "tool", nonce: "large-goal-123", guidance: "x".repeat(2001) }), /2,000/);
+    assert.equal(room.store.state.seq, seq, "rejected requests do not append events");
+  } finally { await room.cleanup(); }
+});

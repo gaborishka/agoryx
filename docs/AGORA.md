@@ -69,7 +69,7 @@ The Table view helps a person understand the current result without reconstructi
 
 - **Heads-up** is an authored overview of where the work stands, important changes and the next action. Its sources and author remain visible.
 - **Human decisions** distinguish a requested choice from an agent recommendation.
-- **Current results** can be comparisons, plans, checks, artifacts, custom components or native interactive tools. **Create a tool** lets the selected agent compose controls, charts, searchable tables, timelines and comparisons for the current task. **Refine tool** requests a scoped revision from its author. Explore inputs, name and **Save scenario** to share them, or export the definition and saved scenarios as JSON. [Intelligent UI guide](INTELLIGENT-UI.md).
+- **Current results** can be comparisons, plans, checks, artifacts, custom components or native interactive tools. **Create a tool** lets the selected agent compose controls, charts, searchable tables, timelines and comparisons for the current task, including a first task described in an empty room. **Refine tool** requests a scoped revision from its author. Explore inputs, name and **Save scenario** to share them, compare two scenarios with their calculated differences, or export the definition and saved scenarios as JSON. Invalid numeric entries block saving until corrected. [Intelligent UI guide](INTELLIGENT-UI.md).
 - **Important changes and team state** come from actual room activity.
 - **Arguments** opens the underlying questions, alternatives, objections, facts and evidence.
 
@@ -95,6 +95,7 @@ agoryx table -r ROOM component "Compatibility checks" --kind checks --ref X1
 agoryx table -r ROOM show W1
 agoryx ui guide
 agoryx ui check --file tool.json --ref F1
+agoryx ui check --file tool.json --ref F1 --values '{"people":6}' --json
 agoryx table -r ROOM component "Export explorer" --kind interactive --body-file tool.json --ref F1
 ```
 

@@ -52,6 +52,17 @@ export function safeScenarios(raw: unknown): { scenarios: TableScenario[]; inval
   return { scenarios: scenarios.sort((a, b) => a.seq - b.seq), invalid };
 }
 
+export type ScenarioModelValues =
+  | { values: Record<string, UIValue>; reason: null }
+  | { values: null; reason: "different-revision" | "invalid-values" };
+
+/** Historical scalars remain inspectable, but applying them requires the exact current model contract. */
+export function scenarioValuesForModel(spec: IntelligentUI, revision: number, scenario: TableScenario): ScenarioModelValues {
+  if (scenario.revision !== revision) return { values: null, reason: "different-revision" };
+  try { return { values: validateUIValues(spec, scenario.values), reason: null }; }
+  catch { return { values: null, reason: "invalid-values" }; }
+}
+
 /** Only the server-attributed event can confirm a pending save; a matching value alone proves nothing. */
 export function acknowledgedScenario(ops: unknown, expected: { nonce: string; target: string; revision: number; by: string }): number | null {
   if (!Array.isArray(ops) || !nonce(expected.nonce) || !/^W[1-9]\d*$/.test(expected.target) || !sequence(expected.revision) || !label(expected.by, 500)) return null;

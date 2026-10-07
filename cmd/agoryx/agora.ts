@@ -105,7 +105,7 @@ export const printAgoraUsage = (write: OutputWriter = console.log): void => {
       "                                     The project's memory: show it, note something, keep a table item as the table holds it, or take one out",
       "  agoryx settings [-r room] [--budget N|none] [--network on|off] [--access workspace|readonly] [--doc PATH|none]",
       "  agoryx viz check [--body JSON | --file F | -]   Check visual blocks (```viz) before posting: what the reader sees, or what to fix",
-      "  agoryx ui guide | ui check --file tool.json [--ref F1]   Validate a table tool before publishing",
+      "  agoryx ui guide | ui check --file tool.json [--ref F1] [--values JSON] [--json]   Validate and evaluate a table tool",
       "  agoryx viz guide                   The visual block kinds and their fields",
       "",
       "Table ops:",

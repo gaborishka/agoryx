@@ -4,10 +4,11 @@ import { evaluateUI, type IntelligentUI, type UIInput, type UINode, type UIValue
 import { createWorkRefResolver } from "@agora/work-table";
 import type { RoomState } from "@/lib/types";
 import { compareIntelligentValues, formatIntelligentValue as format } from "@/lib/intelligent-format";
+import { parseToolNumberDraft, syncToolNumberEditor } from "@/lib/tool-number-editor";
 import { WorkSources } from "./AgentComponent";
 import "./intelligent-ui.css";
 
-export type ToolNodeProps = { node: UINode; spec: IntelligentUI; values: Record<string, UIValue>; change: (id: string, value: UIValue) => void; room: RoomState; locked: boolean };
+export type ToolNodeProps = { node: UINode; spec: IntelligentUI; values: Record<string, UIValue>; change: (id: string, value: UIValue) => void; room: RoomState; locked: boolean; inputResetVersion: number; onInputError: (id: string, error: string | null) => void };
 type ChartNode = Extract<UINode, { type: "chart" }>;
 type TableNode = Extract<UINode, { type: "table" }>;
 const colors = ["var(--primary)", "var(--codex)", "var(--amber)", "var(--add-ink)", "var(--muted-foreground)"];
@@ -39,7 +40,7 @@ export function ToolNode(props: ToolNodeProps) {
     case "text": return <p className="tool-copy">{node.text}</p>;
     case "callout": return <div className="tool-callout" data-tone={node.tone ?? "neutral"}>{node.text}</div>;
     case "metric": return <div className="tool-metric"><div className="tool-eyebrow">{node.label}</div><div className="tool-metric-value"><output aria-label={node.label}>{format(evaluateUI(node.value, values), node.decimals)}</output>{node.unit ? <span>{node.unit}</span> : null}</div>{node.detail ? <p className="tool-detail">{node.detail}</p> : null}</div>;
-    case "input": return <ToolInput input={spec.inputs.find(input => input.id === node.id)!} value={values[node.id]} change={value => change(node.id, value)} locked={locked} />;
+    case "input": return <ToolInput input={spec.inputs.find(input => input.id === node.id)!} value={values[node.id]} change={value => change(node.id, value)} locked={locked} inputResetVersion={props.inputResetVersion} onInputError={props.onInputError} />;
     case "chart": return <ToolChart node={node} values={values} />;
     case "table": return <ToolTable node={node} values={values} />;
     case "progress": {
@@ -57,9 +58,10 @@ export function ToolNode(props: ToolNodeProps) {
   }
 }
 
-function ToolInput({ input, value, change, locked }: { input: UIInput; value: UIValue; change: (value: UIValue) => void; locked: boolean }) {
+type ToolInputProps = { input: UIInput; value: UIValue; change: (value: UIValue) => void; locked: boolean } & Pick<ToolNodeProps, "inputResetVersion" | "onInputError">;
+function ToolInput({ input, value, change, locked, inputResetVersion, onInputError }: ToolInputProps) {
   const id = useId();
-  if (input.type === "number") return <NumberInput input={input} value={Number(value)} change={change} locked={locked} />;
+  if (input.type === "number") return <NumberInput input={input} value={Number(value)} change={change} locked={locked} inputResetVersion={inputResetVersion} onInputError={onInputError} />;
   return <div className="tool-input" data-kind={input.type}><label htmlFor={id} className="tool-label">{input.label}</label>
     {input.type === "toggle" ? <input id={id} type="checkbox" checked={Boolean(value)} disabled={locked} onChange={event => change(event.target.checked)} />
       : input.type === "select" ? <select id={id} value={String(value)} disabled={locked} onChange={event => change(event.target.value)}>{input.options.map(option => <option key={option}>{option}</option>)}</select>
@@ -69,18 +71,26 @@ function ToolInput({ input, value, change, locked }: { input: UIInput; value: UI
   </div>;
 }
 
-function NumberInput({ input, value, change, locked }: { input: Extract<UIInput, { type: "number" }>; value: number; change: (value: UIValue) => void; locked: boolean }) {
+function NumberInput({ input, value, change, locked, inputResetVersion, onInputError }: Omit<ToolInputProps, "input" | "value"> & { input: Extract<UIInput, { type: "number" }>; value: number }) {
   const id = useId();
-  const [draft, setDraft] = useState(String(value));
-  const [editing, setEditing] = useState(false);
-  useEffect(() => { if (!editing) setDraft(String(value)); }, [value, editing]);
-  const numeric = draft.trim() === "" ? NaN : Number(draft);
-  const invalid = !Number.isFinite(numeric) || numeric < input.min || numeric > input.max;
+  const [editor, setEditor] = useState(() => ({ text: String(value), value, resetVersion: inputResetVersion }));
+  const current = syncToolNumberEditor(editor, value, inputResetVersion, input.min, input.max);
+  // Synchronize in the same render so an explicit Reset cannot briefly show stale errors.
+  if (current !== editor) setEditor(current);
+  const invalid = parseToolNumberDraft(current.text, input.min, input.max) === null;
+  const errorText = `${input.label}: enter a number from ${format(input.min)} to ${format(input.max)}.`;
+  useEffect(() => { onInputError(input.id, invalid ? errorText : null); }, [input.id, invalid, errorText, onInputError]);
+  const edit = (text: string) => {
+    const numeric = parseToolNumberDraft(text, input.min, input.max);
+    setEditor({ text, value: numeric ?? value, resetVersion: inputResetVersion });
+    onInputError(input.id, numeric === null ? errorText : null);
+    if (numeric !== null) change(numeric);
+  };
   return <div className="tool-input"><div className="tool-between"><label htmlFor={id} className="tool-label">{input.label}</label>{input.unit ? <span className="tool-unit">{input.unit}</span> : null}</div>
-    <input id={id} type="number" inputMode="decimal" min={input.min} max={input.max} step="any" value={editing ? draft : String(value)} disabled={locked} aria-invalid={editing && invalid || undefined} aria-describedby={`${id}-help`} onFocus={() => { setDraft(String(value)); setEditing(true); }} onChange={event => { const next = event.target.value; setDraft(next); const number = next.trim() === "" ? NaN : Number(next); if (Number.isFinite(number) && number >= input.min && number <= input.max) change(number); }} onBlur={() => { setEditing(false); setDraft(String(value)); }} />
-    {input.presentation !== "number" ? <input aria-label={`${input.label} slider`} type="range" min={input.min} max={input.max} step={input.step ?? 1} value={value} disabled={locked} onChange={event => { const next = Number(event.target.value); setEditing(false); setDraft(String(next)); change(next); }} /> : null}
+    <input id={id} type="number" inputMode="decimal" min={input.min} max={input.max} step="any" value={current.text} disabled={locked} aria-invalid={invalid || undefined} aria-describedby={`${id}-help${invalid ? ` ${id}-error` : ""}`} aria-errormessage={invalid ? `${id}-error` : undefined} onChange={event => edit(event.target.value)} />
+    {input.presentation !== "number" ? <input aria-label={`${input.label} slider`} type="range" min={input.min} max={input.max} step={input.step ?? 1} value={value} disabled={locked} onChange={event => edit(event.target.value)} /> : null}
     <div className="tool-range-bounds" id={`${id}-help`}><span>{format(input.min)}</span><span>{format(input.max)}</span></div>
-    {editing && invalid ? <p className="tool-note" role="status">Enter a number from {format(input.min)} to {format(input.max)}. Results use {format(value)} until a valid value is entered.</p> : null}
+    {invalid ? <p id={`${id}-error`} className="tool-note tool-input-error" role="status">Enter a number from {format(input.min)} to {format(input.max)}. Results still use {format(value)}. Correct this field or reset before saving.</p> : null}
   </div>;
 }
 

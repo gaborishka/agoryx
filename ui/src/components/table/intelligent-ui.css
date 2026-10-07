@@ -48,6 +48,7 @@
 .tool-input-count { align-self: flex-end; font-size: 11px; }
 .tool-range-bounds { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .tool-note { margin-top: 8px; font-size: 12px; line-height: 1.5; color: var(--muted-foreground); }
+.tool-input-error { color: var(--amber-ink); }
 .tool-progress,.tool-bar-track { position: relative; height: 9px; border-radius: 5px; background: var(--secondary); overflow: hidden; }
 .tool-progress { margin-top: 13px; }
 .tool-progress>span { display: block; height: 100%; border-radius: inherit; background: var(--codex); transition: width 200ms ease-out; }

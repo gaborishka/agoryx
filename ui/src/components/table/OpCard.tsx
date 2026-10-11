@@ -50,6 +50,7 @@ export const TC_KIND: Record<TableOp["op"], string> = {
   edit: "Rewritten",
   delete: "Deleted",
   brief: "Heads-up",
+  "component-input": "Scenario saved",
   component: "Component",
   archive: "Archived",
   restore: "Restored",
@@ -73,6 +74,7 @@ export const KIND_ICON: Record<TableOp["op"], LucideIcon> = {
   edit: PencilIcon,
   delete: Trash2Icon,
   brief: MessageSquareTextIcon,
+  "component-input": PanelsTopLeftIcon,
   component: PanelsTopLeftIcon,
   archive: ArchiveIcon,
   restore: RotateCcwIcon,
@@ -96,6 +98,7 @@ export const KIND_TONE: Record<TableOp["op"], string> = {
   edit: "text-muted-foreground",
   delete: "text-muted-foreground",
   brief: "text-primary",
+  "component-input": "text-primary",
   component: "text-primary",
   archive: "text-muted-foreground",
   restore: "text-primary",
@@ -268,6 +271,8 @@ export function OpCard({ o }: { o: TableOp }) {
   switch (o.op) {
     case "brief":
       return <div className={cn(card, "border-l-[3px] border-l-primary/60")}><Kind op="brief" /><div className="mt-1.5 text-ui">{o.now}</div>{o.next ? <p className="mt-1 text-small text-muted-foreground">Next: {o.next}</p> : null}{o.awaiting ? <div className="mt-2"><RefChip id={o.awaiting.q} /> · human decision needed</div> : null}</div>;
+    case "component-input":
+      return <div className={cn(card, "flex items-baseline gap-2.5 py-2")}><Kind op="component-input" /><RefChip id={o.target} /><span className="text-ui">Inputs saved for the team</span></div>;
     case "component":
       return <div className={cn(card, "flex items-baseline gap-2.5 py-2")}><Kind op="component" /><RefChip id={o.target ?? o.id ?? "W?"} /><span className="min-w-0 text-ui">{o.title}</span></div>;
     case "propose": {
@@ -497,6 +502,7 @@ const TC_MANY: Record<TableOp["op"], [string, string]> = {
   edit: ["rewritten", "rewritten"],
   delete: ["deleted", "deleted"],
   brief: ["heads-up", "heads-ups"],
+  "component-input": ["saved scenario", "saved scenarios"],
   component: ["component", "components"],
   archive: ["archived component", "archived components"],
   restore: ["restored component", "restored components"],

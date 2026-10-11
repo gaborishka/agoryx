@@ -1,6 +1,6 @@
 import type { RoomAgent, RoomEvent, RoomState } from "./types.js";
 
-const PRESENTATION_OPS = new Set(["brief", "component", "archive", "restore"]);
+const PRESENTATION_OPS = new Set(["brief", "component", "component-input", "archive", "restore"]);
 /** Publishing or maintaining the work surface is context, never a request for another model turn. */
 export const isTablePresentationOp = (op: unknown): boolean => typeof op === "string" && PRESENTATION_OPS.has(op);
 

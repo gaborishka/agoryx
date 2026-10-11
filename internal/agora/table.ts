@@ -1,3 +1,4 @@
+import { parseIntelligentUI, validateUIValues } from "./intelligent-ui.js";
 import type {
   TableBriefContent,
   TableComponentKind,
@@ -23,7 +24,14 @@ export const renderTableComponentMarkdown = (table: TableState, rawId: string): 
     ...(component.asOfSeq !== undefined ? [`Context through: ${component.asOfSeq}`] : []),
     `Sources: ${component.refs.join(", ") || "none"}`,
     ...(component.file ? [`Preview: ${component.file}`] : []), ""];
-  lines.push(component.body ?? "This native component reads its current source records; it has no separate authored body.");
+  if (component.ui) lines.push("```json", JSON.stringify(component.ui, null, 2), "```");
+  if (component.inputSnapshot) lines.push(`Saved inputs by ${component.inputSnapshot.by} at event ${component.inputSnapshot.seq}:`, JSON.stringify(component.inputSnapshot.values));
+  if (component.scenarios?.length) {
+    lines.push("", "## Saved scenarios (most recent 24)");
+    for (const scenario of component.scenarios) lines.push(`- ${scenario.name} — ${scenario.by}, event ${scenario.seq}, model revision ${scenario.revision}: ${JSON.stringify(scenario.values)}`);
+  }
+  if (component.body) lines.push(component.body);
+  else if (!component.ui) lines.push("This native component reads its current source records; it has no separate authored body.");
   return `${lines.join("\n")}\n`;
 };
 
@@ -57,6 +65,7 @@ const TABLE_OPS: ReadonlySet<TableOpName> = new Set([
   "delete",
   "brief",
   "component",
+  "component-input",
   "archive",
   "restore",
 ]);
@@ -78,6 +87,8 @@ export const TABLE_PRESENTATION_LIMITS = {
   file: MAX_TEXT,
   activeComponents: 12,
   components: 128,
+  scenarios: 24,
+  scenarioHistoryChars: 256_000,
 } as const;
 
 const boundedText = (value: unknown, field: string, max: number, required = true, oneLine = false): string | undefined => {
@@ -237,7 +248,7 @@ export const prepareTableOp = (
       return { ...base, op, ...content };
     }
     case "component": {
-      const kinds: readonly TableComponentKind[] = ["comparison", "plan", "checks", "artifact", "custom"];
+      const kinds: readonly TableComponentKind[] = ["comparison", "plan", "checks", "artifact", "custom", "interactive"];
       const kind = input.kind as TableComponentKind;
       if (!kinds.includes(kind)) throw new TableOpError(`component kind must be ${kinds.join(", ")}`);
       const refs = refsOf(input.refs, TABLE_PRESENTATION_LIMITS.componentRefs);
@@ -248,10 +259,17 @@ export const prepareTableOp = (
         if (kind === "plan" && !refs.some((ref) => ref.startsWith("X"))) throw new TableOpError("plan needs at least one step (X) reference");
       }
       const title = boundedText(input.title, "title", TABLE_PRESENTATION_LIMITS.title, true, true)!;
-      const body = boundedText(input.body, "body", TABLE_PRESENTATION_LIMITS.body, false);
+      let ui;
+      if (kind === "interactive") {
+        if (input.ui !== undefined && input.body !== undefined) throw new TableOpError("use ui or a JSON body, not both");
+        if (input.file !== undefined) throw new TableOpError("interactive components use a JSON UI spec, not a preview file");
+        try { ui = parseIntelligentUI(input.ui ?? input.body, refs); }
+        catch (error) { throw new TableOpError(error instanceof Error ? error.message : String(error)); }
+      } else if (input.ui !== undefined) throw new TableOpError("ui requires kind interactive");
+      const body = kind === "interactive" ? undefined : boundedText(input.body, "body", TABLE_PRESENTATION_LIMITS.body, false);
       const file = boundedText(input.file, "file", TABLE_PRESENTATION_LIMITS.file, false);
       if ((kind === "artifact" || kind === "custom") && !body && !file) throw new TableOpError(`${kind} needs a body or file to preview`);
-      const content = { title, kind, refs, ...(body ? { body } : {}), ...(file ? { file } : {}) };
+      const content = { title, kind, refs, ...(ui ? { ui } : {}), ...(body ? { body } : {}), ...(file ? { file } : {}) };
       if (input.target !== undefined) {
         const found = componentOf(input.target);
         return { ...base, op, target: found.id, ...content };
@@ -260,6 +278,17 @@ export const prepareTableOp = (
       if (components.length >= TABLE_PRESENTATION_LIMITS.components) throw new TableOpError(`the table holds at most ${TABLE_PRESENTATION_LIMITS.components} components; update an existing one`);
       if (components.filter((entry) => !entry.archived).length >= TABLE_PRESENTATION_LIMITS.activeComponents) throw new TableOpError(`at most ${TABLE_PRESENTATION_LIMITS.activeComponents} components can be active; archive an old one first`);
       return { ...base, op, id: nextId(table, "W", components), ...content };
+    }
+    case "component-input": {
+      if (!isHuman) throw new TableOpError("Only the human can save tool inputs");
+      const found = componentOf(input.target);
+      if (found.archived || found.kind !== "interactive" || !found.ui) throw new TableOpError("This tool is not active");
+      if (input.revision !== (found.contentSeq ?? found.seq) || input.inputSeq !== (found.inputSnapshot?.seq ?? 0)) throw new TableOpError("The tool or saved scenario changed. Reload its current values before saving.");
+      let values;
+      try { values = validateUIValues(found.ui, input.values); }
+      catch (error) { throw new TableOpError(error instanceof Error ? error.message : String(error)); }
+      const name = boundedText(input.name, "scenario name", 80, false, true);
+      return { ...base, op, target: found.id, revision: input.revision as number, inputSeq: input.inputSeq as number, values, ...(name ? { name } : {}) };
     }
     case "archive":
     case "restore": {
@@ -529,11 +558,22 @@ export const applyTableOp = (table: TableState, op: TableOp, seq: number, room: 
     case "component": {
       table.components ??= [];
       const found = op.target ? table.components.find((entry) => entry.id === op.target) : undefined;
-      const content = { title: op.title, kind: op.kind, refs: [...op.refs], asOfSeq: op.asOfSeq ?? Math.max(0, seq - 1), contentBy: op.by, ...(op.body ? { body: op.body } : {}), ...(op.file ? { file: op.file } : {}) };
+      const content = { title: op.title, kind: op.kind, ...(op.ui ? { ui: structuredClone(op.ui) } : {}), refs: [...op.refs], asOfSeq: op.asOfSeq ?? Math.max(0, seq - 1), contentBy: op.by, ...(op.body ? { body: op.body } : {}), ...(op.file ? { file: op.file } : {}) };
       if (found) {
-        const replacement = { ...content, id: found.id, by: found.by, seq: found.seq, updatedSeq: seq, contentSeq: seq, updatedBy: op.by, ...(found.archived ? { archived: true } : {}) };
+        const replacement = { ...content, ...(found.scenarios ? { scenarios: structuredClone(found.scenarios) } : {}), id: found.id, by: found.by, seq: found.seq, updatedSeq: seq, contentSeq: seq, updatedBy: op.by, ...(found.archived ? { archived: true } : {}) };
         table.components.splice(table.components.indexOf(found), 1, replacement);
       } else if (!op.target) table.components.push({ ...content, id: op.id!, by: op.by, seq, updatedSeq: seq, contentSeq: seq, updatedBy: op.by });
+      return;
+    }
+    case "component-input": {
+      const found = table.components?.find(entry => entry.id === op.target);
+      if (found && !found.archived && found.kind === "interactive" && op.revision === (found.contentSeq ?? found.seq) && op.inputSeq === (found.inputSnapshot?.seq ?? 0)) {
+        found.inputSnapshot = { values: { ...op.values }, by: op.by, seq };
+        found.scenarios = [...(found.scenarios ?? []), { ...found.inputSnapshot, values: { ...op.values }, name: op.name ?? `Scenario ${seq}`, revision: op.revision }].slice(-TABLE_PRESENTATION_LIMITS.scenarios);
+        while (found.scenarios.length > 1 && JSON.stringify(found.scenarios).length > TABLE_PRESENTATION_LIMITS.scenarioHistoryChars) found.scenarios.shift();
+        found.updatedSeq = seq;
+        found.updatedBy = op.by;
+      }
       return;
     }
     case "archive":
@@ -739,6 +779,8 @@ export const describeTableOp = (op: TableOp, table?: TableState, options: { whol
   switch (op.op) {
     case "brief":
       return `updated the Heads-up: ${quote(op.now)}${op.awaiting ? ` — waiting for a choice on ${op.awaiting.q}` : ""}`;
+    case "component-input":
+      return `saved scenario for ${op.target}`;
     case "component":
       return `${op.target ? "updated" : "added"} component ${op.target ?? op.id} ${quote(op.title, 80)} (${op.kind})`;
     case "archive":
@@ -829,6 +871,8 @@ export const renderTableMarkdown = (table: TableState, roomName: string): string
       lines.push(`- **${component.id}** ${component.title} (${component.kind}; by ${component.by}; updated at ${component.updatedSeq}${component.updatedBy && component.updatedBy !== component.by ? ` by ${component.updatedBy}` : ""}${component.archived ? "; archived" : ""})`);
       if (component.refs.length) lines.push(`  Sources: ${component.refs.join(", ")}`);
       if (component.file) lines.push(`  preview: ${component.file}`);
+      if (component.ui) lines.push(`  Interactive tool: ${component.ui.description} (read: agoryx table show ${component.id})`);
+      if (component.inputSnapshot) lines.push(`  Scenario saved by ${component.inputSnapshot.by}: ${JSON.stringify(component.inputSnapshot.values)}`);
       if (component.body) lines.push(`  Read authored content: agoryx table show ${component.id}`);
     }
     lines.push("");
@@ -989,6 +1033,7 @@ export const summarizeTable = (table: TableState): string | null => {
   }
   for (const component of (table.components ?? []).filter((entry) => !entry.archived).slice(-TABLE_PRESENTATION_LIMITS.activeComponents)) {
     lines.push(`  ${component.id} ${quote(component.title, 80)} (${component.kind}; by ${component.by}; refs: ${component.refs.join(", ") || "none"}${component.file ? `; preview ${component.file}` : ""})`);
+    if (component.inputSnapshot) lines.push(`    Scenario saved by ${component.inputSnapshot.by} at event ${component.inputSnapshot.seq}: ${JSON.stringify(component.inputSnapshot.values)} (exploration, not approval)`);
   }
   for (const question of openQuestions) {
     const options = liveOptions.filter((option) => option.q === question.id);

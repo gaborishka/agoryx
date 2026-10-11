@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 export const TABLE_USAGE = [
   "agoryx table [show [W1]]   (W1: read that component's full authored content)",
   'agoryx table brief "where we are" [--change "important change"] [--next "next step"] [--ref P1] [--awaiting Q1 --recommend P1]   (--change and --ref can repeat)',
-  'agoryx table component "title" --kind comparison|plan|checks|artifact|custom [--ref P1] [--body … | --body-file f.md] [--file path] [--target W1]   (--ref can repeat; target replaces your component)',
+  'agoryx table component "title" --kind comparison|plan|checks|artifact|custom|interactive [--ref P1] [--body … | --body-file f.md] [--file path] [--target W1]   (--ref can repeat; target replaces your component)',
   "agoryx table archive W1 | restore W1",
   'agoryx table ask "question" [--many]   (--many: its options don\'t exclude each other; any number can be chosen)',
   'agoryx table propose "short title" [--body "what and why" | --body-file notes.md] [--file path] [--q Q1]',
@@ -100,7 +100,7 @@ export const parseTableCommand = (verb: string, argv: string[]): Record<string, 
     }
     case "component": {
       if (!rest) throw new TableCommandError("'component' needs a title");
-      if (!flags.kind) throw new TableCommandError("'component' needs --kind comparison|plan|checks|artifact|custom");
+      if (!flags.kind) throw new TableCommandError("'component' needs --kind comparison|plan|checks|artifact|custom|interactive");
       if (flags.body !== undefined && flags["body-file"] !== undefined) throw new TableCommandError("use --body or --body-file, not both");
       for (const name of Object.keys(flags)) if (!flags[name]) throw new TableCommandError(`--${name} needs a value`);
       for (const name of Object.keys(repeated)) if (repeated[name]!.some((value) => !value)) throw new TableCommandError(`--${name} needs a value`);

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // An isolated, reproducible room for inspecting the production table UI. No model requests or personal rooms.
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,7 +48,10 @@ if (!existing) {
     <button type="button" aria-expanded="false" onclick="const p=document.getElementById('detail');p.hidden=!p.hidden;this.setAttribute('aria-expanded',String(!p.hidden));">Show the dependency</button>
     <p id="detail" hidden>Your choice determines how the result is presented. Independent checks can continue.</p></main></html>`;
   move({ op: "component", title: "Interactive work map", kind: "custom", refs: ["P1", "X2"], body: "```html\n" + html + "\n```" }, "claude");
-  move({ op: "brief", now: "The layout comparison is ready. Choose one main result or a grid of components.", changes: ["The plan and checks are linked to real steps", "An interactive diagram was created for this task"], next: "After your choice: Codex checks the narrow layout", refs: ["W1", "X1", "X2"], awaiting: { q: "Q1", recommendation: "P1" } });
+  move({ op: "component", title: "Delivery scenario explorer", kind: "interactive", refs: ["F1", "X2"], body: readFileSync(join(root, "docs/examples/delivery-explorer.json"), "utf8") });
+  move({ op: "component", title: "Release readiness lab", kind: "interactive", refs: ["F1"], body: readFileSync(join(root, "docs/examples/release-readiness.json"), "utf8") }, "claude");
+  move({ op: "component", title: "Research comparison studio", kind: "interactive", refs: ["F1"], body: readFileSync(join(root, "docs/examples/research-comparison.json"), "utf8") });
+  move({ op: "brief", now: "A working surface shaped around the question.", changes: ["Explore delivery, compare alternatives and review a release", "Change inputs, save named scenarios, and revisit your assumptions", "All examples use synthetic data and local test runners"], next: "Open a tool below, or describe a new one with Create a tool", refs: ["W4", "W5", "W6", "F1"] });
 }
 
 const execute = promisify(execFile);
@@ -68,7 +71,15 @@ const runner = kind => ({
       };
       const fresh = () => RoomStore.open(roomsRoot, request.env.AGORYX_ROOM).state;
       const refs = [];
-      if (assist.kind === "question") {
+      if (assist.kind === "tool") {
+        const previous = current.table.components.find(c => c.id === assist.target);
+        const choice = /release|ready|readiness/i.test(assist.guidance ?? "") ? ["release-readiness.json", "Release readiness lab"] : /compare|research|alternative/i.test(assist.guidance ?? "") ? ["research-comparison.json", "Research comparison studio"] : ["delivery-explorer.json", "Delivery scenario explorer"];
+        const spec = previous?.ui ? structuredClone(previous.ui) : JSON.parse(readFileSync(join(root, "docs/examples", choice[0]), "utf8"));
+        if (previous?.inputSnapshot) for (const input of spec.inputs) if (Object.hasOwn(previous.inputSnapshot.values, input.id)) input.value = previous.inputSnapshot.values[input.id];
+        const replaces = previous?.by === request.env.AGORYX_AGENT;
+        await publish(["component", previous?.title ?? choice[1], "--kind", "interactive", "--body", JSON.stringify(spec), "--ref", "F1", ...(assist.target ? replaces ? ["--target", assist.target] : ["--ref", assist.target] : [])]);
+        refs.push(replaces ? assist.target : fresh().table.components.at(-1).id);
+      } else if (assist.kind === "question") {
         const text = "What evidence should confirm that the selected layout is easier to use?";
         let question = current.table.questions.find(question => question.status === "open" && question.text === text);
         if (!question) {

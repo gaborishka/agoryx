@@ -1,4 +1,5 @@
-export const BRIEFING_VERSION = 3;
+export const BRIEFING_VERSION = 4;
+import { intelligentUIGuide } from "./intelligent-ui-guide.js";
 import { originName } from "./actor.js";
 import { parseMentions } from "./mentions.js";
 import { PASS_RESPONSE_TOKEN } from "../events/pass-token.js";
@@ -362,6 +363,7 @@ export const buildBriefing = ({ state, agent, agentCli: cli, env, profile, proje
     "    The brief is your authored interpretation; the table shows its author, sources and whether something changed since you wrote it. Never call your recommendation the human's approval.",
     `  ${agentCli} table component "a useful title" --kind comparison --ref Q1`,
     "    Ready-made components: comparison uses Q/P refs, plan uses X refs (and optional route P), checks uses X/N/F/S. Bind them to the actual table records instead of copying their statuses into prose.",
+    intelligentUIGuide(agentCli),
     `  ${agentCli} table component "interactive result" --kind custom --body-file preview.md --ref P1`,
     "    For a custom result, preview.md contains a fenced html or svg block; use inline CSS/JS and local interaction. Or use --kind artifact --file result.html (also images, PDF, charts). The preview is sandboxed; it cannot call the room API or impersonate the human.",
     "    The trusted table shell owns titles, authors, sources and actions. Do not duplicate or replace those controls inside a custom preview. Choose the representation that helps understand this specific task, not a decorative dashboard.",

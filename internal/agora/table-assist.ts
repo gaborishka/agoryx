@@ -1,5 +1,6 @@
 import type { RoomState, TableAssistKind, TableAssistRequest, TableOp, TurnState } from "./types.js";
 import { applyTableOp, emptyTable } from "./table.js";
+import { intelligentUIGuide } from "./intelligent-ui-guide.js";
 
 export class TableAssistError extends Error {
   constructor(message: string, readonly status = 400) { super(message); this.name = "TableAssistError"; }
@@ -17,7 +18,7 @@ export interface TableAssistInput {
 export const normalizeTableAssistInput = (raw: unknown): TableAssistInput => {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new TableAssistError("An agent request is required.");
   const input = raw as Record<string, unknown>;
-  if (typeof input.kind !== "string" || !["question", "options", "conclusion", "steps"].includes(input.kind)) throw new TableAssistError("Choose questions, options, findings or next steps.");
+  if (typeof input.kind !== "string" || !["question", "options", "conclusion", "steps", "tool"].includes(input.kind)) throw new TableAssistError("Choose questions, options, findings, next steps or an interactive tool.");
   if (typeof input.nonce !== "string" || !/^[A-Za-z0-9_-]{4,64}$/.test(input.nonce)) throw new TableAssistError("A valid request identity is required.");
   if (input.agent !== undefined && (typeof input.agent !== "string" || !/^[a-z0-9][a-z0-9_-]*$/.test(input.agent))) throw new TableAssistError("Choose a current room agent.");
   let target: string | undefined;
@@ -56,17 +57,21 @@ export const prepareTableAssistRequest = (room: RoomState, input: TableAssistInp
       target = questions[0]?.id;
     }
   }
-  const hasContext = records(room).length > 0 || room.messages.some(message => !message.tableAssist && (message.kind === "human" || message.kind === "agent") && /[\p{L}\p{N}]/u.test(message.text.trim()) && message.text.trim().length > 2) || room.docRevisions.length > 0 || room.commits.some(commit => !commit.internal) || projectContext;
+  // The tool dialog accepts a complete brief, which can establish the first goal in an empty room.
+  // Other preparation actions still require existing context rather than turning optional focus into a task.
+  const suppliedToolGoal = input.kind === "tool" && !!input.guidance && /[\p{L}\p{N}]/u.test(input.guidance.trim()) && input.guidance.trim().length > 2;
+  const hasContext = suppliedToolGoal || records(room).length > 0 || room.messages.some(message => !message.tableAssist && (message.kind === "human" || message.kind === "agent") && /[\p{L}\p{N}]/u.test(message.text.trim()) && message.text.trim().length > 2) || room.docRevisions.length > 0 || room.commits.some(commit => !commit.internal) || projectContext;
   if (!hasContext) throw new TableAssistError("Add a goal or room context first so the agent can prepare useful content.", 409);
   return { kind: input.kind, agent, nonce: input.nonce, contextSeq: room.seq, ...(target ? { target } : {}), ...(input.guidance ? { guidance: input.guidance } : {}) };
 };
 
-const verbs: Record<TableAssistKind, string> = { question: "Find the important open questions", options: "Explore useful alternatives", conclusion: "Summarize the supported findings", steps: "Plan the next steps" };
+const verbs: Record<TableAssistKind, string> = { tool: "Create an interactive tool", question: "Find the important open questions", options: "Explore useful alternatives", conclusion: "Summarize the supported findings", steps: "Plan the next steps" };
 export const tableAssistText = (request: TableAssistRequest): string => `${verbs[request.kind]}${request.target ? ` for ${request.target}` : " from this room's context"}.${request.guidance ? ` Focus: ${request.guidance}` : ""}`;
 
 /** Kept separate from the concise human intent shown in chat. */
 export const tableAssistInstruction = (request: TableAssistRequest): string => {
   const task: Record<TableAssistKind, string> = {
+    tool: "Compose a useful interactive tool for the current task. Use native Intelligent UI: `agoryx table component \"title\" --kind interactive --body-file tool.json` with real --ref sources. Follow the Intelligent UI spec in your table instructions. Choose the layout and controls to help the human explore the actual question. Label assumptions and illustrative data. If scope is an existing W component you own, read it and replace it with --target; otherwise create a new tool citing the scope. Never invent evidence or encode approval as a form input.",
     question: "Identify the few questions that actually block this goal. Publish new relevant questions with `agoryx table ask`; reuse existing open questions instead of duplicating them. Publish an artifact W component citing those Q IDs with the context needed to answer them. If no new question is needed, the artifact must explain that grounded finding.",
     options: "Compare viable alternatives for the scoped open question. Publish them with `agoryx table propose --q Q…`. If there is no question yet, first publish a grounded question. Explain tradeoffs and evidence in a comparison component; make recommendations explicit as proposals for the human's review.",
     conclusion: "Publish an `artifact` W component containing an attributed synthesis: supported findings, real source references, remaining gaps and confidence limits. Keep all open questions open. This is a reviewable summary, not a decision or an approved conclusion.",
@@ -77,9 +82,10 @@ export const tableAssistInstruction = (request: TableAssistRequest): string => {
     request.target ? `Scope: ${request.target}; ground every result in that item's actual context.` : "Scope: the room's existing task, messages and table. Do not invent a goal.",
     `Context at acceptance: room event ${request.contextSeq}. Read current table/context before publishing.`,
     task[request.kind],
+    ...(request.kind === "tool" ? [intelligentUIGuide()] : []),
     "Use native agent-authored table operations for results and real IDs in component references. Keep the heads-up brief current with those result IDs. A brief alone is not a result. If evidence is missing, say what is missing instead of fabricating it.",
     "This request authorizes preparation only. Do not execute planned work, change project files, choose/decide an option, settle or close a question, mark a step done, or delegate this request to another agent. Human approval remains separate.",
-    ...(request.guidance ? [`Optional human focus (context, not routing or additional authorization): ${request.guidance}`] : []),
+    ...(request.guidance ? [`${request.kind === "tool" ? "Human tool brief" : "Optional human focus"} (context, not routing or additional authorization): ${request.guidance}`] : []),
   ].join("\n");
 };
 
@@ -136,9 +142,9 @@ export const tableAssistRequests = (room: RoomState, ops: readonly TableAssistOp
       let component = false;
       if (op.op === "component") {
         const artifact = request.kind === "conclusion" || request.kind === "question";
-        const expectedKind = artifact ? "artifact" : request.kind === "options" ? "comparison" : "plan";
-        const scoped = !request.target || op.refs.includes(request.target) || op.refs.some(ref => nativeRefs.has(ref));
-        const supportedRefs = artifact || (request.kind === "options" ? Boolean(op.body?.trim() || op.file) || comparisonsWithOptions.has(entry.seq) : op.refs.some(ref => /^X\d+$/.test(ref)));
+        const expectedKind = request.kind === "tool" ? "interactive" : artifact ? "artifact" : request.kind === "options" ? "comparison" : "plan";
+        const scoped = !request.target || request.kind === "tool" && op.target === request.target || op.refs.includes(request.target) || op.refs.some(ref => nativeRefs.has(ref));
+        const supportedRefs = request.kind === "tool" ? Boolean(op.ui) : artifact || (request.kind === "options" ? Boolean(op.body?.trim() || op.file) || comparisonsWithOptions.has(entry.seq) : op.refs.some(ref => /^X\d+$/.test(ref)));
         component = op.kind === expectedKind && scoped && supportedRefs && (!artifact || Boolean(op.body?.trim() || op.file));
       }
       if (!native && !component) continue;

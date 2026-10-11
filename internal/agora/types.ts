@@ -1,3 +1,4 @@
+import type { IntelligentUI, UIInputSnapshot, UIValue } from "./intelligent-ui.js";
 /**
  * Agora — the room subsystem.
  *
@@ -97,7 +98,7 @@ export interface SkillCatalog {
   warnings: string[];
 }
 
-export type TableAssistKind = "question" | "options" | "conclusion" | "steps";
+export type TableAssistKind = "question" | "options" | "conclusion" | "steps" | "tool";
 
 /** A human request to prepare table content; execution and decisions still require their own intent. */
 export interface TableAssistRequest {
@@ -364,9 +365,10 @@ export interface TableBrief extends TableBriefContent {
   asOfSeq: number;
 }
 
-export type TableComponentKind = "comparison" | "plan" | "checks" | "artifact" | "custom";
+export type TableComponentKind = "comparison" | "plan" | "checks" | "artifact" | "custom" | "interactive";
 
 export interface TableComponentContent {
+  ui?: IntelligentUI;
   title: string;
   kind: TableComponentKind;
   refs: string[];
@@ -374,7 +376,15 @@ export interface TableComponentContent {
   file?: string;
 }
 
+export interface TableScenario extends UIInputSnapshot {
+  name: string;
+  revision: number;
+}
+
 export interface TableComponent extends TableComponentContent {
+  /** Most recent named scenarios, including earlier model revisions; full history remains in JSONL. */
+  scenarios?: TableScenario[];
+  inputSnapshot?: UIInputSnapshot;
   id: string;
   /** Its creator, who may continue maintaining it after a human edit. */
   by: string;
@@ -395,6 +405,7 @@ export type TableOpInput =
   | ({ op: "brief" } & TableBriefContent)
   /** A complete replacement of the component content; omit target to create a W* item. */
   | ({ op: "component"; target?: string } & TableComponentContent)
+  | { op: "component-input"; target: string; revision: number; inputSeq: number; values: Record<string, UIValue>; name?: string }
   | { op: "archive" | "restore"; target: string }
   | { op: "ask"; text: string; many?: boolean }
   | { op: "propose"; title: string; body?: string; q?: string; file?: string }

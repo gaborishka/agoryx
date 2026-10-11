@@ -1,7 +1,9 @@
-import { ChevronDownIcon, CircleHelpIcon, FootprintsIcon, LightbulbIcon, LoaderCircleIcon, PinIcon, Settings2Icon, SparklesIcon, SquareIcon, XIcon } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ChevronDownIcon, CircleHelpIcon, FootprintsIcon, LightbulbIcon, LoaderCircleIcon, PinIcon, Settings2Icon, SlidersHorizontalIcon, SparklesIcon, SquareIcon, XIcon } from "lucide-react";
 import { create } from "zustand";
 import { useEffect, useRef, useState } from "react";
 import { tableAssistRequests } from "@agora/table-assist";
+import { tableAssistRetry } from "@agora/table-assist-retry";
 import type { TableAssistKind } from "@agora/types";
 import { Name } from "@/components/room/bits";
 import { Button } from "@/components/ui/button";
@@ -15,11 +17,18 @@ import { createWorkRefResolver } from "@agora/work-table";
 import { WorkSources } from "./AgentComponent";
 
 const ACTIONS = {
+  tool: { label: "Create a tool", prepared: "Interactive tool ready", verb: "create an interactive tool", Icon: SlidersHorizontalIcon },
   question: { label: "Find questions", prepared: "Question review ready", verb: "find questions", Icon: CircleHelpIcon },
   options: { label: "Explore options", prepared: "Options ready for review", verb: "explore options", Icon: LightbulbIcon },
   conclusion: { label: "Summarize findings", prepared: "Findings summarized", verb: "summarize findings", Icon: PinIcon },
   steps: { label: "Plan next steps", prepared: "Next steps prepared", verb: "plan next steps", Icon: FootprintsIcon },
 } as const;
+const TOOL_PRESETS = [
+  { label: "Explore scenarios", guidance: "Build a what-if tool with the few inputs that matter, clear assumptions, and outcomes that update as I change them." },
+  { label: "Compare options", guidance: "Compare the actual alternatives side by side on the same criteria. Make tradeoffs and missing evidence visible." },
+  { label: "Explain a process", guidance: "Make the current process easy to understand with clear stages, a timeline, and expandable detail where useful." },
+  { label: "Browse evidence", guidance: "Organize the available evidence into a searchable, sortable table with source references and explicit gaps." },
+] as const;
 type Request = { kind: TableAssistKind; agent: string; target?: string; guidance?: string; nonce: string };
 type Choice = Pick<Request, "kind" | "agent" | "guidance">;
 type UI = { agent?: string; guidance?: string; choosing?: Choice; pending?: Request; error?: string; dismissed?: string };
@@ -78,21 +87,45 @@ async function request(kind: TableAssistKind, target?: string, retry?: Request, 
   }
 }
 
+function retryAttempt(previous: Request) {
+  const snap = useStore.getState().snap;
+  if (!snap) return;
+  try {
+    const next = tableAssistRetry(previous, requestNonce(), snap.state.agents);
+    void request(next.kind, next.target, next);
+  } catch (error) {
+    update(snap.state.id, { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 export function TableAssistButton({ kind, target, onRequested }: { kind: TableAssistKind; target?: string; onRequested?: () => void }) {
+  const [toolOpen, setToolOpen] = useState(false);
+  const [toolFocus, setToolFocus] = useState("");
+  const [toolAgent, setToolAgent] = useState("");
   const snap = useStore(state => state.snap);
   const connection = useStore(state => state.connection);
   const ui = useAssistUI(state => snap ? state[snap.state.id] ?? EMPTY : EMPTY);
+  useEffect(() => { setToolOpen(false); }, [snap?.state.id, target]);
   if (!snap?.driven) return null;
   const room = snap.state;
   const requests = tableAssistRequests(room, snap.ops);
   const waiting = ui.pending ?? recovered(room.id);
   const busy = !!ui.pending && !ui.error || !!waiting && !requests.some(item => item.nonce === waiting.nonce) || requests.some(item => item.status === "queued" || item.status === "running");
   const agent = selectedAgent(room.id, room.agents, ui);
-  const { label, verb, Icon } = ACTIONS[kind];
-  const name = room.agents.find(item => item.id === agent)?.label;
-  return <Button variant="outline" size="sm" data-table-assist-options={kind === "options" && !target ? "" : undefined} aria-label={target ? `${label} for ${target}${name ? ` with ${name}` : ""}` : undefined} className="h-auto min-h-8 max-w-full rounded-lg bg-card py-1.5 text-small whitespace-normal text-left pointer-coarse:min-h-11" disabled={connection !== "live" || busy} onClick={() => { onRequested?.(); void request(kind, target); }} title={name ? `${name} will ${verb} using this room's context${target ? ` and ${target}` : ""}.` : "Add an agent to prepare this from context."}>
+  const { label: defaultLabel, verb, Icon } = ACTIONS[kind];
+  const label = kind === "tool" && target ? "Refine tool" : defaultLabel;
+  const owner = room.table.components?.find(c => c.id === target)?.by;
+  const defaultAuthor = kind === "tool" && room.agents.some(a => a.id === owner) ? owner! : agent;
+  const name = room.agents.find(item => item.id === defaultAuthor)?.label;
+  return <><Button variant="outline" size="sm" data-table-assist-options={kind === "options" && !target ? "" : undefined} aria-label={target ? `${label} for ${target}${name ? ` with ${name}` : ""}` : undefined} className="h-auto min-h-8 max-w-full rounded-lg bg-card py-1.5 text-small whitespace-normal text-left pointer-coarse:min-h-11" disabled={connection !== "live" || busy} onClick={() => { if (kind === "tool") { if (!agent) { useStore.getState().openDialog({ kind: "agents" }); return; } setToolAgent(defaultAuthor); setToolFocus(ui.guidance ?? ""); setToolOpen(true); } else { onRequested?.(); void request(kind, target); } }} title={name ? `${name} will ${verb} using this room's context${target ? ` and ${target}` : ""}.` : "Add an agent to prepare this from context."}>
     <Icon className="size-3.5 shrink-0" />{label}
-  </Button>;
+  </Button><Dialog open={toolOpen} onOpenChange={setToolOpen}><DialogContent className="max-w-lg"><DialogHeader><DialogTitle>{target ? "Refine this tool" : "An interface for this moment"}</DialogTitle><DialogDescription>{target ? "Tell the agent how this tool could better support the task." : "Your agent will compose a tool from the conversation. Explore a scenario, compare alternatives, or make a complex idea tangible."}</DialogDescription></DialogHeader>
+    <label className="space-y-2 text-small font-medium">What would help right now?<textarea aria-label="Describe your tool" autoFocus value={toolFocus} maxLength={2000} onChange={e => setToolFocus(e.target.value)} placeholder="For example: let me vary team size and scope to compare delivery scenarios…" className="mt-2 min-h-28 w-full resize-y rounded-xl border border-input bg-background p-3 text-ui font-normal" /></label>
+    {!target ? <div className="flex flex-wrap gap-2">{TOOL_PRESETS.map(example => <button key={example.label} type="button" onClick={() => setToolFocus(example.guidance)} className="rounded-lg border border-border px-2.5 py-2 text-meta text-muted-foreground hover:bg-accent">{example.label}</button>)}</div> : null}
+    <div className="flex flex-wrap items-end justify-between gap-3"><label className="flex flex-col gap-1.5 text-small text-muted-foreground">Build with<select aria-label="Tool author" value={room.agents.some(a => a.id === toolAgent) ? toolAgent : agent} onChange={e => setToolAgent(e.target.value)} className="h-9 rounded-lg border border-input bg-background px-2 text-foreground">{room.agents.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}</select></label><Button disabled={connection !== "live" || busy || !agent} onClick={() => { setToolOpen(false); onRequested?.(); void request("tool", target, undefined, { kind: "tool", agent: room.agents.some(a => a.id === toolAgent) ? toolAgent : agent, guidance: toolFocus.trim() }); }}><SparklesIcon className="size-4" />{target ? "Ask for changes" : "Create tool"}</Button></div>
+    <p className="text-meta text-muted-foreground">{target ? <>Scope: <span className="font-mono">{target}</span>{room.table.components?.find(c => c.id === target)?.title ? ` · ${room.table.components.find(c => c.id === target)!.title}` : ""}</> : "Built from room context · results stay on the table"}</p>
+    {target && owner && toolAgent && toolAgent !== owner ? <p className="text-meta text-muted-foreground">This agent will create a linked alternative. Only the original author can refine the existing tool in place.</p> : null}
+  </DialogContent></Dialog></>;
 }
 
 export function TableAssistActions({ compact = false, onRequested }: { compact?: boolean; onRequested?: () => void }) {
@@ -157,10 +190,12 @@ export function TableAssistActivity() {
   return <section data-table-assist-status="" tabIndex={-1} className={cn("rounded-xl border p-3.5", problem ? "border-amber/20 bg-amber-soft/30" : "border-border bg-card/60")} aria-label="Agent request status" aria-live="polite">
     <div className="flex flex-wrap items-start gap-2"><span className="mt-0.5 text-muted-foreground">{active ? <LoaderCircleIcon className="size-4 animate-spin" /> : <SparklesIcon className="size-4" />}</span><div className="min-w-0 flex-1"><h2 className="text-small font-semibold [overflow-wrap:anywhere]">{title}</h2><p className="mt-1 flex flex-wrap items-center gap-1.5 text-meta text-muted-foreground"><Name handle={latest.agent} />{latest.target ? <>· for {latest.target}</> : " · from room context"}{latest.status === "ready" ? " · prepared for review" : null}</p></div>{!active ? <Button size="icon-sm" variant="ghost" aria-label="Dismiss agent request status" onClick={() => update(room.id, { dismissed: latest.id })}><XIcon className="size-3.5" /></Button> : null}</div>
     {latest.status === "queued" ? <p className="mt-2 text-small text-muted-foreground">Waiting for the agent's next room turn.</p> : null}
+    {latest.guidance ? <p className="mt-2 line-clamp-3 text-small text-muted-foreground [overflow-wrap:anywhere]" title={latest.guidance}>{latest.guidance}</p> : null}
     {latest.error ? <p className="mt-2 text-small text-muted-foreground">{latest.error}</p> : null}
     {ui.error ? <p role="alert" className="mt-2 text-small text-destructive">{ui.error}</p> : null}
     {refs.length ? <div className="mt-3 flex flex-wrap items-center gap-2"><WorkSources refs={refs} />{available.length ? <Button size="sm" variant="ghost" onClick={() => useStore.getState().goToRef(available.find(ref => ref.id.startsWith("W"))?.id ?? available[0]!.id)}>Show results</Button> : <span className="text-small text-muted-foreground">These results are no longer on the current table.</span>}</div> : null}
-    <div className="mt-2 flex flex-wrap gap-2">{active ? <Button size="sm" variant="ghost" disabled={!usable} title="Stops all active and queued work in this room." onClick={() => void useStore.getState().post("/stop").catch(error => update(room.id, { error: String(error) }))}><SquareIcon className="size-3" />Stop run</Button> : problem ? <>{response ? <Button size="sm" variant="ghost" onClick={() => useStore.getState().goToRef(`m-${response}`)}>Read response</Button> : null}<Button size="sm" variant="outline" disabled={!usable} onClick={() => void request(latest.kind, latest.target)}>Try again</Button></> : null}</div>
+    <div className="mt-2 flex flex-wrap gap-2">{active ? <Button size="sm" variant="ghost" disabled={!usable} title="Stops all active and queued work in this room." onClick={() => void useStore.getState().post("/stop").catch(error => update(room.id, { error: String(error) }))}><SquareIcon className="size-3" />Stop run</Button> : problem ? <>{response ? <Button size="sm" variant="ghost" onClick={() => useStore.getState().goToRef(`m-${response}`)}>Read response</Button> : null}<Button size="sm" variant="outline" disabled={!usable || !room.agents.some(agent => agent.id === latest.agent)} title="Start a new attempt with the same agent, scope and instructions." onClick={() => retryAttempt(latest)}>Try again</Button></> : null}</div>
+    {problem && !room.agents.some(agent => agent.id === latest.agent) ? <p role="alert" className="mt-2 text-small text-muted-foreground">The original agent is no longer in this room. Start a new request to choose another agent.</p> : null}
     {requests.length > 1 ? <details className="mt-2 text-small text-muted-foreground"><summary className="cursor-pointer py-1">Request history · {requests.length - 1}</summary><ul className="mt-2 max-h-72 space-y-2 overflow-y-auto">{requests.slice(1).map(item => <li key={item.id} className="flex flex-wrap items-center gap-1.5"><span>{ACTIONS[item.kind].label}</span>· <Name handle={item.agent} />· <span>{item.status === "ready" ? "Prepared" : item.status === "no-output" ? "No table result" : item.status}</span>{item.refs.length ? <WorkSources refs={item.refs.map(id => resolve(id))} /> : null}</li>)}</ul></details> : null}
   </section>;
 }

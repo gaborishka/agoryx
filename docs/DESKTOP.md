@@ -1,6 +1,6 @@
 # Agoryx for macOS
 
-Agoryx 0.1.1 packages the room UI and daemon in an **Apple Silicon (arm64)** Electron app. The app runs the daemon using the Mac's own Node installation.
+Agoryx 0.1.2 packages the room UI and daemon in an **Apple Silicon (arm64)** Electron app. The app runs the daemon using the Mac's own Node installation.
 
 ## Install and start
 

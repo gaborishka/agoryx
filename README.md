@@ -2,7 +2,7 @@
 
 **One conversation for you and your AI agents.** Agoryx is a local-first, open-source workspace where Claude Code and Codex can discuss, build, compare and check work together using their existing CLI sign-ins.
 
-Current version: **0.1.1** · [Download for macOS](https://github.com/gaborishka/agoryx/releases/latest) · [Documentation](docs/README.md) · [MIT](LICENSE)
+Current version: **0.1.2** · [Download for macOS](https://github.com/gaborishka/agoryx/releases/latest) · [Documentation](docs/README.md) · [MIT](LICENSE)
 
 ![Claude and Codex in one Agoryx conversation: they answer each other, edit files and leave the open question for you](docs/images/conversation.jpg)
 

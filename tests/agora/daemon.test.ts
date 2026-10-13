@@ -707,3 +707,30 @@ test("inline activity reads only this turn's native tools, including after the a
     }
   }
 });
+
+test("native chat embed lookup is authenticated, read-only and pinned to its message", async () => {
+  const room = await newRoom("Tool embed lookup", { mode: "chat" });
+  const base = `/api/rooms/${room.id}`;
+  const publish = (value: number, target?: string) => ({ op: "component", kind: "interactive", title: "Chat tool", refs: [], ...(target ? { target } : {}), ui: { version: 1, description: "Illustrative", inputs: [], root: { type: "metric", label: "Value", value } } });
+  const first = await call("POST", `${base}/table`, { body: publish(10) });
+  assert.equal(first.status, 201, first.body);
+  const created = first.json<{ seq: number }>().seq;
+  const posted = await call("POST", `${base}/messages`, { body: { text: "@ivan\n```tool\nW1\n```" } });
+  assert.equal(posted.status, 201, posted.body);
+  const message = posted.json<{ message: { id: string } }>().message.id;
+  const revised = await call("POST", `${base}/table`, { body: publish(20, "W1") });
+  assert.equal(revised.status, 201, revised.body);
+  const path = `${base}/tool-embed?message=${message}&component=W1`;
+  assert.equal((await call("GET", path, { token: null })).status, 401);
+  const reply = await call("GET", path);
+  assert.equal(reply.status, 200, reply.body);
+  const result = reply.json<{ pinned: { contentSeq: number; ui: { root: { value: number } } }; current: { ui: { root: { value: number } } } }>();
+  assert.equal(result.pinned.contentSeq, created);
+  assert.equal(result.pinned.ui.root.value, 10);
+  assert.equal(result.current.ui.root.value, 20);
+  assert.equal((await call("GET", `${base}/tool-embed?message=${message}&component=W99`)).status, 404);
+  assert.equal((await call("GET", `${base}/tool-embed?message=../../wrong&component=W1`)).status, 400);
+  assert.equal((await call("POST", path, { body: {} })).status, 405);
+  const other = await newRoom("No matching tool", { mode: "chat" });
+  assert.equal((await call("GET", `/api/rooms/${other.id}/tool-embed?message=${message}&component=W1`)).status, 404);
+});

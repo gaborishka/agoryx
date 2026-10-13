@@ -1,4 +1,4 @@
-export const BRIEFING_VERSION = 4;
+export const BRIEFING_VERSION = 5;
 import { intelligentUIGuide } from "./intelligent-ui-guide.js";
 import { originName } from "./actor.js";
 import { parseMentions } from "./mentions.js";

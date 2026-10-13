@@ -14,6 +14,7 @@ import { LiveFrame } from "./LiveFrame";
 import { CsvFile, Player, useRawText } from "./Media";
 import { localPath, messageRefId, remarkAgora, wholeBlocks } from "./remark-agora";
 import { remarkLiteralHtml } from "./remark-literal-html";
+import { toolEmbedId, toolEmbedMessage } from "@/lib/tool-embed";
 
 
 /**
@@ -158,6 +159,7 @@ const remarkPluginsLiteral = [...defaultRemark, remarkAgora, remarkLiteralHtml];
 const liveRenderers = [
   { language: ["html", "htm", "svg"], component: LiveBlock },
   { language: ["viz"], component: VizFence },
+  { language: ["tool"], component: ToolFence },
 ];
 const pluginsLight = { code, mermaid: mermaidLight, renderers: liveRenderers };
 const pluginsDark = { code, mermaid: mermaidDark, renderers: liveRenderers };
@@ -266,6 +268,30 @@ function VizFence({ code: fence, isIncomplete }: CustomRendererProps) {
       }
     >
       <VizBlock code={fence} isIncomplete={isIncomplete} />
+    </Suspense>
+  );
+}
+
+/**
+ * A ```tool fence: a native table tool by its ID, pinned to the message's version. Lazy because the tool renderer
+ * reaches back into this file through the table's components.
+ */
+const ToolEmbed = lazy(() => import("./ToolEmbed").then((m) => ({ default: m.ToolEmbed })));
+
+function ToolFence({ code: fence, isIncomplete }: CustomRendererProps) {
+  const { source } = useContext(LiveSource);
+  const id = toolEmbedId(fence), message = toolEmbedMessage(source);
+  if (isIncomplete || !id || !message) {
+    return (
+      <div className="my-3 overflow-hidden rounded-xl border border-border bg-code">
+        <div className="border-b border-border px-3 py-1.5 font-mono text-meta text-muted-foreground">tool</div>
+        <pre className="scroll-thin max-h-96 overflow-auto px-3 py-2.5 font-mono text-small leading-relaxed">{fence}</pre>
+      </div>
+    );
+  }
+  return (
+    <Suspense fallback={<div className="not-prose my-3 h-24 rounded-xl border border-dashed border-border" />}>
+      <ToolEmbed id={id} message={message} />
     </Suspense>
   );
 }

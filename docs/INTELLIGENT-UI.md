@@ -139,7 +139,21 @@ Unsaved exploration is stored in **per-tab session storage**, keyed by room, com
 
 When a model changes, the UI offers export or dismissal of up to three older drafts for that same component. It does not silently reinterpret those values using the new model. If another scenario is saved while you are exploring, choose **Load latest** or **Keep my exploration** before saving a new version; the other scenario remains in history.
 
-Native briefing version **4** supplies the current composition contract to ordinary agent turns. Existing version-3 sessions receive a fresh briefing on their next room turn; subsequent turns retain native sessions normally. Every explicit Create/Refine tool request also carries the complete guide, and agents can retrieve it at any time with `agoryx ui guide`. Model instructions and publication validation use the same supported contract.
+Native briefing version **5** supplies the current composition contract to ordinary agent turns. Existing older sessions receive a fresh briefing on their next room turn; subsequent turns retain native sessions normally. Every explicit Create/Refine tool request also carries the complete guide, and agents can retrieve it at any time with `agoryx ui guide`. Model instructions and publication validation use the same supported contract.
+
+## Tools in the conversation
+
+A message can show a published native tool by its ID, without a second copy of its model:
+
+````md
+```tool
+W2
+```
+````
+
+The fence holds only the ID. The message shows the tool **as it was when the message was posted**: its definition and the saved inputs of that moment, resolved by `GET /api/rooms/:room/tool-embed?message=m12&component=W2`. Exploring it changes nothing outside this device; the pinned view has no Save scenario, even when the model is unchanged, so historical inputs stay historical.
+
+**Show current** switches the same place to the live table tool with its normal saving; the embed also says when the model has been refined since the message. A removed or archived tool keeps its pinned version and no switch.
 
 For interactions outside this native grammar, the existing `custom` HTML components remain available behind sandboxed previews. They cannot call the room API. Native tools require no new provider key or hosted UI generation service; both supported agent types use their existing native sessions.
 

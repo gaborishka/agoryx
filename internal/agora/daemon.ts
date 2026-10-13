@@ -48,6 +48,7 @@ import { RoomStore, type RoomSummary } from "./store.js";
 import { isWorkTableEvent } from "./work-table.js";
 import { describeTableOp, TableOpError } from "./table.js";
 import { TableAssistError } from "./table-assist.js";
+import { resolveToolEmbed, ToolEmbedError } from "./tool-embed.js";
 import type { Actor, ActorOrigin, AgentKind, AgentPresence, DocRevision, EphemeralEvent, LimitSnapshot, RoomAgent, RoomEvent, RoomSettings, RoomState } from "./types.js";
 import { diffHunks, diffLines, docHash, MAX_DOC_TEXT, normalizeDocPath, readDoc } from "./doc.js";
 import { TerminalError, TerminalHub } from "./terminal.js";
@@ -1920,6 +1921,18 @@ export class AgoraDaemon {
 
     if (!action && method === "GET") {
       sendJson(res, 200, this.snapshot(handle, device));
+      return;
+    }
+
+    if (action === "tool-embed") {
+      if (method !== "GET" || parts.length !== 3) throw new HttpError(405, "GET");
+      try {
+        sendJson(res, 200, resolveToolEmbed(handle.store.events, handle.store.state,
+          url.searchParams.get("message") ?? "", url.searchParams.get("component") ?? ""));
+      } catch (error) {
+        if (error instanceof ToolEmbedError) throw new HttpError(error.status, error.message);
+        throw error;
+      }
       return;
     }
 

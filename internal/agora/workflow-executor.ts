@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, platform, tmpdir } from "node:os";
+import { homedir, platform, tmpdir, userInfo } from "node:os";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -166,17 +166,23 @@ const authFile = (env: NodeJS.ProcessEnv, kind: AgentKind): string => kind === "
 
 const claudeToken = (env: NodeJS.ProcessEnv): string | null => {
   if (env.CLAUDE_CODE_OAUTH_TOKEN) return env.CLAUDE_CODE_OAUTH_TOKEN;
+  const parse = (value: string | undefined): string | null => {
+    try {
+      const token: unknown = JSON.parse(value ?? "null")?.claudeAiOauth?.accessToken;
+      return typeof token === "string" && token.length > 0 ? token : null;
+    } catch { return null; }
+  };
   let value: string | undefined;
   try { value = readFileSync(authFile(env, "claude"), "utf8"); } catch { /* macOS uses Keychain */ }
-  if (!value && platform() === "darwin") {
-    const result = spawnSync("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], { encoding: "utf8", timeout: 5000, maxBuffer: 128 * 1024 });
-    if (result.status === 0) value = result.stdout;
+  if (value || platform() !== "darwin") return parse(value);
+  // Claude Code keys its login by the macOS account; an entry with another account (for example
+  // one holding only MCP OAuth) can share the service name, so the unqualified lookup is a fallback.
+  for (const account of [userInfo().username, undefined]) {
+    const result = spawnSync("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", ...(account ? ["-a", account] : []), "-w"], { encoding: "utf8", timeout: 5000, maxBuffer: 128 * 1024 });
+    const token = result.status === 0 ? parse(result.stdout) : null;
+    if (token) return token;
   }
-  try {
-    const parsed = JSON.parse(value ?? "null");
-    const token: unknown = parsed?.claudeAiOauth?.accessToken;
-    return typeof token === "string" && token.length > 0 ? token : null;
-  } catch { return null; }
+  return null;
 };
 
 const codexCredentials = (env: NodeJS.ProcessEnv): { accessToken: string; accountId?: string; childAuth: string } => {
